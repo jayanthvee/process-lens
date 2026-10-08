@@ -1,0 +1,1020 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://processlens.example/schema/recipe/v1",
+  "title": "ProcessLens recipe",
+  "description": "A versioned, typed program that the runner executes once per input record. The recipe is the source of truth for workflow behaviour: the executor performs exactly these steps, in this order, and never decides an action itself. This file is the machine-checkable contract; the recipe specification explains the parts a schema cannot check.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format_version", "meta", "steps"],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Optional hint for editors. The stored recipe does not depend on it."
+    },
+    "format_version": {
+      "const": 1,
+      "description": "Version of this schema. A document that needs a newer format is rejected by this file and read by that version's schema instead."
+    },
+    "meta": { "$ref": "#/$defs/meta" },
+    "variables": {
+      "type": "object",
+      "description": "Values the workflow needs that are not produced by a step. A variable can also be created by a step that binds a name: transform, match, aggregate, classify, extract, read_value, download, for_each.",
+      "propertyNames": { "$ref": "#/$defs/name" },
+      "additionalProperties": { "$ref": "#/$defs/variable" },
+      "default": {}
+    },
+    "steps": {
+      "type": "array",
+      "description": "The program. Executed top to bottom; the runner decides nothing on its own.",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/step" }
+    }
+  },
+  "$defs": {
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{0,63}$",
+      "description": "A variable, field, or table name: lower-case letters, digits and underscores."
+    },
+    "step_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+      "description": "A step identifier. Written to step_events.step_id; unique within the recipe (a code check, not a schema check)."
+    },
+    "template": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000,
+      "description": "Text that may contain {{ }} placeholders: {{row.<column>}} for an input column, {{<variable>}} for a bound value, with an optional pipe filter such as {{row.email | lower}}."
+    },
+    "origin": {
+      "type": "string",
+      "pattern": "^https?://[^/?#]+$",
+      "description": "An origin: scheme, host, and optional port, with no path. The executor refuses to act on any origin outside meta.allowed_origins."
+    },
+    "timeout_ms": {
+      "type": "integer",
+      "minimum": 100,
+      "maximum": 120000,
+      "description": "How long to keep checking. Waits are conditions with timeouts; fixed sleeps are not part of this format."
+    },
+    "labels": {
+      "type": "array",
+      "description": "Free labels for grouping steps in the editor. They change nothing at run time.",
+      "minItems": 1,
+      "maxItems": 5,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1, "maxLength": 40 }
+    },
+    "step_name": {
+      "type": "string",
+      "maxLength": 120,
+      "description": "Human-readable label; the compiler or the builder writes it."
+    },
+    "step_description": { "type": "string", "maxLength": 1000 },
+    "commit_flag": {
+      "type": "boolean",
+      "default": false,
+      "description": "This step changes data in the destination, so the ledger treats it as the commit of the record and writes the write-ahead states around it."
+    },
+    "assert_after": {
+      "$ref": "#/$defs/condition",
+      "description": "Required when commit is true: proof that the destination accepted the change. Without it the commit could never be verified."
+    },
+    "on_failure": {
+      "enum": ["park", "fail"],
+      "default": "park",
+      "description": "What happens to the record when this step cannot be completed. A locator that cannot be resolved parks the record by default; a provable rejection fails it."
+    },
+
+    "meta": {
+      "title": "Meta",
+      "description": "What the workflow is for, what it needs as input, and the rules that decide duplicates and approvals.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "when_to_use",
+        "input_schema",
+        "record_key",
+        "idempotency_key",
+        "approval_policy",
+        "allowed_origins"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "What the workflow does, in one line."
+        },
+        "when_to_use": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000,
+          "description": "When this workflow is the right one, in the builder's words. Shown in the workflow list."
+        },
+        "input_schema": { "$ref": "#/$defs/input_schema" },
+        "record_key": {
+          "$ref": "#/$defs/template",
+          "description": "The value that identifies one record everywhere: the run-level uniqueness key, the duplicate search in the destination, and the basis of the idempotency key. Normalize here, for example {{row.email | lower}}."
+        },
+        "idempotency_key": {
+          "$ref": "#/$defs/template",
+          "description": "The value that makes a commit unique across the whole destination. Create workflows use the record key; update workflows add the new value, for example {{row.sku}}:{{row.new_price}}:{{row.effective_date}}, so the same change applies once while a later change still applies."
+        },
+        "approval_policy": { "$ref": "#/$defs/approval_policy" },
+        "allowed_origins": {
+          "type": "array",
+          "description": "The only origins this workflow may act on. The extension asks for host access to these and nothing else.",
+          "minItems": 1,
+          "maxItems": 20,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/origin" }
+        }
+      }
+    },
+
+    "input_schema": {
+      "title": "Input schema",
+      "description": "What one record of input looks like, and the rules that decide a record before the browser is touched.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fields"],
+      "properties": {
+        "fields": {
+          "type": "object",
+          "description": "One entry per input column, in the order the builder wants them reviewed. Columns not listed here are still available as {{row.<column>}} but are not validated.",
+          "minProperties": 1,
+          "propertyNames": { "$ref": "#/$defs/name" },
+          "additionalProperties": { "$ref": "#/$defs/input_field" }
+        },
+        "rules": {
+          "type": "array",
+          "description": "Precheck rules, applied per record before the destination is touched. 'missing email \u2192 park' is one of these.",
+          "minItems": 1,
+          "maxItems": 20,
+          "items": { "$ref": "#/$defs/precheck_rule" }
+        }
+      }
+    },
+
+    "input_field": {
+      "title": "Input field",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "enum": ["string", "number", "integer", "boolean", "date", "document"],
+          "description": "document covers a file per record, such as a r\u00e9sum\u00e9 or an invoice."
+        },
+        "required": {
+          "type": "boolean",
+          "default": false,
+          "description": "An empty required field parks the record unless a rule says otherwise."
+        },
+        "unique": {
+          "type": "boolean",
+          "default": false,
+          "description": "The value must be unique inside the uploaded file; a repeat is flagged in Input Review before anything runs."
+        },
+        "description": { "type": "string", "maxLength": 500 }
+      }
+    },
+
+    "precheck_rule": {
+      "title": "Precheck rule",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["when", "then", "reason"],
+      "properties": {
+        "when": { "$ref": "#/$defs/predicate" },
+        "then": {
+          "enum": ["skip", "park", "fail"],
+          "description": "The ledger outcome: skip for 'already handled', park when a person is needed, fail when the record cannot be processed and does not need review."
+        },
+        "reason": {
+          "$ref": "#/$defs/template",
+          "description": "Shown in the results screen next to the record."
+        }
+      }
+    },
+
+    "predicate": {
+      "title": "Predicate on one record's input",
+      "description": "A check on the record's own values, before the browser is touched.",
+      "oneOf": [
+        {
+          "title": "Field is empty",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["missing"],
+          "properties": { "missing": { "$ref": "#/$defs/name" } }
+        },
+        {
+          "title": "Value is not one of a fixed list",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["not_in"],
+          "properties": {
+            "not_in": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["field", "allowed_values"],
+              "properties": {
+                "field": { "$ref": "#/$defs/name" },
+                "allowed_values": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 100,
+                  "items": { "type": "string", "minLength": 1 }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+
+    "approval_policy": {
+      "title": "Approval policy",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commit"],
+      "description": "Where a person must approve a commit. Every AI repair and every AI value under the confidence threshold needs approval whatever this says.",
+      "properties": {
+        "commit": {
+          "enum": ["first_record", "every_record", "first_n", "none"],
+          "description": "first_record is the default: the first commit of a run is previewed and approved, later records run unattended."
+        },
+        "n": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "description": "How many records need approval when commit is first_n."
+        }
+      },
+      "allOf": [
+        {
+          "if": { "required": ["commit"], "properties": { "commit": { "const": "first_n" } } },
+          "then": { "required": ["n"] }
+        }
+      ]
+    },
+
+    "variable": {
+      "title": "Variable",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source"],
+      "properties": {
+        "source": { "$ref": "#/$defs/value_source" },
+        "description": { "type": "string", "maxLength": 500 },
+        "requires_review": {
+          "type": "boolean",
+          "default": false,
+          "description": "The value is shown in Input Review and cannot be used until a person accepts it."
+        }
+      }
+    },
+
+    "value_source": {
+      "title": "Value source",
+      "description": "Where a value comes from. AI-generated text is the only source that always needs approval before it can be submitted.",
+      "oneOf": [
+        {
+          "title": "Input column",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "column"],
+          "properties": {
+            "kind": { "const": "input" },
+            "column": { "$ref": "#/$defs/name" }
+          }
+        },
+        {
+          "title": "Constant",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "value"],
+          "properties": {
+            "kind": { "const": "constant" },
+            "value": {
+              "type": ["string", "number", "boolean"],
+              "description": "A string may be a template."
+            }
+          }
+        },
+        {
+          "title": "Rule table lookup",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "table", "key"],
+          "properties": {
+            "kind": { "const": "rule_table" },
+            "table": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$" },
+            "key": { "$ref": "#/$defs/value_source" },
+            "default": { "$ref": "#/$defs/template" }
+          }
+        },
+        {
+          "title": "Read from the page",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "variable"],
+          "properties": {
+            "kind": { "const": "page" },
+            "variable": {
+              "$ref": "#/$defs/name",
+              "description": "A name bound by a read_value step."
+            }
+          }
+        },
+        {
+          "title": "Extracted from a document",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "field"],
+          "properties": {
+            "kind": { "const": "document" },
+            "field": {
+              "$ref": "#/$defs/name",
+              "description": "A field produced by an extract step. Its value is trusted only when it carries a quote from the document and passes the code validators."
+            }
+          }
+        },
+        {
+          "title": "AI-generated text",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "template", "requires_approval"],
+          "properties": {
+            "kind": { "const": "ai_text" },
+            "template": { "$ref": "#/$defs/template" },
+            "requires_approval": {
+              "const": true,
+              "description": "Always true. AI text is data and is never submitted without a person's approval."
+            },
+            "max_characters": { "type": "integer", "minimum": 1, "maximum": 10000 }
+          }
+        }
+      ]
+    },
+
+    "strategy": {
+      "title": "Locator strategy (one rung)",
+      "description": "One rung of the target ladder. A rung counts as found only when exactly one visible, enabled element matches it; the runner walks the rungs in the order given.",
+      "oneOf": [
+        {
+          "title": "Accessible role and name (rung 1)",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["by", "role", "name"],
+          "properties": {
+            "by": { "const": "role" },
+            "role": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+            "name": { "$ref": "#/$defs/template" },
+            "within": {
+              "$ref": "#/$defs/template",
+              "description": "Container scope for this rung, for example 'form:New lead'. Overrides the bundle's within."
+            }
+          }
+        },
+        {
+          "title": "Test id (rung 2)",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["by", "value"],
+          "properties": {
+            "by": { "const": "testid" },
+            "value": { "$ref": "#/$defs/template" },
+            "within": { "$ref": "#/$defs/template" }
+          }
+        },
+        {
+          "title": "Label (rung 3)",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["by", "text"],
+          "properties": {
+            "by": { "const": "label" },
+            "text": { "$ref": "#/$defs/template" },
+            "within": { "$ref": "#/$defs/template" }
+          }
+        },
+        {
+          "title": "Stable CSS (rung 4)",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["by", "selector"],
+          "properties": {
+            "by": { "const": "css" },
+            "selector": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 500,
+              "description": "A short, stable selector. Long generated class names are not stable."
+            },
+            "within": { "$ref": "#/$defs/template" }
+          }
+        },
+        {
+          "title": "Fuzzy text (rung 5)",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["by", "value"],
+          "properties": {
+            "by": { "const": "text_fuzzy" },
+            "value": { "$ref": "#/$defs/template" },
+            "threshold": { "type": "number", "minimum": 0, "maximum": 1 },
+            "within": { "$ref": "#/$defs/template" }
+          }
+        }
+      ]
+    },
+
+    "targets": {
+      "title": "Ordered target ladder",
+      "description": "Ways to find one element, best first. The runner tries them in order and logs which rung found the element.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 5,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/strategy" }
+    },
+
+    "frame": {
+      "title": "Frame path",
+      "description": "The chain of iframes from the top document down to the document that holds the element, outermost first. Absent means the top document.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 5,
+      "items": {
+        "oneOf": [
+          {
+            "title": "By position",
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["by", "index"],
+            "properties": {
+              "by": { "const": "index" },
+              "index": { "type": "integer", "minimum": 0, "maximum": 100 }
+            }
+          },
+          {
+            "title": "By URL",
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["by", "url_matches"],
+            "properties": {
+              "by": { "const": "url" },
+              "url_matches": { "type": "string", "minLength": 1, "maxLength": 500 }
+            }
+          }
+        ]
+      }
+    },
+
+    "selector": {
+      "title": "Selector",
+      "description": "A target ladder plus the scope it applies in. Used where a selector appears inside another structure, such as a condition.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["targets"],
+      "properties": {
+        "targets": { "$ref": "#/$defs/targets" },
+        "within": {
+          "$ref": "#/$defs/template",
+          "description": "Container scope for the whole bundle, for example 'dialog:New lead'. A rung may override it."
+        },
+        "frame": { "$ref": "#/$defs/frame" },
+        "description": { "type": "string", "maxLength": 500 }
+      }
+    },
+
+    "condition": {
+      "title": "Condition",
+      "description": "A check on what the page shows. Every wait and every assertion is a condition with a timeout.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "text_visible": { "$ref": "#/$defs/template" },
+        "text_absent": { "$ref": "#/$defs/template" },
+        "url_matches": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500,
+          "description": "A pattern matched against the page URL."
+        },
+        "element_present": { "$ref": "#/$defs/selector" },
+        "element_absent": { "$ref": "#/$defs/selector" },
+        "value_equals": {
+          "title": "A field's value equals a value",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["selector", "value"],
+          "properties": {
+            "selector": { "$ref": "#/$defs/selector" },
+            "value": { "$ref": "#/$defs/value_source" },
+            "case_insensitive": { "type": "boolean", "default": false }
+          }
+        },
+        "timeout_ms": { "$ref": "#/$defs/timeout_ms" }
+      },
+      "anyOf": [
+        { "required": ["text_visible"] },
+        { "required": ["text_absent"] },
+        { "required": ["url_matches"] },
+        { "required": ["element_present"] },
+        { "required": ["element_absent"] },
+        { "required": ["value_equals"] }
+      ]
+    },
+
+    "commit_assertion_rule": {
+      "title": "Commit steps carry an assertion",
+      "description": "A commit without an assertion could never be verified, so the pair is part of the contract, not a convention.",
+      "if": { "required": ["commit"], "properties": { "commit": { "const": true } } },
+      "then": { "required": ["assert_after"] }
+    },
+
+    "step": {
+      "title": "Step",
+      "description": "One instruction. The action picks the shape: fields that do not belong to that action are rejected, and the fields that action needs are required.",
+      "type": "object",
+      "allOf": [
+        { "$ref": "#/$defs/commit_assertion_rule" },
+        {
+          "oneOf": [
+            { "$ref": "#/$defs/step_navigate" },
+            { "$ref": "#/$defs/step_fill" },
+            { "$ref": "#/$defs/step_select" },
+            { "$ref": "#/$defs/step_click" },
+            { "$ref": "#/$defs/step_upload_file" },
+            { "$ref": "#/$defs/step_read_value" },
+            { "$ref": "#/$defs/step_wait_for" },
+            { "$ref": "#/$defs/step_assert" },
+            { "$ref": "#/$defs/step_download" },
+            { "$ref": "#/$defs/step_branch" },
+            { "$ref": "#/$defs/step_for_each" },
+            { "$ref": "#/$defs/step_transform" },
+            { "$ref": "#/$defs/step_match" },
+            { "$ref": "#/$defs/step_aggregate" },
+            { "$ref": "#/$defs/step_classify" },
+            { "$ref": "#/$defs/step_extract" },
+            { "$ref": "#/$defs/step_approval_gate" },
+            { "$ref": "#/$defs/step_end_record" }
+          ]
+        }
+      ]
+    },
+
+    "step_navigate": {
+      "title": "navigate",
+      "description": "Go to a URL. Its origin must be one of meta.allowed_origins.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "action", "url"],
+      "properties": {
+        "id": { "$ref": "#/$defs/step_id" },
+        "name": { "$ref": "#/$defs/step_name" },
+        "description": { "$ref": "#/$defs/step_description" },
+        "labels": { "$ref": "#/$defs/labels" },
+        "action": { "const": "navigate" },
+        "url": { "$ref": "#/$defs/template" }
+      }
+    },
+
+    "step_fill": {
+      "title": "fill",
+      "description": "Type a value into a field.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "action", "targets", "value"],
+      "properties": {
+        "id": { "$ref": "#/$defs/step_id" },
+        "name": { "$ref": "#/$defs/step_name" },
+        "description": { "$ref": "#/$defs/step_description" },
+        "labels": { "$ref": "#/$defs/labels" },
+        "commit": { "$ref": "#/$defs/commit_flag" },
+        "assert_after": { "$ref": "#/$defs/assert_after" },
+        "timeout_ms": { "$ref": "#/$defs/timeout_ms" },
+        "on_failure": { "$ref": "#/$defs/on_failure" },
+        "action": { "const": "fill" },
+        "targets": { "$ref": "#/$defs/targets" },
+        "within": { "$ref": "#/$defs/template" },
+        "frame": { "$ref": "#/$defs/frame" },
+        "value": { "$ref": "#/$defs/value_source" },
+        "clear_first": { "type": "boolean", "default": true }
+      }
+    },
+
+    "step_select": {
+      "title": "select",
+      "description": "Choose an option in a dropdown, including a custom combobox that is not a native select element.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "action", "targets", "value"],
+      "properties": {
+        "id": { "$ref": "#/$defs/step_id" },
+        "name": { "$ref": "#/$defs/step_name" },
+        "description": { "$ref": "#/$defs/step_description" },
+        "labels": { "$ref": "#/$defs/labels" },
+        "commit": { "$ref": "#/$defs/commit_flag" },
+        "assert_after": { "$ref": "#/$defs/assert_after" },
+        "timeout_ms": { "$ref": "#/$defs/timeout_ms" },
+        "on_failure": { "$ref": "#/$defs/on_failure" },
+        "action": { "const": "select" },
+        "targets": { "$ref": "#/$defs/targets" },
+        "within": { "$ref": "#/$defs/template" },
+        "frame": { "$ref": "#/$defs/frame" },
+        "value": { "$ref": "#/$defs/value_source" },
+        "option_match": {
+          "enum": ["text", "value", "index"],
+          "default": "text",
+          "description": "How the option is identified from the value."
+        }
+      }
+    },
+
+    "step_click": {
+      "title": "click",
+      "description": "Click an element. A click on a control labelled delete, cancel, refund, pay, or transfer needs allow_destructive_control and the run's approval policy.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "action", "targets"],
+      "properties": {
+        "id": { "$ref": "#/$defs/step_id" },
+        "name": { "$ref": "#/$defs/step_name" },
+        "description": { "$ref": "#/$defs/step_description" },
+        "labels": { "$ref": "#/$defs/labels" },
+        "commit": { "$ref": "#/$defs/commit_flag" },
+        "assert_after": { "$ref": "#/$defs/assert_after" },
+        "timeout_ms": { "$ref": "#/$defs/timeout_ms" },
+        "on_failure": { "$ref": "#/$defs/on_failure" },
+        "action": { "const": "click" },
+        "targets": { "$ref": "#/$defs/targets" },
+        "within": { "$ref": "#/$defs/template" },
+        "frame": { "$ref": "#/$defs/frame" },
+        "allow_destructive_control": {
+          "type": "boolean",
+          "default": false,
+          "description": "The step explicitly allows a destructive control. Never set this on a step the compiler produced from a recording."
+        }
+      }
+    },
+
+    "step_upload_file": {
+      "title": "upload_file",
+      "description": "Attach a file to a file input.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "action", "targets", "value"],
+      "properties": {
+        "id": { "$ref": "#/$defs/step_id" },
+        "name": { "$ref": "#/$defs/step_name" },
+        "description": { "$ref": "#/$defs/step_description" },
+        "labels": { "$ref": "#/$defs/labels" },
+        "commit": { "$ref": "#/$defs/commit_flag" },
+        "assert_after": { "$ref": "#/$defs/assert_after" },
+        "timeout_ms": { "$ref": "#/$defs/timeout_ms" },
+        "on_failure": { "$ref": "#/$defs/on_failure" },
+        "action": { "const": "upload_file" },
+        "targets": { "$ref": "#/$defs/targets" },
+        "within": { "$ref": "#/$defs/template" },
+        "frame": { "$ref": "#/$defs/frame" },
+        "value": { "$ref": "#/$defs/value_source" }
+      }
+    },
+
+    "step_read_value": {
+      "title": "read_value",
+      "description": "Read what the page shows and bind it to a variable, for example the current price before changing it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "action", "targets", "as"],
+      "properties": {
+        "id": { "$ref": "#/$defs/step_id" },
+        "name": { "$ref": "#/$defs/step_name" },
+        "description": { "$ref": "#/$defs/step_description" },
+        "labels": { "$ref": "#/$defs/labels" },
+        "timeout_ms": { "$ref": "#/$defs/timeout_ms" },
+        "on_failure": { "$ref": "#/$defs/on_failure" },
+        "action": { "const": "read_value" },
+        "targets": { "$ref": "#/$defs/targets" },
+        "within": { "$ref": "#/$defs/template" },
+        "frame": { "$ref": "#/$defs/frame" },
+        "as": { "$ref": "#/$defs/name" }
+      }
+    },
+
+    "step_wait_for": {
+      "title": "wait_for",
+      "description": "Wait until a condition holds. The timeout is required: a fixed sleep is not expressible in this format.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "action", "condition", "timeout_ms"],
+      "properties": {
+        "id": { "$ref": "#/$defs/step_id" },
+        "name": { "$ref": "#/$defs/step_name" },
+        "description": { "$ref": "#/$defs/step_description" },
+        "labels": { "$ref": "#/$defs/labels" },
+        "timeout_ms": { "$ref": "#/$defs/timeout_ms" },
+        "on_failure": { "$ref": "#/$defs/on_failure" },
+        "action": { "const": "wait_for" },
+        "condition": { "$ref": "#/$defs/condition" },
+        "retries": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3,
+          "default": 0,
+          "description": "How many times to re-check after the timeout before the step fails."
+        }
+      }
+    },
+
+    "step_assert": {
+      "title": "assert",
+      "description": "Check what the page shows. A failed assertion is evidence about this record, never a reason to retry blindly.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "action", "condition"],
+      "properties": {
+        "id": { "$ref": "#/$defs/step_id" },
+        "name": { "$ref": "#/$defs/step_name" },
+        "description": { "$ref": "#/$defs/step_description" },
+        "labels": { "$ref": "#/$defs/labels" },
+        "timeout_ms": { "$ref": "#/$defs/timeout_ms" },
+        "on_failure": { "$ref": "#/$defs/on_failure" },
+        "action": { "const": "assert" },
+        "condition": { "$ref": "#/$defs/condition" }
+      }
+    },
+
+    "step_download": {
+      "title": "download",
+      "description": "Click a control that produces a file and bind the downloaded file to a variable. A missing or empty file is a failure, never a partial success. A download changes nothing in the destination, so it is not a commit step.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "action", "targets", "as"],
+      "properties": {
+        "id": { "$ref": "#/$defs/step_id" },
+        "name": { "$ref": "#/$defs/step_name" },
+        "description": { "$ref": "#/$defs/step_description" },
+        "labels": { "$ref": "#/$defs/labels" },
+        "timeout_ms": { "$ref": "#/$defs/timeout_ms" },
+        "on_failure": { "$ref": "#/$defs/on_failure" },
+        "action": { "const": "download" },
+        "targets": { "$ref": "#/$defs/targets" },
+        "within": { "$ref": "#/$defs/template" },
+        "frame": { "$ref": "#/$defs/frame" },
+        "as": { "$ref": "#/$defs/name" }
+      }
+    },
+
+    "step_branch": {
+      "title": "branch",
+      "description": "Run one of two step lists depending on a condition. This is how 'the search found a match' becomes a skip.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "action", "when", "then"],
+      "properties": {
+        "id": { "$ref": "#/$defs/step_id" },
+        "name": { "$ref": "#/$defs/step_name" },
+        "description": { "$ref": "#/$defs/step_description" },
+        "labels": { "$ref": "#/$defs/labels" },
+        "on_failure": { "$ref": "#/$defs/on_failure" },
+        "action": { "const": "branch" },
+        "when": { "$ref": "#/$defs/condition" },
+        "then": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/step" }
+        },
+        "else": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/step" }
+        }
+      }
+    },
+
+    "step_for_each": {
+      "title": "for_each",
+      "description": "Run a step list once per item of a collection, for example one order's line items.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "action", "over", "as", "steps"],
+      "properties": {
+        "id": { "$ref": "#/$defs/step_id" },
+        "name": { "$ref": "#/$defs/step_name" },
+        "description": { "$ref": "#/$defs/step_description" },
+        "labels": { "$ref": "#/$defs/labels" },
+        "timeout_ms": { "$ref": "#/$defs/timeout_ms" },
+        "on_failure": { "$ref": "#/$defs/on_failure" },
+        "action": { "const": "for_each" },
+        "over": {
+          "$ref": "#/$defs/value_source",
+          "description": "The collection to walk: read from the page or extracted from a document."
+        },
+        "as": {
+          "$ref": "#/$defs/name",
+          "description": "The loop variable: the current item is available as {{<as>}} inside steps."
+        },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/step" }
+        }
+      }
+    },
+
+    "step_transform": {
+      "title": "transform",
+      "description": "Compute a value with plain code from the recipe's closed transform vocabulary. A model may propose a transform, but code applies it and the result must reproduce the recorded value exactly.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "action", "as", "op", "input"],
+      "properties": {
+        "id": { "$ref": "#/$defs/step_id" },
+        "name": { "$ref": "#/$defs/step_name" },
+        "description": { "$ref": "#/$defs/step_description" },
+        "labels": { "$ref": "#/$defs/labels" },
+        "on_failure": { "$ref": "#/$defs/on_failure" },
+        "action": { "const": "transform" },
+        "as": { "$ref": "#/$defs/name" },
+        "op": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{0,63}$",
+          "description": "A name from the closed vocabulary. Never code, a script, an expression, or a regular expression."
+        },
+        "input": { "$ref": "#/$defs/value_source" },
+        "args": {
+          "type": "object",
+          "description": "Constants the operation needs, for example a separator. Values are data, never code.",
+          "additionalProperties": { "type": ["string", "number", "boolean"] }
+        }
+      }
+    },
+
+    "step_match": {
+      "title": "match",
+      "description": "Compare two values in code and bind the boolean result, for example matching a transaction by amount within a tolerance.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "action", "as", "left", "right", "compare"],
+      "properties": {
+        "id": { "$ref": "#/$defs/step_id" },
+        "name": { "$ref": "#/$defs/step_name" },
+        "description": { "$ref": "#/$defs/step_description" },
+        "labels": { "$ref": "#/$defs/labels" },
+        "on_failure": { "$ref": "#/$defs/on_failure" },
+        "action": { "const": "match" },
+        "as": { "$ref": "#/$defs/name" },
+        "left": { "$ref": "#/$defs/value_source" },
+        "right": { "$ref": "#/$defs/value_source" },
+        "compare": {
+          "enum": ["equals", "contains", "amount_within"],
+          "description": "amount_within compares two amounts and allows tolerance."
+        },
+        "tolerance": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Allowed difference for amount_within."
+        },
+        "case_insensitive": { "type": "boolean", "default": false }
+      },
+      "allOf": [
+        {
+          "if": { "required": ["compare"], "properties": { "compare": { "const": "amount_within" } } },
+          "then": { "required": ["tolerance"] }
+        }
+      ]
+    },
+
+    "step_aggregate": {
+      "title": "aggregate",
+      "description": "Combine many values into one in code, for example the total across a set of downloaded reports.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "action", "as", "op", "over"],
+      "properties": {
+        "id": { "$ref": "#/$defs/step_id" },
+        "name": { "$ref": "#/$defs/step_name" },
+        "description": { "$ref": "#/$defs/step_description" },
+        "labels": { "$ref": "#/$defs/labels" },
+        "on_failure": { "$ref": "#/$defs/on_failure" },
+        "action": { "const": "aggregate" },
+        "as": { "$ref": "#/$defs/name" },
+        "op": { "enum": ["sum", "count", "min", "max", "mean"] },
+        "over": { "$ref": "#/$defs/value_source" }
+      }
+    },
+
+    "step_classify": {
+      "title": "classify",
+      "description": "Ask for one category from a fixed list. The answer must be one of the listed categories; below the confidence threshold it goes to review, and the rules table maps the category to a team.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "action", "as", "input", "categories"],
+      "properties": {
+        "id": { "$ref": "#/$defs/step_id" },
+        "name": { "$ref": "#/$defs/step_name" },
+        "description": { "$ref": "#/$defs/step_description" },
+        "labels": { "$ref": "#/$defs/labels" },
+        "on_failure": { "$ref": "#/$defs/on_failure" },
+        "action": { "const": "classify" },
+        "as": { "$ref": "#/$defs/name" },
+        "input": { "$ref": "#/$defs/value_source" },
+        "categories": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 50,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 120 }
+        }
+      }
+    },
+
+    "step_extract": {
+      "title": "extract",
+      "description": "Read fields from a document. Every accepted value must carry the exact quote it came from and pass the code validators, otherwise the value goes to Input Review.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "action", "document", "fields"],
+      "properties": {
+        "id": { "$ref": "#/$defs/step_id" },
+        "name": { "$ref": "#/$defs/step_name" },
+        "description": { "$ref": "#/$defs/step_description" },
+        "labels": { "$ref": "#/$defs/labels" },
+        "on_failure": { "$ref": "#/$defs/on_failure" },
+        "action": { "const": "extract" },
+        "document": {
+          "$ref": "#/$defs/value_source",
+          "description": "The document to read, usually an input column of type document."
+        },
+        "fields": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": { "$ref": "#/$defs/name" },
+          "additionalProperties": { "$ref": "#/$defs/extract_field" }
+        }
+      }
+    },
+
+    "extract_field": {
+      "title": "Extracted field",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": { "enum": ["string", "number", "date"] },
+        "description": { "type": "string", "maxLength": 500 },
+        "required": { "type": "boolean", "default": false }
+      }
+    },
+
+    "step_approval_gate": {
+      "title": "approval_gate",
+      "description": "Stop and wait for a person. Used for a commit the policy marks, and always for an AI repair or an AI value under the confidence threshold.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "action", "reason"],
+      "properties": {
+        "id": { "$ref": "#/$defs/step_id" },
+        "name": { "$ref": "#/$defs/step_name" },
+        "description": { "$ref": "#/$defs/step_description" },
+        "labels": { "$ref": "#/$defs/labels" },
+        "on_failure": { "$ref": "#/$defs/on_failure" },
+        "action": { "const": "approval_gate" },
+        "reason": { "$ref": "#/$defs/template" },
+        "when": {
+          "$ref": "#/$defs/condition",
+          "description": "Ask only when this holds. Without it, always ask."
+        }
+      }
+    },
+
+    "step_end_record": {
+      "title": "end_record",
+      "description": "Finish the record in one of the four exit states, with a reason. This is how a duplicate becomes skipped and a missing input becomes parked.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "action", "outcome", "reason"],
+      "properties": {
+        "id": { "$ref": "#/$defs/step_id" },
+        "name": { "$ref": "#/$defs/step_name" },
+        "description": { "$ref": "#/$defs/step_description" },
+        "labels": { "$ref": "#/$defs/labels" },
+        "on_failure": { "$ref": "#/$defs/on_failure" },
+        "action": { "const": "end_record" },
+        "outcome": {
+          "enum": ["verified", "skipped", "parked", "failed"],
+          "description": "verified and skipped are final; parked and failed can be re-queued by a person."
+        },
+        "reason": { "$ref": "#/$defs/template" }
+      }
+    }
+  }
+}
