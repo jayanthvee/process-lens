@@ -13,9 +13,9 @@ import {
 } from "../shared/messages";
 import type { PendingEvent } from "../shared/events";
 import type { RecordedEvent } from "../shared/recipe-types";
-import { attachDebugger, chromeDebuggerTransport, detachDebugger } from "../executor/cdp";
+import { attachDebugger, chromeDebuggerTransport, detachDebugger, onDebuggerDetach } from "../executor/cdp";
 import { RunControl } from "../executor/control";
-import { runRecipe } from "../executor/executor";
+import { runRecipe, validateRecipe } from "../executor/executor";
 import { FrameContexts } from "../executor/frames";
 import type { ExecutorRecipe } from "../executor/types";
 
@@ -193,15 +193,18 @@ function setExecutorStatus(update: Partial<ExecutorStatus>): void {
 
 async function startExecutor(recipe: ExecutorRecipe, row: Record<string, unknown>): Promise<void> {
   if (executorRunning) throw new Error("a run is already in progress");
-  if (!recipe || typeof recipe !== "object" || !Array.isArray(recipe.steps)) {
-    throw new Error("no recipe was supplied to run");
-  }
+
+  // Fail-closed before touching the browser: a recipe the executor cannot run in
+  // full is refused, so no debugger is attached for a run that cannot finish.
+  const problems = validateRecipe(recipe);
+  if (problems.length > 0) throw new Error(`refusing to start: ${problems.join("; ")}`);
 
   const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
   const tabId = tabs[0]?.id;
   if (tabId === undefined) throw new Error("no active tab to run against");
 
   const control = new RunControl();
+  const frames = new FrameContexts();
   executorControl = control;
   executorRunning = true;
   setExecutorStatus({
@@ -212,13 +215,27 @@ async function startExecutor(recipe: ExecutorRecipe, row: Record<string, unknown
     message: "attaching the debugger",
   });
 
-  await attachDebugger(tabId);
-  const cdp = chromeDebuggerTransport(tabId);
-  const frames = new FrameContexts();
+  // Everything past this point runs inside the try, so an attach failure still
+  // clears the run flags and never leaves the worker locked as "running".
+  let attached = false;
+  let stopDetachWatch: (() => void) | null = null;
   try {
+    await attachDebugger(tabId);
+    attached = true;
+    const cdp = chromeDebuggerTransport(tabId);
+
+    // If the browser detaches the debugger (the person cancels the banner, the
+    // tab closes, another debugger takes over), abort the run rather than send
+    // commands into a dead session.
+    stopDetachWatch = onDebuggerDetach(tabId, (reason) => {
+      control.abort(`the debugger detached from the tab (${reason})`);
+    });
+
+    // Listen for execution contexts before enabling the domains, so the first
+    // context-created events for the top frame and its frames are not missed.
+    frames.listen(cdp);
     await cdp.send("Runtime.enable");
     await cdp.send("Page.enable");
-    frames.listen(cdp);
 
     const summary = await runRecipe(
       recipe,
@@ -245,8 +262,9 @@ async function startExecutor(recipe: ExecutorRecipe, row: Record<string, unknown
       message: summary.error ?? "run finished",
     });
   } finally {
+    stopDetachWatch?.();
     frames.stop();
-    await detachDebugger(tabId);
+    if (attached) await detachDebugger(tabId);
     executorRunning = false;
     executorControl = null;
   }
