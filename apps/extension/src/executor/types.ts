@@ -58,6 +58,16 @@ export interface StepReport {
 
 export type RunState = "idle" | "running" | "paused" | "aborted" | "done" | "failed";
 
+/**
+ * How a run that stopped should be treated by the ledger.
+ *
+ * `park` means the record needs a person: a bad input, a password field, an
+ * unreachable target, an unknown frame, or a condition that never held. `fail`
+ * is reserved for a provable rejection; the extension does not decide that, so
+ * it parks by default. Neither is "retry blindly".
+ */
+export type FailureDisposition = "park" | "fail";
+
 export interface RunStatus {
   state: RunState;
   /** The id of the step being run, or the last one run. */
@@ -68,11 +78,15 @@ export interface RunStatus {
   message: string;
 }
 
-/** Thrown when a step cannot be completed; `fail-closed` stops the run. */
+/**
+ * Thrown when a step cannot be completed. A `park` disposition means a person
+ * must look at the record; the caller must not retry it blindly.
+ */
 export class ExecutorError extends Error {
   constructor(
     message: string,
     readonly stepId?: string,
+    readonly disposition: FailureDisposition = "park",
   ) {
     super(message);
     this.name = "ExecutorError";

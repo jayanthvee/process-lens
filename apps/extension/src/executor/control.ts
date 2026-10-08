@@ -7,6 +7,7 @@ import { ExecutorError } from "./types";
 
 export class RunControl {
   private state: "running" | "paused" | "aborted" = "running";
+  private reason: string | null = null;
   private waiters: Array<() => void> = [];
 
   pause(): void {
@@ -20,8 +21,10 @@ export class RunControl {
     }
   }
 
-  abort(): void {
+  /** Stop the run. `reason` is carried into the run summary, for the log. */
+  abort(reason?: string): void {
     this.state = "aborted";
+    if (reason && !this.reason) this.reason = reason;
     this.release();
   }
 
@@ -31,6 +34,11 @@ export class RunControl {
 
   get aborted(): boolean {
     return this.state === "aborted";
+  }
+
+  /** Why the run was aborted, when the abort named a reason. */
+  get abortReason(): string | null {
+    return this.reason;
   }
 
   get status(): "running" | "paused" | "aborted" {

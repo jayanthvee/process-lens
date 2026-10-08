@@ -66,7 +66,9 @@ export function attachDebugger(tabId: number): Promise<void> {
   });
 }
 
-/** Detach the debugger. Detaching when not attached is treated as success. */
+/**
+ * Detach the debugger. Detaching when not attached is treated as success.
+ */
 export function detachDebugger(tabId: number): Promise<void> {
   return new Promise((resolve) => {
     debuggerApi().detach({ tabId }, () => {
@@ -74,6 +76,22 @@ export function detachDebugger(tabId: number): Promise<void> {
       resolve();
     });
   });
+}
+
+/**
+ * Watch for the browser detaching the debugger from this tab, which happens
+ * when the person presses the "cancel" banner, closes the tab, or another
+ * debugger takes over. The callback fires at most once per detachment; the
+ * returned function removes the listener and must be called when the run ends.
+ */
+export function onDebuggerDetach(tabId: number, handler: (reason: string) => void): () => void {
+  const api = debuggerApi();
+  const listener = (source: { tabId?: number }, reason: string): void => {
+    if (source?.tabId !== tabId) return;
+    handler(reason || "unknown");
+  };
+  api.onDetach.addListener(listener);
+  return () => api.onDetach.removeListener(listener);
 }
 
 /**
