@@ -1,5 +1,11 @@
 // Envelope helpers shared by the recorder and the service worker.
-import type { FrameStep, RecordedEvent, RecordedKind, RecordedStep } from "./recipe-types";
+import type {
+  Condition,
+  FrameStep,
+  RecordedEvent,
+  RecordedKind,
+  RecordedStep,
+} from "./recipe-types";
 
 export type PendingEvent = Omit<RecordedEvent, "seq">;
 
@@ -22,6 +28,8 @@ export interface EventInput {
   step: RecordedStep | null;
   frame?: FrameStep[] | undefined;
   at?: string;
+  /** Present only on an `observation` event: what the page showed after an action. */
+  observation?: Condition | undefined;
 }
 
 export function makeEvent(input: EventInput): PendingEvent {
@@ -31,6 +39,7 @@ export function makeEvent(input: EventInput): PendingEvent {
     url: input.url,
     step: input.step,
   };
+  if (input.observation) event.observation = input.observation;
   if (input.step && input.frame && input.frame.length > 0) {
     input.step.frame = input.frame;
   }

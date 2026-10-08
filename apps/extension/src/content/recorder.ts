@@ -20,6 +20,33 @@ import type { ClickStep, FillStep, SelectStep, RecordedStep } from "../shared/re
 const TYPING_ROLES = new Set(["textbox", "searchbox", "spinbutton"]);
 const TOGGLE_ROLES = new Set(["checkbox", "radio", "switch"]);
 
+/**
+ * The event kind that carries what the page showed after an action. It is not a
+ * step: it is evidence about the click or submit just before it, and the compiler
+ * folds it onto that step as the assertion for a commit.
+ */
+const OBSERVATION_KIND = "observation";
+
+/** How long to watch the page after an action, in milliseconds. */
+const DEFAULT_OBSERVATION_WINDOW_MS = 1500;
+
+/**
+ * Elements that read as a confirmation: an alert, a status message, a live
+ * region, a toast, or a notification. One of these appearing after an action is
+ * the strongest evidence that the destination accepted the change.
+ */
+const CONFIRMATION_SELECTOR = [
+  "[role='alert']",
+  "[role='status']",
+  "[aria-live='polite']",
+  "[aria-live='assertive']",
+  ".toast",
+  ".notification",
+].join(",");
+
+const HEADING_SELECTOR = "h1, h2, h3, h4, h5, h6";
+const OBSERVATION_TEXT_LIMIT = 200;
+
 const CLICKABLE_SELECTOR = [
   "button",
   "a[href]",
@@ -47,6 +74,8 @@ export interface RecorderHooks {
   url?: () => string;
   /** Injectable clock, for deterministic tests. */
   now?: () => string;
+  /** How long to watch for a confirmation after an action. Defaults to 1500ms. */
+  observationWindowMs?: number;
 }
 
 function elementFrom(target: EventTarget | null): Element | null {
@@ -67,6 +96,38 @@ function selectedOptionText(el: Element): string {
   const select = el as HTMLSelectElement;
   const option = select.selectedOptions?.[0] ?? select.options?.[select.selectedIndex ?? -1];
   return normalizeText(option?.textContent ?? select.value);
+}
+
+function trimmedText(el: Element | null, limit = OBSERVATION_TEXT_LIMIT): string {
+  const text = normalizeText(el?.textContent ?? "");
+  return text.length <= limit ? text : text.slice(0, limit);
+}
+
+/**
+ * The path pattern a navigation landed on, with the leaf record id dropped:
+ * `/records/42` becomes `/records/`. A single-segment path is kept whole.
+ */
+function navigationPattern(href: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(href);
+  } catch {
+    return null;
+  }
+  const path = url.pathname;
+  if (!path) return null;
+  if (path.endsWith("/")) return path;
+  const slash = path.lastIndexOf("/");
+  return slash > 0 ? path.slice(0, slash + 1) : path;
+}
+
+/** Whether two URLs share a scheme and host. */
+function sameOrigin(left: string, right: string): boolean {
+  try {
+    return new URL(left).origin === new URL(right).origin;
+  } catch {
+    return false;
+  }
 }
 
 /** Climb from the event target to the element the person meant to act on. */
@@ -101,6 +162,172 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): () => void 
 
   function emitStep(kind: PendingEvent["kind"], step: RecordedStep): void {
     hooks.send(makeEvent({ kind, url: url(), step, frame, at: stamp() }));
+  }
+
+  const observationWindowMs = hooks.observationWindowMs ?? DEFAULT_OBSERVATION_WINDOW_MS;
+
+  interface ObservationWindow {
+    startUrl: string;
+    observedUrl: string | null;
+    preexisting: Set<Element>;
+    headings: string[];
+  }
+
+  let watching: ObservationWindow | null = null;
+  let observer: MutationObserver | null = null;
+  let debounce: ReturnType<typeof setTimeout> | null = null;
+  let deadline: ReturnType<typeof setTimeout> | null = null;
+  let stopUrlWatch: (() => void) | null = null;
+
+  /** Emit a click or a submit, then watch the page for what it changed. */
+  function emitAction(kind: "click" | "submit", step: RecordedStep | null): void {
+    hooks.send(makeEvent({ kind, url: url(), step, frame, at: stamp() }));
+    beginObservation();
+  }
+
+  function emitObservation(payload: Record<string, unknown>, at: string): void {
+    hooks.send(
+      makeEvent({
+        kind: OBSERVATION_KIND,
+        url: at,
+        step: null,
+        observation: payload,
+        at: stamp(),
+      }),
+    );
+  }
+
+  function confirmationText(observation: ObservationWindow): string {
+    for (const node of Array.from(doc.querySelectorAll(CONFIRMATION_SELECTOR))) {
+      if (observation.preexisting.has(node)) continue;
+      const text = trimmedText(node);
+      if (text) return text;
+    }
+    // A heading that was not there before is weaker evidence, but still evidence.
+    const headings = Array.from(doc.querySelectorAll(HEADING_SELECTOR)).map((el) =>
+      normalizeText(el.textContent),
+    );
+    return headings.find((text) => text && !observation.headings.includes(text)) ?? "";
+  }
+
+  function armDebounce(): void {
+    if (debounce !== null) clearTimeout(debounce);
+    debounce = setTimeout(finishObservation, observationWindowMs);
+  }
+
+  function endObservation(): void {
+    watching = null;
+    observer?.disconnect();
+    observer = null;
+    stopUrlWatch?.();
+    stopUrlWatch = null;
+    if (debounce !== null) {
+      clearTimeout(debounce);
+      debounce = null;
+    }
+    if (deadline !== null) {
+      clearTimeout(deadline);
+      deadline = null;
+    }
+  }
+
+  function finishObservation(): void {
+    const observation = watching;
+    if (!observation) return;
+
+    const confirmation = confirmationText(observation);
+    const navigated =
+      observation.observedUrl && observation.observedUrl !== observation.startUrl
+        ? observation.observedUrl
+        : null;
+    endObservation();
+    if (!active()) return;
+
+    if (confirmation) {
+      emitObservation({ text_visible: confirmation }, url());
+      return;
+    }
+    if (navigated) {
+      const pattern = navigationPattern(navigated);
+      if (pattern && sameOrigin(observation.startUrl, navigated)) {
+        emitObservation({ url_matches: pattern }, navigated);
+      }
+    }
+  }
+
+  /**
+   * Watch the page after an action for the two things that prove it landed: a
+   * confirmation appearing, or the URL moving. Either is reported on its own
+   * `observation` event; the compiler turns it into the step's assertion.
+   */
+  function beginObservation(): void {
+    endObservation();
+    if (!active()) return;
+
+    const observation: ObservationWindow = {
+      startUrl: url(),
+      observedUrl: null,
+      preexisting: new Set(Array.from(doc.querySelectorAll(CONFIRMATION_SELECTOR))),
+      headings: Array.from(doc.querySelectorAll(HEADING_SELECTOR)).map((el) =>
+        normalizeText(el.textContent),
+      ),
+    };
+    watching = observation;
+
+    const ObserverCtor = doc.defaultView?.MutationObserver;
+    if (ObserverCtor) {
+      observer = new ObserverCtor(() => armDebounce());
+      observer.observe(doc.documentElement ?? doc, {
+        childList: true,
+        subtree: true,
+        characterData: true,
+      });
+    }
+
+    stopUrlWatch = watchUrl(() => {
+      if (!watching) return;
+      watching.observedUrl = url();
+      armDebounce();
+    });
+
+    armDebounce();
+    // A page that mutates forever must still report; cap the window.
+    deadline = setTimeout(finishObservation, observationWindowMs * 2);
+  }
+
+  /**
+   * Report URL changes that fire no event: `pushState` and `replaceState` are
+   * silent, so the history methods are wrapped for the duration of the window.
+   */
+  function watchUrl(notify: () => void): () => void {
+    const view = doc.defaultView;
+    const history = view?.history;
+    const originalPush = history?.pushState?.bind(history) ?? null;
+    const originalReplace = history?.replaceState?.bind(history) ?? null;
+
+    if (history && originalPush) {
+      history.pushState = ((...args: Parameters<History["pushState"]>) => {
+        originalPush(...args);
+        notify();
+      }) as History["pushState"];
+    }
+    if (history && originalReplace) {
+      history.replaceState = ((...args: Parameters<History["replaceState"]>) => {
+        originalReplace(...args);
+        notify();
+      }) as History["replaceState"];
+    }
+
+    const onHash = (): void => notify();
+    view?.addEventListener?.("hashchange", onHash);
+    view?.addEventListener?.("popstate", onHash);
+
+    return () => {
+      if (history && originalPush) history.pushState = originalPush;
+      if (history && originalReplace) history.replaceState = originalReplace;
+      view?.removeEventListener?.("hashchange", onHash);
+      view?.removeEventListener?.("popstate", onHash);
+    };
   }
 
   function clickStep(el: Element): ClickStep {
@@ -162,7 +389,7 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): () => void 
         return;
       }
     }
-    emitStep("click", clickStep(el));
+    emitAction("click", clickStep(el));
   }
 
   function onInput(event: Event): void {
@@ -198,7 +425,7 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): () => void 
     if (tag === "INPUT") {
       const type = inputType(el);
       if (type === "checkbox" || type === "radio") {
-        emitStep("click", clickStep(el));
+        emitAction("click", clickStep(el));
         return;
       }
       if (type === "file") return;
@@ -230,11 +457,11 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): () => void 
     const submitter = (event as SubmitEvent).submitter ?? null;
     const control = submitter ?? firstSubmitControl(form);
     if (isPasswordField(control ?? form)) {
-      hooks.send(makeEvent({ kind: "submit", url: url(), step: null, frame, at: stamp() }));
+      emitAction("submit", null);
       return;
     }
     const step = control ? clickStep(control) : null;
-    emitStep("submit", step ?? clickStep(form));
+    emitAction("submit", step ?? clickStep(form));
   }
 
   doc.addEventListener("click", onClick, true);
@@ -249,6 +476,7 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): () => void 
     doc.removeEventListener("change", onChange, true);
     doc.removeEventListener("focusout", onFocusOut, true);
     doc.removeEventListener("submit", onSubmit, true);
+    endObservation();
     pending.clear();
   };
 }
