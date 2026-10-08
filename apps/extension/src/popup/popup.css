@@ -1,0 +1,133 @@
+:root {
+  color-scheme: light dark;
+  --fg: #111827;
+  --muted: #6b7280;
+  --line: #d1d5db;
+  --accent: #b91c1c;
+  --surface: #ffffff;
+  --surface-muted: #f3f4f6;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fg: #f3f4f6;
+    --muted: #9ca3af;
+    --line: #374151;
+    --surface: #111827;
+    --surface-muted: #1f2937;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  background: var(--surface);
+  color: var(--fg);
+  font: 13px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+}
+
+.panel__title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.panel__state {
+  margin: 2px 0 0;
+  color: var(--muted);
+}
+
+.panel__state[data-state="recording"] {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.panel__actions {
+  display: flex;
+  gap: 8px;
+}
+
+.button {
+  flex: 1;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface-muted);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.button:hover:not(:disabled) {
+  border-color: var(--fg);
+}
+
+.button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.button--primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #ffffff;
+}
+
+.panel__stats {
+  display: flex;
+  gap: 16px;
+  margin: 0;
+}
+
+.stat {
+  margin: 0;
+}
+
+.stat dt {
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.stat dd {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.field__label {
+  color: var(--muted);
+}
+
+.field__input {
+  padding: 7px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: inherit;
+  font: inherit;
+}
+
+.panel__note {
+  margin: 0;
+  min-height: 1.4em;
+  color: var(--muted);
+}
