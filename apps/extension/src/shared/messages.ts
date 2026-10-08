@@ -20,6 +20,25 @@ export const EMPTY_STATUS: RecorderStatus = {
   wsConnected: false,
 };
 
+/** Where an attended execution is, for the status line. */
+export type ExecutorState = "idle" | "running" | "paused" | "aborted" | "done" | "failed";
+
+export interface ExecutorStatus {
+  state: ExecutorState;
+  stepId: string | null;
+  completed: number;
+  total: number;
+  message: string;
+}
+
+export const EMPTY_EXECUTOR_STATUS: ExecutorStatus = {
+  state: "idle",
+  stepId: null,
+  completed: 0,
+  total: 0,
+  message: "",
+};
+
 /** Sent from a content script or the popup to the service worker. */
 export type ToWorker =
   | { type: "record:event"; event: PendingEvent }
@@ -27,18 +46,22 @@ export type ToWorker =
   | { type: "record:stop" }
   | { type: "record:clear" }
   | { type: "record:get" }
-  | { type: "record:set-ws"; wsUrl: string };
+  | { type: "record:set-ws"; wsUrl: string }
+  | { type: "executor:start"; recipe: unknown; row: Record<string, unknown> }
+  | { type: "executor:pause" }
+  | { type: "executor:resume" }
+  | { type: "executor:abort" }
+  | { type: "executor:get" };
 
 /** Sent from the service worker to content scripts and the popup. */
 export type FromWorker =
   | { type: "record:state"; status: RecorderStatus }
-  | { type: "record:appended"; event: RecordedEvent; status: RecorderStatus };
+  | { type: "record:appended"; event: RecordedEvent; status: RecorderStatus }
+  | { type: "executor:state"; status: ExecutorStatus };
 
 export function isToWorker(message: unknown): message is ToWorker {
-  return (
-    typeof message === "object" &&
-    message !== null &&
-    typeof (message as { type?: unknown }).type === "string" &&
-    (message as { type: string }).type.startsWith("record:")
-  );
+  if (typeof message !== "object" || message === null) return false;
+  const type = (message as { type?: unknown }).type;
+  if (typeof type !== "string") return false;
+  return type.startsWith("record:") || type.startsWith("executor:");
 }

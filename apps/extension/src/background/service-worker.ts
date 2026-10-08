@@ -3,9 +3,21 @@
 // It owns the start/stop/clear state, stamps each event with its order, keeps the
 // session history, and — when a WebSocket URL is configured — streams events out
 // as JSON lines. The content scripts hold no state of their own.
-import { EMPTY_STATUS, isToWorker, type RecorderStatus, type ToWorker } from "../shared/messages";
+import {
+  EMPTY_EXECUTOR_STATUS,
+  EMPTY_STATUS,
+  isToWorker,
+  type ExecutorStatus,
+  type RecorderStatus,
+  type ToWorker,
+} from "../shared/messages";
 import type { PendingEvent } from "../shared/events";
 import type { RecordedEvent } from "../shared/recipe-types";
+import { attachDebugger, chromeDebuggerTransport, detachDebugger, onDebuggerDetach } from "../executor/cdp";
+import { RunControl } from "../executor/control";
+import { runRecipe, validateRecipe } from "../executor/executor";
+import { FrameContexts } from "../executor/frames";
+import type { ExecutorRecipe } from "../executor/types";
 
 const STORAGE_KEY = "processlens:recorder";
 const SETTINGS_KEY = "processlens:settings";
@@ -159,6 +171,139 @@ function clear(): void {
   updateBadge();
 }
 
+// --- attended execution ------------------------------------------------------
+// The executor lives behind the same messaging channel as the recorder: the
+// popup or a script sends executor:start, and pause/resume/abort steer the run.
+// The service worker holds the run state; the content scripts hold none.
+
+let executorStatus: ExecutorStatus = { ...EMPTY_EXECUTOR_STATUS };
+let executorControl: RunControl | null = null;
+let executorRunning = false;
+
+function broadcastExecutor(): void {
+  void chrome.runtime
+    .sendMessage({ type: "executor:state", status: { ...executorStatus } })
+    .catch(() => undefined);
+}
+
+function setExecutorStatus(update: Partial<ExecutorStatus>): void {
+  executorStatus = { ...executorStatus, ...update };
+  broadcastExecutor();
+}
+
+async function startExecutor(recipe: ExecutorRecipe, row: Record<string, unknown>): Promise<void> {
+  if (executorRunning) throw new Error("a run is already in progress");
+
+  // Fail-closed before touching the browser: a recipe the executor cannot run in
+  // full is refused, so no debugger is attached for a run that cannot finish.
+  const problems = validateRecipe(recipe);
+  if (problems.length > 0) throw new Error(`refusing to start: ${problems.join("; ")}`);
+
+  const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+  const tabId = tabs[0]?.id;
+  if (tabId === undefined) throw new Error("no active tab to run against");
+
+  const control = new RunControl();
+  const frames = new FrameContexts();
+  executorControl = control;
+  executorRunning = true;
+  setExecutorStatus({
+    state: "running",
+    stepId: null,
+    completed: 0,
+    total: recipe.steps.length,
+    message: "attaching the debugger",
+  });
+
+  // Everything past this point runs inside the try, so an attach failure still
+  // clears the run flags and never leaves the worker locked as "running".
+  let attached = false;
+  let stopDetachWatch: (() => void) | null = null;
+  try {
+    await attachDebugger(tabId);
+    attached = true;
+    const cdp = chromeDebuggerTransport(tabId);
+
+    // If the browser detaches the debugger (the person cancels the banner, the
+    // tab closes, another debugger takes over), abort the run rather than send
+    // commands into a dead session.
+    stopDetachWatch = onDebuggerDetach(tabId, (reason) => {
+      control.abort(`the debugger detached from the tab (${reason})`);
+    });
+
+    // Listen for execution contexts before enabling the domains, so the first
+    // context-created events for the top frame and its frames are not missed.
+    frames.listen(cdp);
+    await cdp.send("Runtime.enable");
+    await cdp.send("Page.enable");
+
+    const summary = await runRecipe(
+      recipe,
+      { row: row ?? {} },
+      {
+        cdp,
+        control,
+        frames,
+        onStatus: (status) => {
+          setExecutorStatus({
+            state: status.state,
+            stepId: status.stepId,
+            completed: status.completed,
+            total: status.total,
+            message: status.message,
+          });
+        },
+      },
+    );
+
+    setExecutorStatus({
+      stepId: null,
+      completed: summary.steps.length,
+      message: summary.error ?? "run finished",
+    });
+  } finally {
+    stopDetachWatch?.();
+    frames.stop();
+    if (attached) await detachDebugger(tabId);
+    executorRunning = false;
+    executorControl = null;
+  }
+}
+
+function steerExecutor(command: "pause" | "resume" | "abort"): void {
+  if (!executorControl) return;
+  if (command === "pause") {
+    executorControl.pause();
+    setExecutorStatus({ state: "paused", message: "paused" });
+  } else if (command === "resume") {
+    executorControl.resume();
+    setExecutorStatus({ state: "running", message: "resumed" });
+  } else {
+    executorControl.abort();
+    setExecutorStatus({ state: "aborted", message: "aborting" });
+  }
+}
+
+async function handleExecutor(message: ToWorker): Promise<unknown> {
+  switch (message.type) {
+    case "executor:start":
+      await startExecutor(message.recipe as ExecutorRecipe, message.row ?? {});
+      break;
+    case "executor:pause":
+      steerExecutor("pause");
+      break;
+    case "executor:resume":
+      steerExecutor("resume");
+      break;
+    case "executor:abort":
+      steerExecutor("abort");
+      break;
+    default:
+      break;
+  }
+  return { ok: true, status: { ...executorStatus } };
+}
+
 async function handle(message: ToWorker): Promise<RecorderStatus> {
   switch (message.type) {
     case "record:start":
@@ -198,6 +343,12 @@ async function handle(message: ToWorker): Promise<RecorderStatus> {
 
 chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
   if (!isToWorker(message)) return undefined;
+  if (message.type.startsWith("executor:")) {
+    void handleExecutor(message)
+      .then((payload) => sendResponse(payload))
+      .catch((error: unknown) => sendResponse({ ok: false, error: String(error) }));
+    return true;
+  }
   void handle(message)
     .then((current) => sendResponse({ ok: true, status: current, events }))
     .catch((error: unknown) => sendResponse({ ok: false, error: String(error) }));

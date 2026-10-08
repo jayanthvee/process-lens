@@ -4,10 +4,16 @@ A commit step must carry ``assert_after``: a condition on what the page shows
 once the destination accepted the change. The compiler can only report what the
 recording observed, so it infers in this order:
 
-1. an explicit observation attached to the event (a confirmation appeared, a
-   dialog closed, an element appeared, a field's value changed);
+1. an explicit observation (a confirmation appeared, a dialog closed, an element
+   appeared, a field's value changed, the URL moved);
 2. a navigation the recording observed after the action — the page moved, so
    matching the new path is evidence.
+
+The recorder reports observation (1) in one of two ways: as an ``observation``
+field on the action event, or as its own event of kind ``observation`` just after
+the action. ``normalize`` folds the second form onto the action, so by the time
+the assertion is inferred both look the same. The predicates an observation may
+carry are listed in :data:`OBSERVATION_KEYS` below.
 
 If neither is available the compiler refuses to mark the step as a commit rather
 than inventing an assertion. An unverifiable commit is worse than a compiled
@@ -31,6 +37,11 @@ OBSERVATION_KEYS = (
 )
 
 DEFAULT_ASSERTION_TIMEOUT_MS = 8000
+
+# The event kind the recorder uses for a post-action observation. Such an event
+# carries no step: it is evidence about the action before it, and the compiler
+# folds it onto that action as the assertion for a commit step.
+OBSERVATION_EVENT_KIND = "observation"
 
 
 def condition_from_observation(

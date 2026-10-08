@@ -289,16 +289,31 @@ export function stableSelector(el: Element): string {
   return nthOfTypePath(el);
 }
 
-/** The visible text a person would recognize the element by, as the last rung. */
+/**
+ * The visible text a person would recognize the element by, as the last rung.
+ *
+ * A text field's `value` is deliberately never returned. It is the buffer the
+ * person typed, not the element's own text; putting it in the ladder would bake
+ * one record's data into the locator, and for a password field it would leak the
+ * secret into the recording. `placeholder` and `aria-label` are the field's own
+ * labels, so they stay. A `<select>` is a combobox, not a typed buffer, so its
+ * current selection is still reported.
+ */
 export function fuzzyText(el: Element): string {
   const tag = el.tagName.toUpperCase();
-  if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") {
+  if (tag === "INPUT" || tag === "TEXTAREA") {
     const placeholder = normalizeText(el.getAttribute("placeholder"));
     if (placeholder) return truncate(placeholder, 200);
     const ariaLabel = normalizeText(el.getAttribute("aria-label"));
     if (ariaLabel) return truncate(ariaLabel, 200);
-    const value = normalizeText((el as HTMLInputElement).value);
-    return truncate(value, 200);
+    return "";
+  }
+  if (tag === "SELECT") {
+    const placeholder = normalizeText(el.getAttribute("placeholder"));
+    if (placeholder) return truncate(placeholder, 200);
+    const ariaLabel = normalizeText(el.getAttribute("aria-label"));
+    if (ariaLabel) return truncate(ariaLabel, 200);
+    return truncate(normalizeText((el as HTMLSelectElement).value), 200);
   }
   const text = normalizeText(el.textContent);
   if (text) return truncate(text, 200);

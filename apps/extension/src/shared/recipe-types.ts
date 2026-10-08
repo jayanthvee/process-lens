@@ -64,14 +64,22 @@ export interface SelectStep extends StepCommon {
 /** The step shapes the recorder emits. It never emits a commit step. */
 export type RecordedStep = ClickStep | FillStep | SelectStep;
 
-/** The capture kinds the ticket names: click, fill/input, change/select, submit. */
-export type RecordedKind = "click" | "fill" | "select" | "submit";
+/**
+ * The kinds the recorder captures: click, fill/input, change/select, submit, and
+ * the post-action observation.
+ *
+ * `observation` is not an interaction: it is what the page showed after a click
+ * or a submit, carried on its own event so the compiler can use it as the
+ * assertion for the commit step it followed. It carries no step of its own.
+ */
+export type RecordedKind = "click" | "fill" | "select" | "submit" | "observation";
 
 /**
  * One captured interaction, in order.
  *
- * `step` is the recipe-shaped step. It is null only for a form submit that had no
- * identifiable submit control; a submit that has one carries the click step for it.
+ * `step` is the recipe-shaped step. It is null for a form submit that had no
+ * identifiable submit control (a submit that has one carries the click step for
+ * it) and for an `observation` event, which never has a step.
  */
 export interface RecordedEvent {
   seq: number;
@@ -79,4 +87,10 @@ export interface RecordedEvent {
   kind: RecordedKind;
   url: string;
   step: RecordedStep | null;
+  /**
+   * Present on an `observation` event: the condition the page was observed to
+   * satisfy after the action before it. Keys are the assertion predicates the
+   * recipe schema accepts (`text_visible`, `url_matches`, and the like).
+   */
+  observation?: Condition;
 }

@@ -45,6 +45,14 @@
 
       <button id="export" type="button" class="button">Download events (JSON)</button>
       <p class="panel__note" id="note" role="status"></p>
+
+      <section class="panel__actions" aria-label="Recipe execution">
+        <button id="run-start" type="button" class="button button--primary">Run</button>
+        <button id="run-pause" type="button" class="button">Pause</button>
+        <button id="run-resume" type="button" class="button">Resume</button>
+        <button id="run-abort" type="button" class="button">Abort</button>
+      </section>
+      <p class="panel__note" id="run-state" role="status">Idle</p>
     </main>
     <script type="module" src="popup.js"></script>
   </body>
