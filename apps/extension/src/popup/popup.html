@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ProcessLens Recorder</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="panel">
+      <header class="panel__header">
+        <h1 class="panel__title">ProcessLens Recorder</h1>
+        <p class="panel__state" id="state" role="status">Idle</p>
+      </header>
+
+      <div class="panel__actions">
+        <button id="start" type="button" class="button button--primary">Start</button>
+        <button id="stop" type="button" class="button">Stop</button>
+        <button id="clear" type="button" class="button">Clear</button>
+      </div>
+
+      <dl class="panel__stats">
+        <div class="stat">
+          <dt>Captured</dt>
+          <dd id="count">0</dd>
+        </div>
+        <div class="stat">
+          <dt>Stream</dt>
+          <dd id="stream">off</dd>
+        </div>
+      </dl>
+
+      <label class="field" for="ws">
+        <span class="field__label">Stream to WebSocket (optional)</span>
+        <input
+          id="ws"
+          class="field__input"
+          type="url"
+          inputmode="url"
+          placeholder="ws://localhost:8000/record"
+          autocomplete="off"
+          spellcheck="false"
+        />
+      </label>
+
+      <button id="export" type="button" class="button">Download events (JSON)</button>
+      <p class="panel__note" id="note" role="status"></p>
+    </main>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

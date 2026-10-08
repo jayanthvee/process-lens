@@ -1,0 +1,215 @@
+// The service worker: the recorder's single place of state.
+//
+// It owns the start/stop/clear state, stamps each event with its order, keeps the
+// session history, and — when a WebSocket URL is configured — streams events out
+// as JSON lines. The content scripts hold no state of their own.
+import { EMPTY_STATUS, isToWorker, type RecorderStatus, type ToWorker } from "../shared/messages";
+import type { PendingEvent } from "../shared/events";
+import type { RecordedEvent } from "../shared/recipe-types";
+
+const STORAGE_KEY = "processlens:recorder";
+const SETTINGS_KEY = "processlens:settings";
+const MAX_EVENTS = 5000;
+const RECONNECT_DELAY_MS = 2000;
+
+interface Persisted {
+  status: RecorderStatus;
+  events: RecordedEvent[];
+}
+
+let status: RecorderStatus = { ...EMPTY_STATUS };
+let events: RecordedEvent[] = [];
+let sequence = 0;
+let socket: WebSocket | null = null;
+
+function sessionStore(): chrome.storage.StorageArea | null {
+  return chrome.storage?.session ?? null;
+}
+
+async function load(): Promise<void> {
+  const store = sessionStore();
+  if (!store) return;
+  const stored = (await store.get([STORAGE_KEY, SETTINGS_KEY])) as Record<string, unknown>;
+  const persisted = stored[STORAGE_KEY] as Persisted | undefined;
+  if (persisted) {
+    status = { ...EMPTY_STATUS, ...persisted.status, wsConnected: false };
+    events = persisted.events ?? [];
+    sequence = events.length > 0 ? events[events.length - 1]!.seq : 0;
+  }
+  const settings = stored[SETTINGS_KEY] as { wsUrl?: string } | undefined;
+  if (settings?.wsUrl) status.wsUrl = settings.wsUrl;
+}
+
+async function persist(): Promise<void> {
+  const store = sessionStore();
+  if (!store) return;
+  const persisted: Persisted = { status, events };
+  await store.set({ [STORAGE_KEY]: persisted });
+}
+
+async function persistSettings(): Promise<void> {
+  const store = sessionStore();
+  if (!store) return;
+  await store.set({ [SETTINGS_KEY]: { wsUrl: status.wsUrl } });
+}
+
+function snapshot(): RecorderStatus {
+  return { ...status };
+}
+
+function broadcast(): void {
+  const message = { type: "record:state", status: snapshot() };
+  void chrome.runtime.sendMessage(message).catch(() => undefined);
+  void chrome.tabs
+    ?.query({})
+    .then((tabs) => {
+      for (const tab of tabs) {
+        if (tab.id === undefined) continue;
+        void chrome.tabs.sendMessage(tab.id, message).catch(() => undefined);
+      }
+    })
+    .catch(() => undefined);
+}
+
+function updateBadge(): void {
+  const text = status.state === "recording" ? String(status.count) : "";
+  void chrome.action?.setBadgeText?.({ text }).catch(() => undefined);
+  void chrome.action
+    ?.setBadgeBackgroundColor?.({ color: status.state === "recording" ? "#c0392b" : "#4b5563" })
+    .catch(() => undefined);
+}
+
+function closeSocket(): void {
+  if (socket) {
+    const current = socket;
+    socket = null;
+    try {
+      current.close();
+    } catch {
+      // The socket was already closed; nothing to do.
+    }
+  }
+  status = { ...status, wsConnected: false };
+}
+
+function openSocket(): void {
+  if (!status.wsUrl || status.state !== "recording") return;
+  if (typeof WebSocket === "undefined") return;
+  closeSocket();
+  try {
+    const next = new WebSocket(status.wsUrl);
+    socket = next;
+    next.addEventListener("open", () => {
+      status = { ...status, wsConnected: true };
+      updateBadge();
+    });
+    next.addEventListener("close", () => {
+      if (socket === next) {
+        socket = null;
+        status = { ...status, wsConnected: false };
+        if (status.state === "recording" && status.wsUrl) {
+          setTimeout(openSocket, RECONNECT_DELAY_MS);
+        }
+      }
+    });
+    next.addEventListener("error", () => {
+      status = { ...status, wsConnected: false };
+    });
+  } catch {
+    status = { ...status, wsConnected: false };
+  }
+}
+
+function stream(event: RecordedEvent): void {
+  if (socket && socket.readyState === WebSocket.OPEN) {
+    try {
+      socket.send(`${JSON.stringify(event)}\n`);
+    } catch {
+      // A dropped socket is handled by its close listener; the event stays in history.
+    }
+  }
+}
+
+function appendEvent(pending: PendingEvent): RecordedEvent {
+  sequence += 1;
+  const event: RecordedEvent = { seq: sequence, ...pending };
+  events.push(event);
+  if (events.length > MAX_EVENTS) events.splice(0, events.length - MAX_EVENTS);
+  status = { ...status, count: events.length };
+  stream(event);
+  return event;
+}
+
+function start(): void {
+  status = { ...status, state: "recording", startedAt: new Date().toISOString() };
+  openSocket();
+  updateBadge();
+}
+
+function stop(): void {
+  status = { ...status, state: "idle" };
+  closeSocket();
+  updateBadge();
+}
+
+function clear(): void {
+  events = [];
+  sequence = 0;
+  status = { ...status, count: 0, startedAt: status.state === "recording" ? new Date().toISOString() : null };
+  updateBadge();
+}
+
+async function handle(message: ToWorker): Promise<RecorderStatus> {
+  switch (message.type) {
+    case "record:start":
+      start();
+      break;
+    case "record:stop":
+      stop();
+      break;
+    case "record:clear":
+      clear();
+      break;
+    case "record:set-ws":
+      status = { ...status, wsUrl: message.wsUrl };
+      await persistSettings();
+      if (status.state === "recording") {
+        if (status.wsUrl) openSocket();
+        else closeSocket();
+      }
+      break;
+    case "record:event":
+      if (status.state === "recording") {
+        const event = appendEvent(message.event);
+        broadcast();
+        void chrome.runtime
+          .sendMessage({ type: "record:appended", event, status: snapshot() })
+          .catch(() => undefined);
+      }
+      break;
+    case "record:get":
+      break;
+  }
+  await persist();
+  updateBadge();
+  broadcast();
+  return snapshot();
+}
+
+chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
+  if (!isToWorker(message)) return undefined;
+  void handle(message)
+    .then((current) => sendResponse({ ok: true, status: current, events }))
+    .catch((error: unknown) => sendResponse({ ok: false, error: String(error) }));
+  return true;
+});
+
+chrome.runtime.onInstalled.addListener(() => {
+  void load().then(updateBadge);
+});
+
+chrome.runtime.onStartup.addListener(() => {
+  void load().then(updateBadge);
+});
+
+void load().then(updateBadge);
