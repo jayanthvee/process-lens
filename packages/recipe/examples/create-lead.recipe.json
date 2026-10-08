@@ -1,0 +1,228 @@
+{
+  "$schema": "../schema/recipe.schema.json",
+  "format_version": 1,
+  "meta": {
+    "name": "Create a lead from an inquiry sheet",
+    "when_to_use": "Inquiries arrive as a spreadsheet and each one has to exist in the CRM exactly once, with an owner assigned. For inquiries that need a document read first, use the candidate or invoice workflow instead.",
+    "input_schema": {
+      "fields": {
+        "full_name": { "type": "string", "required": true },
+        "email": { "type": "string", "required": true, "unique": true },
+        "phone": { "type": "string" },
+        "interest": { "type": "string" },
+        "assigned_to": { "type": "string" }
+      },
+      "rules": [
+        {
+          "when": { "missing": "email" },
+          "then": "park",
+          "reason": "No email address, so this inquiry has no record key and no duplicate search is possible."
+        },
+        {
+          "when": { "missing": "full_name" },
+          "then": "park",
+          "reason": "No name to put on the lead."
+        }
+      ]
+    },
+    "record_key": "{{row.email | lower}}",
+    "idempotency_key": "{{row.email | lower}}",
+    "approval_policy": { "commit": "first_record" },
+    "allowed_origins": ["https://crm.example.com"]
+  },
+  "variables": {
+    "interest_option": {
+      "source": {
+        "kind": "rule_table",
+        "table": "interest_to_option",
+        "key": { "kind": "input", "column": "interest" }
+      },
+      "requires_review": true,
+      "description": "The dropdown option that matches the free-text interest column. Confirmed once while building, then reused."
+    },
+    "assigned_to_option": {
+      "source": {
+        "kind": "rule_table",
+        "table": "assigned_to_option",
+        "key": { "kind": "input", "column": "assigned_to" }
+      },
+      "requires_review": true,
+      "description": "The salesperson as the CRM spells it."
+    }
+  },
+  "steps": [
+    {
+      "id": "open-customers",
+      "action": "navigate",
+      "name": "Open the customer list",
+      "url": "https://crm.example.com/customers"
+    },
+    {
+      "id": "search-ready",
+      "action": "wait_for",
+      "name": "The search box is usable",
+      "condition": {
+        "element_present": {
+          "targets": [
+            { "by": "role", "role": "textbox", "name": "Search customers" },
+            { "by": "testid", "value": "customer-search" }
+          ]
+        }
+      },
+      "timeout_ms": 10000
+    },
+    {
+      "id": "search-by-email",
+      "action": "fill",
+      "name": "Search for this email",
+      "targets": [
+        { "by": "role", "role": "textbox", "name": "Search customers" },
+        { "by": "testid", "value": "customer-search" },
+        { "by": "label", "text": "Search customers" }
+      ],
+      "value": { "kind": "input", "column": "email" }
+    },
+    {
+      "id": "submit-search",
+      "action": "click",
+      "name": "Run the search",
+      "targets": [
+        { "by": "role", "role": "button", "name": "Search", "within": "form:Customers" },
+        { "by": "testid", "value": "customer-search-submit" }
+      ]
+    },
+    {
+      "id": "results-settled",
+      "action": "wait_for",
+      "name": "The results table is showing",
+      "condition": {
+        "element_present": {
+          "targets": [{ "by": "role", "role": "table", "name": "Search results" }]
+        }
+      },
+      "timeout_ms": 15000
+    },
+    {
+      "id": "already-a-customer",
+      "action": "branch",
+      "name": "A lead for this email already exists",
+      "when": {
+        "element_present": {
+          "targets": [
+            {
+              "by": "role",
+              "role": "cell",
+              "name": "{{row.email | lower}}",
+              "within": "table:Search results"
+            }
+          ]
+        }
+      },
+      "then": [
+        {
+          "id": "skip-existing",
+          "action": "end_record",
+          "outcome": "skipped",
+          "reason": "The CRM already has a lead for {{row.email | lower}}."
+        }
+      ]
+    },
+    {
+      "id": "open-new-lead",
+      "action": "click",
+      "name": "Open the new lead form",
+      "targets": [
+        { "by": "role", "role": "button", "name": "New lead", "within": "toolbar:Customers" },
+        { "by": "testid", "value": "lead-new" },
+        { "by": "text_fuzzy", "value": "New lead" }
+      ]
+    },
+    {
+      "id": "form-ready",
+      "action": "wait_for",
+      "name": "The form is open",
+      "condition": {
+        "element_present": {
+          "targets": [{ "by": "role", "role": "dialog", "name": "New lead" }]
+        }
+      },
+      "timeout_ms": 10000
+    },
+    {
+      "id": "fill-full-name",
+      "action": "fill",
+      "name": "Full name",
+      "targets": [
+        { "by": "role", "role": "textbox", "name": "Full name", "within": "dialog:New lead" },
+        { "by": "testid", "value": "lead-full-name" }
+      ],
+      "value": { "kind": "input", "column": "full_name" }
+    },
+    {
+      "id": "fill-email",
+      "action": "fill",
+      "name": "Email",
+      "targets": [
+        { "by": "role", "role": "textbox", "name": "Email", "within": "dialog:New lead" },
+        { "by": "testid", "value": "lead-email" }
+      ],
+      "value": { "kind": "input", "column": "email" }
+    },
+    {
+      "id": "fill-phone",
+      "action": "fill",
+      "name": "Phone",
+      "targets": [
+        { "by": "role", "role": "textbox", "name": "Phone", "within": "dialog:New lead" },
+        { "by": "testid", "value": "lead-phone" }
+      ],
+      "value": { "kind": "input", "column": "phone" }
+    },
+    {
+      "id": "choose-interest",
+      "action": "select",
+      "name": "Interest",
+      "targets": [
+        { "by": "role", "role": "combobox", "name": "Interest", "within": "dialog:New lead" },
+        { "by": "testid", "value": "lead-interest" }
+      ],
+      "value": { "kind": "constant", "value": "{{interest_option}}" },
+      "option_match": "text"
+    },
+    {
+      "id": "choose-owner",
+      "action": "select",
+      "name": "Assigned to",
+      "targets": [
+        { "by": "role", "role": "combobox", "name": "Assigned to", "within": "dialog:New lead" },
+        { "by": "testid", "value": "lead-assigned-to" }
+      ],
+      "value": { "kind": "constant", "value": "{{assigned_to_option}}" },
+      "option_match": "text"
+    },
+    {
+      "id": "approve-first-commit",
+      "action": "approval_gate",
+      "name": "Approve the first commit",
+      "reason": "The first commit of a run is previewed: check the values for {{row.email | lower}} before they are submitted."
+    },
+    {
+      "id": "save-lead",
+      "action": "click",
+      "name": "Save",
+      "commit": true,
+      "targets": [
+        { "by": "role", "role": "button", "name": "Save", "within": "dialog:New lead" },
+        { "by": "testid", "value": "lead-save" },
+        { "by": "text_fuzzy", "value": "Save" }
+      ],
+      "assert_after": { "text_visible": "Lead created", "timeout_ms": 8000 }
+    },
+    {
+      "id": "done",
+      "action": "end_record",
+      "outcome": "verified",
+      "reason": "Lead created for {{row.email | lower}}."
+    }
+  ]
+}
