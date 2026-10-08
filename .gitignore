@@ -48,3 +48,6 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# Packaging metadata written by editable installs
+*.egg-info/
