@@ -58,6 +58,95 @@ export interface ResolveResult {
   error?: string;
 }
 
+/** The query handed to the page-side measurement: the marked element's token. */
+export interface MeasureQuery {
+  token: string;
+}
+
+/**
+ * The result of measuring a marked element just before a mouse click.
+ *
+ * `hit` is the tag of whatever `document.elementFromPoint` returned at the box
+ * center, so a caller can see what a click would actually land on. A click is
+ * only safe when the measured box has area and the hit test lands on the target
+ * (or inside it).
+ */
+export interface MeasureResult {
+  ok: boolean;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  /** The tag of the element at the box center, or "" when the hit test is unavailable. */
+  hit: string;
+  reason?: string;
+}
+
+/**
+ * Scroll a marked element into view, re-measure its box, and hit-test the box
+ * center. Runs in the page.
+ *
+ * This is separate from the resolver because a click needs the box *after*
+ * scrolling, and needs to know that a click at that point would land on the
+ * target rather than on something covering it. A zero-area box or a hit-test
+ * miss is a refusal, not a click at (0, 0).
+ */
+export function measureTargetInPage(query: MeasureQuery): MeasureResult {
+  const MARKER = "data-pl-target";
+  const reject = (reason: string): MeasureResult => ({
+    ok: false,
+    x: 0,
+    y: 0,
+    width: 0,
+    height: 0,
+    hit: "",
+    reason,
+  });
+
+  let element: Element | null = null;
+  try {
+    const escaped = String(query.token).replace(/["\\]/g, "\\$&");
+    element = document.querySelector(`[${MARKER}="${escaped}"]`);
+  } catch {
+    return reject("the marker token is not a valid selector");
+  }
+  if (!element) return reject("the marked element is no longer in the document");
+
+  // Scroll first, so the measured box is where a click will land.
+  if (typeof element.scrollIntoView === "function") {
+    try {
+      element.scrollIntoView({ block: "center", inline: "center" });
+    } catch {
+      // A page can refuse scrolling; the box below is still measured.
+    }
+  }
+
+  const rect = element.getBoundingClientRect();
+  const width = rect.width;
+  const height = rect.height;
+  if (!(width > 0) || !(height > 0)) {
+    return reject(`the element has no clickable area (${width}x${height})`);
+  }
+
+  const x = rect.left + width / 2;
+  const y = rect.top + height / 2;
+
+  // A hit test confirms nothing covers the target. jsdom has no layout and no
+  // elementFromPoint; in a browser it is present, so the check is real wherever
+  // a click can actually be dispatched.
+  const fromPoint =
+    typeof document.elementFromPoint === "function" ? document.elementFromPoint : null;
+  if (fromPoint) {
+    const hit = fromPoint.call(document, x, y);
+    if (!hit) return reject("the hit test found no element at the box center");
+    if (hit !== element && !element.contains(hit) && !hit.contains(element)) {
+      return reject(`the box center is covered by <${hit.tagName.toLowerCase()}>`);
+    }
+    return { ok: true, x, y, width, height, hit: hit.tagName.toLowerCase() };
+  }
+  return { ok: true, x, y, width, height, hit: "" };
+}
+
 /**
  * Find the element a target ladder describes. Runs in the page.
  *
@@ -247,15 +336,6 @@ export function resolveTargetInPage(query: ResolveQuery): ResolveResult {
     return target.length / text.length;
   };
 
-  const measure = (el: Element): { x: number; y: number } => {
-    try {
-      const rect = el.getBoundingClientRect();
-      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
-    } catch {
-      return { x: 0, y: 0 };
-    }
-  };
-
   const stamp = (el: Element, token: string): void => {
     for (const marked of Array.from(doc.querySelectorAll(`[${MARKER}]`))) {
       marked.removeAttribute(MARKER);
@@ -348,8 +428,8 @@ export function resolveTargetInPage(query: ResolveQuery): ResolveResult {
     const usable = candidates.filter(isUsable);
     if (usable.length === 1) {
       const element = usable[0] as Element;
-      const box = measure(element);
       stamp(element, query.token);
+      const box = measureTargetInPage({ token: query.token });
       attempts.push({ rung, by, matches: 1 });
       return {
         ok: true,
@@ -374,9 +454,21 @@ export function resolveTargetInPage(query: ResolveQuery): ResolveResult {
   return fail("no rung of the target ladder resolved to exactly one element");
 }
 
-/** The resolver as a source string, for injection into a page context. */
+/**
+ * The resolver as a source string, for injection into a page context.
+ *
+ * The resolver calls the measurement function, so both are injected together:
+ * the composed expression evaluates to the resolver, with the measurement in its
+ * enclosing scope. A stamp happens before measuring, so the measurement finds
+ * the element by its marker.
+ */
 export function resolverExpression(): string {
-  return `(${resolveTargetInPage.toString()})`;
+  return `(() => { const measureTargetInPage = ${measureTargetInPage.toString()}; return (${resolveTargetInPage.toString()}); })()`;
+}
+
+/** The measurement function as an injectable expression. */
+export function measureExpression(): string {
+  return `(${measureTargetInPage.toString()})`;
 }
 
 /** An ES-module-safe name for the resolver, used in tests. */
