@@ -1,0 +1,18 @@
+# Secret scanning rules for the public repository.
+# Run: gitleaks detect --source . --config .gitleaks.toml
+title = "process-lens"
+
+[extend]
+# Keep the built-in rules; the allowlist below only removes known-safe placeholders.
+useDefault = true
+
+[allowlist]
+description = "Placeholders and synthetic fixtures that are not secrets."
+paths = [
+  '''(^|/)\.env\.example$''',
+]
+# Values that look like credentials but are documented placeholders.
+regexes = [
+  '''change-me-locally''',
+  '''processlens:processlens''',
+]

@@ -1,5 +1,4 @@
 # Internal workspace (separate private repository) and private material
-internal/
 private/
 AGENTS.md
 CLAUDE.md
@@ -48,3 +47,6 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# Packaging metadata written by editable installs
+*.egg-info/

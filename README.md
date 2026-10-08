@@ -32,7 +32,47 @@ db/          Database migrations and tests
 
 ## Getting started
 
-Setup instructions will be added as the first components land.
+### Prerequisites
+
+- **Docker** with Compose v2 - runs the local Postgres 16 and object storage.
+- **Python 3.12**.
+- **GNU Make** - the commands below are `make` targets.
+- **gitleaks** (optional) - only needed for the pre-commit secret scan.
+
+### Run it locally
+
+```bash
+cp .env.example .env            # Windows: copy .env.example .env
+make up                         # start Postgres 16 and MinIO, wait until healthy
+
+python -m venv .venv
+source .venv/bin/activate       # Windows: .venv\Scripts\activate
+pip install -e ".[dev]"
+
+make migrate                    # apply db/migrations, in order
+make test                       # database and API tests
+make lint                       # ruff
+make fmt                        # ruff, rewriting files
+```
+
+`make down` stops the services; their data stays in named Docker volumes. The credentials in `.env`
+are for local development only.
+
+### The API
+
+```bash
+uvicorn services.api.main:app --reload --env-file .env
+```
+
+`GET /health` answers `{"status": "ok", "db": true}` while the database is reachable, and
+`{"status": "ok", "db": false}` when it is not.
+
+### Pre-commit
+
+```bash
+pre-commit install              # enables secret scanning on commit
+pre-commit run --all-files
+```
 
 ## Security
 

@@ -1,0 +1,15 @@
+default_install_hook_types: [pre-commit]
+
+repos:
+  # Secret scanning on every commit. Needs the gitleaks binary on PATH:
+  # https://github.com/gitleaks/gitleaks#installing
+  #
+  # pass_filenames is off on purpose: the upstream gitleaks-system hook leaves it
+  # on, which hands gitleaks the file list as positional arguments and it refuses
+  # to run. gitleaks finds the changed files itself.
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks-system
+        pass_filenames: false
+        args: [--config, .gitleaks.toml]
