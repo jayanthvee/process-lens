@@ -1,0 +1,50 @@
+# Internal workspace (separate private repository) and private material
+internal/
+private/
+AGENTS.md
+CLAUDE.md
+.claude/
+.codewhale/
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Run artifacts can contain personal data
+artifacts/
+recordings/
+screenshots/
+*.har
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Node
+node_modules/
+dist/
+build/
+.vite/
+coverage/
+playwright-report/
+test-results/
+
+# Local services
+.data/
+*.sqlite
+*.db
+
+# OS and editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
