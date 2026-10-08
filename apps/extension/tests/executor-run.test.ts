@@ -3,11 +3,15 @@
 // The fake transport evaluates page expressions in jsdom, so the real 5-rung
 // resolver and the real condition predicates run here; only the browser input
 // itself is recorded rather than performed.
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { RunControl } from "../src/executor/control";
-import { resetTokens, resolveValue, runRecipe } from "../src/executor/executor";
+import { resetTokens, resolveValue, runRecipe, validateRecipe } from "../src/executor/executor";
+import { FrameContexts } from "../src/executor/frames";
 import type { ExecutorRecipe } from "../src/executor/types";
 import { fakeCdp } from "./helpers/fake-cdp";
+import { installLayout } from "./helpers/layout";
+
+let restoreLayout: (() => void) | null = null;
 
 const ORIGIN = "http://localhost:3000";
 
@@ -33,6 +37,13 @@ beforeEach(() => {
   document.body.innerHTML = "";
   window.history.replaceState({}, "", "/records/new");
   resetTokens();
+  // Clicks measure and hit-test a box; jsdom has no layout.
+  restoreLayout = installLayout();
+});
+
+afterEach(() => {
+  restoreLayout?.();
+  restoreLayout = null;
 });
 
 describe("runRecipe", () => {
@@ -135,9 +146,9 @@ describe("runRecipe", () => {
     expect(callsTo("Input.dispatchKeyEvent")).toHaveLength(0);
   });
 
-  it("skips an action it does not perform, and reports it", async () => {
+  it("refuses to start when a step action is outside the executor's set", async () => {
     formMarkup();
-    const { cdp } = fakeCdp();
+    const { cdp, callsTo } = fakeCdp();
 
     const summary = await runRecipe(
       recipe([
@@ -153,9 +164,147 @@ describe("runRecipe", () => {
       { cdp },
     );
 
-    expect(summary.state).toBe("done");
-    expect(summary.steps[0]).toMatchObject({ id: "wait-1", outcome: "skipped" });
-    expect(summary.steps[1]?.outcome).toBe("done");
+    expect(summary.state).toBe("failed");
+    expect(summary.error).toMatch(/refusing to start/);
+    expect(summary.disposition).toBe("park");
+    // No step ran: the run is refused before step 1.
+    expect(summary.steps).toHaveLength(0);
+    expect(callsTo("Input.dispatchKeyEvent")).toHaveLength(0);
+  });
+
+  it("reports validation problems through validateRecipe", () => {
+    expect(validateRecipe(recipe([{ id: "nested-1", action: "branch" }]))).toHaveLength(1);
+    expect(validateRecipe(recipe([{ id: "ok-1", action: "navigate", url: ORIGIN }]))).toEqual([]);
+    expect(validateRecipe({ format_version: 1, meta: {}, steps: [] })).toHaveLength(1);
+  });
+
+  it("parks a fill whose input column has no value", async () => {
+    formMarkup();
+    const { cdp, callsTo } = fakeCdp();
+
+    const summary = await runRecipe(
+      recipe([
+        {
+          id: "fill-1",
+          action: "fill",
+          targets: [{ by: "label", text: "Email" }],
+          value: { kind: "input", column: "missing_column" },
+        },
+      ]),
+      { row: { email: "ravi@example.com" } },
+      { cdp },
+    );
+
+    expect(summary.state).toBe("failed");
+    expect(summary.disposition).toBe("park");
+    expect(summary.error).toMatch(/missing_column/);
+    expect(callsTo("Input.dispatchKeyEvent")).toHaveLength(0);
+  });
+
+  it("parks a fill that would type an empty value", async () => {
+    formMarkup();
+    const { cdp, callsTo } = fakeCdp();
+
+    const summary = await runRecipe(
+      recipe([
+        {
+          id: "fill-1",
+          action: "fill",
+          targets: [{ by: "label", text: "Email" }],
+          value: { kind: "constant", value: "" },
+        },
+      ]),
+      { row: {} },
+      { cdp },
+    );
+
+    expect(summary.state).toBe("failed");
+    expect(summary.disposition).toBe("park");
+    expect(summary.error).toMatch(/empty value/);
+    expect(callsTo("Input.dispatchKeyEvent")).toHaveLength(0);
+  });
+
+  it("parks a fill into a password field", async () => {
+    document.body.innerHTML =
+      "<form aria-label='Sign in'><label for='pw'>Password</label><input id='pw' type='password' data-testid='pw'></form>";
+    const { cdp, callsTo } = fakeCdp();
+
+    const summary = await runRecipe(
+      recipe([
+        {
+          id: "fill-1",
+          action: "fill",
+          targets: [{ by: "testid", value: "pw" }],
+          value: { kind: "constant", value: "secret" },
+        },
+      ]),
+      { row: {} },
+      { cdp },
+    );
+
+    expect(summary.state).toBe("failed");
+    expect(summary.disposition).toBe("park");
+    expect(summary.error).toMatch(/password/);
+    expect(callsTo("Input.dispatchKeyEvent")).toHaveLength(0);
+  });
+
+  it("refuses a step that targets a frame whose context is unknown", async () => {
+    formMarkup();
+    const { cdp } = fakeCdp((method) => {
+      if (method === "Page.getFrameTree") {
+        return { frameTree: { frame: { id: "root", url: "https://app.example.com/" } } };
+      }
+      return undefined;
+    });
+    const frames = new FrameContexts();
+
+    const summary = await runRecipe(
+      recipe([
+        {
+          id: "fill-1",
+          action: "fill",
+          frame: [{ by: "index", index: 0 }],
+          targets: [{ by: "label", text: "Email" }],
+          value: { kind: "constant", value: "a" },
+        },
+      ]),
+      { row: {} },
+      { cdp, frames },
+    );
+
+    expect(summary.state).toBe("failed");
+    expect(summary.disposition).toBe("park");
+    expect(summary.error).toMatch(/frame path did not resolve|execution context/);
+  });
+
+  it("reports a commit outcome unknown when a commit is aborted mid-flight", async () => {
+    formMarkup();
+    const control = new RunControl();
+    // Abort while the commit's mouse press is in flight: the detach watcher in
+    // the service worker does exactly this when the browser detaches.
+    const { cdp } = fakeCdp((method) => {
+      if (method === "Input.dispatchMouseEvent") control.abort("the debugger detached");
+      return undefined;
+    });
+
+    const summary = await runRecipe(
+      recipe([
+        {
+          id: "click-1",
+          action: "click",
+          commit: true,
+          assert_after: { text_visible: "Record created", timeout_ms: 200 },
+          targets: [{ by: "role", role: "button", name: "Save" }],
+        },
+      ]),
+      { row: {} },
+      { cdp, control },
+    );
+
+    expect(summary.state).toBe("aborted");
+    expect(summary.commitOutcomeUnknown).toBe(true);
+    expect(summary.error).toMatch(/commit outcome unknown/);
+    expect(summary.disposition).toBe("park");
   });
 
   it("fails when a target cannot be resolved", async () => {
