@@ -75,9 +75,7 @@ def workflow(conn: psycopg.Connection) -> uuid.UUID:
 
 def count_versions(conn: psycopg.Connection, workflow_id: uuid.UUID) -> int:
     with conn.cursor() as cur:
-        cur.execute(
-            "SELECT count(*) FROM recipe_versions WHERE workflow_id = %s", (workflow_id,)
-        )
+        cur.execute("SELECT count(*) FROM recipe_versions WHERE workflow_id = %s", (workflow_id,))
         return int(cur.fetchone()[0])
 
 
