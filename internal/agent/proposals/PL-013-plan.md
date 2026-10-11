@@ -127,73 +127,123 @@ never trusted.
 ## 3. The worker and record loop (pseudocode, every transition named)
 
 ```
-run_once(worker_id):
-    run = ledger.claim_run(worker_id)                     # queued -> running (or skip a busy destination)
-    if run is None:
-        epoch = ledger.take_over_run(stale run, worker_id) # running|paused -> same, lease_epoch + 1
-        if epoch: recovered = ledger.recover_run(run, worker_id)
-    process_run(run, epoch)
+run_once(worker_id):                                       # R6: one heartbeat thread for the whole call
+    run, epoch = claim_or_take_over(worker_id)             # see below; a StaleLease stops everything at once
+    if run is None: return                                 # nothing to do
+    with heartbeat_thread(run, worker_id, epoch):          # R6: beats every heartbeat_timeout/3
+        ledger.recover_run(run, worker_id)                 # R4: ALWAYS after a claim or a takeover
+        process_run(run, worker_id, epoch)
 
-process_run(run, epoch):
-    ledger.skip_already_committed(run)                    # pending -> skipped
-    ledger.close_out_exhausted(run)                       # pending -> failed
-    while run.status == 'running':
-        if run.status == 'cancelled':                     # read between steps
-            reconcile_commit_window(run); return
-        if run.status == 'paused': return
-        record = ledger.claim_record(run, worker, epoch)  # pending -> claimed  (attempts = attempts + 1)
-        if record is None: return
-        outcome = process_record(record, run, epoch)
+claim_or_take_over(worker_id):
+    run = ledger.claim_run(worker_id)                      # queued -> running (skips a busy destination)
+    if run is not None: return run, run.lease_epoch
+    run = ledger.stale_run()                               # the oldest running|paused run whose heartbeat lapsed
+    if run is None: return None, None
+    epoch = ledger.take_over_run(run, worker_id)           # running|paused -> same, lease_epoch + 1
+    return (run, epoch) if epoch is not None else (None, None)
+
+process_run(run, worker, epoch):
+    ledger.skip_already_committed(run)                     # pending -> skipped
+    while True:
+        status = ledger.get_run(run).status                # R4: re-read runs.status at EVERY step boundary
+        if status == 'cancelled':
+            finalise_cancel(run, worker, epoch); return
+        if status == 'paused':
+            return
+        record = ledger.claim_record(run, worker, epoch)   # pending -> claimed  (attempts = attempts + 1)
+        if record is None:
+            break                                          # nothing claimable is left
+        outcome = process_record(record, run, worker, epoch)
         if is_canary(record) and outcome in FAILURE_OUTCOMES:
             ledger.set_run_status(run, 'paused', pause_reason='canary_failed'); return
-    mark run completed (runs.status only; records already carry the exit states)
+    # R5: close out exhausted records BEFORE completing, then complete only if every record is out
+    ledger.close_out_exhausted(run)                        # pending -> failed (attempts exhausted)
+    if ledger.all_records_in_exit_state(run):
+        ledger.set_run_status(run, 'completed')            # runs.status only
+    else:
+        ledger.set_run_status(run, 'paused', pause_reason='records_not_exit')
+
+finalise_cancel(run, worker, epoch):                       # R4: the worker finalises a requested cancel
+    reconcile_commit_window(run, worker, epoch)            # submitting|submitted_unverified -> reconciling -> ...
+    ledger.release_working_records(run, worker)            # claimed|prechecked|filling -> pending
+    ledger.skip_pending_records(run, reason='run cancelled')   # pending -> skipped
+    ledger.set_run_status(run, 'cancelled')
 ```
 
 ```
-process_record(record, run, epoch):
+process_record(record, run, worker, epoch):
     row = record.clean
 
     # 1. prechecks (meta.input_schema.rules: predicate -> skip|park|fail)
     for rule in rules:
         if predicate_holds(rule.when, row):
             ledger.change_state(record, expected='claimed', new=rule_then_state(rule.then), reason=rule.reason)
+            record_step_event(...)                         # S4: same transaction as the change
             return rule_then_state(rule.then)             # claimed -> skipped | parked | failed
     ledger.change_state(record, expected='claimed', new='prechecked', reason='precheck passed')
                                                           # claimed -> prechecked
 
-    # 2. steps, in order; ledger state tracked as `state`
-    state = 'prechecked'
-    for step in recipe.steps:
+    return run_steps(recipe.steps, row, state='prechecked', record, run, worker, epoch)
+
+run_steps(steps, row, state, record, run, worker, epoch):
+    for step in steps:
+        # R4: re-read runs.status from the database at EVERY step boundary
+        status = ledger.get_run(run).status
+        if status == 'cancelled':
+            return 'cancelled'                             # caller finalises; never mid-commit here
+        if status == 'paused':
+            if state == 'filling':                         # outside the commit window: release and stop
+                ledger.change_state(record, 'filling' -> 'pending', reason='paused')
+            return 'paused'
+
         if step.action == 'branch':
-            ok = executor.check_condition(step.when)      # executor check
+            ok = executor.check_condition(step.when)       # executor check
             sub = step['then'] if ok else step.get('else', [])
-            terminal = run_steps(sub, row, state)          # recursive; may end the record
+            terminal = run_steps(sub, row, state, record, run, worker, epoch)
             if terminal: return terminal
         elif step.action == 'approval_gate':
             if step.when and not executor.check_condition(step.when): continue
-            ledger.open_approval_request(record, step, shown=rendered_values(step))
-            ledger.set_run_status(run, 'paused', pause_reason='awaiting_approval')
-            return 'awaiting_approval'                     # no transition; record stays filling
+            if not gate(record, run, step, kind='commit'):  # R3: an approved request for these exact values passes
+                return 'awaiting_approval'                  # no transition; record stays filling, run paused
         elif step.action == 'end_record':
             outcome = step.outcome                          # verified | skipped | parked (never failed)
             ledger.change_state(record, expected=state, new=outcome, reason=rendered(step.reason))
+            record_step_event(...)                          # S4
             return outcome
         else:
             if state == 'prechecked':
                 ledger.change_state(record, expected='prechecked', new='filling', reason='steps begin')
                 state = 'filling'                          # prechecked -> filling
             if step.commit:
-                ledger.begin_commit(record, worker, epoch)  # filling -> submitting (committed)
+                # R2: resolve + hit-test the target FIRST, while the record is still in `filling`; no input sent
+                prepared = executor.prepare(command(step))
+                if prepared.status != 'ok':                # locator failure is NOT a commit attempt
+                    ledger.change_state(record, 'filling' -> 'parked', reason=prepared.error)
+                    record_step_event(...)                 # S4
+                    return 'parked'
+                # R3: the POLICY gate sits immediately before begin_commit, and is shown explicitly
+                if policy_gates(step, run):                # first_record | every_record | first_n | preview
+                    if not gate(record, run, step, kind='commit'):
+                        return 'awaiting_approval'         # record stays filling, run paused awaiting_approval
+                ledger.begin_commit(record, worker, epoch)  # filling -> submitting (COMMITTED before dispatch)
                 crash_hook('after_submitting')
-                result = executor.perform(command(step), on_dispatched=lambda: ack(record))
+                result = executor.dispatch(command(step), on_dispatched=lambda: ack(record))
                 # on_dispatched: submitting -> submitted_unverified (committed by the callback)
                 crash_hook('after_dispatch')
-                if result.status == 'rejected':
-                    ledger.change_state(record, 'submitted_unverified' -> 'failed', reason=result.error)
-                    return 'failed'                        # submitted_unverified -> failed
-                if not acknowledged:
+                # S1: the acknowledgement is checked BEFORE a rejection, so a rejection is never
+                # applied while the record is still `submitting` (which would raise StateConflict)
+                if acknowledged:
+                    ledger.change_state(record, 'submitting' -> 'submitted_unverified', reason='dispatched')
+                    if result.status == 'rejected':        # L2: a positive rejection on the page
+                        ledger.change_state(record, 'submitted_unverified' -> 'failed', reason=result.error)
+                        record_step_event(...)             # S4
+                        return 'failed'
+                elif result.status == 'not_dispatched':    # L3: this worker knows no input event was sent
+                    ledger.change_state(record, 'submitting' -> 'failed', reason=result.error)
+                    return 'failed'
+                else:                                       # crash or lost: short of proof
                     ledger.change_state(record, 'submitting' -> 'reconciling', reason='no dispatch proof')
-                    return reconcile(record)               # submitting -> reconciling
+                    return reconcile(record, run, worker, epoch)
                 ok = executor.check_condition(step.assert_after, timeout_ms=step.timeout_ms)
                 crash_hook('after_assert')
                 if ok:
@@ -203,9 +253,10 @@ process_record(record, run, epoch):
                         ledger.set_run_status(run, 'paused', pause_reason='duplicate_detected')
                     return 'verified'
                 ledger.change_state(record, 'submitted_unverified' -> 'reconciling', reason='assertion timeout')
-                return reconcile(record)                   # submitted_unverified -> reconciling
+                return reconcile(record, run, worker, epoch)   # submitted_unverified -> reconciling
             else:
                 result = executor.perform(command(step), on_dispatched=None)
+                record_step_event(...)                     # S4: every executor step writes one row
                 if result.status == 'ok': continue
                 fail_to = 'failed' if step.on_failure == 'fail' else 'parked'
                 ledger.change_state(record, expected='filling', new=fail_to, reason=result.error)
@@ -220,11 +271,25 @@ process_record(record, run, epoch):
 ```
 
 ```
-reconcile(record, run, epoch):                             # Reconciler interface (fake in this ticket)
+gate(record, run, step, kind):                             # R3: idempotent re-entry
+    shown = rendered_values(step)                          # the values about to be submitted, exact bytes
+    existing = ledger.approved_request_for(record.id, step.id)   # an approved request, same step
+    if existing and existing.shown == shown:               # an approval can never cover values the person did not see
+        return True                                        # pass; no new request
+    if existing and existing.decision == 'rejected':       # a person said no to exactly these values
+        ledger.change_state(record, expected=<state>, new='parked', reason=existing.reason)
+        return 'parked'
+    ledger.open_approval_request(record, step, kind=kind, shown=shown)
+    ledger.set_run_status(run, 'paused', pause_reason='awaiting_approval')
+    return False                                           # caller returns 'awaiting_approval'
+
+reconcile(record, run, worker, epoch):                     # Reconciler interface (fake in this ticket)
     outcome = reconciler.outcome(record)
     if outcome == 'verified':  ledger.verify_commit(...)             # reconciling -> verified
     elif outcome == 'pending': ledger.change_state('reconciling' -> 'pending', reason='not found; retry')
     elif outcome == 'parked':  ledger.change_state('reconciling' -> 'parked', reason=...)
+    else:                      ledger.change_state('reconciling' -> 'parked', reason=...)
+                               # S2: an ambiguous match AND a reconcile error both park (never `failed`)
     return outcome
 ```
 
@@ -247,7 +312,8 @@ reconcile(record, run, epoch):                             # Reconciler interfac
 | assertion passed | `submitted_unverified → verified` (+ `committed_keys`) |
 | positive rejection | `submitted_unverified → failed` |
 | assertion timeout / lost | `submitted_unverified → reconciling` |
-| reconcile found / none / ambiguous / error | `reconciling → verified` / `→ pending` / `→ parked` / `→ failed` |
+| reconcile found / none / ambiguous / error | `reconciling → verified` / `→ pending` / `→ parked` / `→ parked` (S2) |
+| R1: a duplicate found by the browser search, while `filling` | `filling → skipped` (only when `commit_attempted = false`) |
 | cancel before commit | `filling → pending` |
 | cancel in commit window | `submitting` / `submitted_unverified → reconciling`, then reconcile |
 | release on shutdown (`recover_run`) | `claimed` / `prechecked` / `filling → pending` |
@@ -256,8 +322,10 @@ reconcile(record, run, epoch):                             # Reconciler interfac
 | person re-queue | `parked` / `failed → pending`, or `→ reconciling` when `commit_attempted` |
 
 `end_record outcome=verified` when the record is already `verified` is a same-state update (accepted).
-`end_record outcome=skipped` is only legal before `filling`; the runner treats an impossible outcome as
-a run-creation error where it can be checked statically, and otherwise as a `StateConflict` at runtime.
+`end_record outcome=skipped` before `filling` uses `prechecked → skipped`; `filling → skipped` is the R1
+transition and is legal only when the record has never entered the commit window (`commit_attempted =
+false`). An `outcome` that is impossible on its static path (for example `verified` before any step has
+run) is refused at run creation (S5); anything else is a `StateConflict` at runtime.
 
 ## 4. Fake executor and fake destination
 
@@ -300,6 +368,13 @@ real time and there are no fixed sleeps.
 - **Every API endpoint + tenant scoping** — `tests/db/test_runs_api.py` (one test per endpoint, plus `::test_tenant_scoping_hides_other_tenants_runs`).
 - **Migration 0003** — `tests/db/test_run_orchestration_migration.py::test_backdated_destination_check_is_rejected`, `...::test_future_destination_check_is_rejected`, `...::test_approval_request_resolves_once`, `...::test_approval_request_other_change_is_rejected`, `...::test_approval_requests_rejects_delete_and_truncate`.
 - **No fixed sleeps / no model SDK** — `tests/runner/test_no_sleeps.py::test_runner_has_no_fixed_sleep_or_time_sleep`, `...::test_no_model_sdk_imported_under_runner_or_ledger`.
+- **R1 `filling → skipped`** — `tests/db/test_ledger_guard.py`, the doc-driven matrix test, and `tests/db/test_run_orchestration_migration.py::test_filling_to_skipped_is_refused_once_commit_attempted`.
+- **R2 prepare/dispatch split** — `tests/runner/test_canary.py::test_locator_failure_on_first_commit_pauses_canary_failed`, `tests/runner/test_commit_window.py::test_not_dispatched_fails_from_submitting`, `...::test_prepare_failure_parks_without_a_write_ahead`.
+- **R3 approval re-entry and the policy gate** — `tests/runner/test_approval.py::test_resume_does_not_reopen_an_approved_request`, `...::test_approval_never_covers_unseen_values`.
+- **R4 status re-read, cancel, resume** — `tests/runner/test_cancel.py`, `tests/runner/test_lease_race.py::test_status_is_reread_at_every_step`.
+- **R5 close-out before completion** — `tests/runner/test_reconcile.py::test_exhausted_records_are_closed_out_before_completion`, `...::test_run_does_not_complete_while_a_record_is_still_pending`.
+- **R6 heartbeat thread and stale-lease stop** — `tests/runner/test_cancel.py::test_heartbeat_runs_while_a_step_blocks`, `tests/runner/test_lease_race.py`.
+- **S1–S6** — the named tests in section 9 (`test_rejection_without_acknowledgement_does_not_raise_state_conflict`, `test_reconcile_error_parks`, the scoped separation test, `test_every_executor_step_writes_a_step_event`, the `test_creation.py` consistency tests, the kill test).
 - **Gates** — `python -m pytest -q`, `ruff check .`, `ruff format --check .`, `python -m db.migrate` twice.
 - **Report** — `internal/agent/reports/PL-013.md`.
 
@@ -329,3 +404,111 @@ real time and there are no fixed sleeps.
    is the intent (it makes the grep test meaningful).
 4. **`approval_requests` on the TRUNCATE list** and the one-time resolve trigger — the update-allowance
    is narrow; confirm the exact wording is acceptable.
+
+All four were answered by T1's plan review (R1–R6, S1–S6). See section 9.
+
+## 9. Changes from T1 review
+
+T1 approved the plan with required changes R1–R6 and smaller fixes S1–S6
+(`internal/agent/reports/PL-013-plan-review.md`). The pseudocode in section 3 above is already amended
+for them; this section states each change and the test that proves it. R1 changes the ledger's
+transition set and carries the owner's sign-off.
+
+**R1. `filling → skipped` (32nd transition), owner-approved.** A duplicate found by the recipe's own
+browser search is found while the record is in `filling`, and neither `prechecked` nor `pending` was the
+state. `0003` adds `filling → skipped`, allowed **only when `commit_attempted = false`**, so a record
+whose save may already have reached the destination is never reported as skipped. `LEDGER_SPEC.md` and
+the matrix test move to 32 transitions. Tests: `tests/db/test_ledger_hardening.py::test_the_spec_lists_
+eleven_states_and_thirty_two_transitions` (the count), the doc-driven matrix test
+(`test_the_transition_matrix_matches_the_ledger_spec`, now covering the 32nd pair), the added row in
+`tests/db/test_ledger_guard.py::LEGAL_TRANSITIONS`, and a new test
+`tests/db/test_run_orchestration_migration.py::test_filling_to_skipped_is_refused_once_commit_attempted` (a
+commit-attempted record back in `filling` cannot skip). Used by `tests/runner/test_happy_path.py`,
+which ends a duplicate `skipped` from the search branch.
+
+**R2. Resolve the target BEFORE the write-ahead.** The executor protocol splits a commit into
+`prepare(command)` (resolve + hit-test the target, **no input sent**, while the record is still in
+`filling`) and `dispatch(command, on_dispatched)` (send the input). A `prepare` locator failure goes
+`filling → parked` and is not a commit attempt, so the canary catches it; only after `prepare` succeeds
+does `begin_commit` write ahead and `dispatch` run. A `dispatch` that reports `not_dispatched` goes
+`submitting → failed` (rule L3); anything else short of proof goes to `reconciling`. Tests:
+`tests/runner/test_canary.py::test_locator_failure_on_first_commit_pauses_canary_failed` (the record
+ends `parked`, never commit-attempted), `tests/runner/test_commit_window.py::test_not_dispatched_fails_
+from_submitting`, and `tests/runner/test_commit_window.py::test_prepare_failure_parks_without_a_write_
+ahead` (no `submitting` row exists after a locator failure).
+
+**R3. Approval re-entry.** When the runner reaches a gate (an `approval_gate` step, or a commit the
+policy gates), it first looks for an **approved** request for the same `run_record_id` and `step_id`
+whose `shown` equals the values it is about to submit, byte for byte. If one exists it passes without a
+new request; if a matching request was **rejected** it parks the record with the reviewer's reason;
+otherwise it opens a new request and pauses. The re-run after a resume therefore does not re-open the
+request it already answered, and an approval can never cover values the person did not see. The policy
+gate (`first_record`, `every_record`, `first_n`, preview) is now shown explicitly, immediately before
+`begin_commit`, not only for `approval_gate` steps. Tests: `tests/runner/test_approval.py::test_resume_
+does_not_reopen_an_approved_request`, `...::test_first_record_gate_stops_without_preview`, `...::test_
+approval_resumes_the_run`, `...::test_rejection_parks_with_reviewer_reason`, and `...::test_approval_
+never_covers_unseen_values` (same step id, different `shown` → a new request).
+
+**R4. Status re-read, pause, cancel, resume.** The loop re-reads `runs.status` from the database at
+**every** step boundary, not only between records. Paused outside the commit window releases the record
+`filling → pending` with reason `paused` and stops; inside the commit window it finishes the commit
+protocol first and never stops between `begin_commit` and verify/reconcile. `0003` adds
+`runs.cancel_requested_at`; the API sets it and moves `paused → queued` when no worker holds the run. A
+worker that sees a cancel finalises it: reconcile the commit-window records, release the working ones,
+`pending → skipped` with reason `run cancelled`, then `status = 'cancelled'`. Resume sets
+`paused → queued`. Recovery (`recover_run`) now runs after **every** claim or takeover, not only
+takeovers, so a resumed run releases its stranded records. Tests: `tests/runner/test_cancel.py::test_
+cancel_during_commit_window_reconciles_before_stopping`, `...::test_cancel_skips_pending_and_marks_the_
+run_cancelled`, `tests/runner/test_lease_race.py::test_status_is_reread_at_every_step`, and the resume
+path in `tests/runner/test_approval.py`.
+
+**R5. Close out exhausted records before completing.** A record reconcile returns to `pending` with
+`attempts = max_attempts` is never claimed again (the claim requires `attempts < max_attempts`). At loop
+end the runner calls `close_out_exhausted` and marks the run `completed` **only** when every record is
+in an exit state; otherwise it pauses with `records_not_exit` and investigates rather than papering over
+it. Tests: `tests/runner/test_reconcile.py::test_exhausted_records_are_closed_out_before_completion` and
+`...::test_run_does_not_complete_while_a_record_is_still_pending`.
+
+**R6. Heartbeat on its own thread; stop on a stale lease.** Executor calls block (assertion timeouts,
+approval waits), so a heartbeat only between records would go stale mid-step and two workers would act.
+The heartbeat runs on a separate thread for the whole worker call, and `heartbeat_timeout` is at least
+3× the longest step timeout plus dispatch. On any `StaleLease` the worker stops at once and sends no
+further command; `begin_commit` is fenced by the lease check, so a stale worker can never write ahead
+and click. Tests: `tests/runner/test_lease_race.py::test_only_one_worker_holds_the_run`, `...::test_
+stale_worker_state_change_raises_stale_lease`, and `tests/runner/test_cancel.py::test_heartbeat_runs_
+while_a_step_blocks`.
+
+**S1. Order of checks.** The acknowledgement is checked before a rejection; a rejection is applied only
+from `submitted_unverified`. As written before the review, a rejection without an acknowledgement would
+have called `submitted_unverified → failed` while the record was still `submitting`, raising
+`StateConflict`. Test: `tests/runner/test_commit_window.py::test_rejection_without_acknowledgement_does_
+not_raise_state_conflict`.
+
+**S2. Reconcile error → `parked`.** The transition table said reconcile error goes to `failed`, the
+ticket says `parked`. `parked` wins. Tests: `tests/runner/test_reconcile.py::test_reconcile_error_parks`
+and `...::test_reconcile_ambiguous_parks`.
+
+**S3. Separation-test scope.** The scan covers `services/` and `packages/` (excluding `packages/ledger`)
+only, because `tests/db/*` and `seed.py` legitimately contain ledger SQL. Test:
+`tests/runner/test_sql_separation.py::test_ledger_table_sql_lives_only_in_packages_ledger`.
+
+**S4. `step_events` for every executor step.** Every executor step writes one `step_events` row (timing,
+rung, observed, outcome, error), in the same transaction as any state change that accompanies it — not
+only in `verify_commit`. Test: `tests/runner/test_happy_path.py::test_every_executor_step_writes_a_step_
+event`.
+
+**S5. Run-creation consistency.** Creation refuses unless the recipe version belongs to the workflow,
+the input batch belongs to the workflow, and all three share one tenant; and it statically refuses an
+`end_record` outcome that is impossible on its path (for example `verified` before any step has run).
+Tests: `tests/runner/test_creation.py::test_refuses_a_recipe_version_from_another_workflow`, `...::test_
+refuses_an_input_batch_from_another_workflow`, `...::test_refuses_a_cross_tenant_pin`, and
+`...::test_refuses_an_impossible_end_record_outcome`.
+
+**S6. Kill-test timing.** The takeover pattern compares `heartbeat_at` with the database's `now()`, so a
+`FrozenClock` cannot stale a worker's heartbeat. The kill test backdates `heartbeat_at` with test SQL (a
+zero or tiny timeout) and adds no test-only branch to production code. Test:
+`tests/runner/test_kill_points.py::test_crash_at_each_write_ahead_point_leaves_no_duplicates`.
+
+**Commit order, unchanged** (section 7): the plan and the review file, then `0003` plus the spec and
+matrix test, then `packages/ledger`, then `services/runner`, then the API, then the tests and the
+report — each in its own conventional commit with the gates at the end.
