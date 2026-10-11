@@ -56,7 +56,7 @@ def test_stale_worker_state_change_raises_stale_lease(
 
     run = claim_run(conn, "w1")
     assert run is not None
-    record = claim_record(conn, run_id, "w1")
+    record = claim_record(conn, run_id, "w1", run.lease_epoch)
     assert record is not None
 
     # The kill test's problem (S6): backdate the heartbeat to make a dead worker's lease stale.
@@ -146,3 +146,67 @@ def test_a_run_record_carries_a_lease_epoch(
     assert run.lease_epoch == 0
     assert run.worker_id == "w1"
     assert isinstance(run_id, uuid.UUID)
+
+
+def test_a_stale_worker_cannot_claim_a_record(
+    seed: Callable[..., Seed], conn: psycopg.Connection
+) -> None:
+    """Requirement 1: the fence covers the claim, not only the state change.
+
+    Without it a worker whose lease was taken over could claim a record it cannot act on, burn an
+    attempt, and mistake the stolen run for an empty one.
+    """
+    base = seed()
+    base.add_input_record(email="a@x.com")
+    run_id = base.create_run()
+    assert claim_run(conn, "w1") is not None
+
+    conn.execute(
+        "UPDATE runs SET heartbeat_at = now() - interval '1 hour' WHERE id = %s", (run_id,)
+    )
+    assert take_over_run(conn, run_id, "w2", heartbeat_timeout="1 minute") == 1
+
+    with pytest.raises(StaleLease):
+        claim_record(conn, run_id, "w1", 0)
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT state, attempts FROM run_records WHERE run_id = %s", (run_id,))
+        state, attempts = cur.fetchone()
+    assert (state, attempts) == ("pending", 0), "no attempt is burned by the stale claim"
+
+
+def test_a_stale_worker_cannot_change_the_run_status(
+    seed: Callable[..., Seed], conn: psycopg.Connection
+) -> None:
+    base = seed()
+    base.add_input_record(email="a@x.com")
+    run_id = base.create_run()
+    assert claim_run(conn, "w1") is not None
+    conn.execute(
+        "UPDATE runs SET heartbeat_at = now() - interval '1 hour' WHERE id = %s", (run_id,)
+    )
+    assert take_over_run(conn, run_id, "w2", heartbeat_timeout="1 minute") == 1
+
+    with pytest.raises(StaleLease):
+        set_run_status(conn, run_id, "completed", worker="w1", epoch=0)
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT status FROM runs WHERE id = %s", (run_id,))
+        assert cur.fetchone()[0] == "running", (
+            "the stale worker did not finish another worker's run"
+        )
+
+
+def test_an_operator_pause_is_not_fenced(
+    seed: Callable[..., Seed], conn: psycopg.Connection
+) -> None:
+    """The pause endpoint is not acting under a lease, so it is not fenced."""
+    base = seed()
+    base.add_input_record(email="a@x.com")
+    run_id = base.create_run()
+
+    set_run_status(conn, run_id, "paused", pause_reason="paused_by_operator")
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT status FROM runs WHERE id = %s", (run_id,))
+        assert cur.fetchone()[0] == "paused"

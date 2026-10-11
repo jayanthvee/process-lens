@@ -27,8 +27,18 @@ from .run_loop import RunLoop
 
 Connect = Callable[[str], Any]
 
-DEFAULT_HEARTBEAT_TIMEOUT = "1 minute"
+# R6: the heartbeat timeout must be well above the longest step, so a worker that is legitimately
+# blocked in a step (an assertion timeout, an approval wait) is never mistaken for a dead one. The
+# recipe schema caps `timeout_ms` at 120 000, so the largest a legal recipe can demand is
+# 3 x 120s + the dispatch budget = 365s; the default covers that, and the worker still checks the
+# configured value against the recipe it is about to run.
+DEFAULT_HEARTBEAT_TIMEOUT_SECONDS = 365.0
 DEFAULT_HEARTBEAT_INTERVAL = 20.0
+
+
+def heartbeat_timeout_interval(seconds: float) -> str:
+    """The ``runs.heartbeat_at < now() - <interval>`` value for a timeout in seconds."""
+    return f"{seconds} seconds"
 
 
 def default_connect(dsn: str) -> Any:
@@ -115,7 +125,7 @@ class Worker:
         reconciler: Reconciler | None = None,
         clock: Clock | None = None,
         crash_hooks: Callable[[str], None] | None = None,
-        heartbeat_timeout: str = DEFAULT_HEARTBEAT_TIMEOUT,
+        heartbeat_timeout_seconds: float = DEFAULT_HEARTBEAT_TIMEOUT_SECONDS,
         heartbeat_interval: float = DEFAULT_HEARTBEAT_INTERVAL,
         fallback_timeout_ms: int = 10_000,
         connect: Connect = default_connect,
@@ -126,7 +136,8 @@ class Worker:
         self.reconciler = reconciler or NoopReconciler()
         self.clock = clock or SystemClock()
         self.crash_hooks = crash_hooks
-        self.heartbeat_timeout = heartbeat_timeout
+        self.heartbeat_timeout_seconds = heartbeat_timeout_seconds
+        self.heartbeat_timeout = heartbeat_timeout_interval(heartbeat_timeout_seconds)
         self.heartbeat_interval = heartbeat_interval
         self.fallback_timeout_ms = fallback_timeout_ms
         self.connect = connect
@@ -167,7 +178,7 @@ class Worker:
             with beat:
                 # R4: recovery runs after every claim or takeover; on a fresh run it is a no-op.
                 with conn.transaction():
-                    recover_run(conn, run.id, self.worker_id)
+                    recover_run(conn, run.id, self.worker_id, epoch)
                 loop = RunLoop(
                     worker_id=self.worker_id,
                     executor=self.executor,
@@ -175,6 +186,7 @@ class Worker:
                     clock=self.clock,
                     crash_hooks=self.crash_hooks,
                     fallback_timeout_ms=self.fallback_timeout_ms,
+                    heartbeat_timeout_seconds=self.heartbeat_timeout_seconds,
                     lease_check=beat.check,
                 )
                 loop.process_run(conn, run, epoch)
@@ -228,7 +240,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="services.runner", description="ProcessLens run worker.")
     parser.add_argument("--worker-id", required=True, help="This worker's lease identity.")
     parser.add_argument("--database-url", default=None, help="Defaults to DATABASE_URL.")
-    parser.add_argument("--heartbeat-timeout", default=DEFAULT_HEARTBEAT_TIMEOUT)
+    parser.add_argument(
+        "--heartbeat-timeout",
+        type=float,
+        default=DEFAULT_HEARTBEAT_TIMEOUT_SECONDS,
+        help="Seconds a run's lease survives without a beat (R6: at least 3x the longest step).",
+    )
     parser.add_argument("--heartbeat-interval", type=float, default=DEFAULT_HEARTBEAT_INTERVAL)
     parser.add_argument("--max-runs", type=int, default=None)
     parser.add_argument(

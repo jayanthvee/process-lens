@@ -512,3 +512,49 @@ zero or tiny timeout) and adds no test-only branch to production code. Test:
 **Commit order, unchanged** (section 7): the plan and the review file, then `0003` plus the spec and
 matrix test, then `packages/ledger`, then `services/runner`, then the API, then the tests and the
 report — each in its own conventional commit with the gates at the end.
+
+## 10. Changes from the implementation review round
+
+After the first implementation pass, two independent read-only reviewers attacked the diff: one on the
+runner's commit window and approvals, one on the migration and the ledger package. Four findings were
+real and are fixed here; each has a named test. (A fifth, an observed `tests/runner/test_approval.py`
+failure, was an artefact of the pre-fix run and is disproven by the current run of that file.)
+
+**T1. The precheck `skip` mapping named an illegal transition.** A `meta.input_schema.rules` entry with
+`then: "skip"` was mapped straight to `claimed → skipped`, which the guard refuses (confirmed by a
+live probe against the dev database): the worker would have raised `illegal ledger transition`. The
+precheck has finished, so the record now passes through `prechecked` — the state the spec defines as
+"precheck finished; the result decides skip, park, or fill" — on its way out (`claimed → prechecked →
+skipped`). `park` and `fail` remain legal straight from `claimed`. Tests:
+`tests/runner/test_precheck.py` (skip, park and fail rules), each asserting the transition list.
+
+**T2. The lease fence was missing from the claim and the bulk writes.** Requirement 1 says every state
+change is conditional on `claimed_by` and a live `lease_epoch`. The conditional single-row change
+(`change_state`, `begin_commit`) had it, but `claim_record`, the recovery/close-out/skip/release bulk
+updates and `set_run_status` did not, so a worker whose lease had been taken over could still claim a
+record (burning an attempt) or mark the run completed. `packages/ledger/lease.py::require_lease` now
+runs the `FOR SHARE` lease check first, in the same transaction, for every one of those writes, and
+zero rows is a typed `StaleLease`. `set_run_status` takes an optional `worker`/`epoch`: a worker's call
+is fenced, the operator's pause is not. Tests: `tests/runner/test_lease_race.py::test_a_stale_worker_cannot_claim_a_record`,
+`...::test_a_stale_worker_cannot_change_the_run_status`, `...::test_an_operator_pause_is_not_fenced`.
+`sql-patterns.md` now shows the fence on every one of those patterns.
+
+**T3. R6's heartbeat headroom was not enforced.** The worker now takes `heartbeat_timeout_seconds`
+(not a raw interval string), derives the interval from it, computes the recipe's longest step (walking
+assertions and nested branches) and refuses to start a run whose timeout is below
+`3 × longest step + dispatch`, with a typed `RunnerConfigError`. The default is 365s — three times the
+schema's 120 000 ms maximum step timeout plus the dispatch budget — so no legal recipe is refused by
+default. Tests: `tests/runner/test_heartbeat.py`.
+
+**T4. A cancel arriving as the last record finished was lost.** The loop re-read the run after closing
+out but before completing, without checking `cancel_requested_at`, so a cancel in that window vanished.
+The completion step now re-reads the cancel and finalises it instead. Test:
+`tests/runner/test_cancel.py::test_a_cancel_that_arrives_as_the_last_record_finishes_is_not_lost`.
+
+**T5. An approval showed only the first rung of the target ladder.** `_gate_values` now renders the
+whole ladder (and still the record's values and the rendered value), so a decision covers every way
+the runner may find the element. Test: `tests/runner/test_gate_values.py::test_the_shown_values_include_the_whole_target_ladder`.
+
+**T6. `recover_run` omitted `reason` on the commit-window reassignment.** Requirement 1's "every state
+change sets `reason`" applied to the bulk recovery too; the statement now sets it. Covered by the
+recovery tests in `tests/runner/test_reconcile.py` and the audit rows they assert on.

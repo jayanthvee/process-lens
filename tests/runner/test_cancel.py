@@ -84,6 +84,32 @@ def test_cancel_during_commit_window_reconciles_before_stopping(
     assert "pending>skipped" in transitions
 
 
+def test_a_cancel_that_arrives_as_the_last_record_finishes_is_not_lost(
+    seed: Callable[..., Seed],
+    make_worker: Callable[..., Worker],
+    conn: psycopg.Connection,
+) -> None:
+    """R4: the run re-reads the cancel before it completes, so a late cancel is honoured."""
+    base = seed()
+    base.add_input_record(key="a", email="a@x.com")
+    run_id = base.create_run()
+
+    scripted = ScriptedRun.build()
+    original = scripted.executor.check_condition
+
+    def check(condition, *, timeout_ms, step_id=None, record_key=None):  # type: ignore[no-untyped-def]
+        # The cancel arrives while the last record's assertion is being checked, after its commit.
+        conn.execute("UPDATE runs SET cancel_requested_at = now() WHERE id = %s", (run_id,))
+        return original(condition, timeout_ms=timeout_ms, step_id=step_id, record_key=record_key)
+
+    scripted.executor.check_condition = check  # type: ignore[method-assign]
+
+    worker = make_worker(scripted)
+    assert worker.run_once() is True
+
+    assert base.run_status(run_id)[0] == "cancelled", "the cancel was not lost to the completion"
+
+
 def test_the_heartbeat_runs_while_a_step_blocks(
     seed: Callable[..., Seed], conn: psycopg.Connection, database_url: str
 ) -> None:

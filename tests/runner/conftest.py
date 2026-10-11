@@ -19,7 +19,7 @@ import pytest
 from db.migrate import apply_migrations, read_dotenv
 from services.runner.creation import create_run
 from services.runner.testing import FakeDestination, ScriptedRun
-from services.runner.worker import Worker
+from services.runner.worker import DEFAULT_HEARTBEAT_TIMEOUT_SECONDS, Worker
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ENV_FILE = REPO_ROOT / ".env"
@@ -301,6 +301,7 @@ def make_worker(database_url: str) -> Callable[..., Worker]:
         *,
         worker_id: str = "worker-1",
         heartbeat_interval: float = 3600.0,
+        heartbeat_timeout_seconds: float = DEFAULT_HEARTBEAT_TIMEOUT_SECONDS,
         fallback_timeout_ms: int = 10_000,
     ) -> Worker:
         return Worker(
@@ -311,6 +312,7 @@ def make_worker(database_url: str) -> Callable[..., Worker]:
             clock=scripted.clock,
             crash_hooks=scripted.crash_hooks,
             heartbeat_interval=heartbeat_interval,
+            heartbeat_timeout_seconds=heartbeat_timeout_seconds,
             fallback_timeout_ms=fallback_timeout_ms,
         )
 

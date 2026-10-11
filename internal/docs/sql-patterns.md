@@ -254,7 +254,7 @@ WHERE id = $request AND resolved_by_approval_id IS NULL;   -- 0 rows: already re
 A cancel sets `runs.cancel_requested_at`; a paused run also goes back to `queued` so a worker picks it
 up and finalises the cancel. The worker that holds the run reconciles the commit window, releases the
 working records, ends the remaining `pending` records `skipped` with reason `run cancelled`, and sets
-`status = 'cancelled'`.
+`status = 'cancelled'` — every one of those writes fenced by the lease check in the same transaction.
 
 ```sql
 UPDATE runs
@@ -263,6 +263,12 @@ SET cancel_requested_at = now(),
 WHERE id = $run AND status IN ('queued', 'running', 'paused');
 
 UPDATE runs SET status = 'queued', pause_reason = NULL WHERE id = $run AND status = 'paused';
+
+-- The worker's owns writes, after the lease check:
+--   reconcile the window, release the working records,
+UPDATE run_records SET state = 'skipped', reason = 'run cancelled'
+WHERE run_id = $run AND state = 'pending';
+UPDATE runs SET status = 'cancelled' WHERE id = $run;
 ```
 
 ## Rules
@@ -271,7 +277,7 @@ UPDATE runs SET status = 'queued', pause_reason = NULL WHERE id = $run AND statu
 - Never `DELETE` or `TRUNCATE` `run_records`; a row is inserted only as `pending` with an `idempotency_key`.
 - Never set `attempts` or `max_attempts` from application code. `attempts` moves only on `pending → claimed`; `max_attempts` is fixed at insert.
 - Never set `commit_attempted` from application code; the guard sets it when a record enters `submitting`.
-- Every state change is conditional on the expected current state, the claiming worker, and a live `lease_epoch`.
+- Every state change is conditional on the expected current state, the claiming worker, and a live `lease_epoch`. Where a statement cannot express that in its own `WHERE` clause — the record claim, and the bulk recovery, close-out, skip and release writes — it runs the lease check (`require_lease` in `packages/ledger`) first, in the same transaction, and raises `StaleLease` on zero rows.
 - A state change and its `step_events` row are written in the same transaction; the `run_record_transitions` row is written by the database.
 - Always set `reason` in a state change. The audit row records `NEW.reason`, so an update that omits it carries the previous transition's reason.
 - One active run per tenant and destination; a takeover increments `lease_epoch` before recovery runs.

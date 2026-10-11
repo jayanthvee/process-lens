@@ -13,6 +13,7 @@ import uuid
 import psycopg
 from psycopg.rows import dict_row
 
+from .lease import require_lease
 from .models import RecordClaim, RecoveryCounts, _row
 
 # sql-patterns.md § Recovery. Commit-window records go to reconciling and are reassigned to the
@@ -20,7 +21,7 @@ from .models import RecordClaim, RecoveryCounts, _row
 # worker can reconcile every one of them before it claims any pending record.
 _RECONCILE_COMMIT_WINDOW = """
 UPDATE run_records
-SET state = 'reconciling', claimed_by = %(worker)s, claimed_at = now()
+SET state = 'reconciling', reason = %(reason)s, claimed_by = %(worker)s, claimed_at = now()
 WHERE run_id = %(run)s AND state IN ('submitting', 'submitted_unverified', 'reconciling')
 """
 
@@ -55,20 +56,28 @@ def recover_run(
     conn: psycopg.Connection,
     run_id: uuid.UUID,
     worker_id: str,
+    epoch: int,
     *,
     reason: str = "released on restart",
 ) -> RecoveryCounts:
     """Move the commit window to ``reconciling`` and the working records back to ``pending``."""
+    require_lease(conn, run_id, worker_id, epoch)
     with conn.cursor() as cur:
-        cur.execute(_RECONCILE_COMMIT_WINDOW, {"run": run_id, "worker": worker_id})
+        cur.execute(
+            _RECONCILE_COMMIT_WINDOW,
+            {"run": run_id, "worker": worker_id, "reason": reason},
+        )
         reconciled = int(cur.rowcount)
         cur.execute(_RELEASE_WORKING, {"run": run_id, "reason": reason})
         released = int(cur.rowcount)
     return RecoveryCounts(reconciled=reconciled, released=released)
 
 
-def close_out_exhausted(conn: psycopg.Connection, run_id: uuid.UUID) -> int:
+def close_out_exhausted(
+    conn: psycopg.Connection, run_id: uuid.UUID, worker_id: str, epoch: int
+) -> int:
     """End every pending record that used all its attempts ``failed`` (R5)."""
+    require_lease(conn, run_id, worker_id, epoch)
     with conn.cursor() as cur:
         cur.execute(_CLOSE_OUT_EXHAUSTED, {"run": run_id})
         return int(cur.rowcount)

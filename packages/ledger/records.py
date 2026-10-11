@@ -15,6 +15,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from .errors import StaleLease, StateConflict
+from .lease import require_lease
 from .models import RecordClaim, _row
 
 # sql-patterns.md § Claim the next record in a run. attempts is raised by the database trigger.
@@ -88,8 +89,16 @@ def _classify_miss(
     raise StateConflict(f"run_record {record_id} is {row['state']!r}, not the expected state")
 
 
-def claim_record(conn: psycopg.Connection, run_id: uuid.UUID, worker_id: str) -> RecordClaim | None:
-    """Claim the oldest pending record of a run that still has attempts left."""
+def claim_record(
+    conn: psycopg.Connection, run_id: uuid.UUID, worker_id: str, epoch: int
+) -> RecordClaim | None:
+    """Claim the oldest pending record of a run that still has attempts left.
+
+    Fenced (Requirement 1): a worker whose lease has been taken over claims nothing and sees the
+    typed :class:`StaleLease`, rather than claiming a record it cannot act on or mistaking a
+    stolen run for an empty one.
+    """
+    require_lease(conn, run_id, worker_id, epoch)
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(_CLAIM_RECORD, {"run": run_id, "worker": worker_id})
         row = cur.fetchone()
@@ -134,16 +143,20 @@ def change_state(
 
 
 def release_working_records(
-    conn: psycopg.Connection, run_id: uuid.UUID, worker_id: str, *, reason: str
+    conn: psycopg.Connection, run_id: uuid.UUID, worker_id: str, epoch: int, *, reason: str
 ) -> int:
     """Release this worker's claimed/prechecked/filling records back to ``pending`` (recovery)."""
+    require_lease(conn, run_id, worker_id, epoch)
     with conn.cursor() as cur:
         cur.execute(_RELEASE_WORKING, {"run": run_id, "worker": worker_id, "reason": reason})
         return int(cur.rowcount)
 
 
-def skip_pending_records(conn: psycopg.Connection, run_id: uuid.UUID, *, reason: str) -> int:
+def skip_pending_records(
+    conn: psycopg.Connection, run_id: uuid.UUID, worker_id: str, epoch: int, *, reason: str
+) -> int:
     """End every pending record of a run ``skipped`` (a cancelled run never processes them)."""
+    require_lease(conn, run_id, worker_id, epoch)
     with conn.cursor() as cur:
         cur.execute(_SKIP_PENDING, {"run": run_id, "reason": reason})
         return int(cur.rowcount)

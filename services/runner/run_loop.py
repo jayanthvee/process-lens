@@ -54,8 +54,12 @@ from .executor import Executor, StepCommand
 from .reconcile import Reconciler, outcome_of
 from .templates import TemplateError, is_template, render
 
-# The outcome of a record that ends a failure the canary watches for.
+# The outcomes of a record that end the canary's run as a failure.
 _FAILURE_STATES = frozenset({"parked", "failed"})
+
+# R6: the heartbeat must outlive three times the longest step in a recipe plus the dispatch budget.
+HEARTBEAT_TIMEOUT_SAFETY_FACTOR = 3.0
+DISPATCH_BUDGET_SECONDS = 5.0
 
 _PRE_EXIT = {"skip": "skipped", "park": "parked", "fail": "failed"}
 
@@ -64,6 +68,10 @@ _SELECT_RECIPE = "SELECT recipe FROM recipe_versions WHERE id = %(id)s"
 
 # value sources the runtime can resolve today. The rest are pre-batch/staging operations (D-017).
 _RESOLVABLE_SOURCES = frozenset({"input", "constant"})
+
+
+class RunnerConfigError(RuntimeError):
+    """The worker's configuration cannot safely run this recipe (R6)."""
 
 
 @dataclass
@@ -85,6 +93,7 @@ class RunLoop:
         clock: Clock,
         crash_hooks: Callable[[str], None] | None = None,
         fallback_timeout_ms: int = 10_000,
+        heartbeat_timeout_seconds: float | None = None,
         lease_check: Callable[[], None] | None = None,
     ) -> None:
         self.worker_id = worker_id
@@ -93,6 +102,7 @@ class RunLoop:
         self.clock = clock
         self.crash_hooks = crash_hooks
         self.fallback_timeout_ms = fallback_timeout_ms
+        self.heartbeat_timeout_seconds = heartbeat_timeout_seconds
         self.lease_check = lease_check or (lambda: None)
         self._epoch = 0
         self._canary: uuid.UUID | None = None
@@ -105,6 +115,10 @@ class RunLoop:
         recipe = self._recipe(conn, run)
         meta = recipe.get("meta") if isinstance(recipe.get("meta"), dict) else {}
         rules = _rules(meta)
+
+        # R6: never start a run whose lease could lapse mid-step: the heartbeat must outlive
+        # three times the longest step in the recipe plus the dispatch budget.
+        self._require_heartbeat_headroom(recipe)
 
         skip_already_committed(conn, run.id, run.destination_key)
 
@@ -126,34 +140,72 @@ class RunLoop:
                 return
 
             with conn.transaction():
-                record = claim_record(conn, run.id, self.worker_id)
+                record = claim_record(conn, run.id, self.worker_id, epoch)
             if record is None:
                 break
 
             outcome = self._process_record(conn, record, run, epoch, recipe, meta, rules)
             if self._canary == record.id and outcome in _FAILURE_STATES:
-                set_run_status(conn, run.id, "paused", pause_reason="canary_failed")
+                with conn.transaction():
+                    set_run_status(
+                        conn,
+                        run.id,
+                        "paused",
+                        pause_reason="canary_failed",
+                        worker=self.worker_id,
+                        epoch=epoch,
+                    )
                 return
 
         # R5: close out exhausted records, then complete only if every record is out.
-        close_out_exhausted(conn, run.id)
+        with conn.transaction():
+            close_out_exhausted(conn, run.id, self.worker_id, epoch)
         remaining = get_run(conn, run.id)
         if remaining is None:
             return
+        # R4: a cancel that arrived while the last record was finishing is honoured here, not lost.
+        if remaining.cancel_requested_at is not None:
+            self._finalise_cancel(conn, run, epoch)
+            return
         from packages.ledger import all_records_in_exit_state
 
-        if all_records_in_exit_state(conn, run.id):
-            set_run_status(conn, run.id, "completed")
-        else:
-            set_run_status(conn, run.id, "paused", pause_reason="records_not_exit")
+        with conn.transaction():
+            if all_records_in_exit_state(conn, run.id):
+                set_run_status(conn, run.id, "completed", worker=self.worker_id, epoch=epoch)
+            else:
+                set_run_status(
+                    conn,
+                    run.id,
+                    "paused",
+                    pause_reason="records_not_exit",
+                    worker=self.worker_id,
+                    epoch=epoch,
+                )
+
+    def _require_heartbeat_headroom(self, recipe: Mapping[str, Any]) -> None:
+        """R6: refuse to start when the heartbeat could lapse during a legitimate step."""
+        if self.heartbeat_timeout_seconds is None:
+            return
+        required = (
+            HEARTBEAT_TIMEOUT_SAFETY_FACTOR * max_step_timeout_seconds(recipe)
+            + DISPATCH_BUDGET_SECONDS
+        )
+        if self.heartbeat_timeout_seconds < required:
+            raise RunnerConfigError(
+                f"heartbeat timeout {self.heartbeat_timeout_seconds:g}s is below 3x the longest "
+                f"step plus dispatch ({required:g}s); a worker blocked in a legitimate step "
+                "would be mistaken for a dead one"
+            )
 
     def _finalise_cancel(self, conn: psycopg.Connection, run: RunClaim, epoch: int) -> None:
         """R4: reconcile the commit window, release the working records, skip the rest, stop."""
-        recover_run(conn, run.id, self.worker_id, reason="run cancelled")
+        with conn.transaction():
+            recover_run(conn, run.id, self.worker_id, epoch, reason="run cancelled")
         for record in reconciling_records(conn, run.id):
             self._reconcile(conn, record, run, epoch)
-        skip_pending_records(conn, run.id, reason="run cancelled")
-        set_run_status(conn, run.id, "cancelled")
+        with conn.transaction():
+            skip_pending_records(conn, run.id, self.worker_id, epoch, reason="run cancelled")
+            set_run_status(conn, run.id, "cancelled", worker=self.worker_id, epoch=epoch)
 
     # -- one record --------------------------------------------------------
 
@@ -177,13 +229,16 @@ class RunLoop:
                 target = _PRE_EXIT.get(rule.get("then"))
                 if target is None:
                     continue
-                self._transition(
-                    conn,
-                    record,
-                    "claimed",
-                    target,
-                    _safe_text(rule.get("reason", ""), row, variables),
-                )
+                reason = _safe_text(rule.get("reason", ""), row, variables)
+                # A precheck rule ends the record. The precheck has finished, so the record passes
+                # through `prechecked` — the state the spec defines as "precheck finished; the
+                # result decides skip, park, or fill" — before it exits. `claimed -> skipped` is not
+                # a legal transition; `park`/`fail` are legal straight from `claimed`.
+                if target == "skipped":
+                    self._transition(conn, record, "claimed", "prechecked", reason)
+                    self._transition(conn, record, "prechecked", "skipped", reason)
+                else:
+                    self._transition(conn, record, "claimed", target, reason)
                 return target
 
         self._transition(conn, record, "claimed", "prechecked", "precheck passed")
@@ -411,7 +466,15 @@ class RunLoop:
                     locator_rung=result.rung,
                 )
             if not verified.key_inserted:
-                set_run_status(conn, run.id, "paused", pause_reason="duplicate_detected")
+                with conn.transaction():
+                    set_run_status(
+                        conn,
+                        run.id,
+                        "paused",
+                        pause_reason="duplicate_detected",
+                        worker=self.worker_id,
+                        epoch=epoch,
+                    )
                 return "duplicate"
             return "verified"
 
@@ -503,7 +566,14 @@ class RunLoop:
                 kind="commit",
                 shown=shown,
             )
-            set_run_status(conn, run.id, "paused", pause_reason="awaiting_approval")
+            set_run_status(
+                conn,
+                run.id,
+                "paused",
+                pause_reason="awaiting_approval",
+                worker=self.worker_id,
+                epoch=self._epoch,
+            )
         return "opened"
 
     def _reconcile(
@@ -536,7 +606,15 @@ class RunLoop:
                         observed={"destination_ref": diff.destination_ref},
                     )
             if not verified.key_inserted:
-                set_run_status(conn, run.id, "paused", pause_reason="duplicate_detected")
+                with conn.transaction():
+                    set_run_status(
+                        conn,
+                        run.id,
+                        "paused",
+                        pause_reason="duplicate_detected",
+                        worker=self.worker_id,
+                        epoch=epoch,
+                    )
                 return "duplicate"
             return "verified"
 
@@ -672,6 +750,40 @@ class RunLoop:
 # -- helpers the loop uses ------------------------------------------------
 
 
+def max_step_timeout_seconds(recipe: Mapping[str, Any]) -> float:
+    """The longest timeout in the recipe, in seconds (R6).
+
+    Considers a step's own ``timeout_ms``, its ``assert_after.timeout_ms`` and its condition
+    timeout, and walks into a ``branch``'s ``then``/``else`` lists, because a commit nested in a
+    branch blocks just as long as a top-level one.
+    """
+    longest_ms = 0
+
+    def walk(steps: Any) -> None:
+        nonlocal longest_ms
+        if not isinstance(steps, list):
+            return
+        for step in steps:
+            if not isinstance(step, dict):
+                continue
+            candidates = [step.get("timeout_ms")]
+            assertion = step.get("assert_after")
+            if isinstance(assertion, dict):
+                candidates.append(assertion.get("timeout_ms"))
+            condition = step.get("condition") or step.get("when")
+            if isinstance(condition, dict):
+                candidates.append(condition.get("timeout_ms"))
+            for candidate in candidates:
+                if isinstance(candidate, int):
+                    longest_ms = max(longest_ms, candidate)
+            walk(step.get("then"))
+            walk(step.get("else"))
+            walk(step.get("steps"))
+
+    walk(recipe.get("steps"))
+    return longest_ms / 1000.0
+
+
 def _rules(meta: Mapping[str, Any]) -> list[Any]:
     schema = meta.get("input_schema")
     if not isinstance(schema, dict):
@@ -805,8 +917,9 @@ def _gate_values(
 ) -> dict[str, Any]:
     """The exact values a person is shown and therefore approves (R3).
 
-    The step's rendered target and value, plus the input values of this record. That makes the
-    approval specific: a decision can never cover a record whose values the person did not see.
+    The whole rendered target ladder and the value, plus the input values of this record. That is
+    what makes the approval specific: a decision can never cover a record, an element or a value the
+    person did not see.
     """
     values: dict[str, Any] = {
         "step": step.get("id"),
@@ -821,10 +934,13 @@ def _gate_values(
             values["value"] = None
     targets = step.get("targets")
     if isinstance(targets, list) and targets:
-        try:
-            values["target"] = _render_target(targets[0], row, variables)
-        except TemplateError:
-            values["target"] = None
+        rendered: list[Any] = []
+        for target in targets:
+            try:
+                rendered.append(_render_target(target, row, variables))
+            except TemplateError:
+                rendered.append(None)
+        values["targets"] = rendered
     return values
 
 

@@ -23,6 +23,7 @@ from .commits import (
 )
 from .errors import IllegalTransition, LedgerError, StaleLease, StateConflict
 from .jobs import claim_job
+from .lease import require_lease
 from .models import (
     ApprovalDecision,
     ApprovalRequestRow,
@@ -117,6 +118,7 @@ __all__ = [
     "release_working_records",
     "request_cancel",
     "requeue_record",
+    "require_lease",
     "results_rows",
     "resume_run",
     "run_of_record",

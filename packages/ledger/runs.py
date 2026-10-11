@@ -13,6 +13,7 @@ import psycopg
 from psycopg.rows import dict_row
 
 from .errors import StaleLease
+from .lease import require_lease
 from .models import RunClaim, _row
 
 # The claim pattern (sql-patterns.md § Claim the next queued run). It skips a run whose destination
@@ -127,8 +128,18 @@ def set_run_status(
     status: str,
     *,
     pause_reason: str | None = None,
+    worker: str | None = None,
+    epoch: int | None = None,
 ) -> None:
-    """Move ``runs.status`` and record the reason when there is one."""
+    """Move ``runs.status`` and record the reason when there is one.
+
+    A worker's call passes ``worker`` and ``epoch`` and is fenced (Requirement 1): the worker
+    must still hold the lease, or it raises :class:`StaleLease`. An operator call (the pause
+    endpoint) omits both and is not fenced, because it is not acting under a lease.
+    """
+    if worker is not None and epoch is not None:
+        require_lease(conn, run_id, worker, epoch)
+
     terminal = ", finished_at = now()" if status in _TERMINAL_STATUSES else ""
     sql = (
         f"UPDATE runs SET status = %(status)s, pause_reason = %(reason)s{terminal}"
