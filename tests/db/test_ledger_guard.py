@@ -70,7 +70,10 @@ LEGAL_TRANSITIONS = [
     ("reconciling", "parked"),
     ("reconciling", "failed"),
     ("parked", "pending"),
+    ("parked", "reconciling"),
+    ("parked", "skipped"),
     ("failed", "pending"),
+    ("failed", "reconciling"),
 ]
 
 ILLEGAL_TRANSITIONS = [

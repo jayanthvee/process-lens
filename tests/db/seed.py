@@ -21,6 +21,30 @@ ALLOWED_ORIGINS = "{http://localhost:5173}"
 RECIPE = '{"steps": []}'
 DEFAULT_MAX_ATTEMPTS = 3
 
+# The legal path from ``pending`` to each state. A ledger row is now inserted only as ``pending``
+# (the insert guard), so a test that needs a row in another state walks it there along these paths.
+# Every step here is legal under the guard; ``verified`` uses the read-only path so a test row is
+# not needlessly marked commit-attempted.
+STATE_PATHS: dict[str, list[str]] = {
+    "pending": [],
+    "claimed": ["claimed"],
+    "prechecked": ["claimed", "prechecked"],
+    "filling": ["claimed", "prechecked", "filling"],
+    "submitting": ["claimed", "prechecked", "filling", "submitting"],
+    "submitted_unverified": [
+        "claimed",
+        "prechecked",
+        "filling",
+        "submitting",
+        "submitted_unverified",
+    ],
+    "verified": ["claimed", "prechecked", "filling", "verified"],
+    "skipped": ["skipped"],
+    "parked": ["claimed", "parked"],
+    "failed": ["failed"],
+    "reconciling": ["claimed", "prechecked", "filling", "submitting", "reconciling"],
+}
+
 
 @dataclass(frozen=True)
 class Run:
@@ -63,11 +87,28 @@ class Ledger:
         )
         run_id: uuid.UUID = self._one(
             "INSERT INTO runs "
-            "(tenant_id, workflow_id, recipe_version_id, input_batch_id, mode, status) "
-            "VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
-            (self.tenant_id, self.workflow_id, self.recipe_version_id, batch_id, mode, status),
+            "(tenant_id, workflow_id, recipe_version_id, input_batch_id, mode, status, "
+            " destination_key) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
+            (
+                self.tenant_id,
+                self.workflow_id,
+                self.recipe_version_id,
+                batch_id,
+                mode,
+                status,
+                DESTINATION_KEY,
+            ),
         )
         return Run(id=run_id, batch_id=batch_id)
+
+    def _advance(self, record_id: uuid.UUID, states: list[str]) -> None:
+        """Move a record through a list of legal states, one conditional update each."""
+        for state in states:
+            self.conn.execute(
+                "UPDATE run_records SET state = %s WHERE id = %s AND state <> %s",
+                (state, record_id, state),
+            )
 
     def add_record(
         self,
@@ -77,10 +118,17 @@ class Ledger:
         state: str = "pending",
         attempts: int = 0,
         max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+        idempotency_key: str | None = None,
     ) -> uuid.UUID:
-        """Insert one input record and its ledger row directly in ``state``."""
+        """Insert one input record and its ledger row, then walk it to ``state``.
+
+        The row is born ``pending`` (the insert guard requires it) and reaches ``state`` and
+        ``attempts`` through legal transitions, so a test cannot forge an outcome the database would
+        reject in production.
+        """
         self._row_index += 1
         key = record_key or f"record-{self._row_index:04d}"
+        idem = idempotency_key if idempotency_key is not None else key
         input_record_id = self._one(
             "INSERT INTO input_records (tenant_id, batch_id, row_index, raw, record_key, status) "
             "VALUES (%s, %s, %s, %s, %s, 'ready') RETURNING id",
@@ -92,12 +140,17 @@ class Ledger:
                 key,
             ),
         )
-        return self._one(
+        record_id: uuid.UUID = self._one(
             "INSERT INTO run_records "
-            "(tenant_id, run_id, input_record_id, record_key, state, attempts, max_attempts) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
-            (self.tenant_id, run.id, input_record_id, key, state, attempts, max_attempts),
+            "(tenant_id, run_id, input_record_id, record_key, state, attempts, max_attempts, "
+            " idempotency_key) "
+            "VALUES (%s, %s, %s, %s, 'pending', 0, %s, %s) RETURNING id",
+            (self.tenant_id, run.id, input_record_id, key, max_attempts, idem),
         )
+        # claims raise attempts by one each and are released back to pending
+        self._advance(record_id, ["claimed", "pending"] * attempts)
+        self._advance(record_id, STATE_PATHS[state])
+        return record_id
 
     def seed_records(
         self, count: int, *, state: str = "pending", run: Run | None = None
