@@ -53,10 +53,15 @@ def test_shipped_migrations_apply_and_record_their_hash(
 
     applied = apply_migrations(dsn, MIGRATIONS, log=_quiet)
 
-    assert applied == ["0001_init.sql", "0002_ledger_hardening.sql"]
+    assert applied == [
+        "0001_init.sql",
+        "0002_ledger_hardening.sql",
+        "0003_run_orchestration.sql",
+    ]
     assert _recorded(dsn) == {
         "0001_init.sql": sha256_of(MIGRATIONS / "0001_init.sql"),
         "0002_ledger_hardening.sql": sha256_of(MIGRATIONS / "0002_ledger_hardening.sql"),
+        "0003_run_orchestration.sql": sha256_of(MIGRATIONS / "0003_run_orchestration.sql"),
     }
     assert "run_records" in _table_names(dsn)
 

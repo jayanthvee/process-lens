@@ -59,6 +59,7 @@ LEGAL_TRANSITIONS = [
     ("filling", "parked"),
     ("filling", "failed"),
     ("filling", "pending"),
+    ("filling", "skipped"),  # a duplicate found by the search, before any commit step (R1)
     ("submitting", "submitted_unverified"),
     ("submitting", "reconciling"),
     ("submitting", "failed"),
