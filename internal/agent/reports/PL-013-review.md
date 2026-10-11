@@ -104,3 +104,49 @@ raises the guard's exception):
    without changing their assertions.
 2. Add the `parked → skipped` rule (amend `0003`; it is unmerged). Update `LEDGER_SPEC.md` and the matrix test.
 3. Re-run the gates, add a "Review fixes" section to the report, commit, push, and stop.
+
+---
+
+## Re-review: approved
+
+Reviewed commit: 4507ad8 (branch `pl-013`) · Verdict: **approved for merge**
+
+```
+$ python -m pytest -q                                   516 passed, 1 warning
+$ python -m pytest -q tests/runner/test_breakit_pl013.py  2 passed   (both failed on bd7c7dc)
+$ ruff check .                                          All checks passed!
+$ ruff format --check .                                 131 files already formatted
+$ python -m db.migrate                                  nothing to apply   (run twice)
+```
+
+**B1 is fixed correctly.**
+- `claim_run` bumps `lease_epoch`.
+- A stopping worker releases the run only while it is still paused. If the release matches 0 rows, the run was
+  resumed, so the worker keeps going.
+- `resume_run` and `request_cancel` queue a paused run only when it was released or its heartbeat lapsed. Otherwise
+  they hand it back to the live holder as `running`.
+
+**B2 is fixed correctly.**
+- A commit-attempted `end_record skipped` parks the record with the agreed reason.
+- `_handle_refused` re-reads the state and parks through the fenced `change_state`, so it cannot trample another
+  worker's record. A `StaleLease` still stops the worker, and anything that cannot be parked pauses the run with
+  `internal_error`.
+
+**The `parked -> skipped` rule** is in the guard, the spec and the tests.
+
+**The `prechecked -> skipped` extension is accepted.** It is the same owner-approved principle: a record that may
+already have saved is never silently skipped. Its only effect is that an input-rule skip on a retried,
+commit-attempted record parks the record instead of skipping it.
+
+**Tests.** My break-it file is committed with its assertions unchanged. The four lease-race edits follow the new
+epoch-on-claim rule and are no weaker.
+
+### Follow-ups (not blocking)
+
+1. **Hand back on the `internal_error` pause.** That path (`_handle_refused` returns `None`) exits the loop
+   without `_hand_back`. The other pauses do hand back: `duplicate_detected`, `awaiting_approval` and `canary_failed`
+   through the loop's status check, and `records_not_exit` at the end of the run. If a person resumes within the heartbeat timeout, the
+   run goes to `running` with no live holder, and it stalls until the stale-run takeover (about 6 minutes). It never
+   double-submits, but it is a needless stall. Release on every pause path.
+2. **`docker-compose.yml`** (your uncommitted MinIO image change): T2's reviewer noted the MinIO healthcheck may not
+   work with the Chainguard image. Check it before committing that change.
