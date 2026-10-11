@@ -119,25 +119,27 @@ as success.
 
 ## Recovery when a worker starts or resumes a run
 
-Recovery runs **only after a successful takeover** (the pattern above), and it reassigns the records
-it moves to the new worker, so the new worker can act on them under the worker-scoped state change
-(H5).
+Recovery runs **after every claim or takeover** (on a fresh run it is a no-op), and it reassigns the
+records it moves to the new worker, so the new worker can act on them under the worker-scoped state
+change (H5).
 
-Records that might have been submitted go to `reconciling`. Records that never reached a commit go
-back to `pending`.
+Records that might have been submitted go to `reconciling`, including records that were already
+`reconciling` under the previous worker's claim, so the new worker can reconcile every one of them.
+Records that never reached a commit go back to `pending`.
 
 ```sql
 UPDATE run_records
 SET state = 'reconciling', claimed_by = $worker, claimed_at = now()
-WHERE run_id = $1 AND state IN ('submitting', 'submitted_unverified');
+WHERE run_id = $1 AND state IN ('submitting', 'submitted_unverified', 'reconciling');
 
 UPDATE run_records
 SET state = 'pending', claimed_by = NULL, claimed_at = NULL
 WHERE run_id = $1 AND state IN ('claimed', 'prechecked', 'filling');
 ```
 
-Then process every `reconciling` record first: search the destination by record key.
-Found → `verified` (plus `committed_keys`). Not found → `pending`. Ambiguous → `parked`.
+Then reconcile **every** `reconciling` record **before claiming any** `pending` one: search the
+destination by record key. Found → `verified` (plus `committed_keys`). Not found → `pending`.
+Ambiguous, or a search error → `parked`.
 
 ## Close out records that used all their attempts
 
@@ -191,6 +193,28 @@ SET state = 'pending',
 WHERE id = $id AND state IN ('parked', 'failed') AND commit_attempted = true;
 ```
 
+## Dismiss a parked record as skipped
+
+A person dismisses a parked record. A record that never reached a commit goes straight to `skipped`.
+A commit-attempted record (it entered `submitting`) is only dismissed when the same `UPDATE` records a
+fresh destination check, so a record that may already have saved is never reported as skipped without
+someone confirming the destination does not have it. The same rule guards `prechecked → skipped`.
+
+```sql
+-- never commit-attempted
+UPDATE run_records
+SET state = 'skipped', reason = 'dismissed by a person'
+WHERE id = $id AND state IN ('parked', 'prechecked') AND commit_attempted = false;
+
+-- commit-attempted: a person confirmed the destination does not have it
+UPDATE run_records
+SET state = 'skipped',
+    reason = 'dismissed by a person',
+    destination_checked_by = $user,
+    destination_checked_at = now()
+WHERE id = $id AND state IN ('parked', 'prechecked') AND commit_attempted = true;
+```
+
 ## Claim a background job
 
 ```sql
@@ -206,13 +230,77 @@ WHERE id = (
 RETURNING *;
 ```
 
+## Create a run and its ledger rows
+
+A run is born `queued` carrying its destination and approval policy; its ledger rows are born
+`pending` with an `idempotency_key` (the insert guard requires it). Creation refuses unless the recipe
+version, the input batch and the workflow belong together under one tenant, and only input rows whose
+`status = 'ready'` become ledger rows.
+
+```sql
+INSERT INTO runs
+  (tenant_id, workflow_id, recipe_version_id, input_batch_id, mode, status,
+   destination_key, approval_policy)
+VALUES ($tenant, $workflow, $recipe, $batch, $mode, 'queued', $destination, $policy)
+RETURNING id;
+
+INSERT INTO run_records
+  (tenant_id, run_id, input_record_id, record_key, idempotency_key, state, max_attempts)
+VALUES ($tenant, $run, $input, $record_key, $idempotency_key, 'pending', 3)
+RETURNING id;
+```
+
+## Open and resolve an approval request
+
+The request records the **exact** values a person is shown; the decision points back at the request it
+answered. The runner looks up a decision by `(run_record_id, step_id, shown)` before it opens a new
+one, so a resumed run never re-asks, and an approval can never cover values the person did not see.
+
+```sql
+INSERT INTO approval_requests (tenant_id, run_id, run_record_id, step_id, kind, shown)
+VALUES ($tenant, $run, $record, $step, $kind, $shown)
+RETURNING id;
+
+INSERT INTO approvals
+  (tenant_id, run_id, run_record_id, step_id, kind, shown, decision, decided_by, request_id, reason)
+SELECT tenant_id, run_id, run_record_id, step_id, kind, shown, $decision, $user, id, $reason
+FROM approval_requests WHERE id = $request
+RETURNING id;
+
+UPDATE approval_requests SET resolved_by_approval_id = $approval
+WHERE id = $request AND resolved_by_approval_id IS NULL;   -- 0 rows: already resolved
+```
+
+## Request a cancel, and resume a run
+
+A cancel sets `runs.cancel_requested_at`; a paused run also goes back to `queued` so a worker picks it
+up and finalises the cancel. The worker that holds the run reconciles the commit window, releases the
+working records, ends the remaining `pending` records `skipped` with reason `run cancelled`, and sets
+`status = 'cancelled'` — every one of those writes fenced by the lease check in the same transaction.
+
+```sql
+UPDATE runs
+SET cancel_requested_at = now(),
+    status = CASE WHEN status = 'paused' THEN 'queued' ELSE status END
+WHERE id = $run AND status IN ('queued', 'running', 'paused');
+
+UPDATE runs SET status = 'queued', pause_reason = NULL WHERE id = $run AND status = 'paused';
+
+-- The worker's owns writes, after the lease check:
+--   reconcile the window, release the working records,
+UPDATE run_records SET state = 'skipped', reason = 'run cancelled'
+WHERE run_id = $run AND state = 'pending';
+UPDATE runs SET status = 'cancelled' WHERE id = $run;
+```
+
 ## Rules
 
 - Never `UPDATE` or `DELETE` on `recipe_versions`, `committed_keys`, `step_events`, `ai_calls`, `approvals`, `run_record_transitions`. Triggers will reject it anyway.
+- A record that may already have saved (`commit_attempted`) is never dismissed as `skipped` — `filling → skipped` is refused, and `parked → skipped` needs a fresh destination check in the same update.
 - Never `DELETE` or `TRUNCATE` `run_records`; a row is inserted only as `pending` with an `idempotency_key`.
 - Never set `attempts` or `max_attempts` from application code. `attempts` moves only on `pending → claimed`; `max_attempts` is fixed at insert.
 - Never set `commit_attempted` from application code; the guard sets it when a record enters `submitting`.
-- Every state change is conditional on the expected current state, the claiming worker, and a live `lease_epoch`.
+- Every state change is conditional on the expected current state, the claiming worker, and a live `lease_epoch`. Where a statement cannot express that in its own `WHERE` clause — the record claim, and the bulk recovery, close-out, skip and release writes — it runs the lease check (`require_lease` in `packages/ledger`) first, in the same transaction, and raises `StaleLease` on zero rows.
 - A state change and its `step_events` row are written in the same transaction; the `run_record_transitions` row is written by the database.
 - Always set `reason` in a state change. The audit row records `NEW.reason`, so an update that omits it carries the previous transition's reason.
 - One active run per tenant and destination; a takeover increments `lease_epoch` before recovery runs.

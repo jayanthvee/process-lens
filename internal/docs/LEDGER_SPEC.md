@@ -24,21 +24,28 @@ ever disagree, the migrations win and this page has a bug. Every query on the le
 
 ## Transitions (exactly as in `guard_record_transition()`)
 
-There are 31 legal transitions between different states (28 in 0001, plus `parked → skipped`,
-`failed → reconciling`, and `parked → reconciling` added by 0002). An update that keeps the same state
-is always accepted. Any other pair raises `illegal ledger transition`. `pending → claimed` increments
-`attempts`, and `CHECK (attempts <= max_attempts)` stops a fourth claim.
+There are 32 legal transitions between different states (28 in 0001; 0002 added `parked → skipped`,
+`failed → reconciling`, and `parked → reconciling`; 0003 added `filling → skipped`). An update that
+keeps the same state is always accepted. Any other pair raises `illegal ledger transition`.
+`pending → claimed` increments `attempts`, and `CHECK (attempts <= max_attempts)` stops a fourth claim.
 
-One further rule rides on the transition. A record whose `commit_attempted` is true (it has entered
-`submitting`) may not go `failed → pending` or `parked → pending` unless the same `UPDATE` sets
-`destination_checked_by` and `destination_checked_at` — a person confirming the destination does not have
-the record. Its retry path is normally `failed|parked → reconciling → pending`.
+Two further rules ride on those transitions, for a record that may already have saved (its
+`commit_attempted` is true, because it has entered `submitting`):
+
+- It may not be dismissed as **skipped**. `filling → skipped` is refused outright, and
+  `prechecked → skipped` and `parked → skipped` are refused unless the same `UPDATE` records a fresh
+  destination check (`destination_checked_by` and `destination_checked_at`, both non-null and fresh). A
+  person who has confirmed the destination does not have the record may dismiss it.
+- It may not be re-queued to **pending** (`failed → pending` or `parked → pending`) unless the same
+  `UPDATE` sets that fresh destination check. Its retry path is normally
+  `failed|parked → reconciling → pending`.
 
 The two destination-check columns are tightly held. `commit_attempted` only ever changes `false → true`,
 and only by the guard when a record enters `submitting`. Entering `submitting` also clears
 `destination_checked_by` and `destination_checked_at`, so a check of one commit never carries over to the
-next. The columns may otherwise change only in a `failed|parked → pending` transition that sets both
-non-null with a fresh `destination_checked_at`. Any other change raises.
+next. The columns may otherwise change only in a `failed|parked → pending` re-queue or a
+`parked|prechecked → skipped` dismissal that sets both non-null with a fresh `destination_checked_at`
+(within the last 5 minutes and not in the future). Any other change raises.
 
 | From | To | Used when |
 | --- | --- | --- |
@@ -50,7 +57,7 @@ non-null with a fresh `destination_checked_at`. Any other change raises.
 | `claimed` | `parked` | Precheck needs a person (input rule, locator for the search not found) |
 | `claimed` | `failed` | Unrecoverable precheck error |
 | `prechecked` | `filling` | Nothing blocks the record |
-| `prechecked` | `skipped` | The search found the record already in the destination |
+| `prechecked` | `skipped` | The search found the record already in the destination (a commit-attempted record needs a fresh destination check in the same update) |
 | `prechecked` | `parked` | The search was ambiguous (more than one match) |
 | `prechecked` | `pending` | Released before filling (recovery) |
 | `filling` | `submitting` | The next step is the commit step |
@@ -58,6 +65,7 @@ non-null with a fresh `destination_checked_at`. Any other change raises.
 | `filling` | `parked` | Locator unresolvable or ambiguous, an unknown popup, or a value needs review |
 | `filling` | `failed` | A non-commit step failed with evidence |
 | `filling` | `pending` | Released before the commit (recovery, pause) |
+| `filling` | `skipped` | The browser search found the record already in the destination, before any commit step (only when `commit_attempted` is false) |
 | `submitting` | `submitted_unverified` | The executor acknowledged the dispatch |
 | `submitting` | `reconciling` | Crash or lost connection after the write-ahead: dispatch status unknown |
 | `submitting` | `failed` | The same worker knows the command was never sent (see rule L3) |
@@ -70,7 +78,7 @@ non-null with a fresh `destination_checked_at`. Any other change raises.
 | `reconciling` | `failed` | The destination check cannot be performed (for example, the search itself keeps erroring) |
 | `parked` | `pending` | A person corrected the record and re-queued it (a commit-attempted record needs `destination_checked_by`) |
 | `parked` | `reconciling` | The commit outcome is unknown for a parked record: reconcile before requeue |
-| `parked` | `skipped` | A person dismisses a parked record |
+| `parked` | `skipped` | A person dismisses a parked record (a commit-attempted record needs a fresh destination check in the same update) |
 | `failed` | `pending` | A person re-queued it (a commit-attempted record needs `destination_checked_by`) |
 | `failed` | `reconciling` | The commit outcome is unknown: reconcile before requeue |
 
@@ -90,12 +98,14 @@ row is durable before the destination can change, and `verified` plus its `commi
 
 ## Recovery procedure
 
-Runs when a worker claims a run that another worker held, and when a paused run resumes.
+Runs when a worker claims a run, and after every successful takeover (on a fresh run it is a no-op).
 
-1. Take ownership of the run. (There is no takeover pattern or fencing yet; see P-001. Until there is, recovery
-   must never run while another worker could still be acting.)
-2. Apply [sql-patterns.md § Recovery](sql-patterns.md#recovery-when-a-worker-starts-or-resumes-a-run): commit window
-   → `reconciling`; `claimed`, `prechecked`, and `filling` → `pending`.
+1. Take ownership of the run: `claim_run` for a queued one, or `take_over_run` for one whose heartbeat has
+   lapsed, which increments `lease_epoch`. Every state change is then fenced by `claimed_by` and the live
+   `lease_epoch` (`FOR SHARE`), so a stale worker cannot write (H7).
+2. Apply [sql-patterns.md § Recovery](sql-patterns.md#recovery-when-a-worker-starts-or-resumes-a-run): the
+   commit window (`submitting`, `submitted_unverified`, and records already `reconciling`) → `reconciling`,
+   reassigned to the new worker; `claimed`, `prechecked`, and `filling` → `pending`.
 3. Reconcile every `reconciling` record before claiming any `pending` one. Check the destination using the recipe's
    reconcile check: exactly one match for this commit → `verified` with its `committed_keys` row; none → `pending`;
    several or unreadable → `parked`. For create workflows, "match" means the record key is found. For update
@@ -121,7 +131,7 @@ P-001 proposed migration 0002 for each of these; L1, L4, L5, and L6 are now enfo
 
 | # | Invariant | Enforced by | Test (layer, owner) |
 | --- | --- | --- | --- |
-| I1 | Only the 31 transitions above are accepted | Guard trigger | `tests/db`: all 121 ordered state pairs; 31 pass, 90 raise (DB, PL-012) |
+| I1 | Only the 32 transitions above are accepted | Guard trigger | `tests/db`: all 121 ordered state pairs; 32 pass, 89 raise (DB, PL-012, PL-013) |
 | I2 | `attempts` rises only on `pending → claimed`; never more than `max_attempts` | Trigger and CHECK | `tests/db` attempts cap (DB, PL-002) |
 | I3 | One ledger row per (run, record key) and per (run, input record) | UNIQUE | `tests/db` duplicate insert (DB, PL-002) |
 | I4 | A key is committed at most once per tenant and destination | UNIQUE on `committed_keys` | `tests/db` ON CONFLICT inserts 0 rows (DB, PL-002) |
@@ -141,5 +151,11 @@ P-001 proposed migration 0002 for each of these; L1, L4, L5, and L6 are now enfo
 | I20 | The transition-audit table is append-only | `forbid_mutation` trigger | `tests/db/test_ledger_breakit.py` H4 (DB, T1) |
 | I21 | An empty `idempotency_key` or `record_key` is rejected; `runs.destination_key` never changes | Insert guard, immutability trigger | `tests/db/test_ledger_breakit.py` H8, H9 (DB, T1) |
 | I22 | A stale lease cannot write while a takeover is in flight (SQL half) | `FOR SHARE` lease check | `tests/db/test_ledger_breakit.py` H7 (DB, T1) |
+| I23 | `filling → skipped` is refused once the record has entered the commit window | Guard trigger | `tests/db/test_run_orchestration_migration.py` R1 (DB, PL-013) |
+| I24 | An approval request resolves at most once; every other change, a DELETE, and a TRUNCATE are refused | `approval_requests` triggers | `tests/db/test_run_orchestration_migration.py` (DB, PL-013) |
+| I25 | A destination check is fresh: within the last 5 minutes and not in the future | Guard trigger | `tests/db/test_run_orchestration_migration.py` (DB, PL-013) |
+| I26 | `parked → skipped` and `prechecked → skipped` are refused for a commit-attempted record unless the same update records a fresh destination check | Guard trigger | `tests/db/test_run_orchestration_migration.py` item 2 (DB, PL-013) |
+| I27 | A claim increments `lease_epoch`, and resuming or cancelling a paused run only re-queues it when no live worker holds it | `packages/ledger/runs.py` | `tests/runner/test_pause_resume.py` (DB, PL-013 review) |
+| I28 | A guard refusal during a record never crashes the worker: the record is parked, or the run pauses `internal_error` (a `StaleLease` still stops the worker, which is correct) | `services/runner/run_loop.py` | `tests/runner/test_refused_transition.py` (DB, PL-013 review) |
 | I12 | `run_summary` counts match the ledger | View | `tests/db` (DB, PL-002) |
-| I13 | `packages/ledger` mirrors the guard exactly | Contract test | Compare its table with the 31 pairs read from the database |
+| I13 | `packages/ledger` mirrors the guard exactly | Contract test | Compare its table with the 32 pairs read from the database |

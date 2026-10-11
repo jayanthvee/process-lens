@@ -493,9 +493,9 @@ def test_g10_approvals_cannot_be_changed(conn: psycopg.Connection, ledger: Ledge
 # --- the transition matrix, read from the spec --------------------------------------------------
 
 
-def test_the_spec_lists_eleven_states_and_thirty_one_transitions() -> None:
+def test_the_spec_lists_eleven_states_and_thirty_two_transitions() -> None:
     assert len(_doc_states()) == 11
-    assert len(_doc_transitions()) == 31
+    assert len(_doc_transitions()) == 32
 
 
 def test_the_transition_matrix_matches_the_ledger_spec(
