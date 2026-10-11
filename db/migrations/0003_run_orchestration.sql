@@ -45,8 +45,10 @@ CREATE INDEX approval_requests_open_idx
   ON approval_requests (run_id, run_record_id, step_id)
   WHERE resolved_by_approval_id IS NULL;
 
--- A decision points at the exact request and values it approved.
+-- A decision points at the exact request and values it approved, and carries the reviewer's reason
+-- (used as the record's park reason when a request is rejected).
 ALTER TABLE approvals ADD COLUMN request_id uuid REFERENCES approval_requests(id);
+ALTER TABLE approvals ADD COLUMN reason text;
 
 -- The only update allowed is setting `resolved_by_approval_id` from NULL to non-NULL, once. Every
 -- other change, a second resolve, a DELETE, and a TRUNCATE are rejected.
