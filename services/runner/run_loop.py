@@ -16,6 +16,7 @@ This module holds the logic the plan's pseudocode describes, amended for T1's re
 
 from __future__ import annotations
 
+import logging
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -25,22 +26,27 @@ import psycopg
 from psycopg.rows import dict_row
 
 from packages.ledger import (
+    LEGAL_TRANSITIONS,
+    IllegalTransition,
     LedgerError,
     RecordClaim,
     RunClaim,
     StaleLease,
+    StateConflict,
     begin_commit,
     change_state,
     claim_record,
     close_out_exhausted,
     commits_attempted,
     decisions_for_step,
+    get_record,
     get_run,
     mark_submitted_unverified,
     open_approval_request,
     reconciling_records,
     record_step_event,
     recover_run,
+    release_run,
     set_run_status,
     skip_already_committed,
     skip_pending_records,
@@ -54,8 +60,16 @@ from .executor import Executor, StepCommand
 from .reconcile import Reconciler, outcome_of
 from .templates import TemplateError, is_template, render
 
+logger = logging.getLogger("processlens.runner")
+
 # The outcomes of a record that end the canary's run as a failure.
 _FAILURE_STATES = frozenset({"parked", "failed"})
+
+# B2: the reason a commit-attempted record is parked instead of skipped.
+ALREADY_SAVED_REASON = "found in the destination after an earlier save attempt: confirm it is ours"
+
+# B2: the pause reason when a record could not be rescued by parking it.
+INTERNAL_ERROR = "internal_error"
 
 # R6: the heartbeat must outlive three times the longest step in a recipe plus the dispatch budget.
 HEARTBEAT_TIMEOUT_SAFETY_FACTOR = 3.0
@@ -137,6 +151,10 @@ class RunLoop:
                 self._finalise_cancel(conn, run, epoch)
                 return
             if current.status != "running":
+                # B1: hand the run back when stopping. If it was resumed in the meantime, the
+                # release matches nothing and the holder carries on instead of leaving it unclaimed.
+                if current.status == "paused" and not self._hand_back(conn, run):
+                    continue
                 return
 
             with conn.transaction():
@@ -144,7 +162,14 @@ class RunLoop:
             if record is None:
                 break
 
-            outcome = self._process_record(conn, record, run, epoch, recipe, meta, rules)
+            try:
+                outcome = self._process_record(conn, record, run, epoch, recipe, meta, rules)
+            except (IllegalTransition, StateConflict) as exc:
+                # B2: a refused transition never crashes the worker. Park the record if that is
+                # legal; otherwise pause the run for a person.
+                outcome = self._handle_refused(conn, record, run, epoch, exc)
+                if outcome is None:
+                    return
             if self._canary == record.id and outcome in _FAILURE_STATES:
                 with conn.transaction():
                     set_run_status(
@@ -155,6 +180,7 @@ class RunLoop:
                         worker=self.worker_id,
                         epoch=epoch,
                     )
+                self._hand_back(conn, run)
                 return
 
         # R5: close out exhausted records, then complete only if every record is out.
@@ -181,6 +207,51 @@ class RunLoop:
                     worker=self.worker_id,
                     epoch=epoch,
                 )
+        self._hand_back(conn, run)
+
+    def _hand_back(self, conn: psycopg.Connection, run: RunClaim) -> bool:
+        """Release a paused run (B1). False when it was resumed, so the caller keeps going."""
+        with conn.transaction():
+            return release_run(conn, run.id, self.worker_id)
+
+    def _handle_refused(
+        self,
+        conn: psycopg.Connection,
+        record: RecordClaim,
+        run: RunClaim,
+        epoch: int,
+        exc: LedgerError,
+    ) -> str | None:
+        """B2: a refused transition must never crash the worker.
+
+        Park the record with the error when parking is legal from its current state; otherwise pause
+        the run with ``internal_error`` and return ``None`` so the caller stops.
+        """
+        logger.warning(
+            "run %s record %s: the ledger refused a transition: %s", run.id, record.id, exc
+        )
+        fresh = get_record(conn, record.id)
+        state = fresh.state if fresh is not None else None
+        if state is not None and (state, "parked") in LEGAL_TRANSITIONS:
+            try:
+                self._transition(
+                    conn, record, state, "parked", f"the ledger refused a transition: {exc}"
+                )
+                return "parked"
+            except (IllegalTransition, StateConflict):
+                logger.warning(
+                    "run %s record %s: parking was refused too: %s", run.id, record.id, exc
+                )
+        with conn.transaction():
+            set_run_status(
+                conn,
+                run.id,
+                "paused",
+                pause_reason=INTERNAL_ERROR,
+                worker=self.worker_id,
+                epoch=epoch,
+            )
+        return None
 
     def _require_heartbeat_headroom(self, recipe: Mapping[str, Any]) -> None:
         """R6: refuse to start when the heartbeat could lapse during a legitimate step."""
@@ -235,6 +306,11 @@ class RunLoop:
                 # result decides skip, park, or fill" — before it exits. `claimed -> skipped` is not
                 # a legal transition; `park`/`fail` are legal straight from `claimed`.
                 if target == "skipped":
+                    # B2's rule: a record that may already have saved is never reported as skipped.
+                    fresh = get_record(conn, record.id)
+                    if fresh is not None and fresh.commit_attempted:
+                        self._transition(conn, record, "claimed", "parked", ALREADY_SAVED_REASON)
+                        return "parked"
                     self._transition(conn, record, "claimed", "prechecked", reason)
                     self._transition(conn, record, "prechecked", "skipped", reason)
                 else:
@@ -315,6 +391,14 @@ class RunLoop:
             if action == "end_record":
                 outcome = step.get("outcome")
                 reason = _safe_text(step.get("reason", ""), row, variables)
+                # B2: a record that may already have saved is never dismissed as `skipped`. The
+                # database refuses `filling -> skipped` for a commit-attempted record, and a recipe
+                # that reaches this point after an earlier save attempt must not crash the worker.
+                if outcome == "skipped":
+                    fresh = get_record(conn, record.id)
+                    if fresh is not None and fresh.commit_attempted:
+                        self._transition(conn, record, box.state, "parked", ALREADY_SAVED_REASON)
+                        return "parked"
                 self._transition(conn, record, box.state, outcome, reason)
                 return outcome
 

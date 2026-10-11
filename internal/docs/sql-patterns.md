@@ -193,6 +193,28 @@ SET state = 'pending',
 WHERE id = $id AND state IN ('parked', 'failed') AND commit_attempted = true;
 ```
 
+## Dismiss a parked record as skipped
+
+A person dismisses a parked record. A record that never reached a commit goes straight to `skipped`.
+A commit-attempted record (it entered `submitting`) is only dismissed when the same `UPDATE` records a
+fresh destination check, so a record that may already have saved is never reported as skipped without
+someone confirming the destination does not have it. The same rule guards `prechecked → skipped`.
+
+```sql
+-- never commit-attempted
+UPDATE run_records
+SET state = 'skipped', reason = 'dismissed by a person'
+WHERE id = $id AND state IN ('parked', 'prechecked') AND commit_attempted = false;
+
+-- commit-attempted: a person confirmed the destination does not have it
+UPDATE run_records
+SET state = 'skipped',
+    reason = 'dismissed by a person',
+    destination_checked_by = $user,
+    destination_checked_at = now()
+WHERE id = $id AND state IN ('parked', 'prechecked') AND commit_attempted = true;
+```
+
 ## Claim a background job
 
 ```sql
@@ -274,6 +296,7 @@ UPDATE runs SET status = 'cancelled' WHERE id = $run;
 ## Rules
 
 - Never `UPDATE` or `DELETE` on `recipe_versions`, `committed_keys`, `step_events`, `ai_calls`, `approvals`, `run_record_transitions`. Triggers will reject it anyway.
+- A record that may already have saved (`commit_attempted`) is never dismissed as `skipped` — `filling → skipped` is refused, and `parked → skipped` needs a fresh destination check in the same update.
 - Never `DELETE` or `TRUNCATE` `run_records`; a row is inserted only as `pending` with an `idempotency_key`.
 - Never set `attempts` or `max_attempts` from application code. `attempts` moves only on `pending → claimed`; `max_attempts` is fixed at insert.
 - Never set `commit_attempted` from application code; the guard sets it when a record enters `submitting`.

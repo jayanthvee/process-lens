@@ -11,6 +11,7 @@ import uuid
 
 import psycopg
 
+from .errors import guard_refusal_is_typed
 from .models import VerifyResult
 from .records import _classify_miss
 
@@ -85,7 +86,7 @@ def begin_commit(
     reason: str = "commit write-ahead",
 ) -> None:
     """``filling -> submitting``. The caller must commit before sending the command."""
-    with conn.cursor() as cur:
+    with conn.cursor() as cur, guard_refusal_is_typed():
         cur.execute(
             _BEGIN_COMMIT,
             {"reason": reason, "record": record_id, "worker": worker, "epoch": epoch},
@@ -103,7 +104,7 @@ def mark_submitted_unverified(
     reason: str = "dispatched",
 ) -> None:
     """``submitting -> submitted_unverified``. Called from the dispatch acknowledgement."""
-    with conn.cursor() as cur:
+    with conn.cursor() as cur, guard_refusal_is_typed():
         cur.execute(
             _ACK_COMMIT,
             {"reason": reason, "record": record_id, "worker": worker, "epoch": epoch},
@@ -127,7 +128,7 @@ def verify_commit(
     writes the step event in the same block. ``key_inserted`` is False when another record already
     committed the key: the L5 duplicate incident.
     """
-    with conn.cursor() as cur:
+    with conn.cursor() as cur, guard_refusal_is_typed():
         cur.execute(
             _VERIFY_COMMIT,
             {

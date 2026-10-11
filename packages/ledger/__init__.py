@@ -60,10 +60,12 @@ from .recovery import (
     recover_run,
 )
 from .runs import (
+    DEFAULT_HEARTBEAT_TIMEOUT,
     claim_run,
     find_stale_run,
     get_run,
     heartbeat,
+    release_run,
     request_cancel,
     resume_run,
     set_run_status,
@@ -74,6 +76,7 @@ from .transitions import COMMIT_WINDOW_STATES, EXIT_STATES, LEGAL_TRANSITIONS, W
 
 __all__ = [
     "COMMIT_WINDOW_STATES",
+    "DEFAULT_HEARTBEAT_TIMEOUT",
     "EXIT_STATES",
     "LEGAL_TRANSITIONS",
     "WORKING_STATES",
@@ -115,6 +118,7 @@ __all__ = [
     "record_step_event",
     "recover_run",
     "reconciling_records",
+    "release_run",
     "release_working_records",
     "request_cancel",
     "requeue_record",

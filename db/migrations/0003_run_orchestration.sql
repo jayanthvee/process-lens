@@ -6,6 +6,9 @@
 --       and the guard had no exit to `skipped` from there. `filling -> skipped` is added, allowed
 --       only when `commit_attempted = false`: a record whose save may already have reached the
 --       destination is never reported as skipped. This is the 32nd legal transition.
+--   item 2  the same rule extends to `parked -> skipped` (a person dismissing a parked record):
+--       allowed only when `commit_attempted = false`, or when the same update records a fresh
+--       destination check.
 --   R3  `approval_requests` records the exact values a person was shown, and `approvals.request_id`
 --       points a decision at the request it answered, so a re-run cannot ask twice for the same
 --       values and an approval can never cover values the person did not see.
@@ -99,11 +102,14 @@ CREATE TRIGGER approval_requests_no_truncate
   FOR EACH STATEMENT EXECUTE FUNCTION forbid_truncate();
 
 -- ---------------------------------------------------------------------------
--- R1 + PL-012 follow-up 1. Replace the transition guard
+-- R1 + PL-012 follow-up 1 + review item 2. Replace the transition guard
 --
 -- The whole function is replaced, exactly as 0002 did to 0001: only the changed clauses differ.
 --   * `filling > skipped` joins the legal set, with the `commit_attempted = false` condition.
---   * the re-queue that sets `destination_checked_*` now requires a fresh, non-future check.
+--   * `parked > skipped` joins it too: allowed when `commit_attempted = false`, or when the same
+--     update records a fresh destination check (review item 2).
+--   * the re-queue (and the new parked > skipped) that sets `destination_checked_*` requires a
+--     fresh, non-future check.
 -- ---------------------------------------------------------------------------
 
 CREATE OR REPLACE FUNCTION guard_record_transition() RETURNS trigger AS $$
@@ -147,19 +153,22 @@ BEGIN
        AND NEW.destination_checked_at IS NULL
     THEN
       NULL;  -- cleared on entering the commit window (H2)
-    ELSIF OLD.state IN ('failed', 'parked')
-          AND NEW.state = 'pending'
-          AND NEW.destination_checked_by IS NOT NULL
+    ELSIF NEW.destination_checked_by IS NOT NULL
           AND NEW.destination_checked_at IS NOT NULL
           AND NEW.destination_checked_at IS DISTINCT FROM OLD.destination_checked_at
           AND NEW.destination_checked_at >= now() - interval '5 minutes'
           AND NEW.destination_checked_at <= now()
+          AND (
+            (OLD.state IN ('failed', 'parked') AND NEW.state = 'pending')
+            OR (OLD.state IN ('parked', 'prechecked') AND NEW.state = 'skipped')
+          )
     THEN
-      NULL;  -- a fresh person's check, recorded in the requeue itself (H3 + follow-up 1)
+      NULL;  -- a fresh check, recorded by the requeue or the dismissal itself (item 2)
     ELSE
       RAISE EXCEPTION
-        'destination_checked_* change only by clearing on entering submitting or by a '
-        'failed|parked -> pending requeue that sets both with a fresh timestamp (run_record %)',
+        'destination_checked_* change only by clearing on entering submitting, or by a '
+        'failed|parked -> pending or parked|prechecked -> skipped update that sets both with a '
+        'fresh timestamp (run_record %)',
         OLD.id;
     END IF;
   END IF;
@@ -184,11 +193,24 @@ BEGIN
     RAISE EXCEPTION 'illegal ledger transition % -> % (run_record %)', OLD.state, NEW.state, OLD.id;
   END IF;
 
-  -- R1: `filling -> skipped` says "the destination already has this record". A record that has ever
-  -- entered the commit window may already have saved, so it is never reported as skipped.
+  -- R1 + review item 2: `-> skipped` says "the destination already has this record" (or a person
+  -- dismissed it). A record that may already have saved is never reported as skipped without a fresh
+  -- destination check recorded in the same update. `filling -> skipped` is refused outright (a search
+  -- that finds a duplicate must park, not skip, once the record entered the commit window).
   IF OLD.state = 'filling' AND NEW.state = 'skipped' AND OLD.commit_attempted THEN
     RAISE EXCEPTION
       'run_record % was commit-attempted; it cannot end skipped from filling', OLD.id;
+  END IF;
+
+  IF OLD.state IN ('parked', 'prechecked') AND NEW.state = 'skipped' AND OLD.commit_attempted
+     AND NOT (NEW.destination_checked_by IS NOT NULL
+              AND NEW.destination_checked_at IS NOT NULL
+              AND NEW.destination_checked_at >= now() - interval '5 minutes'
+              AND NEW.destination_checked_at <= now())
+  THEN
+    RAISE EXCEPTION
+      'run_record % was commit-attempted; % -> skipped requires a fresh destination check',
+      OLD.id, OLD.state;
   END IF;
 
   -- A record whose save may already have reached the destination never returns to pending without a

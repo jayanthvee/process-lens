@@ -223,6 +223,141 @@ def test_an_approval_can_point_at_its_request(conn: psycopg.Connection, ledger: 
     assert row == (request_id, "commit")
 
 
+# --- review item 2: parked -> skipped ---------------------------------------
+
+
+def _commit_attempted_parked(conn: psycopg.Connection, ledger: Ledger) -> uuid.UUID:
+    """A record that has entered the commit window and is now parked: commit_attempted is true."""
+    run = ledger.new_run()
+    record_id = ledger.add_record(run, state="submitting")
+    _advance(conn, record_id, ["reconciling", "parked"])
+    return record_id
+
+
+def _commit_attempted_prechecked(conn: psycopg.Connection, ledger: Ledger) -> uuid.UUID:
+    """A commit-attempted record back at ``prechecked`` (a reconcile found nothing, so it
+    retried)."""
+    run = ledger.new_run()
+    record_id = ledger.add_record(run, state="submitting")
+    _advance(
+        conn,
+        record_id,
+        ["reconciling", "pending", "claimed", "prechecked"],
+    )
+    return record_id
+
+
+def test_prechecked_to_skipped_is_refused_once_commit_attempted(
+    conn: psycopg.Connection, ledger: Ledger
+) -> None:
+    """The same rule as `parked -> skipped`: never skip a record that may already have saved.
+
+    Without this, a retry whose reconcile lagged (commit_attempted, back at `prechecked`) could be
+    dismissed as `skipped` without anyone confirming the destination does not have it.
+    """
+    record_id = _commit_attempted_prechecked(conn, ledger)
+
+    with pytest.raises(psycopg.errors.RaiseException, match="requires a fresh destination check"):
+        conn.execute("UPDATE run_records SET state = 'skipped' WHERE id = %s", (record_id,))
+
+    assert _state(conn, record_id) == "prechecked"
+
+
+def test_prechecked_to_skipped_is_accepted_with_a_fresh_destination_check(
+    conn: psycopg.Connection, ledger: Ledger
+) -> None:
+    record_id = _commit_attempted_prechecked(conn, ledger)
+    user = _user(conn, ledger.tenant_id)
+
+    conn.execute(
+        "UPDATE run_records SET state = 'skipped', destination_checked_by = %s, "
+        "destination_checked_at = now() WHERE id = %s",
+        (user, record_id),
+    )
+
+    assert _state(conn, record_id) == "skipped"
+
+
+def test_prechecked_to_skipped_is_accepted_when_never_committed(
+    conn: psycopg.Connection, ledger: Ledger
+) -> None:
+    run = ledger.new_run()
+    record_id = ledger.add_record(run, state="prechecked")
+
+    conn.execute("UPDATE run_records SET state = 'skipped' WHERE id = %s", (record_id,))
+
+    assert _state(conn, record_id) == "skipped"
+
+
+def test_parked_to_skipped_is_accepted_when_never_committed(
+    conn: psycopg.Connection, ledger: Ledger
+) -> None:
+    run = ledger.new_run()
+    record_id = ledger.add_record(run, state="parked")
+
+    conn.execute("UPDATE run_records SET state = 'skipped' WHERE id = %s", (record_id,))
+
+    assert _state(conn, record_id) == "skipped"
+
+
+def test_parked_to_skipped_is_refused_once_commit_attempted(
+    conn: psycopg.Connection, ledger: Ledger
+) -> None:
+    record_id = _commit_attempted_parked(conn, ledger)
+
+    with pytest.raises(psycopg.errors.RaiseException, match="requires a fresh destination check"):
+        conn.execute("UPDATE run_records SET state = 'skipped' WHERE id = %s", (record_id,))
+
+    assert _state(conn, record_id) == "parked"
+
+
+def test_parked_to_skipped_is_accepted_with_a_fresh_destination_check(
+    conn: psycopg.Connection, ledger: Ledger
+) -> None:
+    record_id = _commit_attempted_parked(conn, ledger)
+    user = _user(conn, ledger.tenant_id)
+
+    conn.execute(
+        "UPDATE run_records SET state = 'skipped', reason = 'confirmed not in the destination', "
+        "destination_checked_by = %s, destination_checked_at = now() WHERE id = %s",
+        (user, record_id),
+    )
+
+    assert _state(conn, record_id) == "skipped"
+
+
+def test_parked_to_skipped_refuses_a_backdated_destination_check(
+    conn: psycopg.Connection, ledger: Ledger
+) -> None:
+    record_id = _commit_attempted_parked(conn, ledger)
+    user = _user(conn, ledger.tenant_id)
+
+    with pytest.raises(psycopg.errors.RaiseException, match="destination_checked_"):
+        conn.execute(
+            "UPDATE run_records SET state = 'skipped', destination_checked_by = %s, "
+            "destination_checked_at = now() - interval '10 minutes' WHERE id = %s",
+            (user, record_id),
+        )
+
+    assert _state(conn, record_id) == "parked"
+
+
+def test_parked_to_skipped_refuses_a_future_destination_check(
+    conn: psycopg.Connection, ledger: Ledger
+) -> None:
+    record_id = _commit_attempted_parked(conn, ledger)
+    user = _user(conn, ledger.tenant_id)
+
+    with pytest.raises(psycopg.errors.RaiseException, match="destination_checked_"):
+        conn.execute(
+            "UPDATE run_records SET state = 'skipped', destination_checked_by = %s, "
+            "destination_checked_at = now() + interval '1 minute' WHERE id = %s",
+            (user, record_id),
+        )
+
+    assert _state(conn, record_id) == "parked"
+
+
 # --- the runs column R4 adds ------------------------------------------------
 
 

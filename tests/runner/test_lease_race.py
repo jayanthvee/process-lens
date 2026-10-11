@@ -64,16 +64,16 @@ def test_stale_worker_state_change_raises_stale_lease(
         "UPDATE runs SET heartbeat_at = now() - interval '1 hour' WHERE id = %s", (run_id,)
     )
     epoch = take_over_run(conn, run_id, "w2", heartbeat_timeout="1 minute")
-    assert epoch == 1, "a takeover increments lease_epoch"
+    assert epoch == run.lease_epoch + 1, "a takeover increments lease_epoch"
 
     with pytest.raises(StaleLease):
-        heartbeat(conn, run_id, "w1", 0)
+        heartbeat(conn, run_id, "w1", run.lease_epoch)
     with pytest.raises(StaleLease):
         change_state(
             conn,
             record.id,
             worker="w1",
-            epoch=0,
+            epoch=run.lease_epoch,
             expected="claimed",
             new="prechecked",
             reason="stale write",
@@ -143,9 +143,30 @@ def test_a_run_record_carries_a_lease_epoch(
 
     run = claim_run(conn, "w1")
     assert run is not None
-    assert run.lease_epoch == 0
+    assert run.lease_epoch == 1, "a claim bumps the epoch, fencing out any previous holder (B1)"
     assert run.worker_id == "w1"
     assert isinstance(run_id, uuid.UUID)
+
+
+def test_a_claim_bumps_the_epoch_so_a_previous_holder_is_fenced_out(
+    seed: Callable[..., Seed], conn: psycopg.Connection
+) -> None:
+    """B1: every claim increments ``lease_epoch``, so a worker that lost the run cannot write."""
+    base = seed()
+    base.add_input_record(email="a@x.com")
+    run_id = base.create_run()
+
+    first = claim_run(conn, "w1")
+    assert first is not None
+    # Release the run as a stopped worker would, so it can be claimed again.
+    conn.execute("UPDATE runs SET status = 'queued', worker_id = NULL WHERE id = %s", (run_id,))
+
+    second = claim_run(conn, "w2")
+    assert second is not None
+    assert second.lease_epoch == first.lease_epoch + 1
+
+    with pytest.raises(StaleLease):
+        heartbeat(conn, run_id, "w1", first.lease_epoch)
 
 
 def test_a_stale_worker_cannot_claim_a_record(
@@ -159,15 +180,16 @@ def test_a_stale_worker_cannot_claim_a_record(
     base = seed()
     base.add_input_record(email="a@x.com")
     run_id = base.create_run()
-    assert claim_run(conn, "w1") is not None
+    first = claim_run(conn, "w1")
+    assert first is not None
 
     conn.execute(
         "UPDATE runs SET heartbeat_at = now() - interval '1 hour' WHERE id = %s", (run_id,)
     )
-    assert take_over_run(conn, run_id, "w2", heartbeat_timeout="1 minute") == 1
+    assert take_over_run(conn, run_id, "w2", heartbeat_timeout="1 minute") == first.lease_epoch + 1
 
     with pytest.raises(StaleLease):
-        claim_record(conn, run_id, "w1", 0)
+        claim_record(conn, run_id, "w1", first.lease_epoch)
 
     with conn.cursor() as cur:
         cur.execute("SELECT state, attempts FROM run_records WHERE run_id = %s", (run_id,))
@@ -181,14 +203,15 @@ def test_a_stale_worker_cannot_change_the_run_status(
     base = seed()
     base.add_input_record(email="a@x.com")
     run_id = base.create_run()
-    assert claim_run(conn, "w1") is not None
+    first = claim_run(conn, "w1")
+    assert first is not None
     conn.execute(
         "UPDATE runs SET heartbeat_at = now() - interval '1 hour' WHERE id = %s", (run_id,)
     )
-    assert take_over_run(conn, run_id, "w2", heartbeat_timeout="1 minute") == 1
+    assert take_over_run(conn, run_id, "w2", heartbeat_timeout="1 minute") == first.lease_epoch + 1
 
     with pytest.raises(StaleLease):
-        set_run_status(conn, run_id, "completed", worker="w1", epoch=0)
+        set_run_status(conn, run_id, "completed", worker="w1", epoch=first.lease_epoch)
 
     with conn.cursor() as cur:
         cur.execute("SELECT status FROM runs WHERE id = %s", (run_id,))

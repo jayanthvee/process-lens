@@ -18,9 +18,11 @@ from .models import RunClaim, _row
 
 # The claim pattern (sql-patterns.md § Claim the next queued run). It skips a run whose destination
 # already has an active run, so it does not collide with runs_one_active_per_destination.
+# The claim also increments `lease_epoch` (B1): every new holder fences out any previous one, so a
+# worker that lost a race can never write under a lease it no longer owns.
 _CLAIM_RUN = """
 UPDATE runs
-SET status = 'running', worker_id = %(worker)s,
+SET status = 'running', worker_id = %(worker)s, lease_epoch = lease_epoch + 1,
     started_at = coalesce(started_at, now()), heartbeat_at = now()
 WHERE id = (
   SELECT id FROM runs
@@ -64,6 +66,48 @@ WHERE id = %(run)s AND worker_id = %(worker)s AND lease_epoch = %(epoch)s
 """
 
 _GET_RUN = "SELECT * FROM runs WHERE id = %(run)s"
+
+# B1: a worker that stops on a pause hands the run back, so a later resume does not leave the run
+# held by a worker that has already stopped. A run resumed in the meantime matches 0 rows.
+_RELEASE_RUN = """
+UPDATE runs SET worker_id = NULL
+WHERE id = %(run)s AND worker_id = %(worker)s AND status = 'paused'
+RETURNING id
+"""
+
+# B1: resume moves a paused run back to `queued` only when no live worker holds it (released, or its
+# heartbeat lapsed). Otherwise the current holder simply carries on: the run goes back to `running`.
+_RESUME_RUN = """
+UPDATE runs
+SET status = (CASE
+      WHEN worker_id IS NULL OR heartbeat_at < now() - %(timeout)s::interval THEN 'queued'
+      ELSE 'running'
+    END)::run_status,
+    pause_reason = NULL
+WHERE id = %(run)s AND status = 'paused'
+RETURNING id, status
+"""
+
+# B1: the same rule for a cancel. A released or stale run goes back to `queued` for a worker to
+# finalise; a run a live worker still holds goes to `running`, so that holder notices the request.
+_REQUEST_CANCEL = """
+UPDATE runs
+SET cancel_requested_at = now(),
+    status = (CASE
+      WHEN status = 'paused'
+           AND (worker_id IS NULL OR heartbeat_at < now() - %(timeout)s::interval) THEN 'queued'
+      WHEN status = 'paused' THEN 'running'
+      ELSE status
+    END)::run_status
+WHERE id = %(run)s AND status IN ('queued', 'running', 'paused')
+RETURNING id
+"""
+
+# A paused run whose heartbeat has not been refreshed for this long is presumed abandoned: no worker
+# is acting on it, so a resume may hand it to a fresh worker. It matches the runner's default
+# heartbeat timeout (3x the schema's longest step timeout plus dispatch), so a live worker is never
+# mistaken for a dead one.
+DEFAULT_HEARTBEAT_TIMEOUT = "365 seconds"
 
 _TERMINAL_STATUSES = frozenset({"completed", "cancelled", "failed"})
 
@@ -149,28 +193,47 @@ def set_run_status(
         cur.execute(sql, {"status": status, "reason": pause_reason, "run": run_id})
 
 
-def request_cancel(conn: psycopg.Connection, run_id: uuid.UUID) -> bool:
-    """Ask a run to stop (R4). Returns True when the run was there to ask.
+def release_run(conn: psycopg.Connection, run_id: uuid.UUID, worker_id: str) -> bool:
+    """Hand a paused run back: clear the holder so a later resume can queue it afresh (B1).
 
-    A paused run has no worker acting on it, so it also moves back to ``queued`` for a worker to
-    pick up and finalise; a running run is left alone and its worker notices the cancel request.
+    Returns ``False`` when the run was resumed in the meantime (0 rows), which tells the caller to
+    keep going rather than leave a run it no longer owns.
     """
     with conn.cursor() as cur:
-        cur.execute(
-            "UPDATE runs SET cancel_requested_at = now(),"
-            " status = CASE WHEN status = 'paused' THEN 'queued' ELSE status END"
-            " WHERE id = %(run)s AND status IN ('queued', 'running', 'paused') RETURNING id",
-            {"run": run_id},
-        )
+        cur.execute(_RELEASE_RUN, {"run": run_id, "worker": worker_id})
         return cur.fetchone() is not None
 
 
-def resume_run(conn: psycopg.Connection, run_id: uuid.UUID) -> bool:
-    """Resume a paused run: ``paused -> queued`` so a worker claims it again (R4)."""
+def request_cancel(
+    conn: psycopg.Connection,
+    run_id: uuid.UUID,
+    *,
+    heartbeat_timeout: str = DEFAULT_HEARTBEAT_TIMEOUT,
+) -> bool:
+    """Ask a run to stop (R4, B1). Returns True when the run was there to ask.
+
+    A paused run no live worker holds (released, or its heartbeat lapsed) goes back to ``queued``
+    for a worker to pick up and finalise. A paused run a live worker still holds goes to
+    ``running``, so that holder notices the cancel request. A running run is left alone.
+    """
     with conn.cursor() as cur:
-        cur.execute(
-            "UPDATE runs SET status = 'queued', pause_reason = NULL"
-            " WHERE id = %(run)s AND status = 'paused' RETURNING id",
-            {"run": run_id},
-        )
+        cur.execute(_REQUEST_CANCEL, {"run": run_id, "timeout": heartbeat_timeout})
+        return cur.fetchone() is not None
+
+
+def resume_run(
+    conn: psycopg.Connection,
+    run_id: uuid.UUID,
+    *,
+    heartbeat_timeout: str = DEFAULT_HEARTBEAT_TIMEOUT,
+) -> bool:
+    """Resume a paused run (R4, B1).
+
+    ``paused -> queued`` only when no live worker holds it (``worker_id IS NULL``, or its heartbeat
+    lapsed), so a worker that has already stopped cannot leave the run unclaimed. Otherwise the run
+    goes back to ``running`` and its current holder carries on. Returns True when the run was
+    paused.
+    """
+    with conn.cursor() as cur:
+        cur.execute(_RESUME_RUN, {"run": run_id, "timeout": heartbeat_timeout})
         return cur.fetchone() is not None

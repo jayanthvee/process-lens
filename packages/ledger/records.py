@@ -14,7 +14,7 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
-from .errors import StaleLease, StateConflict
+from .errors import StaleLease, StateConflict, guard_refusal_is_typed
 from .lease import require_lease
 from .models import RecordClaim, _row
 
@@ -125,7 +125,7 @@ def change_state(
     error: Any = None,
 ) -> None:
     """Move a record to ``new`` when it is in ``expected`` and this worker's lease is live."""
-    with conn.cursor() as cur:
+    with conn.cursor() as cur, guard_refusal_is_typed():
         cur.execute(
             _CHANGE_STATE,
             {
@@ -181,7 +181,7 @@ def requeue_record(
         raise StateConflict(f"run_record {record_id} does not exist")
 
     if record.commit_attempted and destination_checked_by is None:
-        with conn.cursor() as cur:
+        with conn.cursor() as cur, guard_refusal_is_typed():
             cur.execute(
                 "UPDATE run_records SET state = 'reconciling', reason = %(reason)s"
                 " WHERE id = %(record)s AND state IN ('parked', 'failed') AND commit_attempted",
@@ -192,7 +192,7 @@ def requeue_record(
         return "reconciling"
 
     if record.commit_attempted:
-        with conn.cursor() as cur:
+        with conn.cursor() as cur, guard_refusal_is_typed():
             cur.execute(
                 "UPDATE run_records SET state = 'pending', reason = %(reason)s,"
                 " claimed_by = NULL, claimed_at = NULL,"
@@ -204,7 +204,7 @@ def requeue_record(
                 raise StateConflict(f"run_record {record_id} is not parked or failed")
         return "pending"
 
-    with conn.cursor() as cur:
+    with conn.cursor() as cur, guard_refusal_is_typed():
         cur.execute(
             "UPDATE run_records SET state = 'pending', reason = %(reason)s,"
             " claimed_by = NULL, claimed_at = NULL"
