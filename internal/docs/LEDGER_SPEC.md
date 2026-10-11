@@ -92,12 +92,14 @@ row is durable before the destination can change, and `verified` plus its `commi
 
 ## Recovery procedure
 
-Runs when a worker claims a run that another worker held, and when a paused run resumes.
+Runs when a worker claims a run, and after every successful takeover (on a fresh run it is a no-op).
 
-1. Take ownership of the run. (There is no takeover pattern or fencing yet; see P-001. Until there is, recovery
-   must never run while another worker could still be acting.)
-2. Apply [sql-patterns.md § Recovery](sql-patterns.md#recovery-when-a-worker-starts-or-resumes-a-run): commit window
-   → `reconciling`; `claimed`, `prechecked`, and `filling` → `pending`.
+1. Take ownership of the run: `claim_run` for a queued one, or `take_over_run` for one whose heartbeat has
+   lapsed, which increments `lease_epoch`. Every state change is then fenced by `claimed_by` and the live
+   `lease_epoch` (`FOR SHARE`), so a stale worker cannot write (H7).
+2. Apply [sql-patterns.md § Recovery](sql-patterns.md#recovery-when-a-worker-starts-or-resumes-a-run): the
+   commit window (`submitting`, `submitted_unverified`, and records already `reconciling`) → `reconciling`,
+   reassigned to the new worker; `claimed`, `prechecked`, and `filling` → `pending`.
 3. Reconcile every `reconciling` record before claiming any `pending` one. Check the destination using the recipe's
    reconcile check: exactly one match for this commit → `verified` with its `committed_keys` row; none → `pending`;
    several or unreadable → `parked`. For create workflows, "match" means the record key is found. For update
@@ -143,5 +145,8 @@ P-001 proposed migration 0002 for each of these; L1, L4, L5, and L6 are now enfo
 | I20 | The transition-audit table is append-only | `forbid_mutation` trigger | `tests/db/test_ledger_breakit.py` H4 (DB, T1) |
 | I21 | An empty `idempotency_key` or `record_key` is rejected; `runs.destination_key` never changes | Insert guard, immutability trigger | `tests/db/test_ledger_breakit.py` H8, H9 (DB, T1) |
 | I22 | A stale lease cannot write while a takeover is in flight (SQL half) | `FOR SHARE` lease check | `tests/db/test_ledger_breakit.py` H7 (DB, T1) |
+| I23 | `filling → skipped` is refused once the record has entered the commit window | Guard trigger | `tests/db/test_run_orchestration_migration.py` R1 (DB, PL-013) |
+| I24 | An approval request resolves at most once; every other change, a DELETE, and a TRUNCATE are refused | `approval_requests` triggers | `tests/db/test_run_orchestration_migration.py` (DB, PL-013) |
+| I25 | A destination check is fresh: within the last 5 minutes and not in the future | Guard trigger | `tests/db/test_run_orchestration_migration.py` (DB, PL-013) |
 | I12 | `run_summary` counts match the ledger | View | `tests/db` (DB, PL-002) |
 | I13 | `packages/ledger` mirrors the guard exactly | Contract test | Compare its table with the 32 pairs read from the database |
