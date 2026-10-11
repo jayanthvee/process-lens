@@ -48,6 +48,11 @@ CREATE UNIQUE INDEX runs_one_active_per_destination
 
 CREATE OR REPLACE FUNCTION guard_record_transition() RETURNS trigger AS $$
 BEGIN
+  -- max_attempts is fixed at insert (G3).
+  IF NEW.max_attempts <> OLD.max_attempts THEN
+    RAISE EXCEPTION 'max_attempts is set at insert and never changed (run_record %)', OLD.id;
+  END IF;
+
   -- attempts moves only by the trigger's own increment on pending -> claimed (G3).
   IF NEW.attempts <> OLD.attempts
      AND NOT (OLD.state = 'pending' AND NEW.state = 'claimed' AND NEW.attempts = OLD.attempts + 1)
@@ -56,9 +61,44 @@ BEGIN
       OLD.id, OLD.attempts, NEW.attempts;
   END IF;
 
-  -- max_attempts is fixed at insert (G3).
-  IF NEW.max_attempts <> OLD.max_attempts THEN
-    RAISE EXCEPTION 'max_attempts is set at insert and never changed (run_record %)', OLD.id;
+  -- Entering the commit window marks the record commit-attempted and clears any earlier destination
+  -- check, so a person's check of one commit never carries over to the next one (H2).
+  IF NEW.state = 'submitting' AND OLD.state <> 'submitting' THEN
+    NEW.commit_attempted := true;
+    NEW.destination_checked_by := NULL;
+    NEW.destination_checked_at := NULL;
+  END IF;
+
+  -- commit_attempted never changes back: only false -> true, and only on entering submitting (H1).
+  IF NEW.commit_attempted IS DISTINCT FROM OLD.commit_attempted
+     AND NOT (NEW.state = 'submitting' AND OLD.commit_attempted = false)
+  THEN
+    RAISE EXCEPTION
+      'commit_attempted changes only false -> true on entering submitting (run_record %)', OLD.id;
+  END IF;
+
+  -- destination_checked_* change only when the guard clears them on entering the commit window, or
+  -- when the requeue that uses them sets both non-null with a fresh timestamp (H3).
+  IF NEW.destination_checked_by IS DISTINCT FROM OLD.destination_checked_by
+     OR NEW.destination_checked_at IS DISTINCT FROM OLD.destination_checked_at
+  THEN
+    IF NEW.state = 'submitting'
+       AND NEW.destination_checked_by IS NULL
+       AND NEW.destination_checked_at IS NULL
+    THEN
+      NULL;  -- cleared on entering the commit window (H2)
+    ELSIF OLD.state IN ('failed', 'parked')
+          AND NEW.state = 'pending'
+          AND NEW.destination_checked_by IS NOT NULL
+          AND NEW.destination_checked_at IS NOT NULL
+          AND NEW.destination_checked_at IS DISTINCT FROM OLD.destination_checked_at
+    THEN
+      NULL;  -- a person's check, recorded in the requeue itself (H3)
+    ELSE
+      RAISE EXCEPTION
+        'destination_checked_* change only by clearing on entering submitting or by a '
+        'failed|parked -> pending requeue that sets both (run_record %)', OLD.id;
+    END IF;
   END IF;
 
   IF NEW.state = OLD.state THEN
@@ -97,19 +137,16 @@ BEGIN
     NEW.attempts := OLD.attempts + 1;
   END IF;
 
-  -- Entering the commit window is what marks the record commit-attempted. Application code never
-  -- sets this column.
-  IF NEW.state = 'submitting' THEN
-    NEW.commit_attempted := true;
-  END IF;
-
   RETURN NEW;
 END $$ LANGUAGE plpgsql;
 
--- Fire on attempts and max_attempts too, so a direct write to either is caught by the guard above.
+-- Fire on every locked column, so a standalone write to commit_attempted or destination_checked_*
+-- is caught by the guard above (H1, H2, H3).
 DROP TRIGGER run_records_guard ON run_records;
 CREATE TRIGGER run_records_guard
-  BEFORE UPDATE OF state, attempts, max_attempts ON run_records
+  BEFORE UPDATE OF state, attempts, max_attempts, commit_attempted, destination_checked_by,
+    destination_checked_at
+  ON run_records
   FOR EACH ROW EXECUTE FUNCTION guard_record_transition();
 
 -- ---------------------------------------------------------------------------
@@ -129,8 +166,11 @@ BEGIN
   IF NEW.commit_attempted THEN
     RAISE EXCEPTION 'a run_records row starts with commit_attempted = false';
   END IF;
-  IF NEW.idempotency_key IS NULL THEN
-    RAISE EXCEPTION 'a run_records row requires a non-null idempotency_key';
+  IF NEW.idempotency_key IS NULL OR NEW.idempotency_key = '' THEN
+    RAISE EXCEPTION 'a run_records row requires a non-empty idempotency_key';
+  END IF;
+  IF NEW.record_key IS NULL OR NEW.record_key = '' THEN
+    RAISE EXCEPTION 'a run_records row requires a non-empty record_key';
   END IF;
   RETURN NEW;
 END $$ LANGUAGE plpgsql;
@@ -148,7 +188,7 @@ CREATE TRIGGER run_records_no_delete
   BEFORE DELETE ON run_records
   FOR EACH ROW EXECUTE FUNCTION forbid_run_record_delete();
 
--- runs carry their destination from the moment they exist (G7).
+-- runs carry their destination from the moment they exist, and it never changes (G7, H9).
 CREATE FUNCTION require_run_destination_key() RETURNS trigger AS $$
 BEGIN
   IF NEW.destination_key IS NULL THEN
@@ -160,6 +200,20 @@ END $$ LANGUAGE plpgsql;
 CREATE TRIGGER runs_destination_key_guard
   BEFORE INSERT ON runs
   FOR EACH ROW EXECUTE FUNCTION require_run_destination_key();
+
+-- A run cannot move to another destination: it would slip out from under
+-- runs_one_active_per_destination and open a second active run (H9).
+CREATE FUNCTION forbid_destination_key_change() RETURNS trigger AS $$
+BEGIN
+  IF NEW.destination_key IS DISTINCT FROM OLD.destination_key THEN
+    RAISE EXCEPTION 'runs.destination_key is set at insert and never changed (run %)', OLD.id;
+  END IF;
+  RETURN NEW;
+END $$ LANGUAGE plpgsql;
+
+CREATE TRIGGER runs_destination_key_immutable
+  BEFORE UPDATE OF destination_key ON runs
+  FOR EACH ROW EXECUTE FUNCTION forbid_destination_key_change();
 
 -- ---------------------------------------------------------------------------
 -- d. Transition audit (G6)
@@ -176,6 +230,11 @@ CREATE TABLE run_record_transitions (
   at            timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX run_record_transitions_record_idx ON run_record_transitions (run_record_id, id);
+
+-- The audit trail is append-only: a transition row is never edited or removed (H4).
+CREATE TRIGGER run_record_transitions_append_only
+  BEFORE UPDATE OR DELETE ON run_record_transitions
+  FOR EACH ROW EXECUTE FUNCTION forbid_mutation();
 
 -- One row per actual change, including changes made by a bulk UPDATE (G6).
 CREATE FUNCTION record_transition_audit() RETURNS trigger AS $$
