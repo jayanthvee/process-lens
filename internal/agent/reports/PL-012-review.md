@@ -77,3 +77,42 @@ The 31-transition guard matches `LEDGER_SPEC.md` (the matrix test reads the spec
 max_attempts lock, the TRUNCATE ban on all seven tables, the approvals table (append-only, `decided_by` required),
 the idempotency-key skip join, the `committed_keys` zero-row incident rule, and the takeover pattern. The report is
 accurate, and its two flagged test changes were the right call.
+
+---
+
+## Re-review: approved
+
+Reviewed commit: 6ef073f (branch `pl-012`) · Verdict: **approved for merge**
+
+All nine holes are closed, and T1 verified each fix independently.
+
+```
+$ python -m pytest -q                                     360 passed, 1 warning
+$ python -m pytest -q tests/db/test_ledger_breakit.py tests/db/test_ledger_hardening.py
+                                                          43 passed
+$ ruff check .                                            All checks passed!
+$ ruff format --check .                                   75 files already formatted
+$ python -m db.migrate                                    nothing to apply: the database is up to date
+```
+
+- **Break-it file.** Every assertion is unchanged. The four setup edits are exactly the corrected patterns (H5
+  recovery, H6 claim, H7 lease check) and the early-return idiom for H3, whose staging write the fix now rejects.
+  They are legitimate.
+- **Second-round probes on the fixed guards (fresh database):**
+  - A re-queue with only `destination_checked_by`, or only `destination_checked_at`, is rejected.
+  - A standalone write to either column is rejected.
+  - A second commit that tries `commit_attempted = false` ends with `true`.
+  - The `reconciling -> pending` path still works.
+- **Lease race, end to end.** A stale write blocks while the takeover is uncommitted, writes **0 rows** once the
+  takeover commits, and leaves the record untouched.
+- **Scope and reports.** Only the ticket's files changed. Both reports are valid UTF-8.
+
+### Follow-ups (not blocking)
+
+1. **A backdated check is accepted.** A re-queue with `destination_checked_at = '2000-01-01'` passes, because the
+   guard only requires a changed value. Requiring `destination_checked_at >= now() - interval '1 minute'` (or
+   setting it in the guard) would make the timestamp trustworthy. Fold this into PL-013.
+2. **The audit row's `reason` is `NEW.reason`**, which can be stale when an update doesn't set one. The PL-013
+   patterns should always set `reason`.
+3. **PL-013 must carry `lease_epoch` on every executor command** and have the extension refuse old epochs. The
+   database now fences stale writes, but only the executor can stop a stale click.
