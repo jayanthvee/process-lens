@@ -12,11 +12,14 @@ import os
 import psycopg
 from fastapi import FastAPI
 
+from .recipes import router as recipes_router
+
 logger = logging.getLogger("processlens.api")
 
 CONNECT_TIMEOUT_SECONDS = 2
 
 app = FastAPI(title="ProcessLens API", version="0.1.0")
+app.include_router(recipes_router)
 
 
 def database_available() -> bool:
