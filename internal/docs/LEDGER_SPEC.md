@@ -23,9 +23,15 @@ ever disagree, the migration wins and this page has a bug. Every query on the le
 
 ## Transitions (exactly as in `guard_record_transition()`)
 
-There are 28 legal transitions between different states. An update that keeps the same state is always accepted.
-Any other pair raises `illegal ledger transition`. `pending → claimed` increments `attempts`, and
-`CHECK (attempts <= max_attempts)` stops a fourth claim.
+There are 31 legal transitions between different states (28 in 0001, plus `parked → skipped`,
+`failed → reconciling`, and `parked → reconciling` added by 0002). An update that keeps the same state
+is always accepted. Any other pair raises `illegal ledger transition`. `pending → claimed` increments
+`attempts`, and `CHECK (attempts <= max_attempts)` stops a fourth claim.
+
+One further rule rides on the transition: a record whose `commit_attempted` is true (it has entered
+`submitting`) may not go `failed → pending` or `parked → pending` unless the same `UPDATE` sets
+`destination_checked_by` — a person confirming the destination does not have the record. Its retry
+path is normally `failed|parked → reconciling → pending`.
 
 | From | To | Used when |
 | --- | --- | --- |
@@ -55,8 +61,11 @@ Any other pair raises `illegal ledger transition`. `pending → claimed` increme
 | `reconciling` | `pending` | The destination check finds nothing: retry, consuming an attempt |
 | `reconciling` | `parked` | The destination check is ambiguous |
 | `reconciling` | `failed` | The destination check cannot be performed (for example, the search itself keeps erroring) |
-| `parked` | `pending` | A person corrected the record and re-queued it |
-| `failed` | `pending` | A person re-queued it |
+| `parked` | `pending` | A person corrected the record and re-queued it (a commit-attempted record needs `destination_checked_by`) |
+| `parked` | `reconciling` | The commit outcome is unknown for a parked record: reconcile before requeue |
+| `parked` | `skipped` | A person dismisses a parked record |
+| `failed` | `pending` | A person re-queued it (a commit-attempted record needs `destination_checked_by`) |
+| `failed` | `reconciling` | The commit outcome is unknown: reconcile before requeue |
 
 ## Write-ahead sequence around a commit
 
@@ -89,22 +98,23 @@ Runs when a worker claims a run that another worker held, and when a paused run 
 
 ## Application rules the database does not enforce yet
 
-P-001 proposes migration changes for each of these. Until those land, code review and the tests below enforce them.
+P-001 proposed migration 0002 for each of these; L1, L4, L5, and L6 are now enforced by the database
+(`db/migrations/0002_ledger_hardening.sql`). L2 and L3 remain application rules.
 
-| Rule | Statement |
-| --- | --- |
-| L1 | A record that has ever entered `submitting` never goes `failed → pending` or `parked → pending` unless a person confirms the destination does not have it. Its retry path goes through reconcile |
-| L2 | `submitted_unverified → failed` requires a positive rejection signal on the page. A timeout is not proof; a timeout goes to `reconciling` |
-| L3 | `submitting → failed` only by the worker that wrote `submitting`, before it sent the command. Recovery never uses it |
-| L4 | `run_records` rows are inserted only as `pending` and are never deleted; `attempts` and `max_attempts` are never written by application code |
-| L5 | A `committed_keys` insert that hits the conflict (0 rows) in the verify transaction is an incident: the run pauses with reason `duplicate_detected` |
-| L6 | Each state change writes its `step_events` row in the same transaction (sql-patterns rule) |
+| Rule | Statement | Enforced by |
+| --- | --- | --- |
+| L1 | A record that has ever entered `submitting` never goes `failed → pending` or `parked → pending` unless a person confirms the destination does not have it. Its retry path goes through reconcile | **Database**: `commit_attempted` + the guard's `destination_checked_by` rule |
+| L2 | `submitted_unverified → failed` requires a positive rejection signal on the page. A timeout is not proof; a timeout goes to `reconciling` | Code (the runner) |
+| L3 | `submitting → failed` only by the worker that wrote `submitting`, before it sent the command. Recovery never uses it | Code (the runner) |
+| L4 | `run_records` rows are inserted only as `pending` and are never deleted; `attempts` and `max_attempts` are never written by application code | **Database**: the insert guard, the delete guard, and the attempts/`max_attempts` checks in the guard |
+| L5 | A `committed_keys` insert that hits the conflict (0 rows) in the verify transaction is an incident: the run pauses with reason `duplicate_detected` | **Database**: the unique constraint; the runner reads the row count |
+| L6 | Each state change writes its audit row in the same transaction (sql-patterns rule) | **Database**: the `run_record_transitions` trigger |
 
 ## Invariants and the tests that prove them
 
 | # | Invariant | Enforced by | Test (layer, owner) |
 | --- | --- | --- | --- |
-| I1 | Only the 28 transitions above are accepted | Guard trigger | `tests/db`: all 110 ordered state pairs; 28 pass, 82 raise (DB, PL-002) |
+| I1 | Only the 31 transitions above are accepted | Guard trigger | `tests/db`: all 121 ordered state pairs; 31 pass, 90 raise (DB, PL-012) |
 | I2 | `attempts` rises only on `pending → claimed`; never more than `max_attempts` | Trigger and CHECK | `tests/db` attempts cap (DB, PL-002) |
 | I3 | One ledger row per (run, record key) and per (run, input record) | UNIQUE | `tests/db` duplicate insert (DB, PL-002) |
 | I4 | A key is committed at most once per tenant and destination | UNIQUE on `committed_keys` | `tests/db` ON CONFLICT inserts 0 rows (DB, PL-002) |
@@ -114,6 +124,11 @@ P-001 proposes migration changes for each of these. Until those land, code revie
 | I8 | A re-run of the same file submits nothing new | `committed_keys` skip pattern | End-to-end re-run on the demo CRM (Phase 3) |
 | I9 | `verified` after a commit implies a `committed_keys` row | Verify transaction | Integration: verified commit records = keys per run |
 | I10 | Ledger, recipe versions, and audit rows cannot be edited | Append-only triggers | `tests/db` UPDATE/DELETE rejected (DB, PL-002) |
-| I11 | L1 to L6 above | Code until the migration is amended | `tests/breakit/` (T1) for each rule: re-queue after submit, timeout path, stale writes, conflict incident |
+| I11 | L1 to L6 above | Database (L1, L4, L5, L6) and code (L2, L3) | `tests/db/test_ledger_hardening.py` for L1/L4/L6; `tests/breakit/` (T1) for L2/L3 |
+| I14 | A commit-attempted record re-queues only through reconcile or a recorded destination check | `commit_attempted` + guard rule | `tests/db/test_ledger_hardening.py` G1 (DB, PL-012) |
+| I15 | One active run per tenant and destination; a run carries `destination_key` and a `lease_epoch` | Partial unique index, insert guard | `tests/db/test_ledger_hardening.py` G7/G8 (DB, PL-012) |
+| I16 | Every state change writes a `run_record_transitions` row, including bulk updates | Audit trigger | `tests/db/test_ledger_hardening.py` G6 (DB, PL-012) |
+| I17 | The append-only tables reject `TRUNCATE`, and `run_records` rejects `DELETE` | Statement/row triggers | `tests/db/test_ledger_hardening.py` G5 (DB, PL-012) |
+| I18 | Who approved a commit is recorded | `approvals` (append-only) | `tests/db/test_ledger_hardening.py` G10 (DB, PL-012) |
 | I12 | `run_summary` counts match the ledger | View | `tests/db` (DB, PL-002) |
 | I13 | `packages/ledger` mirrors the guard exactly | Contract test | Compare its table with the 28 pairs read from the database |

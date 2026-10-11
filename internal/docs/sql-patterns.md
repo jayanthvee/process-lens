@@ -39,13 +39,35 @@ RETURNING r.*;
 
 ## Change state (always conditional on the state you expect)
 
-Check the affected row count. Zero rows means someone else moved the record; stop and re-read.
+Check the affected row count. Zero rows means someone else moved the record, or the worker's lease is
+stale; stop and re-read. The update is scoped to the worker that claimed the record and to the run's
+current `lease_epoch`, so a stale worker cannot overwrite a live one (G8).
 
 ```sql
 UPDATE run_records
 SET state = $new_state, reason = $reason, last_error = $error
-WHERE id = $id AND state = $expected_state;
+WHERE id = $id
+  AND state = $expected_state
+  AND claimed_by = $worker
+  AND EXISTS (SELECT 1 FROM runs WHERE id = run_records.run_id AND lease_epoch = $epoch);
 ```
+
+## Take over a run (a worker whose lease is stale)
+
+Recovery runs only after a successful takeover. The heartbeat timeout is a configuration value.
+
+```sql
+UPDATE runs
+SET worker_id = $worker,
+    lease_epoch = lease_epoch + 1,
+    heartbeat_at = now()
+WHERE id = $run
+  AND status IN ('running', 'paused')
+  AND heartbeat_at < now() - $heartbeat_timeout
+RETURNING lease_epoch;
+```
+
+Zero rows means another worker holds the run or it is already done; do not run recovery.
 
 ## Write-ahead around a commit step
 
@@ -60,14 +82,22 @@ UPDATE run_records
 SET state = 'verified', destination_ref = $ref
 WHERE id = $id AND state IN ('submitted_unverified', 'reconciling');
 
-INSERT INTO committed_keys (tenant_id, destination_key, idempotency_key, workflow_id, run_record_id, destination_ref)
-VALUES ($tenant, $destination, $idempotency_key, $workflow, $id, $ref)
-ON CONFLICT (tenant_id, destination_key, idempotency_key) DO NOTHING;
+WITH written AS (
+  INSERT INTO committed_keys (tenant_id, destination_key, idempotency_key, workflow_id, run_record_id, destination_ref)
+  VALUES ($tenant, $destination, $idempotency_key, $workflow, $id, $ref)
+  ON CONFLICT (tenant_id, destination_key, idempotency_key) DO NOTHING
+  RETURNING id
+)
+SELECT count(*) FROM written;   -- 0 rows: another record already committed this key
 
 INSERT INTO step_events (tenant_id, run_record_id, step_id, attempt, started_at, ended_at, outcome, locator_rung, observed)
 VALUES (...);
 COMMIT;
 ```
+
+The `SELECT count(*)` from the `committed_keys` insert is the L5 check: **0 rows means another record
+already committed this key.** Pause the run with `pause_reason = 'duplicate_detected'`; never treat it
+as success.
 
 ## Recovery when a worker starts or resumes a run
 
@@ -94,13 +124,46 @@ WHERE run_id = $1 AND state = 'pending' AND attempts >= max_attempts;
 
 ## Skip keys already committed by earlier runs (before a batch starts)
 
+The match is on the record's own `idempotency_key`, not a single bind parameter, so it works for a
+batch (G9). A matched record ends `skipped`; it is never `verified` (there is no `pending → verified`
+transition).
+
 ```sql
 UPDATE run_records r
 SET state = 'skipped', reason = 'already committed in an earlier run'
 FROM committed_keys k
 WHERE r.run_id = $1 AND r.state = 'pending'
   AND k.tenant_id = r.tenant_id AND k.destination_key = $destination
-  AND k.idempotency_key = $key_expression_for_r;   -- computed by the app from the recipe template
+  AND k.idempotency_key = r.idempotency_key;
+```
+
+## Re-queue a record after a person looks at it
+
+A record that never reached a commit goes straight back to `pending`.
+
+```sql
+UPDATE run_records
+SET state = 'pending', reason = $reason, claimed_by = NULL, claimed_at = NULL
+WHERE id = $id AND state IN ('parked', 'failed') AND commit_attempted = false;
+```
+
+A commit-attempted record goes through `reconciling` first, so the destination is checked before any
+retry. It reaches `pending` directly only when the same `UPDATE` records who checked the destination
+(the guard rejects it otherwise).
+
+```sql
+-- preferred: reconcile first
+UPDATE run_records
+SET state = 'reconciling', reason = $reason
+WHERE id = $id AND state IN ('parked', 'failed') AND commit_attempted = true;
+
+-- a person confirmed the destination does not have it
+UPDATE run_records
+SET state = 'pending',
+    reason = $reason,
+    destination_checked_by = $user,
+    destination_checked_at = now()
+WHERE id = $id AND state IN ('parked', 'failed') AND commit_attempted = true;
 ```
 
 ## Claim a background job
@@ -120,8 +183,11 @@ RETURNING *;
 
 ## Rules
 
-- Never `UPDATE` or `DELETE` on `recipe_versions`, `committed_keys`, `step_events`, `ai_calls`. Triggers will reject it anyway.
-- Never set `attempts` from application code.
-- Every state change is conditional on the expected current state.
-- A state change and its `step_events` row are written in the same transaction.
+- Never `UPDATE` or `DELETE` on `recipe_versions`, `committed_keys`, `step_events`, `ai_calls`, `approvals`, `run_record_transitions`. Triggers will reject it anyway.
+- Never `DELETE` or `TRUNCATE` `run_records`; a row is inserted only as `pending` with an `idempotency_key`.
+- Never set `attempts` or `max_attempts` from application code. `attempts` moves only on `pending → claimed`; `max_attempts` is fixed at insert.
+- Never set `commit_attempted` from application code; the guard sets it when a record enters `submitting`.
+- Every state change is conditional on the expected current state, the claiming worker, and a live `lease_epoch`.
+- A state change and its `step_events` row are written in the same transaction; the `run_record_transitions` row is written by the database.
+- One active run per tenant and destination; a takeover increments `lease_epoch` before recovery runs.
 - Every one of these patterns has a concurrency test with two workers racing.
