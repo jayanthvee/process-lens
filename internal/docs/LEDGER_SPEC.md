@@ -1,8 +1,9 @@
 # Ledger specification
 
 The ledger is `run_records`: one row per input record per run. The authority is the trigger function
-`guard_record_transition()` in [0001_init.sql](../../db/migrations/0001_init.sql). If this page and the migration
-ever disagree, the migration wins and this page has a bug. Every query on the ledger has one approved shape, listed in
+`guard_record_transition()`, defined in [0001_init.sql](../../db/migrations/0001_init.sql) and replaced by
+[0002_ledger_hardening.sql](../../db/migrations/0002_ledger_hardening.sql). If this page and the migrations
+ever disagree, the migrations win and this page has a bug. Every query on the ledger has one approved shape, listed in
 [sql-patterns.md](sql-patterns.md). The design rationale is in [SYSTEM_DESIGN.md](SYSTEM_DESIGN.md#the-run-ledger).
 
 ## States
@@ -28,10 +29,16 @@ There are 31 legal transitions between different states (28 in 0001, plus `parke
 is always accepted. Any other pair raises `illegal ledger transition`. `pending → claimed` increments
 `attempts`, and `CHECK (attempts <= max_attempts)` stops a fourth claim.
 
-One further rule rides on the transition: a record whose `commit_attempted` is true (it has entered
+One further rule rides on the transition. A record whose `commit_attempted` is true (it has entered
 `submitting`) may not go `failed → pending` or `parked → pending` unless the same `UPDATE` sets
-`destination_checked_by` — a person confirming the destination does not have the record. Its retry
-path is normally `failed|parked → reconciling → pending`.
+`destination_checked_by` and `destination_checked_at` — a person confirming the destination does not have
+the record. Its retry path is normally `failed|parked → reconciling → pending`.
+
+The two destination-check columns are tightly held. `commit_attempted` only ever changes `false → true`,
+and only by the guard when a record enters `submitting`. Entering `submitting` also clears
+`destination_checked_by` and `destination_checked_at`, so a check of one commit never carries over to the
+next. The columns may otherwise change only in a `failed|parked → pending` transition that sets both
+non-null with a fresh `destination_checked_at`. Any other change raises.
 
 | From | To | Used when |
 | --- | --- | --- |
@@ -103,7 +110,7 @@ P-001 proposed migration 0002 for each of these; L1, L4, L5, and L6 are now enfo
 
 | Rule | Statement | Enforced by |
 | --- | --- | --- |
-| L1 | A record that has ever entered `submitting` never goes `failed → pending` or `parked → pending` unless a person confirms the destination does not have it. Its retry path goes through reconcile | **Database**: `commit_attempted` + the guard's `destination_checked_by` rule |
+| L1 | A record that has ever entered `submitting` never goes `failed → pending` or `parked → pending` unless a person confirms the destination does not have it. Its retry path goes through reconcile | **Database**: `commit_attempted` + the guard's `destination_checked_by`/`_at` rule |
 | L2 | `submitted_unverified → failed` requires a positive rejection signal on the page. A timeout is not proof; a timeout goes to `reconciling` | Code (the runner) |
 | L3 | `submitting → failed` only by the worker that wrote `submitting`, before it sent the command. Recovery never uses it | Code (the runner) |
 | L4 | `run_records` rows are inserted only as `pending` and are never deleted; `attempts` and `max_attempts` are never written by application code | **Database**: the insert guard, the delete guard, and the attempts/`max_attempts` checks in the guard |
@@ -130,5 +137,9 @@ P-001 proposed migration 0002 for each of these; L1, L4, L5, and L6 are now enfo
 | I16 | Every state change writes a `run_record_transitions` row, including bulk updates | Audit trigger | `tests/db/test_ledger_hardening.py` G6 (DB, PL-012) |
 | I17 | The append-only tables reject `TRUNCATE`, and `run_records` rejects `DELETE` | Statement/row triggers | `tests/db/test_ledger_hardening.py` G5 (DB, PL-012) |
 | I18 | Who approved a commit is recorded | `approvals` (append-only) | `tests/db/test_ledger_hardening.py` G10 (DB, PL-012) |
+| I19 | `commit_attempted` only changes `false → true`; a destination check does not carry over to the next commit, and is set only in the requeue that uses it | Guard trigger | `tests/db/test_ledger_breakit.py` H1–H3 (DB, T1) |
+| I20 | The transition-audit table is append-only | `forbid_mutation` trigger | `tests/db/test_ledger_breakit.py` H4 (DB, T1) |
+| I21 | An empty `idempotency_key` or `record_key` is rejected; `runs.destination_key` never changes | Insert guard, immutability trigger | `tests/db/test_ledger_breakit.py` H8, H9 (DB, T1) |
+| I22 | A stale lease cannot write while a takeover is in flight (SQL half) | `FOR SHARE` lease check | `tests/db/test_ledger_breakit.py` H7 (DB, T1) |
 | I12 | `run_summary` counts match the ledger | View | `tests/db` (DB, PL-002) |
-| I13 | `packages/ledger` mirrors the guard exactly | Contract test | Compare its table with the 28 pairs read from the database |
+| I13 | `packages/ledger` mirrors the guard exactly | Contract test | Compare its table with the 31 pairs read from the database |

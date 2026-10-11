@@ -5,12 +5,22 @@ These are the only approved shapes for those operations. If you need a new one, 
 
 ## Claim the next queued run (run worker)
 
+The query skips a run whose destination already has an active run, so it does not compete for the
+`runs_one_active_per_destination` slot and crash the loop (H6). If a race still produces a `23505`
+on that index, treat it as "nothing to claim" and move on to the next loop.
+
 ```sql
 UPDATE runs
 SET status = 'running', worker_id = $1, started_at = coalesce(started_at, now()), heartbeat_at = now()
 WHERE id = (
   SELECT id FROM runs
   WHERE status = 'queued'
+    AND NOT EXISTS (
+      SELECT 1 FROM runs active
+      WHERE active.tenant_id = runs.tenant_id
+        AND active.destination_key = runs.destination_key
+        AND active.status IN ('running', 'paused')
+    )
   ORDER BY created_at
   FOR UPDATE SKIP LOCKED
   LIMIT 1
@@ -49,8 +59,16 @@ SET state = $new_state, reason = $reason, last_error = $error
 WHERE id = $id
   AND state = $expected_state
   AND claimed_by = $worker
-  AND EXISTS (SELECT 1 FROM runs WHERE id = run_records.run_id AND lease_epoch = $epoch);
+  AND EXISTS (
+    SELECT 1 FROM runs
+    WHERE id = run_records.run_id AND lease_epoch = $epoch
+    FOR SHARE
+  );
 ```
+
+The lease check locks the `runs` row `FOR SHARE`, so a write whose lease is being taken over waits
+for the takeover to commit and then fails the `lease_epoch` check, instead of reading the old
+committed epoch and landing (H7).
 
 ## Take over a run (a worker whose lease is stale)
 
@@ -101,13 +119,20 @@ as success.
 
 ## Recovery when a worker starts or resumes a run
 
-Records that might have been submitted go to `reconciling`. Records that never reached a commit go back to `pending`.
+Recovery runs **only after a successful takeover** (the pattern above), and it reassigns the records
+it moves to the new worker, so the new worker can act on them under the worker-scoped state change
+(H5).
+
+Records that might have been submitted go to `reconciling`. Records that never reached a commit go
+back to `pending`.
 
 ```sql
-UPDATE run_records SET state = 'reconciling'
+UPDATE run_records
+SET state = 'reconciling', claimed_by = $worker, claimed_at = now()
 WHERE run_id = $1 AND state IN ('submitting', 'submitted_unverified');
 
-UPDATE run_records SET state = 'pending', claimed_by = NULL, claimed_at = NULL
+UPDATE run_records
+SET state = 'pending', claimed_by = NULL, claimed_at = NULL
 WHERE run_id = $1 AND state IN ('claimed', 'prechecked', 'filling');
 ```
 
@@ -189,5 +214,6 @@ RETURNING *;
 - Never set `commit_attempted` from application code; the guard sets it when a record enters `submitting`.
 - Every state change is conditional on the expected current state, the claiming worker, and a live `lease_epoch`.
 - A state change and its `step_events` row are written in the same transaction; the `run_record_transitions` row is written by the database.
+- Always set `reason` in a state change. The audit row records `NEW.reason`, so an update that omits it carries the previous transition's reason.
 - One active run per tenant and destination; a takeover increments `lease_epoch` before recovery runs.
 - Every one of these patterns has a concurrency test with two workers racing.
