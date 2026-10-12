@@ -125,6 +125,36 @@ export function conditionExpression(condition: Condition, ctx: ConditionContext)
   throw new Error(`the executor does not understand the condition: ${JSON.stringify(condition)}`);
 }
 
+/**
+ * Whether a thrown `evaluate` error is TRANSIENT — that is, the page navigated
+ * under the poll and the next poll will simply evaluate in the new document.
+ *
+ * Exactly three messages qualify, matched case-insensitively (C2):
+ *
+ * - "Execution context was destroyed" and "Cannot find context with specified
+ *   id": Chrome's execution-context errors while a redirect tears down the old
+ *   document. A Save that lands on a new URL does exactly this.
+ * - "Inspected target navigated or closed": what Chrome returns when a
+ *   navigation interrupts `Runtime.evaluate` itself.
+ *
+ * The throw says nothing about the condition — only that *this* poll happened to
+ * run mid-navigation — so the poll can be retried: sleep `pollMs` and re-evaluate
+ * in the new document. Refusing the whole check here would park every record on a
+ * CRM that redirects after saving.
+ *
+ * The match is deliberately NARROW. A bare "was destroyed" also matches
+ * "the target was destroyed" (a dead target, not a navigation), and retrying a
+ * persistent error only burns the poll's whole timeout and then lets the caller
+ * report a "no" no poll ever observed. A detach, a malformed condition, or a
+ * missing tab must reach the caller and refuse the check.
+ */
+export function isTransientEvaluateError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return /execution context was destroyed|cannot find context with specified id|inspected target navigated or closed/i.test(
+    message,
+  );
+}
+
 export interface WaitOptions {
   timeoutMs?: number;
   pollMs?: number;
@@ -144,8 +174,21 @@ export interface WaitResult {
   elapsedMs: number;
   /** True when the `aborted` probe ended the poll rather than the timeout. */
   aborted?: boolean;
+  /**
+   * C2: true when the poll timed out without the condition ever being evaluated
+   * cleanly — the LAST attempt before the timeout threw a transient navigation
+   * error rather than answering. `ok` stays false, but this is NOT an answered
+   * "no": no poll saw the page long enough to judge the condition, so the caller
+   * must treat it as "could not evaluate" (a refusal) rather than reporting
+   * `passed: false`. An answered "no" would take the runner's `else` branch on a
+   * page that merely kept redirecting (R1). Absent when the last attempt was a
+   * clean false.
+   */
+  unanswered?: boolean;
   /** Why the poll stopped early, when it was not the condition holding. */
   reason?: string;
+  /** How many polls ended in a transient evaluate error and were retried. */
+  transientRetries?: number;
 }
 
 const defaultSleep = (ms: number): Promise<void> =>
@@ -156,6 +199,16 @@ const defaultSleep = (ms: number): Promise<void> =>
  * then waits `pollMs` between checks. Returns `ok: false` on timeout, and also
  * as soon as the `aborted` probe answers true — an aborted run must not sit in
  * a poll for the rest of its timeout.
+ *
+ * A *transient* evaluate error (the page navigated mid-poll) counts toward the
+ * timeout and the loop sleeps `pollMs` and tries again, so a commit whose
+ * redirect destroys the execution context still verifies. Any other throw is
+ * rethrown and refuses the check.
+ *
+ * C2: `ok: false` on timeout is an answered "no" ONLY when the last attempt
+ * before the timeout evaluated cleanly. When that attempt was a transient error
+ * instead, the result carries `unanswered: true` — a "could not evaluate" the
+ * caller must refuse, never report as `passed: false`.
  */
 export async function waitForCondition(
   cdp: CdpTransport,
@@ -170,6 +223,10 @@ export async function waitForCondition(
 
   const started = now();
   let polls = 0;
+  let transientRetries = 0;
+  // C2: whether the LAST evaluation attempt before the timeout answered cleanly. Only a clean false
+  // is a real "no"; a last attempt that threw transiently means the condition was never judged.
+  let lastAttemptClean = false;
 
   for (;;) {
     polls += 1;
@@ -179,20 +236,50 @@ export async function waitForCondition(
         polls,
         elapsedMs: now() - started,
         aborted: true,
+        transientRetries,
         reason: "the run was aborted",
       };
     }
     const expression = conditionExpression(condition, ctx);
-    const ok =
-      (await evaluate(cdp, expression, options.contextId !== undefined ? { contextId: options.contextId } : {})) ===
-      true;
+    let ok = false;
+    let clean = false;
+    try {
+      ok =
+        (await evaluate(
+          cdp,
+          expression,
+          options.contextId !== undefined ? { contextId: options.contextId } : {},
+        )) === true;
+      clean = true;
+    } catch (error) {
+      // A transient error is a poll that answered "not yet": the page navigated under us and the
+      // next attempt evaluates in the new document. It counts toward the timeout like any other
+      // poll, and the loop keeps going. A persistent error still refuses the check.
+      if (!isTransientEvaluateError(error)) throw error;
+      transientRetries += 1;
+    }
+    lastAttemptClean = clean;
     const elapsedMs = now() - started;
-    if (ok) return { ok: true, polls, elapsedMs };
+    if (ok) return { ok: true, polls, elapsedMs, transientRetries };
     if (elapsedMs >= timeoutMs) {
+      // C2 (R1): the last attempt decides whether this is a real "no". A clean false is an answered
+      // "no"; a transient error means the condition was never evaluated, so the result says so and
+      // the caller refuses the check instead of reporting `passed: false`.
+      if (!lastAttemptClean) {
+        return {
+          ok: false,
+          polls,
+          elapsedMs,
+          transientRetries,
+          unanswered: true,
+          reason: `the condition could not be evaluated: the last poll failed with a transient navigation error (${transientRetries} of ${polls} polls)`,
+        };
+      }
       return {
         ok: false,
         polls,
         elapsedMs,
+        transientRetries,
         reason: `the condition did not hold within ${timeoutMs}ms`,
       };
     }

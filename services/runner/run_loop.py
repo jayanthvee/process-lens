@@ -22,7 +22,9 @@ going down the ``else`` branch of a duplicate search.
       ``{{row.email | lower}}`` must arrive as the record's email, never as the placeholder.
 * R6  a run-level event beats the step result. Events are drained *before* a result is
       interpreted, so a challenge releases a pre-commit record instead of parking it through the
-      ``refused`` rule, and ``peer_gone`` is authoritative rather than a hint.
+      ``refused`` rule, and ``peer_gone`` is authoritative rather than a hint. PL-014b reads the
+      whole batch on each drain, and a run-level event anywhere in it takes precedence over an
+      ``off_origin`` anywhere in it.
 """
 
 from __future__ import annotations
@@ -119,6 +121,11 @@ class RunnerConfigError(RuntimeError):
 def _pause_reason_for(kind: str) -> str:
     """The pause reason a run-level event produces (PL-014)."""
     return EXECUTOR_DISCONNECTED if kind in DISCONNECT_EVENTS else kind
+
+
+def _is_run_level_event(kind: str) -> bool:
+    """A run-level event: one that stops the run whatever the record is doing (PL-014)."""
+    return kind in PAUSE_EVENTS or kind in DISCONNECT_EVENTS
 
 
 @dataclass
@@ -578,6 +585,13 @@ class RunLoop:
                 )
                 return "parked"
 
+        # R6: the probe is another executor call, so an event that arrived while it ran beats the
+        # result it produced: a challenge that appeared with the page stops the save here, instead
+        # of being drained only after the save had already been dispatched.
+        stopped = self._drain_events(conn, record, run, epoch, box)
+        if stopped is not None:
+            return stopped
+
         # R3: the policy gate sits immediately before begin_commit.
         policy_gates = evaluate_policy(
             run.approval_policy,
@@ -948,8 +962,23 @@ class RunLoop:
         """R6: events are applied **before** any result is interpreted.
 
         Returns an outcome string when the run stops, or ``None`` to carry on.
+
+        PL-014 requirement 7b: the whole batch is taken in one pass, and a run-level event
+        (:data:`PAUSE_EVENTS`/:data:`DISCONNECT_EVENTS`) anywhere in it beats an ``off_origin``
+        anywhere in it. Returning the first non-``None`` outcome meant an ``off_origin`` at the head
+        of the batch parked the record and the challenge, login or detach behind it was never seen,
+        so the run carried on against a page that had already gone. The run-level events are
+        applied first, which is what makes the ticket's outcome land: the record is released and the
+        run is paused, whatever position in the batch the ``off_origin`` held.
         """
-        for kind, detail in self._take_events():
+        run_level: list[tuple[str, str]] = []
+        other: list[tuple[str, str]] = []
+        for event in self._take_events():
+            if _is_run_level_event(event[0]):
+                run_level.append(event)
+            else:
+                other.append(event)
+        for kind, detail in run_level + other:
             outcome = self._apply_event(conn, record, run, epoch, box, kind, detail)
             if outcome is not None:
                 return outcome

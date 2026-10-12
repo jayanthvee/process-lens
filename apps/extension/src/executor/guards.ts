@@ -111,10 +111,14 @@ export function challengeOrLoginInPage(query: { targets: unknown[] }): Challenge
   let marker = "";
   for (const frame of Array.from(document.querySelectorAll("iframe"))) {
     const src = frame.getAttribute("src") ?? "";
-    if (challengeSrc.test(src)) {
-      marker = src || "challenge iframe";
-      break;
-    }
+    if (!challengeSrc.test(src)) continue;
+    // Only a *visible* challenge iframe counts (Requirement 8). An ordinary form usually embeds a
+    // zero-size reCAPTCHA badge to obtain a token; its src matches the challenge pattern but
+    // nothing is being asked of the person, so pausing the run for it would park records that
+    // need no intervention. A challenge that is really shown occupies a box.
+    if (!isVisible(frame)) continue;
+    marker = src || "challenge iframe";
+    break;
   }
   if (!marker && /just a moment/i.test(document.title ?? "")) marker = "Just a moment";
 

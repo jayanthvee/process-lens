@@ -14,6 +14,7 @@ import {
 } from "../shared/messages";
 import type { PendingEvent } from "../shared/events";
 import type { Condition, RecordedEvent } from "../shared/recipe-types";
+import type { EventKind } from "../shared/command-protocol";
 import {
   attachDebugger,
   chromeDebuggerTransport,
@@ -25,18 +26,13 @@ import { RunControl } from "../executor/control";
 import { runRecipe, validateRecipe } from "../executor/executor";
 import { FrameContexts } from "../executor/frames";
 import { waitForCondition } from "../executor/assertions";
-import {
-  POLICY_BLOCKED_MESSAGE,
-  checkChallengeOrLogin,
-  checkDestructive,
-  checkOrigin,
-  classifyAttachError,
-} from "../executor/guards";
+import { POLICY_BLOCKED_MESSAGE, checkChallengeOrLogin, classifyAttachError } from "../executor/guards";
 import { resolverExpression } from "../executor/ladder";
-import { performStep, resolveStepTarget } from "../executor/step-runner";
-import { ExecutorError, type ExecutorRecipe, type ExecutorStep, type StepReport } from "../executor/types";
+import type { ExecutorRecipe, StepReport } from "../executor/types";
+import { dispatchCommandStep, prepareCommandStep } from "./command-step";
 import {
   CommandSession,
+  type CheckAnswer,
   type SessionDeps,
   type SessionState,
   type StoredSession,
@@ -357,9 +353,45 @@ function commandStorage(): SessionDeps["storage"] {
  */
 let commandCdpToken: CdpTransport | null = null;
 let commandCdpTabId: number | null = null;
+/** The browser-detach listener for the bound tab, or null when no session holds the debugger. */
+let commandDetachWatch: { tabId: number; stop: () => void } | null = null;
+
+function stopCommandDetachWatch(): void {
+  const watch = commandDetachWatch;
+  commandDetachWatch = null;
+  watch?.stop();
+}
+
+/**
+ * Watch the bound tab for a browser-side debugger detach (PL-014b item 6).
+ *
+ * Chrome detaches on its own when the person cancels the banner, the tab closes, or another
+ * debugger takes over. Without this the cached transport would still look alive and every later
+ * command would fail only when its next CDP call rejected — the runner would wait out its whole
+ * ack budget instead of learning at once. One listener per bound tab: re-attaching to the same tab
+ * keeps the existing one.
+ */
+function watchCommandDebugger(tabId: number): void {
+  if (commandDetachWatch?.tabId === tabId) return;
+  stopCommandDetachWatch();
+  const stop = onDebuggerDetach(tabId, (reason) => {
+    // The listener also fires for OUR OWN detach, so `releaseDebugger` removes it first; reaching
+    // here means the browser detached. The cached transport is dead: drop it so the next command
+    // re-attaches, and tell the session so the in-flight command stops immediately instead of
+    // typing into a tab with no debugger.
+    stopCommandDetachWatch();
+    commandCdpToken = null;
+    commandCdpTabId = null;
+    commandSession?.notifyDebuggerDetached(reason);
+  });
+  commandDetachWatch = { tabId, stop };
+}
 
 async function ensureDebugger(tabId: number): Promise<CdpTransport> {
-  if (commandCdpToken && commandCdpTabId === tabId) return commandCdpToken;
+  if (commandCdpToken && commandCdpTabId === tabId) {
+    watchCommandDebugger(tabId);
+    return commandCdpToken;
+  }
   if (commandCdpTabId !== null) await releaseDebugger();
   try {
     await attachDebugger(tabId);
@@ -371,6 +403,8 @@ async function ensureDebugger(tabId: number): Promise<CdpTransport> {
     // failure is real and propagates.
     if (!/already attached/i.test(message)) throw error;
   }
+  // The debugger is ours from here on, so a browser-side detach is worth learning about at once.
+  watchCommandDebugger(tabId);
   const cdp = chromeDebuggerTransport(tabId);
   // Enabling an already-enabled domain is idempotent, so this is safe in both cases.
   await cdp.send("Runtime.enable");
@@ -382,6 +416,9 @@ async function ensureDebugger(tabId: number): Promise<CdpTransport> {
 
 /** Drop the debugger. The next command attaches again. */
 async function releaseDebugger(): Promise<void> {
+  // Remove the listener BEFORE detaching: our own detach fires it, and a session going idle must
+  // not be told the browser detached it.
+  stopCommandDetachWatch();
   const tabId = commandCdpTabId;
   commandCdpTabId = null;
   commandCdpToken = null;
@@ -389,9 +426,12 @@ async function releaseDebugger(): Promise<void> {
 }
 
 /**
- * Perform one command's step: guard, resolve, then dispatch. Every guard runs
- * before any input and refuses fail-closed; a policy-blocked attach becomes
- * the readable sentence instead of Chrome's raw error.
+ * Perform one command's step: guard, resolve, then dispatch.
+ *
+ * The step body itself lives in `command-step`, dependency-injected, so the prepare phase can be
+ * driven in a test with a fake CDP; this keeps only what needs Chrome — the bound tab, the
+ * debugger, and the error classification. A policy-blocked attach becomes the readable sentence
+ * instead of Chrome's raw error.
  */
 async function runCommandStep(
   step: unknown,
@@ -402,7 +442,6 @@ async function runCommandStep(
     beforeInput: () => void;
   },
 ): Promise<StepReport> {
-  const executorStep = step as ExecutorStep;
   const tabId = commandBoundTabId;
   if (tabId === null || tabId < 0) throw new Error("no tab is bound to this session");
 
@@ -412,66 +451,15 @@ async function runCommandStep(
     attached = true;
     // Command mode: the runner states the deadline for every step it sends, and the session's own
     // probe polices each input at the last moment (R4, F1, B3).
-    const deps = { cdp, commandMode: true, beforeInput: opts.beforeInput };
-
-    const guardContext = { cdp, step: executorStep, allowedOrigins: opts.allowedOrigins };
-    // R6: each guard that has a run-level meaning carries its event on the error, so the session
-    // sends the event before the refusal it causes. Without this a challenge would park the record
-    // instead of pausing the run for a person.
-    const origin = await checkOrigin(guardContext);
-    if (!origin.ok) {
-      throw new ExecutorError(origin.reason, executorStep.id, "park", origin.event);
-    }
-    const challenge = await checkChallengeOrLogin(guardContext);
-    if (!challenge.ok) {
-      throw new ExecutorError(challenge.reason, executorStep.id, "park", challenge.event);
-    }
-
-    // `navigate` carries a url and no target ladder, so it is never resolved: it is performed.
-    const needsTarget = executorStep.action !== "navigate";
-    let rung: number | undefined;
-    let accessibleName = "";
-    let resolvedTarget: Awaited<ReturnType<typeof resolveStepTarget>> | undefined;
-    if (needsTarget) {
-      const resolved = await resolveStepTarget(executorStep, deps);
-      if (!resolved.ok) {
-        throw new ExecutorError(
-          `the ${executorStep.action} target could not be resolved: ${resolved.error}`,
-          executorStep.id,
-          "park",
-        );
-      }
-      rung = resolved.rung;
-      accessibleName = resolved.name;
-      resolvedTarget = resolved;
-    }
-
-    // The destructive check runs AFTER resolution on purpose: it judges the accessible name of the
-    // control the ladder actually matched, not what the ladder happened to declare. A recipe can
-    // point at a plain `#danger` and the guard still sees "Delete lead".
-    const destructive = checkDestructive(guardContext, accessibleName);
-    if (!destructive.ok) {
-      throw new ExecutorError(destructive.reason, executorStep.id, "park", destructive.event);
-    }
-
-    // R2: a `prepare` stops here. It has proved the target resolves, is hit-testable and passes
-    // every guard, and it has sent no input; the runner writes `submitting` only after this returns.
-    if (opts.phase === "prepare") {
-      return { id: executorStep.id, action: executorStep.action, outcome: "done", rung };
-    }
-
-    // The same element the guards just approved is acted on: no second resolve, no second measure.
-    if (resolvedTarget && resolvedTarget.ok) {
-      return await performStep(
-        executorStep,
-        { row: {} },
-        opts.allowedOrigins,
-        deps,
-        opts.sentInput,
-        resolvedTarget,
-      );
-    }
-    return await performStep(executorStep, { row: {} }, opts.allowedOrigins, deps, opts.sentInput);
+    const body = {
+      cdp,
+      allowedOrigins: opts.allowedOrigins,
+      beforeInput: opts.beforeInput,
+      onFirstInput: opts.sentInput,
+    };
+    return opts.phase === "prepare"
+      ? await prepareCommandStep(step, body)
+      : await dispatchCommandStep(step, body);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (classifyAttachError(message) === "policy_blocked") throw new Error(POLICY_BLOCKED_MESSAGE);
@@ -484,18 +472,50 @@ async function runCommandStep(
 }
 
 /**
+ * Probe the bound tab for a challenge or a login wall (C3).
+ *
+ * A `check` carries no step, so the guard gets a minimal one: with no targets declared, any visible
+ * password field is a login this check is not performing — exactly the wall this is looking for —
+ * and the step id is only a label (the guard's reasons name the marker, not the step). A probe
+ * that itself throws changes nothing: the poll's answer already stands and a wall is never guessed
+ * from a failed evaluation, so the caller keeps the "no" it had.
+ */
+async function probeWallForCheck(
+  cdp: CdpTransport,
+): Promise<{ event: EventKind; detail: string } | null> {
+  try {
+    const guard = await checkChallengeOrLogin({
+      cdp,
+      step: { id: "check", action: "check", targets: [] },
+      allowedOrigins: undefined,
+    });
+    if (guard.ok || !guard.event) return null;
+    return { event: guard.event, detail: guard.reason };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Evaluate one `check` command's condition against the bound tab.
  *
  * B1: a check that could not be evaluated is a *refusal*, not a "no". Returning `false` for a
  * missing tab, a throwing evaluate, or a malformed condition would reach the runner as a real
  * answered "no" — a failed duplicate search would then take the `else` branch and create the
  * lead a second time, and a failed fresh-confirmation probe would report "absent".
+ *
+ * C2: a poll that never evaluated cleanly is the same kind of not-answered. `waitForCondition`
+ * flags it `unanswered`, and it becomes a refusal here rather than `passed: false`.
+ *
+ * C3: a clean `passed: false` also probes the page for a wall. A challenge or a login the recipe
+ * does not describe is reported as the answer's event, so the session can send it before the
+ * condition reply (R6) and the run pauses with the wall's reason. The answer itself is unchanged.
  */
 async function checkCommandCondition(
   condition: unknown,
   timeoutMs: number,
   aborted: () => boolean,
-): Promise<{ ok: true; passed: boolean } | { ok: false; reason: string }> {
+): Promise<CheckAnswer> {
   const tabId = commandBoundTabId;
   if (tabId === null || tabId < 0) {
     return { ok: false, reason: "no tab is bound to this session" };
@@ -521,7 +541,18 @@ async function checkCommandCondition(
     if (outcome.aborted === true) {
       return { ok: false, reason: outcome.reason ?? "the command was withdrawn" };
     }
-    return { ok: true, passed: outcome.ok };
+    // C2: the poll timed out without ever evaluating the condition cleanly (the last attempt threw
+    // a transient navigation error). Nobody saw the page, so there is no "no" to report.
+    if (outcome.unanswered === true) {
+      return { ok: false, reason: outcome.reason ?? "the condition could not be evaluated" };
+    }
+    if (outcome.ok) return { ok: true, passed: true };
+    // C3: the condition was evaluated and did not hold. A wall under the answer explains it, so ask
+    // the page before reporting the "no". The reply still carries `passed: false` either way.
+    const wall = await probeWallForCheck(cdp);
+    return wall
+      ? { ok: true, passed: false, event: wall.event, eventDetail: wall.detail }
+      : { ok: true, passed: false };
   } catch (error) {
     // The attach failed, the evaluate threw, or the condition is one the executor does not
     // understand: none of those is a page that said "no".

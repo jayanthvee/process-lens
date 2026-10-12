@@ -4,6 +4,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   CommandSession,
+  type CheckAnswer,
   type SessionDeps,
   type SessionState,
   type StoredSession,
@@ -81,7 +82,7 @@ interface HarnessOptions {
     condition: unknown,
     timeoutMs: number,
     aborted: () => boolean,
-  ) => Promise<{ ok: true; passed: boolean } | { ok: false; reason: string }>;
+  ) => Promise<CheckAnswer>;
   restoreBoundTab?: (tabId: number) => Promise<boolean>;
   now?: () => number;
   storageValue?: StoredSession | null;
@@ -200,6 +201,22 @@ function command(overrides: Record<string, unknown> = {}): Record<string, unknow
     step: { id: "step-1", action: "click", targets: [{ by: "role", role: "button", name: "Save" }] },
     commit: true,
     allowed_origins: [],
+    ...overrides,
+  };
+}
+
+function checkCommand(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    protocol: 1,
+    type: "check",
+    command_id: "c-check",
+    step_ref: "s1",
+    run_id: "run-1",
+    run_record_id: "rec-1",
+    lease_epoch: 1,
+    expires_at: 10_000_000,
+    condition: { text_visible: "Lead created" },
+    timeout_ms: 500,
     ...overrides,
   };
 }
@@ -420,6 +437,92 @@ describe("CommandSession", () => {
     expect(String(result?.["error"])).toMatch(/no tab is bound/);
   });
 
+  it("a wall under a failed check is sent as an event BEFORE the condition reply", async () => {
+    // C3 (R6): the condition was evaluated and did not hold on a page showing a challenge. The
+    // runner must learn about the wall first, so it releases the record and pauses the run with the
+    // wall's reason instead of taking the `else` branch. The answer itself is unchanged.
+    const harness = makeHarness({
+      checkCondition: async () => ({
+        ok: true,
+        passed: false,
+        event: "challenge",
+        eventDetail: "the page is showing a challenge (Just a moment)",
+      }),
+    });
+    const socket = await openSession(harness);
+
+    deliver(socket, checkCommand({ command_id: "c-wall" }));
+    await flush();
+
+    const messages = socket.messages();
+    const eventAt = messages.findIndex((message) => message["type"] === "event");
+    const conditionAt = messages.findIndex((message) => message["type"] === "condition");
+    expect(eventAt).toBeGreaterThanOrEqual(0);
+    expect(conditionAt).toBeGreaterThan(eventAt);
+    expect(messages[eventAt]?.["kind"]).toBe("challenge");
+    expect(String(messages[eventAt]?.["detail"])).toMatch(/challenge/);
+    // The answer is unchanged: still a clean "no", with no refusal added.
+    expect(messages[conditionAt]?.["passed"]).toBe(false);
+    expect(messages.some((message) => message["type"] === "result")).toBe(false);
+  });
+
+  it("a login wall under a failed check is sent as an event BEFORE the condition reply", async () => {
+    const harness = makeHarness({
+      checkCondition: async () => ({
+        ok: true,
+        passed: false,
+        event: "login_required",
+        eventDetail: "the page is asking for a password (password), which this step is not",
+      }),
+    });
+    const socket = await openSession(harness);
+
+    deliver(socket, checkCommand({ command_id: "c-login" }));
+    await flush();
+
+    const messages = socket.messages();
+    const eventAt = messages.findIndex((message) => message["type"] === "event");
+    const conditionAt = messages.findIndex((message) => message["type"] === "condition");
+    expect(messages[eventAt]?.["kind"]).toBe("login_required");
+    expect(conditionAt).toBeGreaterThan(eventAt);
+    expect(messages[conditionAt]?.["passed"]).toBe(false);
+  });
+
+  it("a clean false on a clean page sends no event", async () => {
+    // C3: only a wall produces an event; an ordinary "no" is just the condition reply.
+    const harness = makeHarness({ checkCondition: async () => ({ ok: true, passed: false }) });
+    const socket = await openSession(harness);
+
+    deliver(socket, checkCommand({ command_id: "c-clean" }));
+    await flush();
+
+    const messages = socket.messages();
+    expect(messages.some((message) => message["type"] === "event")).toBe(false);
+    expect(messages.find((message) => message["type"] === "condition")?.["passed"]).toBe(false);
+  });
+
+  it("a check that could not be evaluated sends no wall event, only the refusal", async () => {
+    // C2/C3: the poll never judged the page, so there is no answer for a wall to explain — and a
+    // check the session refuses must not pause a run on a page nobody read.
+    const harness = makeHarness({
+      checkCondition: async () => ({
+        ok: false,
+        reason: "the condition could not be evaluated: the last poll failed with a transient navigation error (3 of 3 polls)",
+      }),
+    });
+    const socket = await openSession(harness);
+
+    deliver(socket, checkCommand({ command_id: "c-unanswered" }));
+    await flush();
+
+    const messages = socket.messages();
+    expect(messages.some((message) => message["type"] === "event")).toBe(false);
+    expect(messages.some((message) => message["type"] === "condition")).toBe(false);
+    const result = socket.lastResult();
+    expect(result?.["status"]).toBe("refused");
+    expect(String(result?.["error"])).toMatch(/could not be evaluated/);
+  });
+
   it("the expiry is re-checked immediately before the input, not only before the step", async () => {
     // F1: the command is fresh when it is received and when the step starts, but the resolve,
     // guards and scroll let it expire before the input would be sent.
@@ -598,5 +701,90 @@ describe("CommandSession", () => {
     await flush();
     expect(socket.lastResult()?.["status"]).toBe("refused");
     expect(String(socket.lastResult()?.["error"])).toMatch(/stale lease/);
+  });
+
+  it("a debugger detach sends `detached` and aborts the in-flight command", async () => {
+    // Item 6: the browser detached the debugger mid-command. The runner must learn at once, and the
+    // abandoned dispatch must not still type or click.
+    let gate: (() => void) | null = null;
+    const pending = deferredStep();
+    const harness = makeHarness({
+      runStep: async (_step, opts) => {
+        gate = opts.beforeInput;
+        opts.beforeInput();
+        return pending.promise;
+      },
+    });
+    const socket = await openSession(harness);
+
+    deliver(socket, command({ command_id: "c1" }));
+    await flush();
+    expect(harness.session.currentState).toBe("executing");
+
+    // The browser detaches while the command is in flight.
+    harness.session.notifyDebuggerDetached("target closed");
+
+    const event = socket.messages().find((message) => message["type"] === "event");
+    expect(event?.["kind"]).toBe("detached");
+    expect(String(event?.["detail"])).toMatch(/debugger detached from the bound tab/);
+
+    // The in-flight command is withdrawn: its next input gate refuses, so the command stops.
+    expect(() => gate?.()).toThrow(/withdrawn/);
+
+    pending.resolve({ id: "step-1", action: "click", outcome: "done" });
+    await flush();
+  });
+
+  it("a debugger detach with no command in flight sends no event", async () => {
+    // Item 7: an event belongs to a current command. With none, there is no record for it to land
+    // on, so nothing is sent.
+    const harness = makeHarness();
+    const socket = await openSession(harness);
+
+    deliver(socket, command({ command_id: "c1" }));
+    await flush();
+    expect(socket.lastResult()?.["status"]).toBe("ok");
+
+    harness.session.notifyDebuggerDetached("target closed");
+    await flush();
+
+    expect(socket.messages().some((message) => message["type"] === "event")).toBe(false);
+  });
+
+  it("an aborted command's run-level event is not sent on the reconnected socket", async () => {
+    // Item 7: the challenge belonged to the command the dropped socket abandoned. Sending it on the
+    // reconnected socket would land it on the next record's run and pause the wrong thing.
+    const gate: { release: (() => void) | null } = { release: null };
+    const harness = makeHarness({
+      runStep: async () => {
+        await new Promise<void>((done) => {
+          gate.release = done;
+        });
+        throw new ExecutorError("the page is showing a challenge", "s1", "park", "challenge");
+      },
+    });
+    const socket = await openSession(harness);
+
+    deliver(socket, command({ command_id: "c1" }));
+    await flush();
+
+    socket.emit("close");
+    expect(harness.fireTimers(500)).toBe(1);
+    const reconnected = harness.sockets[1];
+    reconnected?.emit("open");
+    await flush();
+    expect(
+      reconnected?.messages().some(
+        (message) => message["type"] === "result" && message["status"] === "lost",
+      ),
+    ).toBe(true);
+
+    // The abandoned step finally fails with its run-level event.
+    gate.release?.();
+    await flush();
+
+    expect(reconnected?.messages().some((message) => message["type"] === "event")).toBe(false);
+    // And no second, contradictory result either: the outcome was already reported lost.
+    expect(reconnected?.messages().filter((message) => message["type"] === "result")).toHaveLength(1);
   });
 });

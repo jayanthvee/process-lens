@@ -101,6 +101,11 @@ def test_reconnecting_and_resuming_continues_the_run(harness) -> None:
         timeout=30_000,
     )
     harness.api_post(f"/api/v1/runs/{run_id}/resume")
+    # The resumed run needs a live claimant, and the first worker's budget can expire while the run
+    # sits paused. Start a fresh worker for the second half instead of relying on the first still
+    # being there (PL-014b item 9); its budget covers the whole post-resume wait.
+    harness.stop_workers()
+    harness.start_worker(worker_id="resumed", max_seconds=240)
     harness.wait_for_terminal(run_id, timeout=180)
 
     _wait_for_lead(harness, email, count=1)

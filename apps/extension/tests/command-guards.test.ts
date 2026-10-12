@@ -85,6 +85,30 @@ describe("checkChallengeOrLogin", () => {
     if (!result.ok) expect(result.event).toBe("challenge");
   });
 
+  it("a visible challenge iframe is a challenge", async () => {
+    document.body.innerHTML =
+      "<iframe src='https://challenges.cloudflare.com/turnstile/v0/api.js'></iframe>";
+    const frame = document.querySelector("iframe") as HTMLIFrameElement;
+    frame.getBoundingClientRect = () => ({ width: 300, height: 65 }) as DOMRect;
+    const { cdp } = fakeCdp();
+    const result = await checkChallengeOrLogin({ cdp, step: step(), allowedOrigins: [] });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.event).toBe("challenge");
+  });
+
+  it("an invisible reCAPTCHA badge does not pause the run", async () => {
+    // Requirement 8: a normal form embeds the reCAPTCHA badge at a zero box purely to get a token.
+    // jsdom has no layout engine and the layout stub hands every element a non-zero rect, so the
+    // badge's real styling (width:0;height:0, display:none) is reproduced on the element itself.
+    document.body.innerHTML =
+      "<iframe src='https://www.google.com/recaptcha/api2/anchor?k=site-key'></iframe>";
+    const badge = document.querySelector("iframe") as HTMLIFrameElement;
+    badge.getBoundingClientRect = () => ({ width: 0, height: 0 }) as DOMRect;
+    const { cdp } = fakeCdp();
+    const result = await checkChallengeOrLogin({ cdp, step: step(), allowedOrigins: [] });
+    expect(result.ok).toBe(true);
+  });
+
   it("a visible password field on a page that is not the step is login_required", async () => {
     document.body.innerHTML =
       "<form><input id='pw' name='password' type='password'></form>";
