@@ -9,6 +9,7 @@ import {
   isToWorker,
   type ExecutorStatus,
   type FromWorker,
+  type RecorderResponse,
   type RecorderStatus,
   type ToWorker,
 } from "../shared/messages";
@@ -30,6 +31,7 @@ import { POLICY_BLOCKED_MESSAGE, checkChallengeOrLogin, classifyAttachError } fr
 import { resolverExpression } from "../executor/ladder";
 import type { ExecutorRecipe, StepReport } from "../executor/types";
 import { dispatchCommandStep, prepareCommandStep } from "./command-step";
+import { RecorderSession, shouldRecordNavigation } from "./recorder-session";
 import {
   CommandSession,
   type CheckAnswer,
@@ -47,11 +49,17 @@ const RECONNECT_DELAY_MS = 2000;
 interface Persisted {
   status: RecorderStatus;
   events: RecordedEvent[];
+  /** The action a navigation is still owed evidence for, so a worker restart does not lose it. */
+  arrival?: { stepId: string; at: number } | null;
 }
 
 let status: RecorderStatus = { ...EMPTY_STATUS };
-let events: RecordedEvent[] = [];
-let sequence = 0;
+const session = new RecorderSession({ maxEvents: MAX_EVENTS });
+/**
+ * The tab the recording is following: the one that last sent a recorded event. Navigations are
+ * only interesting there, so a busy second tab cannot fill the recording with its movements.
+ */
+let recordedTabId: number | null = null;
 let socket: WebSocket | null = null;
 
 function sessionStore(): chrome.storage.StorageArea | null {
@@ -65,8 +73,9 @@ async function load(): Promise<void> {
   const persisted = stored[STORAGE_KEY] as Persisted | undefined;
   if (persisted) {
     status = { ...EMPTY_STATUS, ...persisted.status, wsConnected: false };
-    events = persisted.events ?? [];
-    sequence = events.length > 0 ? events[events.length - 1]!.seq : 0;
+    session.restore(persisted.events ?? []);
+    session.restoreArrival(persisted.arrival ?? null);
+    status = { ...status, count: session.count };
   }
   const settings = stored[SETTINGS_KEY] as { wsUrl?: string } | undefined;
   if (settings?.wsUrl) status.wsUrl = settings.wsUrl;
@@ -75,7 +84,11 @@ async function load(): Promise<void> {
 async function persist(): Promise<void> {
   const store = sessionStore();
   if (!store) return;
-  const persisted: Persisted = { status, events };
+  const persisted: Persisted = {
+    status,
+    events: [...session.events],
+    arrival: session.snapshotArrival(),
+  };
   await store.set({ [STORAGE_KEY]: persisted });
 }
 
@@ -163,17 +176,52 @@ function stream(event: RecordedEvent): void {
 }
 
 function appendEvent(pending: PendingEvent): RecordedEvent {
-  sequence += 1;
-  const event: RecordedEvent = { seq: sequence, ...pending };
-  events.push(event);
-  if (events.length > MAX_EVENTS) events.splice(0, events.length - MAX_EVENTS);
-  status = { ...status, count: events.length };
+  // The session owns the order and the step ids: one counter per action for the whole
+  // recording, so a page load cannot restart it and mint an id that already exists.
+  const event = session.append(pending);
+  status = { ...status, count: session.count };
   stream(event);
   return event;
 }
 
+/**
+ * Keep the action a document is navigating away from as the target of the page that lands.
+ * The document cannot observe what happens after it is gone; the worker can, and this is the
+ * note that says an observation is owed.
+ */
+function noteLeaving(): void {
+  if (status.state !== "recording") return;
+  session.noteLeaving();
+}
+
+/** What a freshly loaded page owes the page before it, or null when it owes nothing. */
+function pendingObservationTarget(): string | null {
+  if (status.state !== "recording") return null;
+  return session.takePendingTarget();
+}
+
+/**
+ * Attach what the page an action navigated to showed, to the action itself.
+ *
+ * Only the action the session is waiting on is accepted, and only while it carries no evidence:
+ * the first observation wins, and a late or unrelated report changes nothing.
+ */
+function attachArrivalObservation(stepId: string, observation: RecordedEvent["observation"]): boolean {
+  if (status.state !== "recording" || !observation) return false;
+  const updated = session.attachObservation(stepId, observation);
+  if (!updated) return false;
+  void chrome.runtime
+    .sendMessage({ type: "record:appended", event: updated, status: snapshot() })
+    .catch(() => undefined);
+  return true;
+}
+
 function start(): void {
   status = { ...status, state: "recording", startedAt: new Date().toISOString() };
+  // The tab this recording follows is adopted from its first event, not remembered from the
+  // last demonstration, and a fresh demonstration owes the last one no evidence.
+  recordedTabId = null;
+  session.forgetArrival();
   openSocket();
   updateBadge();
 }
@@ -185,8 +233,7 @@ function stop(): void {
 }
 
 function clear(): void {
-  events = [];
-  sequence = 0;
+  session.clear();
   status = { ...status, count: 0, startedAt: status.state === "recording" ? new Date().toISOString() : null };
   updateBadge();
 }
@@ -641,7 +688,48 @@ async function handleExecutor(message: ToWorker): Promise<unknown> {
   };
 }
 
-async function handle(message: ToWorker): Promise<RecorderStatus> {
+/**
+ * A top-level navigation nobody's click caused is part of the recording (requirement 6).
+ *
+ * `chrome.webNavigation` is the honest source: it reports the transition, so a typed URL, a
+ * bookmark, a reload and a back/forward are facts about how the workflow was done, while a
+ * link's own navigation is the click already in the recording and a redirect is nobody's step.
+ * Only the tab the recording is following is watched.
+ */
+chrome.webNavigation?.onCommitted?.addListener((details) => {
+  const recordable = shouldRecordNavigation(details, {
+    recording: status.state === "recording",
+    // The recording follows one tab, adopted from its first event. Until there is one, no tab
+    // is followed: a navigation elsewhere is not part of anything being demonstrated.
+    recordedTab: recordedTabId !== null && details.tabId === recordedTabId,
+  });
+  if (!recordable) return;
+
+  const event = session.appendNavigate(details.url);
+  status = { ...status, count: session.count };
+  updateBadge();
+  void persist().then(() => broadcast());
+  void chrome.runtime
+    .sendMessage({ type: "record:appended", event, status: snapshot() })
+    .catch(() => undefined);
+});
+
+/**
+ * Whether this sender is the page an action navigated to: the top frame of the recorded tab.
+ *
+ * Every frame of every page runs the content script, so answering any asker would let an
+ * advertisement, a chat widget or a later, unrelated load hand the worker the confirmation that
+ * belongs to the save this recording is waiting on. Only the document the person navigated to
+ * is the one that saw it.
+ */
+function senderIsTheRecordedPage(sender?: chrome.runtime.MessageSender): boolean {
+  if (!sender || sender.frameId !== 0) return false;
+  const tabId = sender.tab?.id;
+  return recordedTabId !== null && tabId === recordedTabId;
+}
+
+async function handle(message: ToWorker, sender?: chrome.runtime.MessageSender): Promise<RecorderResponse> {
+  const sendingTabId = sender?.tab?.id;
   switch (message.type) {
     case "record:start":
       start();
@@ -662,6 +750,7 @@ async function handle(message: ToWorker): Promise<RecorderStatus> {
       break;
     case "record:event":
       if (status.state === "recording") {
+        if (sendingTabId !== undefined) recordedTabId = sendingTabId;
         const event = appendEvent(message.event);
         broadcast();
         void chrome.runtime
@@ -669,16 +758,32 @@ async function handle(message: ToWorker): Promise<RecorderStatus> {
           .catch(() => undefined);
       }
       break;
+    case "record:leaving":
+      noteLeaving();
+      break;
+    case "record:observation":
+      attachArrivalObservation(message.stepId, message.observation);
+      break;
+    case "record:pending-observation":
     case "record:get":
       break;
   }
+  const observationTarget =
+    message.type === "record:pending-observation" && senderIsTheRecordedPage(sender)
+      ? pendingObservationTarget()
+      : null;
   await persist();
   updateBadge();
   broadcast();
-  return snapshot();
+  return {
+    ok: true,
+    status: snapshot(),
+    events: [...session.events],
+    observationTarget,
+  };
 }
 
-chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
   if (!isToWorker(message)) return undefined;
   if (message.type.startsWith("executor:")) {
     void handleExecutor(message)
@@ -686,8 +791,8 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
       .catch((error: unknown) => sendResponse({ ok: false, error: String(error) }));
     return true;
   }
-  void handle(message)
-    .then((current) => sendResponse({ ok: true, status: current, events }))
+  void handle(message, sender)
+    .then((current) => sendResponse(current))
     .catch((error: unknown) => sendResponse({ ok: false, error: String(error) }));
   return true;
 });

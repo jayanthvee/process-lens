@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Recipients</title>
+<link rel="stylesheet" href="/styles.css">
+<!--SWITCHES-->
+</head>
+<body>
+<header class="site-header">
+  <h1>Recipients</h1>
+  <nav class="site-nav">
+    <a class="button-link" id="{{ID_BACK_LINK}}" data-testid="back-to-compose" href="index.html">Back to compose</a>
+    <a class="button-link" data-testid="nav-second" href="second-page.html">Second page</a>
+  </nav>
+</header>
+<!--ERROR-->
+<main>
+  <form id="{{ID_SAVE_FORM}}" action="/save" method="post" data-testid="save-form">
+    <input type="hidden" name="page" value="recipients">
+    <section id="{{ID_COMPOSER}}" class="composer" aria-labelledby="recipients-label" data-testid="recipient-composer">
+      <span class="field-label" id="recipients-label">Recipients</span>
+      <label for="{{ID_TO}}">Add recipient</label>
+      <input id="{{ID_TO}}" name="to" type="text" role="combobox" aria-expanded="false" aria-controls="{{ID_SUGGESTIONS}}" aria-autocomplete="list" data-testid="recipient-input" autocomplete="off" placeholder="alice@example.test" value="{{TO_VALUE}}">
+      <div id="{{ID_SUGGESTIONS}}" class="suggestions" role="listbox" aria-label="Recipient suggestions" data-testid="recipient-suggestions" hidden></div>
+      <button id="{{ID_ADD}}" type="button" data-testid="recipient-add">Add</button>
+      <div id="{{ID_CHIPS}}" class="chips" role="listbox" aria-label="Selected recipients" aria-multiselectable="false" data-testid="recipient-chips">
+        <div id="{{ID_CHIP_ALICE}}" class="chip" role="option" aria-selected="false" data-testid="recipient-chip" data-recipient="alice@example.test"><span class="chip-name">alice@example.test</span><button type="button" aria-label="Remove alice@example.test">✕</button></div>
+      </div>
+      <input id="{{ID_RECIPIENTS}}" type="hidden" name="recipients" value="{{RECIPIENTS_VALUE}}">
+    </section>
+    <button id="{{ID_SAVE}}" type="submit" data-testid="save">Save</button>
+  </form>
+</main>
+<script src="/app.js"></script>
+</body>
+</html>

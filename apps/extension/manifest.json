@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "description": "Records a browser demonstration as semantic, replayable steps.",
   "minimum_chrome_version": "116",
-  "permissions": ["activeTab", "storage", "debugger"],
+  "permissions": ["activeTab", "storage", "debugger", "webNavigation"],
   "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "background/service-worker.js",
