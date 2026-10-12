@@ -231,8 +231,19 @@ Three failures that are not step results:
   message.
 - `session_expired` — a command for a session whose extension is gone is a `peer_unavailable`.
 
-`BrowserExecutor` turns `peer_unavailable` into `StepResult(status="lost", error=...)` **and** raises a
-transient flag the run loop reads (§5.4): "the extension is gone" is a pause, not a step failure.
+`BrowserExecutor` turns `peer_unavailable` into `StepResult(status="lost", error=...)` **and** raises the
+`disconnected` flag that pauses the run (§5.4): "the extension is gone" is a pause, not a step failure.
+
+**R1 — a `check` with no answer is never "false".** `ConditionResult` carries only `passed` today, which is
+harmless against the fake and dangerous against a real page: a `check` can end with no answer at all (lost,
+refused by a guard, `peer_unavailable`, or past the runner's own budget). Read as `False`, a duplicate-search
+`branch` takes its `else` and **creates a record that already exists**. So `ConditionResult` gains
+`status: Literal["ok","lost","refused"] = "ok"` (defaulted, so the fake is unchanged), and the rule is:
+`passed is False` means one thing only — the extension polled to its timeout and the condition never held. A
+no-answer is propagated and handled by the caller: §5.3 for `branch`/`when`, §5.6 for the fresh-confirmation
+probe, and the existing not-passed path for `assert_after`.
+
+**R4 — nothing may act after the runner has stopped waiting.** The wire expiry is not decorative; see §5.2.
 
 ### 2.6 `command_id` uniqueness
 
@@ -240,11 +251,17 @@ transient flag the run loop reads (§5.4): "the extension is gone" is a pause, n
 the same record — a re-queued record, a `wait_for` retry — would therefore reuse it, and a strict
 "repeated id is refused" rule would deadlock the run.
 
-Resolution: **`BrowserExecutor` mints the wire `command_id` per send** as `f"{command.command_id}#{n}"` with `n`
-a per-process monotonic counter, and keeps `StepCommand.command_id` untouched for the ledger's own logging.
-The extension's dedupe window is then over wire ids, where "repeated" can only mean "duplicate delivery of the
-same message", which is exactly what the rule exists to catch. The requirement — `command_id` unique — is met
-on the wire. Flagged in §14 because it is a judgement call, not a literal reading.
+Resolution (R7 — corrected): **`BrowserExecutor` mints the wire `command_id` per send as `str(uuid4())`**, and
+carries `StepCommand.command_id` alongside in the message as `step_ref`, for the runner's logs and for a person
+reading a step event. The extension's dedupe window is then over wire ids, where "repeated" can only mean
+"duplicate delivery of the same message", which is exactly what the rule exists to catch.
+
+The earlier draft used `f"{command.command_id}#{n}"` with a per-process counter, and that is wrong: after a
+worker crash the counter restarts at `#1`, so the takeover worker's first command for the same record and step
+mints an id the extension still remembers from before the crash, and the extension refuses it as a duplicate.
+That is precisely the crash-and-takeover e2e path (`test_a_takeover_workers_first_command_is_not_a_duplicate`),
+so a per-process counter would break the acceptance criterion it was meant to serve. A uuid is unique across
+processes and restarts.
 
 ---
 
@@ -261,14 +278,20 @@ Attended, single user, per the ticket.
 3. The hub creates an **unclaimed session**: `session_id` (`uuid4`), a one-time `session_token`
    (`secrets.token_urlsafe(32)`), and `expires_at` (now + 10 min). It returns `{session_id, session_token,
    protocol: 1, expires_at}`.
-4. The worker opens `ws://{hub}/api/v1/executor/ws?session={session_id}` carrying the token in
-   `Sec-WebSocket-Protocol` (browsers cannot set headers on a WebSocket; the subprotocol is a handshake header,
-   kept out of URLs and logs). The hub ties that socket to the session and marks it claimed; the token is
-   consumed and never returned again.
-5. A worker started with `--executor browser --session <session_id>` connects to
+4. The worker opens `ws://{hub}/api/v1/executor/ws?session={session_id}` offering the subprotocols
+   `processlens.v1` and `pl.token.<token>` (S3). Browsers cannot set headers on a WebSocket, and the server
+   must select exactly one offered value, so the token travels as one subprotocol and the hub selects the
+   other — the token is never echoed back into a response header. The hub ties that socket to the session and
+   marks it claimed; the session token is consumed and never returned again.
+5. **R5 — the resume token.** On every successful attach, the hub's **first** message to the extension is
+   `{type:"session", resume_token: <secrets.token_urlsafe(32)>}`, and the previous resume token dies. This is
+   what makes reconnect possible: the session token is single-use, so it cannot be the thing a reconnect
+   presents. A detached session accepts exactly one re-attach carrying the current resume token within its
+   TTL; a second socket presenting the same token, or any token after the TTL, is refused `4401`.
+6. A worker started with `--executor browser --session <session_id>` connects to
    `ws://{hub}/api/v1/runner/ws?session={session_id}` with `Authorization: Bearer $PROCESSLENS_RUNNER_SECRET`.
    The hub binds that runner socket to the same session.
-6. When both sockets of a session are attached, the hub sends `peer_ready` to each; when either goes, it sends
+7. When both sockets of a session are attached, the hub sends `peer_ready` to each; when either goes, it sends
    `peer_gone` to the other.
 
 **The session is bound to the tab by the extension, not the hub.** The hub records `tab_url`/`tab_title` for
@@ -283,14 +306,19 @@ Four checks, all before a message is read, in the spirit of "refuse, do not nego
 1. **Loopback peer.** The hub refuses any client whose address is not loopback (`127.0.0.1`, `::1`) with close
    code `4403`. The ticket says "by default the hub listens on 127.0.0.1 only"; a code check makes it a
    guarantee rather than a deployment note, and it holds even if uvicorn is started with `--host 0.0.0.0`.
-2. **Extension channel: origin.** `Origin` must be exactly `chrome-extension://<id>`, with `<id>` pinned to
+2. **S4 — host header.** Every request (HTTP and WebSocket alike) is refused unless its `Host` header names
+   `127.0.0.1:<port>` or `localhost:<port>`. This is the cheap guard against DNS rebinding: a page at
+   `evil.example` that resolves to `127.0.0.1` still sends `Host: evil.example`, and is refused before it
+   reaches `POST /executor/sessions`.
+3. **Extension channel: origin.** `Origin` must be exactly `chrome-extension://<id>`, with `<id>` pinned to
    `PROCESSLENS_EXTENSION_ID`. An unset/mismatched id, a `http(s)://` origin, or a missing origin is `4401`
    before the token is even examined. A web page that opens a WebSocket to localhost sends its own `http(s)`
    origin and is refused.
-3. **Extension channel: session token.** The `Sec-WebSocket-Protocol` value must be `pl.token.<token>` and must
-   match an **unclaimed, unexpired** session; the session must not already have an extension socket. Single
-   use, constant-time compare (`secrets.compare_digest`).
-4. **Runner channel: secret.** `Authorization: Bearer <secret>` compared against
+4. **Extension channel: session token or resume token.** The offered subprotocols must include
+   `processlens.v1` and a `pl.token.<token>` whose value matches either an **unclaimed, unexpired** session
+   (the session token) or a **detached** session's current resume token (R5). Constant-time compare
+   (`secrets.compare_digest`). One socket per session.
+5. **Runner channel: secret.** `Authorization: Bearer <secret>` compared against
    `PROCESSLENS_RUNNER_SECRET` with `secrets.compare_digest`. **If the variable is unset the runner channel
    refuses everything** (fail closed — an unset secret must not mean "no secret required"). A runner socket that
    also carries a `chrome-extension://` origin is refused.
@@ -321,23 +349,30 @@ in a payload to escape it. An unknown, expired, already-paired, or extension-les
 - **No buffering, no replay**: if the peer is absent, the sender gets `peer_unavailable` and the hub forgets the
   message. It does not hold it for a reconnect — because the extension refusing a stale command is the design,
   and a relay that replays would defeat it.
-- `peer_ready` / `peer_gone` are the hub's own two control messages; they are not relayed and both ends ignore
-  them for step purposes (the runner uses `peer_gone` as a *hint*; the authoritative signal is the socket dying
-  under `BrowserExecutor`, §5.2).
+- `peer_ready` / `peer_gone` are the hub's own two control messages; they are not relayed. **R6: `peer_gone` is
+  authoritative, not a hint.** When the extension's socket drops — which is exactly what the hub's `close` test
+  does — the *runner's* socket stays up, so "the socket dying under `BrowserExecutor`" never happens. On
+  `peer_gone` the runner's in-flight command is `lost` at once and the run pauses `executor_disconnected`, even
+  if the extension reconnects 500 ms later. `peer_ready` is what the browser worker waits for before it claims
+  a run (S5).
+- `session` is the hub's third control message: the first message an extension socket receives (R5).
 - A socket that exceeds a small per-socket queue (`1024` messages) is closed `4408`: a peer that cannot keep up
   must not grow the hub's memory in a run that could last an hour. The runner is strictly one-command-at-a-time,
   so this can only fire when the extension is wedged.
 
 ### 3.5 Lifecycle and the one operational control
 
-`POST /api/v1/executor/sessions/{session_id}/close` (runner secret required) drops the session's extension
-socket. It exists because an acceptance criterion requires a **deterministic** extension disconnect mid-save,
-and the alternatives are worse: stopping the MV3 service worker over CDP is flaky and needs the test to command
-a browser-internal target; a test-only hook inside the extension would be production code that only tests use.
-A "drop this session" control is also what an operator needs when a session is wedged. Flagged in §9/§14.
+`POST /api/v1/executor/sessions/{session_id}/close` (runner secret required) **detaches** the session's
+extension socket (S6: it does not end the session). It exists because an acceptance criterion requires a
+**deterministic** extension disconnect mid-save, and the alternatives are worse: stopping the MV3 service worker
+over CDP is flaky and needs the test to command a browser-internal target; a test-only hook inside the extension
+would be production code that only tests use. A "drop this socket" control is also what an operator needs when
+a session is wedged. Flagged in §9/§14.
 
-`DELETE`-style semantics are not used: the session ends, the extension sees its socket close, reconnects, and
-the runner sees `lost` — which is the point of the test.
+Because it detaches rather than ends the session, the sequence is: the extension sees its socket close and
+reconnects with its resume token (R5); the runner sees `peer_gone`, loses the in-flight command at once and
+pauses `executor_disconnected`; on resume the run continues against the same session. That is exactly what
+`test_reconnecting_and_resuming_continues_the_run` needs, and it is why S6 and R5 are the same change.
 
 ---
 
@@ -385,11 +420,17 @@ idle ──connect──▶ pairing ──201──▶ connecting ──ws open�
 - **`disconnected`**: the socket closed. The in-flight command, if any, is abandoned and **reported `lost` on
   the next successful connection** (§4.4) — and never re-run.
 
-Per-session memory, in memory only, never persisted:
-- `highestEpoch: Map<run_id, number>` — the highest `lease_epoch` seen per run;
-- `recentIds: Set<command_id>` — a bounded ring of the last 256 wire ids;
-- `inFlight: {command_id, run_id, lease_epoch, commit, dispatched} | null`;
-- `boundTabId: number | null`, `sessionId`, `sessionToken`, `hubUrl`.
+Per-session memory. Two tiers, and the split is deliberate (R5):
+
+- **In memory only** — `highestEpoch: Map<run_id, number>`, `recentIds: Set<command_id>` (a bounded ring of the
+  last 256 wire ids), `inFlight: {command_id, run_id, lease_epoch, commit, dispatched} | null`. An MV3 service
+  worker is suspended and restarted routinely, and losing this is **acceptable**: the hub never replays, so a
+  new socket only ever carries new messages. A restarted worker cannot be handed a stale command, so it has
+  nothing to compare ids against.
+- **In `chrome.storage.session`** (memory-backed, survives a service-worker restart, dies with the browser) —
+  `{hubUrl, sessionId, resumeToken, boundTabId}`. This is what makes reconnect-after-restart work at all (R5).
+  It holds no run state, no row, and no ledger fact, so D-004 is untouched: the extension still owns no
+  workflow state, only the address of the socket it is supposed to be on.
 
 ### 4.3 The refusal rules
 
@@ -403,17 +444,25 @@ Before acting on any command, in this order, each producing `result status=refus
 6. `state === "executing"` → refuse (serial, §4.2).
 
 A refusal is a `result`, never an `event`: the runner needs a per-command answer to keep the ledger honest.
-`highestEpoch` is only advanced by a command that passed its checks, so a higher-epoch command that is itself
-refused for another reason does not poison the next lower-epoch one… it does, and it should: an epoch advance
-means a new lease holder, and everything from before is stale. Note the ordering consequence: rule 2 must run
-**after** the id/expiry checks only in the sense that all four must be evaluated on the same message — the plan
-evaluates in the order above, which is stable and unit-tested per rule.
+
+**S1 — the epoch rule, stated once and unambiguously.** After the stale check, *every* well-formed command
+advances the watermark before any other rule is applied:
+
+```
+highestEpoch[run_id] = max(highestEpoch[run_id], lease_epoch)
+```
+
+even when the command is then refused for a different reason. A higher epoch always means a newer lease
+holder, so a command that carries one is evidence that everything from the previous holder is stale —
+including commands the extension has not yet refused. The earlier draft of this section said the opposite in
+one place and then talked itself out of it; this is the rule.
 
 ### 4.4 Reconnect, and the `lost` report
 
 On `close`:
 - if a command was in flight, keep `{command_id, run_id, lease_epoch, commit, dispatched}` in `unreported`;
-- attempt reconnect (backoff above);
+- attempt reconnect (backoff above) **with the resume token from `chrome.storage.session`** (R5) — not the
+  consumed session token, which the hub will refuse;
 - on the next successful `ready`, **first** send `result {command_id, status: "lost", error: "the connection
   dropped while this command was in flight"}` for each `unreported` entry — with `status: "lost"` regardless of
   whether the input had been dispatched, because after a drop the extension cannot prove otherwise;
@@ -423,6 +472,13 @@ The in-flight command is never re-run, and the extension never holds the result 
 `unreported` is cleared when sent. If the extension dies before reconnecting, the runner's own budget expires
 and it records `lost` there — the two mechanisms are independent on purpose, because either side can be the
 survivor.
+
+**R5 — why storage.session, and what is deliberately lost.** An MV3 service worker is suspended and restarted
+routinely, so `sessionId`, `resumeToken` and `boundTabId` cannot live in module scope: a restart would leave the
+extension unable to re-attach, and the run would be stranded. They live in `chrome.storage.session` (memory-
+backed, survives a restart, dies with the browser). `highestEpoch` and `recentIds` are **deliberately not
+persisted**: the hub never replays, so a fresh socket only ever carries new messages, and a restarted worker has
+no stale command to compare ids against.
 
 ### 4.5 Keepalive
 
@@ -438,8 +494,8 @@ to the popup plus an offscreen document. Not planned; noted in §13 as the risk 
 ### 4.6 The guards: before every command, in order, never acting
 
 1. **Origin.** Read the target frame's `location.origin` (in the frame's own context). It must be in
-   `allowed_origins`. Otherwise `event off_origin` + `result refused`. This is checked per command, not once per
-   run: a page can navigate between steps.
+   `allowed_origins`. Otherwise `event off_origin` **then** `result refused` (R6: the event goes first). This is
+   checked per command, not once per run: a page can navigate between steps.
 2. **Challenge or login.** One page-side probe expression returns
    `{challenge: bool, marker: string, password_field: string | null}`:
    - a challenge iframe whose `src` matches `challenges.cloudflare.com`, `recaptcha`, `hcaptcha`, or
@@ -448,12 +504,19 @@ to the popup plus an offscreen document. Not planned; noted in §13 as the risk 
      current step.
    On a challenge, `event challenge` and refuse the command. On a login page, `event login_required` and
    refuse. **Neither is ever solved, skipped, or bypassed** (rule 19, D-017): a person logs in.
-3. **Destructive control.** For a `click`, read the target's accessible name (the resolver already computes it).
-   Refuse when it contains `delete`, `cancel`, `refund`, `pay`, or `transfer` as a word, unless the step sets
-   `allow_destructive_control: true`. `result refused` with the reason naming the word and the control.
-   Word-boundary matching, case-insensitive, so "Payment history" is refused and "Canceled orders report" is
-   too — over-refusing is the safe direction, and the flag is the escape hatch.
-4. **Debugger attach.** `attachDebugger` currently rejects with `cannot attach the debugger: <lastError>`.
+3. **Destructive control (S2 — corrected matching).** For a `click`, read the target's accessible name (the
+   resolver already computes it). Refuse when it matches `/\b(delete|cancel|refund|pay|transfer)/i`, unless the
+   step sets `allow_destructive_control: true`. `result refused` with the reason naming the matched prefix and
+   the control.
+   **Prefix, not whole word.** The earlier draft said whole-word *and* gave "Payment history" as an example of
+   a refusal, which cannot both be true: `\bpay\b` does not match "Payment". Matching the prefix does, and it
+   also catches "Payment", "Transferring", "Cancelations" and "Refunds". Over-refusing is the safe direction,
+   and the flag is the escape hatch.
+4. **R4 — the expiry re-check.** Immediately before the first input event, and after the guards, the scroll and
+   the hit test, re-read `expires_at`. If it has passed, refuse and send **no input**. The command was fresh
+   when it arrived; it may not be fresh by the time the target is measured, and the runner uses the expiry to
+   decide how long it will keep waiting (§5.2). This is the extension's half of R4.
+5. **Debugger attach.** `attachDebugger` currently rejects with `cannot attach the debugger: <lastError>`.
    Classification: a message matching `/host access is restricted by policy/i` or `/screenshot capture is
    restricted by policy/i` (or any `policy` + `restricted`) becomes `event policy_blocked` with the readable
    sentence *"your administrator's Chrome policy blocks ProcessLens"*, and the run pauses `policy_blocked`.
@@ -510,14 +573,23 @@ So `BrowserExecutor` owns one blocking socket and one reader that **runs inside 
 - Two deadlines, both real: the **ack budget** is `DISPATCH_BUDGET_SECONDS` (`run_loop.py:76`, 5 s) and the
   **result budget** is the step's own `timeout_ms` plus the same budget. A missing ack inside 5 s is `lost` (the
   ticket says so explicitly); a missing result inside its budget is `timeout`.
-- **The wire `expires_at` is minted at send time; it is not `StepCommand.expires_at`.** That field is the
-  *runner's own* budget, computed once in `_command` as `clock.time() + condition_timeout(assert_after,
-  fallback)/1000` (`run_loop.py:805-806`) — and for a commit whose `assert_after.timeout_ms` is small (the schema
-  allows 100 ms) it can already be in the past by the time the `dispatch` is sent, after `prepare` and the fresh
-  confirmation ran. Reusing it would refuse a legitimate command. So `BrowserExecutor` stamps every outbound
-  message with `expires_at = now_ms + COMMAND_TTL_MS` (`COMMAND_TTL_MS = 60_000`), which answers the extension's
-  actual question — "is this message too old to act on?" — and is a property of the round trip, not of the
-  assertion.
+- **R4 — the wire `expires_at` is `send + the budget of the command it is on`, and it is not
+  `StepCommand.expires_at`.** That field is the *runner's own* budget, computed once in `_command` as
+  `clock.time() + condition_timeout(assert_after, fallback)/1000` (`run_loop.py:805-806`) — and for a commit
+  whose `assert_after.timeout_ms` is small (the schema allows 100 ms) it can already be in the past by the time
+  the `dispatch` is sent, after `prepare` and the fresh confirmation ran. So:
+  - a **`dispatch` that expects an ack** gets `expires_at = now_ms + ack budget (5 s)` — the extension may act
+    on it only as long as the runner will still be waiting for the ack;
+  - **every other command** gets `expires_at = now_ms + its own result budget` (the `check`'s or the step's
+    `timeout_ms`, plus the same 5 s of slack).
+
+  This closes a real hole the review found: a flat 60 s TTL against a 5 s ack budget leaves 55 s in which the
+  runner has already written the dispatch off (`lost` → `reconciling` → parked) while the extension can still
+  click Save. The extension also **re-checks the expiry immediately before the first input event** (§4.6).
+- **R4 — no reply within the budget, socket still up.** `BrowserExecutor` sends nothing further and flags the run
+  to pause `executor_disconnected`. It never moves on to the next record while the extension may still be acting
+  on the previous command. The socket has not died, so the pause is driven by the missed budget, not by a close
+  event; the flag is drained by the loop exactly as a `peer_gone` is (§5.3).
 - The socket being closed or refused at any point is `lost`, and it sets the `disconnected` flag (§5.4).
 
 The worker keeps one connection for the life of the process and reconnects between runs; a run never starts
@@ -527,9 +599,17 @@ executor when the socket is down — the same fail-closed shape as `Disconnected
 ### 5.3 The event queue, and how the run loop maps it
 
 `BrowserExecutor` exposes `take_events() -> list[tuple[str, str]]` (drain). The run loop drains it **at the top
-of the record loop and immediately after every executor call**. A new optional constructor argument
-`events: Callable[[], list[tuple[str, str]]] | None = None` keeps `FakeExecutor` tests unchanged and lets a test
-inject any sequence. Mapping, per the ticket:
+of the record loop, immediately after every executor call, and — R6 — *before* it interprets any result**. A new
+optional constructor argument `events: Callable[[], list[tuple[str, str]]] | None = None` keeps `FakeExecutor`
+tests unchanged and lets a test inject any sequence.
+
+**R6 — the ordering, and why it matters.** The extension sends an `event` **before** the `result refused` it
+causes, and the loop processes drained events before it reads a result. Without both halves, a challenge would
+first park the record through the `refused → parked` rule (§2.4) and only then pause the run — but the ticket
+says a pre-commit record is *released*, not parked. Draining first means the event decides the record's fate
+before the refusal is ever interpreted. `peer_gone` is drained the same way and is authoritative (§3.4).
+
+Mapping, per the ticket:
 
 | event | what the loop does |
 |---|---|
@@ -547,14 +627,17 @@ kinds into that existing pause path (a `paused` run status plus the pause reason
 resume re-queues the run and the released records are claimed again, consuming an attempt — the ledger's
 designed retry semantics, unchanged from today's pause behaviour.
 
-### 5.4 Pauses need a hand-back
+### 5.4 Pauses need a hand-back (R8 — corrected)
 
-A record in `filling` that hits a run-level event is released to `pending` (§5.3); every pause path ends with
+A record in `filling` that hits a run-level event is released to `pending` (§5.3); every new pause path ends with
 `_hand_back`, exactly as `canary_failed` and `records_not_exit` do — otherwise the run stays claimed by a worker
-that has stopped, and "resume" would have nothing to resume. The PL-013 follow-up in the ticket
-(`internal_error`) is fixed the same way, and the same omission in the `awaiting_approval` and
-`duplicate_detected` paths is **noted in the report as a remaining gap**, not fixed here: those two are not in
-this ticket's scope.
+that has stopped, and "resume" would have nothing to resume.
+
+**Correction to the earlier draft:** `awaiting_approval` and `duplicate_detected` already hand back, and always
+have. They set the run `paused` and return; the loop's own status check at `run_loop.py:156` then releases the
+run on the next iteration. Only the `internal_error` path (`run_loop.py:168-169`) `return`s directly out of
+`process_run` and skips that check, so **only `internal_error` needs the fix** — the ticket's PL-013 follow-up is
+exactly this, and nothing else is a gap.
 
 ### 5.5 `ParkingReconciler`
 
@@ -581,11 +664,22 @@ In `_commit_step`, after `prepare` succeeds and **before** `begin_commit`:
 ```python
 # one bounded evaluation, not the step's own polling budget: the question is "is the
 # confirmation on the page now", and `_check` would otherwise poll for the full fallback timeout
-if self._confirmation_present(conn, record, step["assert_after"]):
-    self._transition(conn, record, box.state, "parked", ALREADY_ON_PAGE_REASON)
+verdict = self._probe_confirmation(conn, record, step["assert_after"])   # True | False | None
+if verdict is not False:          # R1: True *or* no answer -> park. Never treat "no answer" as "absent".
+    self._transition(conn, record, box.state, "parked",
+                     ALREADY_ON_PAGE_REASON if verdict is True else UNKNOWN_CONFIRMATION_REASON)
     return "parked"
 ALREADY_ON_PAGE_REASON = "the confirmation was already on the page before saving"
+UNKNOWN_CONFIRMATION_REASON = "could not tell whether the confirmation was already on the page"
 ```
+
+**R1 at the probe: no answer means park, never "absent".** The probe is the one place where a no-answer would
+be consumed as a *negative*, and a negative here means "the page is clean, go ahead and save" — which can
+duplicate a record whose confirmation the extension merely failed to read. So the probe's three outcomes are
+`True` (already there → park, the confirmation could not be trusted), `False` (a real poll to the timeout found
+nothing → save), and **no answer → park**. The two parked reasons are distinct on purpose: one says a stale
+confirmation was seen, the other says the runner could not tell, and a person reading the ledger needs to know
+which.
 
 `_confirmation_present` asks the **page**, so it must be a probe the executor can decline. It is gated on a new
 capability on the `Executor` seam: `probe_confirmation(condition, *, step_id, record_key) -> bool | None`,
@@ -754,9 +848,15 @@ in `tests`, and `browser_automation` may not appear in `services/`. The e2e driv
 fixtures, run `python -m db.migrate`, start the API+hub, start the runner worker, and assert through the
 fixture's test API and the ledger — all Python. Driving that from Node would mean two runtimes, two dependency
 trees, and a cross-process protocol that is itself a test hazard. So: **Playwright for Python**, in `tests/e2e/`,
-using its **bundled Chromium** (`chromium.launch_persistent_context`), because branded Chrome and Edge no
-longer load an unpacked extension from the command line — which is also why the existing Node smoke script keeps
-its browser-candidate search and stays as it is.
+using its **bundled Chromium** (`chromium.launch_persistent_context` with `channel="chromium"`), because branded
+Chrome and Edge no longer load an unpacked extension from the command line — which is also why the existing Node
+smoke script keeps its browser-candidate search and stays as it is.
+
+**R9 — the browser stays in the repo.** `playwright install chromium` downloads to `%LOCALAPPDATA%\ms-playwright`
+by default, which is outside `C:\Users\vasup\process-lens` and therefore forbidden by constitution §2.1. So the
+install and every run set `PLAYWRIGHT_BROWSERS_PATH` to a gitignored folder inside the repo
+(`.cache/ms-playwright/`), a new `.gitignore` line listed in §9. `channel="chromium"` selects the bundled
+build, which is the one that loads an unpacked extension.
 
 ### 8.2 What a test starts
 
@@ -806,6 +906,7 @@ Each of these is a small, unavoidable touch; each is listed here rather than smu
 | `apps/extension/scripts/validate-package.mjs` | its `REQUIRED_PERMISSIONS` hard-codes `webNavigation`; the ticket requires that permission to be removed, so the validator would fail otherwise | one array entry |
 | `pyproject.toml` | the `e2e` marker must be registered (`--strict-markers` is already on), and Playwright must be a dev extra | two blocks |
 | `services/api/hub.py` `close` endpoint | the disconnect acceptance criterion needs a deterministic disconnect (§3.5) | ~15 lines |
+| `.gitignore` | R9: `.cache/ms-playwright/` must be ignored, because the Playwright browser has to live inside the repo | one line |
 | `tests/runner/test_hub.py` (rather than `tests/api/`) | `tests/runner/` is the only in-scope home for a Python transport test | placement choice |
 | `internal/docs/ARCHITECTURE.md` | in scope, and used to resolve the transport open item — **runner ↔ hub is the same WebSocket hub**, with the runner as a client; neither LISTEN/NOTIFY nor internal HTTP | one open item removed |
 
@@ -831,17 +932,22 @@ gates green.
    connected to the runner; PL-010 mode untouched.
 3. **`feat(runner): drive the real extension through the hub`** — `browser_executor.py`, `reconcile.py`
    (`ParkingReconciler`), `worker.py`/`__main__.py`, the run-loop event mapping + the fresh-confirmation probe +
-   the `internal_error` hand-back, `executor.py`'s `refused` and `probe_confirmation`, `testing.py`'s no-op probe,
-   and the runner tests. The first commit where an end-to-end run is possible. The tests this commit must
-   *change* are named here so the diff is reviewable: `testing.py` (the no-op probe), plus new files
+   the `internal_error` hand-back, `executor.py`'s `refused`, `ConditionResult.status` and `probe_confirmation`,
+   `testing.py`'s no-op probe, and the runner tests. **R1 and R2 land here**, with their named tests
+   (`test_a_lost_branch_check_takes_neither_branch`, `test_a_refused_branch_check_takes_neither_branch`,
+   `test_an_unanswered_confirmation_probe_parks`, `test_a_templated_branch_condition_reaches_the_executor_rendered`)
+   and R3, R6, R7's runner tests. The first commit where an end-to-end run is possible. The tests this commit
+   must *change* are named here so the diff is reviewable: `testing.py` (the no-op probe), plus new files
    `test_browser_executor.py`, `test_command_mode_events.py`, `test_fresh_confirmation.py`,
-   `test_parking_reconciler.py`, `test_internal_error_handback.py`. **No existing runner test's assertions
-   change** — the no-op probe is what makes that true, and if any existing test needs an assertion edited, that
-   is a signal the gate leaked and it gets reported rather than patched.
+   `test_parking_reconciler.py`, `test_internal_error_handback.py`, `test_condition_answers.py`. **No existing
+   runner test's assertions change** — the no-op probe is what makes that true, and if any existing test needs
+   an assertion edited that is a signal the gate leaked; the instruction is to stop and report it, not patch it.
 4. **`test(executor): harden the PL-010 carry-overs`** then
    **`test(e2e): drive the real extension on the fixture site`** — §6's twelve changes and thirteen tests, the
-   fixture site, and the e2e harness. Split in two because §6 is extension-local and the e2e work is a stack.
-5. **`docs: resolve the runner-hub transport item`** + `internal/agent/reports/PL-014.md`.
+   fixture site (`fixtures/sites/lead-crm/`), and the e2e harness (`tests/e2e/`). Split in two because §6 is
+   extension-local and the e2e work is a whole stack.
+5. **`docs: resolve the runner-hub transport item`** — `internal/docs/ARCHITECTURE.md`, plus
+   `internal/agent/reports/PL-014.md`.
 
 ---
 
@@ -887,6 +993,28 @@ and its `result`), `test_browser_executor.py::test_a_missing_ack_within_the_budg
 `test_browser_executor.py::test_on_dispatched_fires_exactly_once`, and
 `test_hub.py::test_the_hub_never_queues_a_command_for_an_absent_peer`.
 
+### 11.1 Tests required by the T1 plan review (R1–R9)
+
+| change | test | layer |
+|---|---|---|
+| R1 | `test_a_lost_branch_check_takes_neither_branch` | runner |
+| R1 | `test_a_refused_branch_check_takes_neither_branch` | runner |
+| R1 | `test_an_unanswered_confirmation_probe_parks` | runner |
+| R2 | `test_a_templated_branch_condition_reaches_the_executor_rendered` | runner |
+| R3 | `test_a_late_ack_never_fires_the_next_commands_on_dispatched` | runner |
+| R4 | `an expired command is refused before any input is sent` | vitest |
+| R4 | `test_no_reply_within_budget_pauses_the_run` | runner |
+| R5 | `a restarted worker re-attaches with the resume token` | vitest |
+| R5 | `test_a_resume_token_is_single_use` | runner |
+| R6 | `test_a_challenge_releases_a_pre_commit_record_instead_of_parking` | runner |
+| R6 | `test_peer_gone_loses_the_in_flight_command_at_once` | runner |
+| R7 | `test_a_takeover_workers_first_command_is_not_a_duplicate` | runner |
+| S2 | `the destructive match is a word prefix, so Payment is refused` | vitest |
+| S3 | `test_the_hub_selects_the_protocol_subprotocol_and_never_echoes_the_token` | runner |
+| S4 | `test_a_dns_rebinding_host_header_is_refused` | runner |
+| S5 | `test_the_browser_worker_waits_for_peer_ready_before_claiming` | runner |
+| S6 | `test_close_detaches_the_session_and_the_extension_re_attaches` | runner |
+
 ---
 
 ## 12. Gates
@@ -921,7 +1049,7 @@ nothing.
    partially filled form from the interrupted attempt, and the next attempt types into it again. Three things
    bound it: `fill` clears by default (`clear_first`), the record's `attempts` counter is capped by
    `max_attempts`, and the commit window is untouched (a record that may already have saved reconciles and
-   parks). Flagged in the report, in §14.2, and worth watching in the first real runs.
+   parks). Accepted by T1 (see §14 answer 2), and worth watching in the first real runs.
 3. **Branded Chrome is out of reach for automated loading**, so the e2e harness runs Chromium. Manual
    verification in the person's Chrome ("Load unpacked" on `apps/extension/dist`) stays the standard, and the
    report will say so.
@@ -932,32 +1060,230 @@ nothing.
    long-term home; PL-014 puts this one in `fixtures/sites/` because the ticket names that path, and the report
    will note the duplication risk if both grow.
 6. **Not covered, by the ticket's own Out of scope:** the reconcile definition (P-003), pacing, Web Store
-   readiness, the dashboard (PL-015), multi-user auth, the cloud runner, `upload_file` and `read_value`. Also
-   not covered: the `awaiting_approval`/`duplicate_detected` hand-back gap (§5.4), which is reported.
-7. **This plan does not itself implement anything**, per Step 0. No implementation commit exists on `pl-014`
-   beyond the ticket and the P-003 proposal.
+   readiness, the dashboard (PL-015), multi-user auth, the cloud runner, `upload_file` and `read_value`. (Corrected
+   by R8: `awaiting_approval` and `duplicate_detected` already hand the run back, so they are not a gap.)
+7. **The plan is no longer the whole deliverable.** Step 0 ended at the plan; T1 has now approved it with
+   changes, so the implementation follows in the same branch (§10), with R1 and R2 at the front because both can
+   create a duplicate record and the fake executor hides both.
 
 ---
 
-## 14. Open questions for T1
+## 14. Open questions, and T1's answers
 
-1. **`refused` in `StepStatus`** (§2.4, §9). Adding a seventh Python status plus explicit run-loop handling is
-   the only way "a destructive refusal parks the record" survives a recipe that says `on_failure: fail`. The
-   residual `dispatch`-time refusal goes `submitting → failed`, because `submitting → parked` is not legal and
-   `reconciling` would assert something untrue; confirm, as the ticket does not cover that case.
-2. **The release rule's page state** (§5.3, §13.2). The plan implements the ticket's `filling → pending`
-   release via the ledger's existing `release_working_records`. Confirm that a released record may re-drive a
-   tab still holding the interrupted attempt's half-filled form (the alternative is to park, which the ticket
-   does not ask for).
-3. **Wire `command_id` minted by `BrowserExecutor`** (§2.6). The alternative is to change `_command`'s id
-   scheme, which touches the run loop's logging. Confirm the executor-side mint.
-4. **The hub's `close` endpoint** (§3.5). It exists to make the disconnect criterion deterministic. Accept, or
-   point at the mechanism you prefer (stopping the service worker over CDP is the alternative, and it is flaky).
-5. **`Sec-WebSocket-Protocol` for the token** (§3.1). Browsers cannot set headers on a WebSocket; the
-   subprotocol is the only handshake field available that is not a URL. Accept, or move the token to a
-   first-message auth with a strict window.
-6. **Playwright for Python, in `tests/e2e/`** (§8.1). ARCHITECTURE.md permits it; the ticket names the directory
-   but not the language. Confirm the Python driver over a Node one.
-7. **The scope touches in §9** — in particular `services/runner/executor.py`,
-   `apps/extension/scripts/validate-package.mjs`, and `pyproject.toml`. Each is forced; each is listed so you
-   can rule.
+All seven were answered in the plan review; the answers are recorded here because they change the plan body.
+The plan text above has been amended accordingly — this list is the record of *why*.
+
+1. **`refused` in `StepStatus`: yes.** A dispatch-time refusal going `submitting → failed`: **yes** — no input
+   was sent, and that is evidence, exactly as with `not_dispatched`. The ticket's "no record `failed`" on a
+   challenge refers to the pre-commit path, which R6 handles by draining the event first.
+2. **Re-driving a half-filled tab: accepted.** Every recipe we have starts the record with `navigate`, and
+   `clear_first` is the default.
+3. **Executor-side id minting: yes — with `uuid4()`, not a counter** (R7, §2.6).
+4. **The `close` endpoint: accepted — as a detach, not an end** (S6, §3.5).
+5. **`Sec-WebSocket-Protocol` for the token: accepted — with S3's two-value offer** (§3.1, §3.2.4).
+6. **Playwright for Python: yes — with R9's in-repo `PLAYWRIGHT_BROWSERS_PATH`** (§8.1, §9).
+7. **§9 scope touches: all accepted.** Also accepted: the `_check` rendering fix (R2) and the `.gitignore` line
+   (R9).
+
+
+---
+
+## 15. Changes from T1 review
+
+T1 approved the plan with required changes (`internal/agent/reports/PL-014-plan-review.md`, on `9ac1635`). This
+section records each change, what it touches, and the test that proves it; the sections above have been amended
+so the plan reads correctly on its own. Where this section and an earlier section disagree, this one is the
+current truth.
+
+The review's own framing is worth keeping: **R1 and R2 are the important ones, because both let the real
+extension create a duplicate record and the fake hides both.** Everything else is a correctness or a mechanism
+fix.
+
+### R1 — a check with no answer is never "false"
+
+**Required.** `ConditionResult` carries only `passed` (`executor.py:52`) and `_check` returns `result.passed`
+(`run_loop.py:760-769`). Against the fake that is harmless; against a real page a `check` can end with no answer
+at all — lost, refused by a guard, `peer_unavailable`, or past the runner's budget. Read as `False`, the
+duplicate-search `branch` takes its `else` and creates a lead that already exists.
+
+**Change.** `ConditionResult` gains `status: Literal["ok","lost","refused"] = "ok"` — defaulted, so every
+existing construction and every `FakeExecutor` call site is unchanged. `passed is False` now means exactly one
+thing: the extension polled to its timeout and the condition never held. The three call sites handle a
+no-answer explicitly:
+
+- **`branch`/`when` and `approval_gate`/`when`, no answer** — park the record. If a run-level event or a
+  disconnect is flagged, release it and pause instead (§5.3, R6). Never take either branch. Taking `else` would
+  type a new lead over an existing one; taking `then` would skip a lead that should have been created. Parking
+  is the only safe answer, and a person can see it.
+- **`assert_after`, no answer** — `reconciling`, which is already the not-passed path (`run_loop.py:530-540`).
+  Nothing new is needed beyond not treating it as a pass.
+- **Fresh-confirmation probe, no answer** — treat it as "present" **and park** (§5.6). A no-answer there is the
+  most dangerous of the three: "absent" is the answer that authorises the save, so an unanswered probe must
+  never authorise anything.
+
+**Tests.** `test_a_lost_branch_check_takes_neither_branch`, `test_a_refused_branch_check_takes_neither_branch`,
+`test_an_unanswered_confirmation_probe_parks`.
+
+### R2 — render conditions before `_check`
+
+**Required.** `_check` receives `step.get("when")` and `step.get("assert_after")` raw (`run_loop.py:372`, `530`);
+`_render_condition` is applied only inside `_command`. Our own `packages/recipe/examples/create-lead.recipe.json`
+searches for a row named `{{row.email | lower}}` — **confirmed at line 115**, inside the duplicate-search
+condition's `targets` rung. The extension would look for that literal text, never find it, and create a duplicate
+of every existing lead. The fixture site would mask it (it rejects duplicate emails); a real CRM would not.
+
+**Change.** Every condition is rendered with `_render_condition(condition, row, variables)` before it reaches
+`_check`. That covers `branch.when`, `approval_gate.when`, `assert_after`, and the fresh-confirmation probe —
+four call sites, one helper, no new mechanism. The rendering already exists and is already tested
+(`tests/runner/test_templates.py`); the bug was that three of the four paths never called it.
+
+**Test.** `test_a_templated_branch_condition_reaches_the_executor_rendered` — asserts the condition the executor
+receives carries the record's email, not the `{{row.email}}` placeholder.
+
+**Where.** Commit 3, with R1.
+
+### R3 — match every reply to the command it answers
+
+**Required.** A `result` for command N must not be read as the answer to command N+1.
+
+**Change.** `BrowserExecutor` keeps the wire id of the command it is waiting on and accepts an `ack`, `result`
+or `condition` only when the id matches. Anything else — a late reply, or the extension's "`lost` after
+reconnect" report for an earlier command — is logged and dropped. `on_dispatched` fires only on a matching
+`ack`, and only for a commit `dispatch`.
+
+**Test.** `test_a_late_ack_never_fires_the_next_commands_on_dispatched`.
+
+### R4 — nothing acts after the runner has stopped waiting
+
+**Required.** A flat 60 s wire TTL against a 5 s ack budget leaves 55 s in which the runner has already written
+the dispatch off (`lost` → `reconciling` → parked) while the extension can still click Save.
+
+**Change.** Two halves, and both are needed:
+
+- **Wire expiry by command** (§5.2): a `dispatch` that expects an ack gets `send + ack budget` (5 s); every
+  other command gets `send + its own result budget`. The extension's `expires_at` question — "is this message
+  too old to act on?" — is now answered identically by both sides.
+- **Re-check on the extension** (§4.6, rule 4): `expires_at` is checked on receipt **and again immediately
+  before the first input event**, after the guards, the scroll and the hit test. The plan had the extension
+  re-checking only its own step timeout at the action layer; the wire expiry is the runner's clock and must be
+  re-read.
+- **No reply within budget, socket still up:** `BrowserExecutor` sends nothing further and flags the run to
+  pause `executor_disconnected`. It never advances to the next record while the extension may still be acting.
+
+**Tests.** `an expired command is refused before any input is sent` (vitest), `test_no_reply_within_budget_pauses_the_run` (runner).
+
+### R5 — reconnect needs a resume token, and storage that survives a restart
+
+**Required.** The session token is single-use (§3.2.4) yet §4.4 reconnected with it, and an MV3 worker restart
+loses `sessionId` and the token from memory. Reconnect could not work as designed.
+
+**Change.** Three parts:
+
+- On every successful attach the hub sends a fresh **resume token** as its first message (`type: "session"`), and
+  the old one dies (§3.1.5).
+- A detached session accepts exactly **one** re-attach carrying the current resume token within its TTL; a
+  second socket with the same token, or any token after the TTL, is refused `4401` (§3.2.4).
+- The extension keeps `{hubUrl, sessionId, resumeToken, boundTabId}` in `chrome.storage.session`, which is
+  memory-backed and survives a service-worker restart (§4.2).
+
+**What is deliberately lost:** `highestEpoch` and `recentIds` stay in memory and are not persisted. The hub
+never replays, so a new socket only ever carries new messages, and a restarted worker has no stale command to
+compare ids against. This is stated in the plan because it is the reason the persistence list is short.
+
+**Tests.** `a restarted worker re-attaches with the resume token` (vitest), `test_a_resume_token_is_single_use`
+(runner).
+
+### R6 — run-level events take precedence over the step result
+
+**Required.** Without ordering, a challenge first parks the record through `refused → parked` and only then
+pauses the run — but the ticket says a pre-commit record is *released*, not parked.
+
+**Change.** Both halves:
+
+- **On the wire:** the extension sends the `event` **before** the `result refused` it causes (§4.6).
+- **In the run loop:** events are drained **before** a result is interpreted (§5.3), at the top of the record
+  loop, after every executor call, and before any result handling.
+- **`peer_gone` is authoritative, not a hint** (§3.4). When the extension's socket drops — exactly what the
+  hub's `close` test does — the *runner's* socket stays up, so "the socket dying under `BrowserExecutor`" never
+  happens. On `peer_gone` the in-flight command is `lost` at once and the run pauses `executor_disconnected`,
+  even if the extension reconnects 500 ms later.
+
+**Tests.** `test_a_challenge_releases_a_pre_commit_record_instead_of_parking`,
+`test_peer_gone_loses_the_in_flight_command_at_once`.
+
+### R7 — wire command ids must be unique across processes
+
+**Required.** `{command_id}#{n}` with a per-process counter restarts at `#1` after a crash, so the takeover
+worker's first command matches an id the extension remembers and is refused as a duplicate — the
+crash-and-takeover e2e path.
+
+**Change.** `str(uuid4())` per send, with `StepCommand.command_id` carried alongside as `step_ref` for the
+runner's logs (§2.6). The extension's dedupe window is over wire ids.
+
+**Test.** `test_a_takeover_workers_first_command_is_not_a_duplicate`.
+
+### R8 — correct §5.4
+
+**Required.** `awaiting_approval` and `duplicate_detected` already hand back; only the `internal_error` return
+skips it. Do not report the other two as a gap.
+
+**Change.** §5.4 rewritten. They set the run `paused` and return; the loop's status check at `run_loop.py:156`
+releases on the next iteration. Only `run_loop.py:168-169` returns directly out of `process_run` and skips that
+check, so `internal_error` is the only fix and nothing else is a gap.
+
+**Test.** `test_internal_error_handback.py::test_a_resume_after_an_internal_error_queues_the_run_at_once`
+(already in §11).
+
+### R9 — keep the Playwright browser inside the repo
+
+**Required.** `playwright install chromium` downloads into `%LOCALAPPDATA%\ms-playwright`, outside the repo, which
+constitution §2.1 forbids.
+
+**Change.** `PLAYWRIGHT_BROWSERS_PATH` is set to `.cache/ms-playwright/` inside the repo, for the install and for
+every run; `.gitignore` gains that path; `channel="chromium"` selects the bundled build that loads an unpacked
+extension. `.gitignore` is added to §9's scope touches.
+
+**Test.** By construction: the install command and the e2e run both carry the variable, and the report shows the
+resolved path. If the browser is absent, the e2e fixture installs it there and re-runs.
+
+### Smaller fixes
+
+- **S1 — §4.3 rewritten.** The paragraph contradicted itself. The rule, stated once: after the stale check,
+  *every* well-formed command sets `highestEpoch[run] = max(highestEpoch[run], lease_epoch)`, even if it is then
+  refused for another reason. A higher epoch always means a newer holder.
+- **S2 — destructive matching is a word prefix.** `\b(delete|cancel|refund|pay|transfer)` case-insensitively, so
+  "Payment" is refused. The earlier draft claimed whole-word matching *and* gave "Payment history" as a refusal,
+  which cannot both be true.
+- **S3 — two subprotocols.** The extension offers `processlens.v1` and `pl.token.<t>`; the hub selects
+  `processlens.v1`. Browsers require the server to pick one offered value, and this way the token is never
+  echoed back.
+- **S4 — host check.** Any HTTP or WebSocket request whose `Host` is not `127.0.0.1:<port>` or
+  `localhost:<port>` is refused — a cheap guard against DNS rebinding on `POST /executor/sessions`.
+- **S5 — claim only when paired.** The browser worker claims a run only after `peer_ready`, meaning the
+  extension is attached, not merely that the runner's own socket is open.
+- **S6 — `close` detaches; it does not end the session.** As first written the session ended, which
+  `test_reconnecting_and_resuming_continues_the_run` cannot use. `close` now detaches the extension socket, the
+  extension re-attaches with its resume token (R5), and the runner sees `peer_gone`. S6 and R5 are one change.
+
+### The §14 answers, applied
+
+| question | answer | where it landed |
+|---|---|---|
+| 1. `refused` as a seventh `StepStatus`; dispatch-time refusal → `submitting → failed` | yes to both | §2.4; the pre-commit case is R6's |
+| 2. re-driving a half-filled tab | accepted | §13.2 |
+| 3. executor-side id minting | yes, with `uuid4()` | §2.6 (R7) |
+| 4. the `close` endpoint | accepted, as a detach | §3.5 (S6) |
+| 5. token in `Sec-WebSocket-Protocol` | accepted, with two offered values | §3.1, §3.2.4 (S3) |
+| 6. Playwright for Python in `tests/e2e/` | yes | §8.1 (R9) |
+| 7. §9 scope touches; the `_check` rendering fix; the `.gitignore` line | all accepted | §9 |
+
+### What changes in §10
+
+R1, R2, R3, R6 and R7 all land in **commit 3** (the runner), together with their tests; the extension half of R4
+and R5 and all of S2 land in **commit 2**; S3, S4, S5 and S6 land in **commit 1** (the hub). The commit order
+itself is unchanged, and no second stop is needed: implementation proceeds straight through it.
+
+### What does not change
+
+The ticket's requirements, the acceptance criteria, and the security model. The review found mechanism bugs and
+two correctness bugs, not a wrong shape. No requirement was waived, and no test the ticket asks for was dropped.
