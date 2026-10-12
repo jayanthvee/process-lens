@@ -151,6 +151,9 @@ class Peer:
     reader: asyncio.Task[None] | None = None
     writer: asyncio.Task[None] | None = None
     gone: bool = False
+    # Set once the other side has been told this socket left, so a detach announced by the endpoint
+    # and the retire that follows it do not each send a `peer_gone`.
+    announced_gone: bool = False
 
 
 @dataclass
@@ -277,6 +280,16 @@ async def _write_loop(peer: Peer) -> None:
         await peer.websocket.send_text(text)
 
 
+async def _announce_gone(session: Session, peer: Peer) -> None:
+    """Tell the still-attached side that this socket left, exactly once per departure."""
+    if peer.announced_gone:
+        return
+    peer.announced_gone = True
+    other = _other_peer(session, peer)
+    if other is not None and not other.gone:
+        await _send_frame(other, _frame("peer_gone"))
+
+
 async def _retire(session: Session, peer: Peer) -> None:
     """Forget one socket: free its slot, tell the side still attached, stop its tasks."""
     peer.gone = True
@@ -284,9 +297,7 @@ async def _retire(session: Session, peer: Peer) -> None:
         session.extension = None
     if session.runner is peer:
         session.runner = None
-    other = _other_peer(session, peer)
-    if other is not None and not other.gone:
-        await _send_frame(other, _frame("peer_gone"))
+    await _announce_gone(session, peer)
     current = asyncio.current_task()
     for task in (peer.reader, peer.writer):
         if task is not None and task is not current:
@@ -405,6 +416,11 @@ async def detach_executor_session(
     if peer is not None:
         session.extension = None
         await _close_peer(peer, DETACHED_CODE)
+        # Tell the runner, exactly as `_retire` would when a socket drops on its own, and only once:
+        # the retire that follows this close must not send a second `peer_gone`. Without the
+        # announcement the runner keeps waiting for a reply that can never come, and the record is
+        # parked as a timed-out step instead of the run pausing `executor_disconnected` (R6).
+        await _announce_gone(session, peer)
     return {"detached": True}
 
 

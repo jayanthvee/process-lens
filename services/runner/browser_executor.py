@@ -383,10 +383,22 @@ class BrowserExecutor:
         )
 
     def _lost(self, kind: str, message: Any) -> StepResult:
-        """Anything that is neither an ack nor a result is a step the runner cannot prove."""
+        """Anything that is neither an ack nor a result is a step the runner cannot prove.
+
+        R4: a command that ran out of budget with the socket still up means the extension may still
+        be acting on it. The runner must not simply move on — a later command sent to an extension
+        that is still busy is refused ("another command is already executing"), which would turn one
+        slow command into a cascade of parked records. It raises the same detach flag a lost socket
+        does, so the run pauses `executor_disconnected` and a person sees the real cause.
+        """
         if kind in ("peer_gone", "closed"):
             return StepResult(status="lost", error="the extension is no longer connected")
         if kind == "timeout":
+            self._events.append(
+                ("detached", "the extension did not answer within the command budget")
+            )
+            self.disconnected = True
+            self._socket = None
             return StepResult(
                 status="lost",
                 error="the extension did not answer within the command budget",

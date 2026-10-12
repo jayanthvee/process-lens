@@ -420,6 +420,11 @@ class RunLoop:
                     row=row,
                     variables=variables,
                 )
+                # R6: a condition check is an executor call, so an event that arrived while it ran
+                # beats its verdict.
+                stopped = self._drain_events(conn, record, run, epoch, box)
+                if stopped is not None:
+                    return stopped
                 unanswered = self._no_answer(conn, record, run, epoch, box, verdict)
                 if unanswered is not None:
                     return unanswered
@@ -439,6 +444,9 @@ class RunLoop:
                         row=row,
                         variables=variables,
                     )
+                    stopped = self._drain_events(conn, record, run, epoch, box)
+                    if stopped is not None:
+                        return stopped
                     unanswered = self._no_answer(conn, record, run, epoch, box, verdict)
                     if unanswered is not None:
                         return unanswered
@@ -582,6 +590,10 @@ class RunLoop:
 
         with conn.transaction():
             begin_commit(conn, record.id, worker=self.worker_id, epoch=epoch)
+        # The box must follow the record into the commit window. An event drained after this point
+        # decides the record's fate from `box.state`, and a stale `filling` there would ask the
+        # ledger for `filling -> pending` on a record that is already `submitting`.
+        box.state = "submitting"
         self._crash("after_submitting")
 
         acked = {"value": False}
@@ -589,6 +601,7 @@ class RunLoop:
         def on_dispatched() -> None:
             with conn.transaction():
                 mark_submitted_unverified(conn, record.id, worker=self.worker_id, epoch=epoch)
+            box.state = "submitted_unverified"
             acked["value"] = True
             self._crash("after_ack")
 
@@ -670,6 +683,13 @@ class RunLoop:
             variables=variables,
         )
         self._crash("after_assert")
+
+        # R6: the assertion is another executor call, so an event that arrived while it ran still
+        # beats its result. Without this drain a disconnect during the assertion would reconcile
+        # the record and then pause the run `canary_failed`, not `executor_disconnected`.
+        stopped = self._drain_events(conn, record, run, epoch, box)
+        if stopped is not None:
+            return stopped
 
         if verdict.passed:
             with conn.transaction():
