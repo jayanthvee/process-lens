@@ -1,0 +1,181 @@
+{
+  "$schema": "https://processlens.example/schema/recipe/v1",
+  "format_version": 1,
+  "meta": {
+    "name": "Create a lead in the Lead CRM",
+    "when_to_use": "Use this when a row of leads should be created in the synthetic Lead CRM fixture. The workflow searches for the email first and skips a lead that is already there, so re-running the same file never creates a second lead for the same address.",
+    "input_schema": {
+      "fields": {
+        "email": {
+          "type": "string",
+          "required": true,
+          "unique": true,
+          "description": "The lead's email address. It is the record key and the destination's duplicate check."
+        },
+        "interest": {
+          "type": "string",
+          "description": "The course the lead is interested in, for example 'Data course'."
+        },
+        "company": {
+          "type": "string",
+          "description": "The lead's company. A record with no company parks instead of saving a lead without one."
+        }
+      },
+      "rules": [
+        {
+          "when": { "missing": "email" },
+          "then": "park",
+          "reason": "no email address in this record"
+        }
+      ]
+    },
+    "record_key": "{{row.email | lower}}",
+    "idempotency_key": "{{row.email | lower}}",
+    "approval_policy": { "commit": "none" },
+    "allowed_origins": ["http://127.0.0.1:0"]
+  },
+  "variables": {
+    "crm_base": {
+      "source": { "kind": "constant", "value": "http://127.0.0.1:0" },
+      "description": "The CRM origin. Port 0 is a placeholder: the e2e test rewrites it (and meta.allowed_origins) to the port the fixture reported on stdout before ingesting the recipe."
+    }
+  },
+  "steps": [
+    {
+      "id": "open-crm",
+      "name": "Open the lead CRM",
+      "action": "navigate",
+      "url": "{{crm_base}}/"
+    },
+    {
+      "id": "search-email",
+      "name": "Search the CRM for this email",
+      "description": "Type the record's email into the search box, so the next step can tell whether this lead already exists.",
+      "action": "fill",
+      "targets": [
+        { "by": "role", "role": "textbox", "name": "Search leads" },
+        { "by": "testid", "value": "lead-search" },
+        { "by": "label", "text": "Search leads" },
+        { "by": "css", "selector": "#lead-search" }
+      ],
+      "value": { "kind": "input", "column": "email" }
+    },
+    {
+      "id": "run-search",
+      "name": "Click Search",
+      "action": "click",
+      "targets": [
+        { "by": "role", "role": "button", "name": "Search" },
+        { "by": "testid", "value": "lead-search-button" },
+        { "by": "css", "selector": "#lead-search-button" }
+      ]
+    },
+    {
+      "id": "duplicate-check",
+      "name": "Skip when the CRM already has this lead",
+      "description": "The results table is the destination's own answer. A row cell holding the email means the lead exists, so the record ends as skipped and nothing else is typed, filled, or submitted.",
+      "action": "branch",
+      "when": {
+        "element_present": {
+          "targets": [
+            { "by": "role", "role": "cell", "name": "{{row.email | lower}}", "within": "table:Search results" },
+            { "by": "text_fuzzy", "value": "{{row.email | lower}}" }
+          ]
+        }
+      },
+      "then": [
+        {
+          "id": "already-there",
+          "action": "end_record",
+          "outcome": "skipped",
+          "reason": "this lead already exists in the CRM"
+        }
+      ]
+    },
+    {
+      "id": "open-new-lead",
+      "name": "Open the new-lead form",
+      "action": "navigate",
+      "url": "{{crm_base}}/new-lead.html"
+    },
+    {
+      "id": "fill-email",
+      "name": "Fill the Email field",
+      "action": "fill",
+      "targets": [
+        { "by": "role", "role": "textbox", "name": "Email" },
+        { "by": "testid", "value": "lead-email" },
+        { "by": "label", "text": "Email" },
+        { "by": "css", "selector": "#lead-email" }
+      ],
+      "value": { "kind": "input", "column": "email" }
+    },
+    {
+      "id": "select-interest",
+      "name": "Select the Interest",
+      "action": "select",
+      "targets": [
+        { "by": "role", "role": "combobox", "name": "Interest" },
+        { "by": "testid", "value": "lead-interest" },
+        { "by": "label", "text": "Interest" },
+        { "by": "css", "selector": "#lead-interest" }
+      ],
+      "value": { "kind": "input", "column": "interest" },
+      "option_match": "text"
+    },
+    {
+      "id": "fill-company",
+      "name": "Fill the Company field, or park a record without one",
+      "description": "The Company box starts empty, so it already equals a record whose company column is empty. That record parks here instead of being submitted without a company; every other record takes the else branch and types the company.",
+      "action": "branch",
+      "when": {
+        "value_equals": {
+          "selector": {
+            "targets": [
+              { "by": "role", "role": "textbox", "name": "Company" },
+              { "by": "testid", "value": "lead-company" },
+              { "by": "label", "text": "Company" },
+              { "by": "css", "selector": "#lead-company" }
+            ]
+          },
+          "value": { "kind": "input", "column": "company" }
+        }
+      },
+      "then": [
+        {
+          "id": "no-company",
+          "action": "end_record",
+          "outcome": "parked",
+          "reason": "no company on this record"
+        }
+      ],
+      "else": [
+        {
+          "id": "company-value",
+          "name": "Type the company",
+          "action": "fill",
+          "targets": [
+            { "by": "role", "role": "textbox", "name": "Company" },
+            { "by": "testid", "value": "lead-company" },
+            { "by": "label", "text": "Company" },
+            { "by": "css", "selector": "#lead-company" }
+          ],
+          "value": { "kind": "input", "column": "company" }
+        }
+      ]
+    },
+    {
+      "id": "save-lead",
+      "name": "Save the lead",
+      "description": "The click is the commit. The destination answers with a status toast, and the ledger confirms it against the fixture's own state instead of the page alone.",
+      "action": "click",
+      "commit": true,
+      "targets": [
+        { "by": "role", "role": "button", "name": "Save" },
+        { "by": "testid", "value": "lead-save" },
+        { "by": "css", "selector": "#lead-save-button" }
+      ],
+      "assert_after": { "text_visible": "Lead created", "timeout_ms": 8000 }
+    }
+  ]
+}
