@@ -69,3 +69,29 @@ python fixtures/sites/messy-crm/selftest.py   SELFTEST PASSED (77 checks)
 2. Run the gates from the ticket.
 3. Add a "Review fixes" section to `internal/agent/reports/PL-016.md` with the real output. Commit it with this
    review, push, and stop for T1.
+
+---
+
+## Re-review: approved
+
+Reviewed commit: c9f76fd (branch `pl-016`) · Verdict: **approved for merge**.
+
+```
+python -m pytest -q                       635 passed
+ruff check . / ruff format --check .      clean / 177 files already formatted
+npm --prefix apps/extension run check     266 tests passed, build ok, validation passed
+npm --prefix apps/web run check           passed
+python fixtures/sites/messy-crm/selftest.py   SELFTEST PASSED (77 checks)
+```
+
+- **C1.** A recorded `navigate` becomes a step at its position. A reload of the same URL gives no step. A navigation
+  a click caused gives no step. A navigate outside an explicitly pinned `allowed_origins` is a 422. The opening
+  navigate is no longer duplicated.
+- **C2.** A step with only a positional rung carries "only a positional selector remains", and the **Make recipe**
+  form shows it. The recipe stays schema-valid.
+
+**Carried to PL-016b (not blocking):**
+- When the caller does not pin `allowed_origins`, the compiler derives it from every origin the recording visited.
+  So the off-origin rule fires only on an explicit pin.
+- The **Make recipe** form should show the derived allowed origins and ask the person to confirm them before the
+  recipe is stored.
