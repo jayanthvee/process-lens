@@ -9,6 +9,15 @@ The recorder also emits ``observation`` events: what the page showed just after 
 click or a submit. They are not actions, so they never become steps of their own;
 each is folded onto the action it followed, where it becomes the evidence for
 that step's assertion.
+
+One more kind is dropped here rather than reported: ``navigate``. A top-level
+navigation nobody's click caused -- a typed URL, back/forward, a reload -- is a
+fact the recorder witnessed, not something the workflow does, so it becomes no
+step and earns no warning. A navigation a recorded click *did* cause says nothing
+either: the click is already the action, and the new page url is the assertion
+that follows it. An unknown kind keeps its warning, because a kind this module
+does not know about is something to re-record, not something to ignore in
+silence.
 """
 
 from __future__ import annotations
@@ -20,6 +29,11 @@ from typing import Any
 from .assertions import OBSERVATION_EVENT_KIND
 from .errors import CompileError
 from .model import ACTIONABLE_KINDS, Event
+
+# The recorder's own event for a top-level navigation. It carries the url the page moved to, but no
+# action and no caller intent, so it is dropped exactly like an observation: deliberately, and
+# without the noise warning an unknown kind gets.
+NAVIGATE_EVENT_KIND = "navigate"
 
 
 def as_event_list(recording: Any) -> list[Any]:
@@ -96,6 +110,11 @@ def parse_events(recording: Any) -> tuple[list[Event], list[str]]:
 
         seq = raw.get("seq")
         seq = seq if isinstance(seq, int) else index + 1
+
+        if kind == NAVIGATE_EVENT_KIND:
+            # Read and dropped on purpose: where the page moved on its own is recorded fact, not an
+            # action, so it is not a step and not noise either.
+            continue
 
         observation = raw.get("observation")
         if observation is not None and not isinstance(observation, Mapping):

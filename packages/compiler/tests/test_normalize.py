@@ -2,11 +2,21 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
+from packages.compiler import CompileOptions, compile_recording
 from packages.compiler.errors import CompileError
 from packages.compiler.normalize import parse_events
 from packages.compiler.testing import EMAIL_TARGETS, action_event, noise_event
+
+NAVIGATE_URL = "https://app.example.com/records/new"
+
+
+def navigate_event(seq: int, url: str = NAVIGATE_URL) -> dict[str, Any]:
+    """A top-level navigation the recorder witnessed: a url, and no action."""
+    return {"seq": seq, "kind": "navigate", "url": url}
 
 
 def test_keeps_the_actionable_kinds_in_order() -> None:
@@ -92,3 +102,21 @@ def test_a_recording_that_is_not_a_list_is_rejected() -> None:
 def test_an_object_without_events_is_rejected() -> None:
     with pytest.raises(CompileError, match="no 'events' list"):
         parse_events({"recording": []})
+
+
+def test_a_navigate_event_becomes_no_step_and_no_warning() -> None:
+    """A navigation is a fact, not an action: dropped deliberately and in silence."""
+    events, warnings = parse_events(
+        [navigate_event(1), action_event(2, "click", "click", EMAIL_TARGETS)]
+    )
+    assert [event.kind for event in events] == ["click"]
+    assert warnings == []
+
+
+def test_a_leading_navigate_event_does_not_change_the_compiled_steps(
+    recording: list[dict[str, Any]], options: CompileOptions
+) -> None:
+    """A navigation before the demonstration compiles to exactly the same steps."""
+    without = compile_recording(recording, options).recipe["steps"]
+    with_navigate = compile_recording([navigate_event(0), *recording], options).recipe["steps"]
+    assert with_navigate == without

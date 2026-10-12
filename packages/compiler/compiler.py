@@ -279,7 +279,7 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
         )
         if candidate.assert_after is None:
             without_assertion.append(
-                f"commit step {candidate.recorded_id or candidate.seq} has no assertion: "
+                f"commit step {candidate.recorded_id or candidate.seq} has no assert_after: "
                 "the recording observed no confirmation and no navigation, and none was "
                 "supplied for it"
             )

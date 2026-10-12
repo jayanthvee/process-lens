@@ -19,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .approvals import router as approvals_router
+from .compile import router as compile_router
 from .hub import router as hub_router
 from .middleware import FrontDoorMiddleware
 from .recipes import router as recipes_router
@@ -39,6 +40,7 @@ app = FastAPI(title="ProcessLens API", version="0.1.0")
 # keep their own, stricter checks on top.
 app.add_middleware(FrontDoorMiddleware)
 app.include_router(recipes_router)
+app.include_router(compile_router)
 app.include_router(runs_router)
 app.include_router(approvals_router)
 app.include_router(hub_router)
