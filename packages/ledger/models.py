@@ -124,6 +124,19 @@ class RunSummaryRow:
 
 
 @dataclass(frozen=True)
+class RunListRow:
+    """One row of the runs list."""
+
+    id: uuid.UUID
+    status: str
+    pause_reason: str | None
+    created_at: datetime
+    recipe_name: str
+    recipe_version: int
+    counts: dict[str, int]
+
+
+@dataclass(frozen=True)
 class TransitionRow:
     """One row of ``run_record_transitions``: the audit feed."""
 

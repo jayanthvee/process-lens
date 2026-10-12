@@ -214,3 +214,46 @@ def requeue_record(
         if cur.rowcount == 0:
             raise StateConflict(f"run_record {record_id} is not parked or failed")
     return "pending"
+
+
+def dismiss_record(
+    conn: psycopg.Connection,
+    record_id: uuid.UUID,
+    *,
+    reason: str,
+    destination_checked_by: uuid.UUID | None = None,
+) -> str:
+    """Dismiss a parked or prechecked record as ``skipped``; return the state it moved to.
+
+    A record that never reached a commit goes straight to ``skipped``. A commit-attempted record is
+    only dismissed when the same update records a fresh destination check, and the guard is the
+    authority: the check is passed through as-is, so a commit-attempted record with no check reaches
+    the database and is refused there rather than by a rule of this function's own.
+    """
+    record = get_record(conn, record_id)
+    if record is None:
+        raise StateConflict(f"run_record {record_id} does not exist")
+
+    if record.commit_attempted:
+        with conn.cursor() as cur, guard_refusal_is_typed():
+            cur.execute(
+                "UPDATE run_records SET state = 'skipped', reason = %(reason)s,"
+                " destination_checked_by = %(checked_by)s, destination_checked_at = now()"
+                " WHERE id = %(record)s AND state IN ('parked', 'prechecked')"
+                " AND commit_attempted = true",
+                {"reason": reason, "record": record_id, "checked_by": destination_checked_by},
+            )
+            if cur.rowcount == 0:
+                raise StateConflict(f"run_record {record_id} is not parked or prechecked")
+        return "skipped"
+
+    with conn.cursor() as cur, guard_refusal_is_typed():
+        cur.execute(
+            "UPDATE run_records SET state = 'skipped', reason = %(reason)s"
+            " WHERE id = %(record)s AND state IN ('parked', 'prechecked')"
+            " AND commit_attempted = false",
+            {"reason": reason, "record": record_id},
+        )
+        if cur.rowcount == 0:
+            raise StateConflict(f"run_record {record_id} is not parked or prechecked")
+    return "skipped"
