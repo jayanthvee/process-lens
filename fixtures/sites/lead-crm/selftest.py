@@ -361,8 +361,7 @@ def main() -> int:
         stale = raw(crm, "/new-lead.html")["body"]
         check(
             "stale_toast renders Lead created on load with no save",
-            '<div role="status">Lead created</div>' in stale
-            and state(crm)["leads"] == {},
+            '<div role="status">Lead created</div>' in stale and state(crm)["leads"] == {},
         )
 
         reset(crm)

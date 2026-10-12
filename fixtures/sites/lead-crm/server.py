@@ -274,7 +274,9 @@ def render_new_lead(
 
     # A rejected form comes back with what was already typed, so a person (or a
     # test) can correct one field instead of retyping the whole record.
-    text = text.replace("{{COMPANY_VALUE}}", html.escape(str(values.get("company") or ""), quote=True))
+    text = text.replace(
+        "{{COMPANY_VALUE}}", html.escape(str(values.get("company") or ""), quote=True)
+    )
     selected = " selected" if (values.get("interest") or "") == "Data course" else ""
     text = text.replace("{{DATA_SELECTED}}", selected)
     return text

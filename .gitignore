@@ -36,6 +36,9 @@ coverage/
 playwright-report/
 test-results/
 
+# Playwright's browser (R9: it must live inside the repo, never in %LOCALAPPDATA%)
+.cache/ms-playwright/
+
 # Local services
 .data/
 *.sqlite
