@@ -1,0 +1,218 @@
+/* Minimal styling for the synthetic messy-crm fixture.
+   Every interactive element gets a real box, so document.elementFromPoint
+   hit-testing works and a click lands where a person sees it -- the ✕ on a
+   chip included, which is the element the recorder has to name correctly.
+   No flex or grid is used anywhere a role has to stay exposed. */
+
+:root { color-scheme: light; }
+
+* { box-sizing: border-box; }
+
+[hidden] { display: none !important; }
+
+body {
+  margin: 0;
+  padding: 16px;
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Arial, sans-serif;
+  color: #1b1f23;
+  background: #ffffff;
+}
+
+h1 { font-size: 22px; margin: 0 0 10px; }
+h2 { font-size: 17px; margin: 0 0 8px; }
+
+.site-header { display: block; margin-bottom: 12px; }
+.site-nav { display: block; margin-bottom: 16px; }
+
+.field-label,
+label {
+  display: block;
+  margin: 8px 0 2px;
+  font-weight: 600;
+}
+
+input,
+select,
+button {
+  display: block;
+  width: 320px;
+  min-height: 36px;
+  height: 36px;
+  margin: 0 0 12px;
+  padding: 6px 8px;
+  font: inherit;
+  color: #1b1f23;
+  background: #ffffff;
+  border: 1px solid #8d9299;
+  border-radius: 4px;
+}
+
+input[type="hidden"] { display: none; }
+
+input:focus,
+select:focus,
+button:focus,
+a.button-link:focus { outline: 2px solid #1f4ed8; outline-offset: 1px; }
+
+button {
+  width: auto;
+  min-width: 140px;
+  background: #1f4ed8;
+  border-color: #1f4ed8;
+  color: #ffffff;
+  cursor: pointer;
+}
+
+a.button-link {
+  display: inline-block;
+  width: auto;
+  min-width: 140px;
+  min-height: 36px;
+  padding: 7px 12px;
+  margin: 0 8px 12px 0;
+  text-align: center;
+  text-decoration: none;
+  color: #1f4ed8;
+  background: #ffffff;
+  border: 1px solid #1f4ed8;
+  border-radius: 4px;
+}
+
+.composer,
+.notes-section,
+.saved-record { display: block; max-width: 640px; }
+
+/* The autocomplete listbox. It is hidden until the input has a query and the
+   fixture has answered, and every option is thrown away on the next
+   keystroke -- with a fresh id, which is the mess. */
+.suggestions {
+  display: block;
+  width: 320px;
+  margin: -8px 0 12px;
+  padding: 2px 0;
+  background: #ffffff;
+  border: 1px solid #8d9299;
+  border-radius: 4px;
+}
+
+.suggestions [role="option"] {
+  display: block;
+  width: 100%;
+  min-height: 32px;
+  padding: 6px 8px;
+  cursor: pointer;
+}
+
+.suggestions [role="option"]:hover { background: #eef2fd; }
+
+.suggestion-name { font-weight: 600; margin-right: 8px; }
+.suggestion-address { color: #4a5157; }
+
+/* The chips. The chip is a real box and it is clickable (`role="option"`),
+   and the ✕ inside it is a real box too, so both can be hit-tested: which one
+   a click belongs to is decided by where the pointer landed. */
+.chips {
+  display: block;
+  width: 320px;
+  min-height: 40px;
+  margin: 0 0 12px;
+  padding: 4px;
+  background: #f5f7fa;
+  border: 1px solid #d5d9de;
+  border-radius: 4px;
+}
+
+.chip {
+  display: inline-block;
+  min-height: 28px;
+  margin: 2px;
+  padding: 3px 4px 3px 8px;
+  color: #1b1f23;
+  background: #ffffff;
+  border: 1px solid #8d9299;
+  border-radius: 14px;
+  cursor: pointer;
+}
+
+.chip-name { margin-right: 6px; }
+
+.chip button {
+  display: inline-block;
+  width: 22px;
+  min-width: 22px;
+  height: 22px;
+  min-height: 22px;
+  margin: 0;
+  padding: 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: #1b1f23;
+  background: #eceff3;
+  border: 1px solid #8d9299;
+  border-radius: 50%;
+}
+
+/* The contenteditable notes box. `:empty::before` is the placeholder: it is
+   generated content, so it never becomes the element's text. */
+.notes {
+  display: block;
+  width: 320px;
+  min-height: 90px;
+  margin: 0 0 12px;
+  padding: 8px;
+  white-space: pre-wrap;
+  background: #ffffff;
+  border: 1px solid #8d9299;
+  border-radius: 4px;
+}
+
+.notes:empty::before {
+  content: attr(data-placeholder);
+  color: #8d9299;
+}
+
+/* The save status: `[role="status"]` needs a real box, so a hit-test or a
+   visibility check can find it. The served markup stays the brief's bare
+   `<div role="status">Saved</div>`; the box comes from here. */
+[role="status"] {
+  display: block;
+  width: 100%;
+  max-width: 420px;
+  min-height: 34px;
+  margin: 8px 0;
+  padding: 8px 12px;
+  color: #12492a;
+  background: #e6f4ea;
+  border: 1px solid #9cc7a8;
+  border-radius: 4px;
+}
+
+.field-error {
+  display: block;
+  width: 100%;
+  max-width: 420px;
+  min-height: 30px;
+  margin: 8px 0;
+  padding: 7px 10px;
+  color: #8a1f1f;
+  background: #fdeaea;
+  border: 1px solid #d16666;
+  border-radius: 4px;
+}
+
+.empty {
+  display: block;
+  width: 100%;
+  max-width: 420px;
+  min-height: 28px;
+  margin: 8px 0;
+  padding: 8px 10px;
+  color: #4a5157;
+  background: #f5f7fa;
+  border: 1px solid #d5d9de;
+  border-radius: 4px;
+}
+
+.saved-line { display: block; margin: 0 0 6px; }
+.saved-key { font-weight: 600; margin-right: 6px; }
+.prose { display: block; max-width: 520px; margin: 8px 0; }
