@@ -507,9 +507,17 @@ So `BrowserExecutor` owns one blocking socket and one reader that **runs inside 
   deadline. Any `event` read on the way is appended to the event queue and the read continues — no event is lost
   because it arrived while a result was expected, and no thread is involved.
 - `prepare`, `perform` and `check_condition` do the same, minus the ack.
-- Two deadlines, both real: the **ack budget** is `DISPATCH_BUDGET_SECONDS` (5 s, already a constant in the run
-  loop) and the **result budget** is the step's own `timeout_ms` plus the same budget. A missing ack inside 5 s
-  is `lost` (the ticket says so explicitly); a missing result inside its budget is `timeout`.
+- Two deadlines, both real: the **ack budget** is `DISPATCH_BUDGET_SECONDS` (`run_loop.py:76`, 5 s) and the
+  **result budget** is the step's own `timeout_ms` plus the same budget. A missing ack inside 5 s is `lost` (the
+  ticket says so explicitly); a missing result inside its budget is `timeout`.
+- **The wire `expires_at` is minted at send time; it is not `StepCommand.expires_at`.** That field is the
+  *runner's own* budget, computed once in `_command` as `clock.time() + condition_timeout(assert_after,
+  fallback)/1000` (`run_loop.py:805-806`) — and for a commit whose `assert_after.timeout_ms` is small (the schema
+  allows 100 ms) it can already be in the past by the time the `dispatch` is sent, after `prepare` and the fresh
+  confirmation ran. Reusing it would refuse a legitimate command. So `BrowserExecutor` stamps every outbound
+  message with `expires_at = now_ms + COMMAND_TTL_MS` (`COMMAND_TTL_MS = 60_000`), which answers the extension's
+  actual question — "is this message too old to act on?" — and is a property of the round trip, not of the
+  assertion.
 - The socket being closed or refused at any point is `lost`, and it sets the `disconnected` flag (§5.4).
 
 The worker keeps one connection for the life of the process and reconnects between runs; a run never starts
@@ -530,12 +538,14 @@ inject any sequence. Mapping, per the ticket:
 | `detached`, `tab_closed` | in-flight commands are `lost`, then pause the run `executor_disconnected` |
 | (socket loss with no event) | same as `detached` |
 
-"Released `filling → pending`" is already a legal transition (`packages/ledger/transitions.py`, the
-`("filling", "pending")` pair, unguarded by the trigger), and `recover_run`'s `_RELEASE_WORKING` statement in
-`packages/ledger/recovery.py` moves exactly `claimed`, `prechecked` and `filling` back to `pending` while
-clearing `claimed_by`/`claimed_at`. So the loop calls the ledger's existing `release_working_records(...)` with
-the event's reason, rather than hand-writing an UPDATE. A resume then re-queues the run and those records are
-claimed again — consuming an attempt, which is the ledger's designed retry semantics.
+"Released `filling → pending`" is not a new mechanism: **the run loop already does exactly it.**
+`_run_steps` re-reads `runs.status` at every step boundary and, when it is no longer `running`, writes
+`self._transition(conn, record, "filling", "pending", "paused")` — `run_loop.py:361`. `("filling", "pending")`
+is a legal, unguarded pair in `packages/ledger/transitions.py`, and `recover_run`'s `_RELEASE_WORKING` moves the
+same three working states back to `pending` after a crash. The work here is therefore to route the new event
+kinds into that existing pause path (a `paused` run status plus the pause reason), not to invent a release. A
+resume re-queues the run and the released records are claimed again, consuming an attempt — the ledger's
+designed retry semantics, unchanged from today's pause behaviour.
 
 ### 5.4 Pauses need a hand-back
 
@@ -577,9 +587,24 @@ if self._confirmation_present(conn, record, step["assert_after"]):
 ALREADY_ON_PAGE_REASON = "the confirmation was already on the page before saving"
 ```
 
-`_confirmation_present` is `self.executor.check_condition(condition, timeout_ms=100, ...)` — the schema's
-minimum, which is one immediate poll plus at most one retry, so a stale toast parks the record in well under a
-second instead of stalling the run for the 10 s fallback.
+`_confirmation_present` asks the **page**, so it must be a probe the executor can decline. It is gated on a new
+capability on the `Executor` seam: `probe_confirmation(condition, *, step_id, record_key) -> bool | None`,
+where `None` means "this executor cannot see page state". `FakeExecutor` and `DisconnectedExecutor` return
+`None` (a scripted fake has no page, so it can never have a stale toast), which is what keeps every existing
+PL-013 commit test meaning exactly what it means today; `BrowserExecutor` sends one `check` command and returns
+the answer.
+
+This gate is load-bearing, and the plan states it plainly because the obvious implementation is wrong.
+`FakeExecutor.check_condition` returns `True` by default for an unknown condition (`testing.py:120-126`), so a
+probe routed through the ordinary `check_condition` would answer "the confirmation is already on the page" for
+every unscripted commit in the existing suite and park records that must verify. The runner tests that must now
+change are named in §10: the fake gains `probe_confirmation -> None`, and the fresh-confirmation behaviour gets
+its own tests with an executor that answers `True` and `False`.
+
+Because a `check` costs a round trip, the probe uses `timeout_ms=100` (the schema's own minimum for a condition
+timeout) rather than `_check`'s fallback: `_check` would otherwise read the *step's* `assert_after.timeout_ms`,
+which is the budget for waiting after the save, not for asking whether the confirmation is already there. One
+probe, at most one retry, and the answer is immediate.
 
 Placing it before `begin_commit` matters: the record never enters the commit window, so `commit_attempted`
 stays false and a later requeue is not blocked by the destination-check rule. A stale toast is exactly what the
@@ -776,7 +801,8 @@ Each of these is a small, unavoidable touch; each is listed here rather than smu
 
 | path | why it is forced | size |
 |---|---|---|
-| `services/runner/executor.py` | `StepStatus` needs `refused` (§2.4) and the docstring needs the wire mapping | one literal + docstring |
+| `services/runner/executor.py` | `StepStatus` needs `refused` (§2.4), the seam needs `probe_confirmation` (§5.6), and the docstring needs the wire mapping | one literal, one protocol method + its two no-op implementations, docstring |
+| `services/runner/testing.py` | `FakeExecutor` gains `probe_confirmation -> None` (§5.6); without it the fresh-confirmation gate would park every unscripted commit in the existing suite | one method |
 | `apps/extension/scripts/validate-package.mjs` | its `REQUIRED_PERMISSIONS` hard-codes `webNavigation`; the ticket requires that permission to be removed, so the validator would fail otherwise | one array entry |
 | `pyproject.toml` | the `e2e` marker must be registered (`--strict-markers` is already on), and Playwright must be a dev extra | two blocks |
 | `services/api/hub.py` `close` endpoint | the disconnect acceptance criterion needs a deterministic disconnect (§3.5) | ~15 lines |
@@ -804,9 +830,14 @@ gates green.
    the extension unit tests for the state machine, the guards, the keepalive and the protocol. Still not
    connected to the runner; PL-010 mode untouched.
 3. **`feat(runner): drive the real extension through the hub`** — `browser_executor.py`, `reconcile.py`
-   (`ParkingReconciler`), `worker.py`/`__main__.py`, the run-loop event mapping + the fresh-confirmation check +
-   the `internal_error` hand-back, `executor.py`'s `refused`, and the runner tests. The first commit where an
-   end-to-end run is possible.
+   (`ParkingReconciler`), `worker.py`/`__main__.py`, the run-loop event mapping + the fresh-confirmation probe +
+   the `internal_error` hand-back, `executor.py`'s `refused` and `probe_confirmation`, `testing.py`'s no-op probe,
+   and the runner tests. The first commit where an end-to-end run is possible. The tests this commit must
+   *change* are named here so the diff is reviewable: `testing.py` (the no-op probe), plus new files
+   `test_browser_executor.py`, `test_command_mode_events.py`, `test_fresh_confirmation.py`,
+   `test_parking_reconciler.py`, `test_internal_error_handback.py`. **No existing runner test's assertions
+   change** — the no-op probe is what makes that true, and if any existing test needs an assertion edited, that
+   is a signal the gate leaked and it gets reported rather than patched.
 4. **`test(executor): harden the PL-010 carry-overs`** then
    **`test(e2e): drive the real extension on the fixture site`** — §6's twelve changes and thirteen tests, the
    fixture site, and the e2e harness. Split in two because §6 is extension-local and the e2e work is a stack.
@@ -842,7 +873,7 @@ protects the invariant every run, the e2e test proves it against a real browser.
 | Policy-blocked attach (fake debugger) → paused `policy_blocked` with the readable message | `command-guards.test.ts::a policy blocked attach becomes the readable policy message` (unit) and `test_command_mode_events.py::test_a_policy_blocked_event_pauses_the_run_with_policy_blocked` (runner) |
 | Off-origin page → the record parks | `test_off_origin_and_destructive.py::test_an_off_origin_page_parks_the_record` (e2e) and `test_command_mode_events.py::test_an_off_origin_event_parks_the_record` (runner) |
 | A destructive control without the flag → refused, and the record parks | `command-guards.test.ts::a destructive control without the flag is refused` (unit) and `test_off_origin_and_destructive.py::test_a_destructive_control_parks_the_record` (e2e) |
-| A stale "Lead created" toast left on the page → the record is not `verified` | `test_batch_real_extension.py::test_a_stale_toast_does_not_verify_the_record` (e2e) and `test_fresh_confirmation.py::test_a_confirmation_already_on_the_page_parks_before_dispatch` (runner) |
+| A stale "Lead created" toast left on the page → the record is not `verified` | `test_batch_real_extension.py::test_a_stale_toast_does_not_verify_the_record` (e2e) and `test_fresh_confirmation.py::test_a_confirmation_already_on_the_page_parks_before_dispatch` plus `test_fresh_confirmation.py::test_a_fake_executor_cannot_report_a_stale_confirmation` (runner) |
 | The run survives an idle wait of over 30 seconds (keepalive) | `test_keepalive.py::test_the_run_survives_a_thirty_five_second_idle_wait` (e2e) and `command-keepalive.test.ts::a ping is sent every twenty seconds` (unit, timer seam) |
 | Every item in Requirement 5 has a test | the 13 tests named in §6, in `executor-hardening.test.ts` |
 | The `internal_error` pause hands the run back: a resume queues it at once | `test_internal_error_handback.py::test_a_resume_after_an_internal_error_queues_the_run_at_once` |
