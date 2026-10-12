@@ -1,10 +1,11 @@
 // CDP event dispatch: turning a step into trusted browser input.
 //
 // Synthetic script events are ignored by modern apps, so every action here is a
-// real CDP input event: keystrokes through `Input.dispatchKeyEvent`, a click
-// through `Input.dispatchMouseEvent` at the element's box center, a select
-// through a value update in the page, and a navigation through `Page.navigate`.
-// The element is always addressed by the marker the resolver stamped on it.
+// real CDP input event: text through `Input.insertText`, a click through
+// `Input.dispatchMouseEvent` at the element's box center, a select through a
+// value update in the page, and a navigation through `Page.navigate` followed
+// by a wait for the document to load. The element is always addressed by the
+// marker the resolver stamped on it.
 import type { CdpTransport } from "./cdp";
 import { measureExpression, type MeasureResult } from "./ladder";
 import { evaluate, markerExpression } from "./page";
@@ -57,6 +58,7 @@ export async function prepareField(
   cdp: CdpTransport,
   token: string,
   contextId?: number,
+  clearFirst: boolean = true,
 ): Promise<{ ok: boolean; reason?: string }> {
   const expression = `(() => {
     const el = ${markerExpression(token)};
@@ -70,7 +72,10 @@ export async function prepareField(
       }
     }
     el.focus();
-    if (typeof el.select === "function") el.select();
+    // Selecting is part of *clearing*: with clear_first false the field is
+    // focused and the text already in it is left alone.
+    const clearFirst = ${clearFirst === false ? "false" : "true"};
+    if (clearFirst && typeof el.select === "function") el.select();
     return { ok: true };
   })()`;
   const result = (await evaluate(
@@ -87,27 +92,34 @@ export async function focusAndSelect(cdp: CdpTransport, token: string, contextId
   return prepared.ok;
 }
 
-/** Dispatch one realistic keystroke: a keyDown carrying the text, then a keyUp. */
-async function typeCharacter(cdp: CdpTransport, char: string): Promise<void> {
-  const code = KEY_CODES[char];
-  const key = char === "\n" ? "Enter" : char === "\t" ? "Tab" : char;
-  if (code !== undefined) {
-    await cdp.send("Input.dispatchKeyEvent", {
-      type: "keyDown",
-      key,
-      windowsVirtualKeyCode: code,
-      nativeVirtualKeyCode: code,
-    });
-    await cdp.send("Input.dispatchKeyEvent", {
-      type: "keyUp",
-      key,
-      windowsVirtualKeyCode: code,
-      nativeVirtualKeyCode: code,
-    });
-    return;
+/**
+ * Read a stamped element's current value (or text) back out of the page, so a
+ * fill can prove the field actually kept what was typed into it.
+ */
+async function readFieldValue(
+  cdp: CdpTransport,
+  token: string,
+  contextId?: number,
+): Promise<string> {
+  const expression = `(() => {
+    const el = ${markerExpression(token)};
+    if (!el) return null;
+    if (typeof el.value === "string") return el.value;
+    return el.textContent === null || el.textContent === undefined ? "" : String(el.textContent);
+  })()`;
+  const result = (await evaluate(
+    cdp,
+    expression,
+    contextId !== undefined ? { contextId } : {},
+  )) as string | null;
+  if (result === null) {
+    throw new ExecutorError(
+      "the fill target is no longer in the document, so the typed value could not be verified",
+      undefined,
+      "park",
+    );
   }
-  await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", text: char, key: char });
-  await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: char });
+  return result;
 }
 
 /** Press Backspace once, used to clear a selection before typing. */
@@ -127,9 +139,12 @@ async function pressBackspace(cdp: CdpTransport): Promise<void> {
 }
 
 /**
- * Fill a field: check it is safe to type into, clear what is there, then type
- * the value one key at a time so the page sees the same events a person would
- * produce. A password field is refused, not typed into.
+ * Fill a field: check it is safe to type into, clear what is there when asked,
+ * then insert the whole value with one `Input.insertText`. One insert keeps
+ * `\n` and `\t` characters — a key-event loop would turn them into Enter and
+ * Tab — and the value is read back afterwards, so a fill that did not stick is
+ * a failure rather than a reported success. A password field is refused, not
+ * typed into.
  */
 export async function dispatchFill(
   cdp: CdpTransport,
@@ -137,7 +152,8 @@ export async function dispatchFill(
   value: string,
   options: { clearFirst?: boolean; contextId?: number } = {},
 ): Promise<void> {
-  const prepared = await prepareField(cdp, token, options.contextId);
+  const clearFirst = options.clearFirst !== false;
+  const prepared = await prepareField(cdp, token, options.contextId, clearFirst);
   if (!prepared.ok) {
     if (prepared.reason === "password") {
       throw new ExecutorError(
@@ -152,8 +168,19 @@ export async function dispatchFill(
       "park",
     );
   }
-  if (options.clearFirst !== false) await pressBackspace(cdp);
-  for (const char of Array.from(value)) await typeCharacter(cdp, char);
+  if (clearFirst) await pressBackspace(cdp);
+  await cdp.send("Input.insertText", { text: value });
+
+  const actual = await readFieldValue(cdp, token, options.contextId);
+  if (actual !== value) {
+    throw new ExecutorError(
+      `the fill did not stick: the recipe typed ${JSON.stringify(
+        value,
+      )} but the field holds ${JSON.stringify(actual)}`,
+      undefined,
+      "park",
+    );
+  }
 }
 
 /**
@@ -167,6 +194,17 @@ export async function dispatchClick(
   contextId?: number,
 ): Promise<MeasureResult> {
   const box = await measureTarget(cdp, token, contextId);
+
+  // The click is dispatched at the top document's coordinates. An element inside
+  // a subframe cannot be clicked from here without landing on whatever the top
+  // document shows at those coordinates, so the step is parked instead.
+  if (box.topFrame !== true) {
+    throw new ExecutorError(
+      "refusing to click: the target is inside a frame, so a click at its coordinates would land on the top document instead",
+      undefined,
+      "park",
+    );
+  }
 
   const base = { x: box.x, y: box.y, button: "left", clickCount: 1 };
   await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: box.x, y: box.y });
@@ -235,7 +273,84 @@ export async function dispatchSelect(
   };
 }
 
-/** Navigate the tab to a URL. */
-export async function dispatchNavigate(cdp: CdpTransport, url: string): Promise<void> {
-  await cdp.send("Page.navigate", { url });
+/** How long to wait for a navigation's load event before giving up. */
+export const DEFAULT_NAVIGATE_TIMEOUT_MS = 8000;
+
+/**
+ * Wait for a frame's document to load. `Page.frameNavigated` and
+ * `Page.loadEventFired` both mean the document arrived, so either one settles
+ * the wait; when the page reports a frame id, only that frame's event settles
+ * it. A transport with no event feed (a test double, or a debugger that cannot
+ * subscribe) resolves immediately rather than hanging.
+ */
+function waitForLoad(
+  cdp: CdpTransport,
+  frameId: string | undefined,
+  timeoutMs: number,
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (typeof cdp.on !== "function") {
+      resolve(true);
+      return;
+    }
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let offNav: (() => void) | undefined;
+    let offLoad: (() => void) | undefined;
+    const finish = (ok: boolean): void => {
+      if (settled) return;
+      settled = true;
+      if (timer !== undefined) clearTimeout(timer);
+      if (offNav) offNav();
+      if (offLoad) offLoad();
+      resolve(ok);
+    };
+    const frameMatches = (params: Record<string, unknown>): boolean => {
+      if (!frameId) return true;
+      const frame = params["frame"] as { id?: string } | undefined;
+      const id = frame?.id ?? (params["frameId"] as string | undefined);
+      return id === undefined || id === frameId;
+    };
+    timer = setTimeout(() => finish(false), timeoutMs);
+    offNav = cdp.on("Page.frameNavigated", (params) => {
+      if (frameMatches(params)) finish(true);
+    });
+    offLoad = cdp.on("Page.loadEventFired", (params) => {
+      if (frameMatches(params)) finish(true);
+    });
+  });
+}
+
+/**
+ * Navigate the tab to a URL and wait for the document to arrive.
+ *
+ * `Page.navigate` reports a refusal in its result rather than rejecting, so the
+ * result is inspected: a non-empty `errorText` fails the step. Once the browser
+ * accepts the navigation the load event is awaited, with a timeout, so the next
+ * step never runs against the document that was being replaced.
+ */
+export async function dispatchNavigate(
+  cdp: CdpTransport,
+  url: string,
+  timeoutMs: number = DEFAULT_NAVIGATE_TIMEOUT_MS,
+): Promise<void> {
+  const result = (await cdp.send("Page.navigate", { url })) as
+    | { errorText?: string; frameId?: string }
+    | undefined;
+  const errorText = typeof result?.errorText === "string" ? result.errorText.trim() : "";
+  if (errorText !== "") {
+    throw new ExecutorError(
+      `the browser refused to navigate to ${url}: ${errorText}`,
+      undefined,
+      "park",
+    );
+  }
+  const loaded = await waitForLoad(cdp, result?.frameId, timeoutMs);
+  if (!loaded) {
+    throw new ExecutorError(
+      `the page did not finish loading ${url} within ${timeoutMs}ms`,
+      undefined,
+      "park",
+    );
+  }
 }

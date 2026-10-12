@@ -50,7 +50,7 @@ describe("runRecipe", () => {
   it("replays a fill, a select, and a committing click", async () => {
     formMarkup();
     document.body.append(Object.assign(document.createElement("div"), { textContent: "Record created" }));
-    const { cdp, callsTo } = fakeCdp();
+    const { cdp, callsTo } = fakeCdp(undefined, { simulateInput: true });
 
     const recipeUnderTest = recipe([
       { id: "navigate-1", action: "navigate", url: `${ORIGIN}/records/new` },
@@ -81,10 +81,10 @@ describe("runRecipe", () => {
     expect(summary.state).toBe("done");
     expect(summary.steps.map((step) => step.outcome)).toEqual(["done", "done", "done", "done"]);
     expect(callsTo("Page.navigate")).toHaveLength(1);
-    expect((document.getElementById("email") as HTMLInputElement).value).toBe("");
+    expect((document.getElementById("email") as HTMLInputElement).value).toBe("ravi@example.com");
     expect((document.getElementById("interest") as HTMLSelectElement).value).toBe("Data course");
-    // The committing click was resolved by rung 1 (role + name).
-    expect(summary.steps[3]).toMatchObject({ rung: 0, by: "role" });
+    // The committing click was resolved by rung 1 (role + name). Rungs are 1 to 5.
+    expect(summary.steps[3]).toMatchObject({ rung: 1, by: "role" });
   });
 
   it("stops fail-closed when a commit's assertion never holds", async () => {

@@ -113,15 +113,25 @@ async function verifyCondition(
   step: ExecutorStep,
   condition: ExecutorStep["assert_after"],
   deps: RunDeps,
+  aborted?: () => boolean,
 ): Promise<void> {
   if (!condition) return;
   const contextId = await frameContextId(cdp, step, deps.frames);
   const timeoutMs = conditionTimeout(condition, step.timeout_ms);
   const outcome = await waitForCondition(cdp, condition, conditionContext(deps), {
     timeoutMs,
+    ...(aborted ? { aborted } : {}),
     ...(contextId !== undefined ? { contextId } : {}),
   });
   if (!outcome.ok) {
+    // An abort ends the poll immediately; it is reported as an abort, not as a
+    // condition that failed to hold.
+    if (outcome.aborted === true) {
+      throw new ExecutorError(
+        `the run was aborted while waiting for the post-condition of step ${step.id}`,
+        step.id,
+      );
+    }
     throw new ExecutorError(
       `the post-condition for step ${step.id} did not hold within ${timeoutMs}ms`,
       step.id,
@@ -192,7 +202,7 @@ export async function runRecipe(
       }
 
       const report = await performStep(step, context, allowedOrigins, deps);
-      await verifyCondition(deps.cdp, step, step.assert_after, deps);
+      await verifyCondition(deps.cdp, step, step.assert_after, deps, () => control.aborted);
       if (committing) trace.commitInFlight = false;
       reports.push(report);
       completed += 1;
@@ -202,7 +212,10 @@ export async function runRecipe(
     return { state: "done", steps: reports };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    const aborted = control.aborted || /aborted/.test(message);
+    // The abort is `control.aborted` and nothing else: the run stops aborting the
+    // moment the person clicks cancel (or the debugger detaches), never because
+    // a step's message happened to contain the word "aborted".
+    const aborted = control.aborted;
 
     if (aborted) {
       // An abort during a commit's dispatch means the destination may or may not

@@ -34,29 +34,33 @@ afterEach(() => {
 });
 
 describe("fill", () => {
-  it("focuses, clears, and types one key event pair per character", async () => {
+  it("focuses, clears, and inserts the whole value with one Input.insertText", async () => {
     stamp("<input id='email'>", "f1", { by: "css", selector: "#email" });
-    const { cdp, callsTo } = fakeCdp();
+    const { cdp, callsTo } = fakeCdp(undefined, { simulateInput: true });
 
     await dispatchFill(cdp, "f1", "ab");
 
+    // Requirement 5: one insert keeps `\n` and `\t` as characters, not Enter or Tab.
     const keys = callsTo("Input.dispatchKeyEvent");
-    expect(keys).toHaveLength(2 + 2 * 2); // one Backspace pair, then one pair per character
+    expect(keys).toHaveLength(2); // the Backspace pair that clears the field
     expect(keys[0]?.params).toMatchObject({ type: "keyDown", key: "Backspace" });
     expect(keys[1]?.params).toMatchObject({ type: "keyUp", key: "Backspace" });
-    expect(keys[2]?.params).toMatchObject({ type: "keyDown", text: "a" });
-    expect(keys[4]?.params).toMatchObject({ type: "keyDown", text: "b" });
+    const inserts = callsTo("Input.insertText");
+    expect(inserts).toHaveLength(1);
+    expect(inserts[0]?.params).toMatchObject({ text: "ab" });
   });
 
   it("does not clear when clear_first is false", async () => {
     stamp("<input id='email'>", "f1", { by: "css", selector: "#email" });
-    const { cdp, callsTo } = fakeCdp();
+    const { cdp, callsTo } = fakeCdp(undefined, { simulateInput: true });
 
     await dispatchFill(cdp, "f1", "a", { clearFirst: false });
 
-    const keys = callsTo("Input.dispatchKeyEvent");
-    expect(keys).toHaveLength(2);
-    expect(keys[0]?.params).toMatchObject({ type: "keyDown", text: "a" });
+    // With no clearing there is no Backspace pair at all; the text is still one insert.
+    expect(callsTo("Input.dispatchKeyEvent")).toHaveLength(0);
+    const inserts = callsTo("Input.insertText");
+    expect(inserts).toHaveLength(1);
+    expect(inserts[0]?.params).toMatchObject({ text: "a" });
   });
 
   it("refuses to type into a password field", async () => {

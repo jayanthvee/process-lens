@@ -104,12 +104,21 @@ export interface WaitOptions {
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
   contextId?: number;
+  /**
+   * Asked at the top of every poll; when it answers true the wait ends at once
+   * with `ok: false`, so an abort does not have to wait out the timeout.
+   */
+  aborted?: () => boolean;
 }
 
 export interface WaitResult {
   ok: boolean;
   polls: number;
   elapsedMs: number;
+  /** True when the `aborted` probe ended the poll rather than the timeout. */
+  aborted?: boolean;
+  /** Why the poll stopped early, when it was not the condition holding. */
+  reason?: string;
 }
 
 const defaultSleep = (ms: number): Promise<void> =>
@@ -117,7 +126,9 @@ const defaultSleep = (ms: number): Promise<void> =>
 
 /**
  * Poll a condition until it holds or the timeout elapses. Checks immediately,
- * then waits `pollMs` between checks. Returns `ok: false` on timeout.
+ * then waits `pollMs` between checks. Returns `ok: false` on timeout, and also
+ * as soon as the `aborted` probe answers true — an aborted run must not sit in
+ * a poll for the rest of its timeout.
  */
 export async function waitForCondition(
   cdp: CdpTransport,
@@ -135,13 +146,29 @@ export async function waitForCondition(
 
   for (;;) {
     polls += 1;
+    if (options.aborted && options.aborted()) {
+      return {
+        ok: false,
+        polls,
+        elapsedMs: now() - started,
+        aborted: true,
+        reason: "the run was aborted",
+      };
+    }
     const expression = conditionExpression(condition, ctx);
     const ok =
       (await evaluate(cdp, expression, options.contextId !== undefined ? { contextId: options.contextId } : {})) ===
       true;
     const elapsedMs = now() - started;
     if (ok) return { ok: true, polls, elapsedMs };
-    if (elapsedMs >= timeoutMs) return { ok: false, polls, elapsedMs };
+    if (elapsedMs >= timeoutMs) {
+      return {
+        ok: false,
+        polls,
+        elapsedMs,
+        reason: `the condition did not hold within ${timeoutMs}ms`,
+      };
+    }
     await sleep(pollMs);
   }
 }

@@ -79,6 +79,13 @@ export interface MeasureResult {
   height: number;
   /** The tag of the element at the box center, or "" when the hit test is unavailable. */
   hit: string;
+  /**
+   * True when the measured document is the top document (`window.top ===
+   * window.self`). A click is dispatched at the top document's coordinates, so
+   * one inside a subframe can never land on the element: `dispatchClick`
+   * refuses it rather than clicking somewhere unrelated.
+   */
+  topFrame: boolean;
   reason?: string;
 }
 
@@ -93,6 +100,16 @@ export interface MeasureResult {
  */
 export function measureTargetInPage(query: MeasureQuery): MeasureResult {
   const MARKER = "data-pl-target";
+  // `window.top === window.self` only in the top document; an inaccessible
+  // `window.top` means a cross-origin parent, so this document is not the top
+  // one either.
+  const topFrame = (() => {
+    try {
+      return window.top === window.self;
+    } catch {
+      return false;
+    }
+  })();
   const reject = (reason: string): MeasureResult => ({
     ok: false,
     x: 0,
@@ -100,6 +117,7 @@ export function measureTargetInPage(query: MeasureQuery): MeasureResult {
     width: 0,
     height: 0,
     hit: "",
+    topFrame,
     reason,
   });
 
@@ -139,12 +157,15 @@ export function measureTargetInPage(query: MeasureQuery): MeasureResult {
   if (fromPoint) {
     const hit = fromPoint.call(document, x, y);
     if (!hit) return reject("the hit test found no element at the box center");
-    if (hit !== element && !element.contains(hit) && !hit.contains(element)) {
+    // Only the target itself, or a descendant of it, is a hit. An ANCESTOR is
+    // not: a click at the box center would land on the wrapper that contains the
+    // target, not on the target.
+    if (hit !== element && !element.contains(hit)) {
       return reject(`the box center is covered by <${hit.tagName.toLowerCase()}>`);
     }
-    return { ok: true, x, y, width, height, hit: hit.tagName.toLowerCase() };
+    return { ok: true, x, y, width, height, hit: hit.tagName.toLowerCase(), topFrame };
   }
-  return { ok: true, x, y, width, height, hit: "" };
+  return { ok: true, x, y, width, height, hit: "", topFrame };
 }
 
 /**
@@ -266,20 +287,14 @@ export function resolveTargetInPage(query: ResolveQuery): ResolveResult {
     return norm(el.textContent) || norm(el.getAttribute("title"));
   };
 
-  const fuzzyTextOf = (el: Element): string => {
-    const tag = el.tagName.toUpperCase();
-    if (tag === "INPUT" || tag === "TEXTAREA") {
-      return (
-        norm(el.getAttribute("placeholder")) ||
-        norm(el.getAttribute("aria-label")) ||
-        norm((el as HTMLInputElement).value)
-      );
-    }
-    if (tag === "SELECT") {
-      return norm(el.getAttribute("placeholder")) || norm((el as HTMLSelectElement).value);
-    }
-    return norm(el.textContent) || norm(el.getAttribute("title"));
-  };
+  // The fuzzy rung reads a *label*, never a value: an input's current text is
+  // what it happens to hold, not what it is called. Matching on it would let a
+  // value typed earlier in the run re-target a later step.
+  const fuzzyTextOf = (el: Element): string =>
+    norm(el.getAttribute("placeholder")) ||
+    norm(el.getAttribute("aria-label")) ||
+    norm(el.getAttribute("title")) ||
+    norm(el.textContent);
 
   const isDisabled = (el: Element): boolean => {
     const node = el as HTMLInputElement;
@@ -310,21 +325,35 @@ export function resolveTargetInPage(query: ResolveQuery): ResolveResult {
   const elements = (scope: Element | null): Element[] =>
     Array.from((scope ?? doc).querySelectorAll("*"));
 
-  /** Resolve a "kind:Name" container descriptor to the element it names. */
-  const container = (descriptor: string): Element | null => {
+  /**
+   * Resolve a "kind:Name" container descriptor to exactly one *visible*
+   * element. A descriptor that names two visible containers is a refusal, not a
+   * guess: scoping a rung to the wrong form would silently act on the wrong
+   * part of the page. The reason is reported so the rung can be skipped.
+   */
+  const container = (descriptor: string): { el: Element | null; reason?: string } => {
     const trimmed = norm(descriptor);
-    if (!trimmed) return null;
+    if (!trimmed) return { el: null };
     const colon = trimmed.indexOf(":");
     const kind = lower(colon === -1 ? trimmed : trimmed.slice(0, colon));
     const name = norm(colon === -1 ? "" : trimmed.slice(colon + 1));
-    for (const el of elements(null)) {
+    const named = elements(null).filter((el) => {
       const tag = el.tagName.toLowerCase();
       const explicitRole = lower(el.getAttribute("role"));
-      if (tag !== kind && explicitRole !== kind && roleOf(el) !== kind) continue;
-      if (name && lower(accessibleNameOf(el)) !== lower(name)) continue;
-      return el;
+      if (tag !== kind && explicitRole !== kind && roleOf(el) !== kind) return false;
+      // The name is the container's accessible name, or its id. A control that
+      // names its own listbox (`aria-controls="dd-list"`) is scoped with
+      // `listbox:dd-list`, and a listbox usually carries no accessible name of
+      // its own — its text is its options' text.
+      if (name && lower(accessibleNameOf(el)) !== lower(name) && el.id !== name) return false;
+      return true;
+    });
+    const visible = named.filter(isVisible);
+    if (visible.length === 0) return { el: null };
+    if (visible.length > 1) {
+      return { el: null, reason: `container "${trimmed}" is not unique` };
     }
-    return null;
+    return { el: visible[0] as Element };
   };
 
   const fuzzyScore = (haystack: string, needle: string): number => {
@@ -355,17 +384,39 @@ export function resolveTargetInPage(query: ResolveQuery): ResolveResult {
     error: reason,
   });
 
-  const targets = (query.targets ?? []) as ResolveRung[];
-  if (targets.length === 0) return fail("the step has no target ladder");
+  const requested = (query.targets ?? []) as ResolveRung[];
+  if (requested.length === 0) return fail("the step has no target ladder");
+
+  const rankOf = (by: unknown): number => LADDER.indexOf(lower(by));
+  // Climb in rung RANK order, not the order the recipe happened to list: a
+  // recipe that puts `css` before `role` must still try `role` first. The sort
+  // is stable, so two rungs of the same rank keep their recipe order, and a rung
+  // the format does not define sorts last.
+  const targets = requested
+    .map((target, index) => ({ target, index }))
+    .sort((a, b) => rankOf(a.target.by) - rankOf(b.target.by) || a.index - b.index)
+    .map((entry) => entry.target);
 
   for (let rung = 0; rung < targets.length; rung += 1) {
     const target = targets[rung] as ResolveRung;
     const by = norm(target.by);
+    const rank = rankOf(by);
+    // Rungs are reported as the recipe format numbers them, 1..5; 0 marks a rung
+    // that is not in the ladder at all.
+    const rungNumber = rank === -1 ? 0 : rank + 1;
     const scopeDescriptor = norm(target.within) || norm(query.within);
-    const scope = scopeDescriptor ? container(scopeDescriptor) : null;
+    const containerResult = scopeDescriptor
+      ? container(scopeDescriptor)
+      : { el: null as Element | null, reason: undefined as string | undefined };
+    const scope = containerResult.el;
 
     if (scopeDescriptor && !scope) {
-      attempts.push({ rung, by, matches: 0, reason: `container "${scopeDescriptor}" not found` });
+      attempts.push({
+        rung: rungNumber,
+        by,
+        matches: 0,
+        reason: containerResult.reason ?? `container "${scopeDescriptor}" not found`,
+      });
       continue;
     }
 
@@ -405,7 +456,7 @@ export function resolveTargetInPage(query: ResolveQuery): ResolveResult {
       try {
         candidates = Array.from((scope ?? doc).querySelectorAll(selector));
       } catch {
-        attempts.push({ rung, by, matches: 0, reason: `invalid selector ${selector}` });
+        attempts.push({ rung: rungNumber, by, matches: 0, reason: `invalid selector ${selector}` });
         continue;
       }
     } else if (by === "text_fuzzy") {
@@ -421,7 +472,7 @@ export function resolveTargetInPage(query: ResolveQuery): ResolveResult {
         (el) => !matches.some((other) => other !== el && el.contains(other)),
       );
     } else {
-      attempts.push({ rung, by, matches: 0, reason: `unknown rung ${by}` });
+      attempts.push({ rung: rungNumber, by, matches: 0, reason: `unknown rung ${by}` });
       continue;
     }
 
@@ -430,10 +481,10 @@ export function resolveTargetInPage(query: ResolveQuery): ResolveResult {
       const element = usable[0] as Element;
       stamp(element, query.token);
       const box = measureTargetInPage({ token: query.token });
-      attempts.push({ rung, by, matches: 1 });
+      attempts.push({ rung: rungNumber, by, matches: 1 });
       return {
         ok: true,
-        rung,
+        rung: rungNumber,
         by,
         marker: query.token,
         x: box.x,
@@ -444,7 +495,7 @@ export function resolveTargetInPage(query: ResolveQuery): ResolveResult {
     }
 
     attempts.push({
-      rung,
+      rung: rungNumber,
       by,
       matches: usable.length,
       reason: usable.length === 0 ? "no visible, enabled match" : "more than one match",

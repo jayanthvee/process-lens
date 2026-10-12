@@ -21,7 +21,7 @@ import {
   type ResolveResult,
   type ResolveRung,
 } from "./ladder";
-import { evaluate, resolverCallExpression } from "./page";
+import { evaluate, markerExpression, resolverCallExpression } from "./page";
 import { ExecutorError, type ExecutorStep, type RunContext, type StepReport } from "./types";
 
 /** The seams a single step needs: a CDP channel, the resolver source, and any frame contexts. */
@@ -180,6 +180,56 @@ export function assertionContext(deps: StepRunDeps): ConditionContext {
   return { resolverSource: deps.resolverSource ?? resolverExpression() };
 }
 
+/**
+ * Resolve the listbox a custom combobox controls, so the option search can be
+ * scoped to it.
+ *
+ * A control that names its listbox (`aria-controls`/`aria-owns`) is trusted to
+ * that element; otherwise the one open `[role=listbox]` is used. Searching the
+ * whole document for a `role=option` would let an option belonging to another
+ * listbox be clicked — the wrong record's value — so a listbox that cannot be
+ * resolved is a refusal, not a document-wide search.
+ */
+async function resolveListboxDescriptor(
+  cdp: CdpTransport,
+  token: string,
+  contextId: number | undefined,
+): Promise<{ ok: true; descriptor: string } | { ok: false; reason: string }> {
+  const expression = `(() => {
+    const el = ${markerExpression(token)};
+    if (!el) return { ok: false, reason: "the select target is no longer in the document" };
+    const firstId = (value) => String(value || "").split(/\\s+/).filter(Boolean)[0] || "";
+    const id = firstId(el.getAttribute("aria-controls")) || firstId(el.getAttribute("aria-owns"));
+    if (id) {
+      if (!document.getElementById(id)) {
+        return { ok: false, reason: "the listbox the control names is not in the document" };
+      }
+      return { ok: true, descriptor: "listbox:" + id };
+    }
+    const open = Array.from(document.querySelectorAll('[role="listbox"]')).filter((box) => {
+      if (box.hasAttribute("hidden")) return false;
+      const style = window.getComputedStyle ? window.getComputedStyle(box) : null;
+      return !style || (style.display !== "none" && style.visibility !== "hidden");
+    });
+    if (open.length === 0) return { ok: false, reason: "the combobox has no listbox to search" };
+    if (open.length > 1) return { ok: false, reason: "more than one listbox is open" };
+    const box = open[0];
+    if (!box.id) {
+      return { ok: false, reason: "the open listbox has no id to scope the option search to" };
+    }
+    return { ok: true, descriptor: "listbox:" + box.id };
+  })()`;
+  const result = (await evaluate(
+    cdp,
+    expression,
+    contextId !== undefined ? { contextId } : {},
+  )) as { ok?: boolean; descriptor?: string; reason?: string } | undefined;
+  if (result?.ok === true && typeof result.descriptor === "string") {
+    return { ok: true, descriptor: result.descriptor };
+  }
+  return { ok: false, reason: result?.reason ?? "the combobox's listbox could not be resolved" };
+}
+
 /** Climb the 5-rung ladder for one step and return the resolver's result. */
 async function resolveStep(
   cdp: CdpTransport,
@@ -310,15 +360,25 @@ export async function performStep(
       );
     }
     if (!chosen.matched && chosen.custom) {
-      // A custom combobox: open it, then click the option the resolver finds.
+      // A custom combobox: open it, then click the option inside the listbox it
+      // owns. The search is `role=option` only, scoped to that listbox: a
+      // document-wide search, or a fuzzy text fallback, could click an option of
+      // some other listbox on the page.
       await dispatchClick(deps.cdp, token, contextId);
+      const listbox = await resolveListboxDescriptor(deps.cdp, token, contextId);
+      if (!listbox.ok) {
+        throw new ExecutorError(
+          `the select step ${step.id} could not find the listbox for ${wanted}: ${listbox.reason}`,
+          step.id,
+          "park",
+        );
+      }
       const option = await resolveStep(deps.cdp, step, deps, contextId, [
-        { by: "role", role: "option", name: wanted },
-        { by: "text_fuzzy", value: wanted },
+        { by: "role", role: "option", name: wanted, within: listbox.descriptor },
       ]);
       if (!option.result.ok) {
         throw new ExecutorError(
-          `the select step ${step.id} found no option matching ${wanted}`,
+          `the select step ${step.id} found no option matching ${wanted} inside its listbox`,
           step.id,
           "park",
         );
