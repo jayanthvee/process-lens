@@ -104,6 +104,21 @@ export function recordedValues(events: RecordedEvent[]): RecordedValue[] {
 }
 
 /**
+ * The recorder's own caveats about the recording, one sentence per event that carries one.
+ * The form shows these so a person sees a step that rests on a positional selector before
+ * they compile, rather than after a replay moves the layout out from under it.
+ */
+export function recordedWarnings(events: RecordedEvent[]): string[] {
+  const warnings: string[] = [];
+  for (const event of events) {
+    const warning = event?.warning;
+    if (!warning) continue;
+    warnings.push(`step ${event.step?.id ?? event.kind}: ${warning}`);
+  }
+  return warnings;
+}
+
+/**
  * The step the form should preselect as the commit: the last recorded click.
  *
  * A form submit carries the click step for its submit control, so a click step is
@@ -316,7 +331,7 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
     commitEl.disabled = choices.length === 0;
 
     goEl.disabled = events.length === 0 || busy;
-    warningsEl.textContent = "";
+    warningsEl.textContent = recordedWarnings(events).join("\n");
     if (events.length === 0) notice(NO_EVENTS);
     else resultEl.textContent = "";
   }
@@ -355,7 +370,9 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
       // Run reads these two keys, and the row is the sample row the route compiled.
       await deps.storage.set({ [RECIPE_KEY]: outcome.recipe, [ROW_KEY]: request.sample_row });
       notice(`Recipe "${name}" is ready — Run will use it.`);
-      warningsEl.textContent = outcome.warnings.join("\n");
+      // The recorder's caveats come first: they describe the recording itself, and the
+      // route's warnings describe the recipe the compiler wrote from it.
+      warningsEl.textContent = [...recordedWarnings(events), ...outcome.warnings].join("\n");
     } catch (error) {
       showProblems([`The hub could not be reached: ${describe(error)}.`]);
     } finally {

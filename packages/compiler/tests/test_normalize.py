@@ -104,19 +104,22 @@ def test_an_object_without_events_is_rejected() -> None:
         parse_events({"recording": []})
 
 
-def test_a_navigate_event_becomes_no_step_and_no_warning() -> None:
-    """A navigation is a fact, not an action: dropped deliberately and in silence."""
+def test_a_navigate_event_is_kept_and_is_not_noise() -> None:
+    """A navigation is a recorded fact: kept as its own event, with no noise warning."""
     events, warnings = parse_events(
         [navigate_event(1), action_event(2, "click", "click", EMAIL_TARGETS)]
     )
-    assert [event.kind for event in events] == ["click"]
+    assert [event.kind for event in events] == ["navigate", "click"]
+    assert events[0].url == NAVIGATE_URL
+    assert events[0].step is None
     assert warnings == []
 
 
-def test_a_leading_navigate_event_does_not_change_the_compiled_steps(
+def test_a_recorded_navigate_event_compiles_to_a_navigate_step(
     recording: list[dict[str, Any]], options: CompileOptions
 ) -> None:
-    """A navigation before the demonstration compiles to exactly the same steps."""
-    without = compile_recording(recording, options).recipe["steps"]
-    with_navigate = compile_recording([navigate_event(0), *recording], options).recipe["steps"]
-    assert with_navigate == without
+    """A navigation before the demonstration becomes a navigate step at its position."""
+    result = compile_recording([navigate_event(0), *recording], options)
+    steps = result.recipe["steps"]
+    assert steps[0]["action"] == "navigate"
+    assert steps[0]["url"] == NAVIGATE_URL

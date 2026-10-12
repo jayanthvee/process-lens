@@ -27,7 +27,7 @@ from .assertions import (
 from .coalesce import coalesce_fills, collapse_submits
 from .errors import CompileError
 from .model import STEP_ACTIONS, Candidate, Event
-from .normalize import parse_events
+from .normalize import NAVIGATE_EVENT_KIND, parse_events
 from .parameterize import parameterize_candidate
 from .validation import assert_valid_recipe
 
@@ -82,6 +82,35 @@ def to_candidates(
     warnings: list[str] = []
 
     for index, event in enumerate(events):
+        if event.kind == NAVIGATE_EVENT_KIND:
+            # A recorded navigation's action is "navigate": it becomes a step at its position.
+            if not options.include_navigate:
+                continue
+            url = event.url
+            if not url:
+                warnings.append(f"skipped a navigate event at {event.seq}: it carried no url")
+                continue
+            previous = events[index - 1] if index > 0 else None
+            if (
+                previous is not None
+                and previous.kind not in ("click", "submit")
+                and previous.url == url
+            ):
+                # A reload: the page did not move, so there is nothing to do. A click or a submit
+                # before it may have navigated away and back, so a navigate that follows one is a
+                # real move, not a reload.
+                continue
+            candidates.append(
+                Candidate(
+                    action="navigate",
+                    targets=[],
+                    url=url,
+                    name=f"Open {path_pattern(url) or url}",
+                    seq=event.seq,
+                )
+            )
+            continue
+
         step = event.step or {}
         action = step.get("action") or event.kind
         if action not in STEP_ACTIONS:
@@ -173,6 +202,27 @@ def _resolve_meta(
     }
 
 
+def _check_navigate_origins(candidates: list[Candidate], allowed_origins: list[str]) -> None:
+    """Refuse a recorded navigation whose origin the caller did not allow.
+
+    ``allowed_origins`` derived from the recording already contains every event url's origin, so
+    this fires only when the caller pinned ``allowed_origins`` explicitly.
+    """
+    allowed = set(allowed_origins)
+    problems: list[str] = []
+    for candidate in candidates:
+        if candidate.action != "navigate":
+            continue
+        origin = origin_of(candidate.url)
+        if origin not in allowed:
+            problems.append(
+                f"navigate step {candidate.seq or '?'} goes to {candidate.url!r}, "
+                f"whose origin {origin or candidate.url!r} is not in allowed_origins"
+            )
+    if problems:
+        raise CompileError("a recorded navigation goes outside allowed_origins", problems=problems)
+
+
 def _default_name(action: str, targets: list[dict[str, Any]]) -> str:
     for rung in targets:
         for key in ("name", "text", "value"):
@@ -183,6 +233,13 @@ def _default_name(action: str, targets: list[dict[str, Any]]) -> str:
 
 
 def _render_candidate(candidate: Candidate) -> dict[str, Any]:
+    if candidate.action == "navigate":
+        # The schema's step_navigate allows nothing but id, action, name and url.
+        return {
+            "action": "navigate",
+            "name": candidate.name or f"Open {path_pattern(candidate.url) or candidate.url}",
+            "url": candidate.url,
+        }
     step: dict[str, Any] = {"action": candidate.action}
     step["name"] = candidate.name or _default_name(candidate.action, candidate.targets)
     step["targets"] = candidate.targets
@@ -203,7 +260,10 @@ def _render_candidate(candidate: Candidate) -> dict[str, Any]:
 def _render_steps(candidates: list[Candidate], options: CompileOptions) -> list[dict[str, Any]]:
     bodies: list[dict[str, Any]] = []
 
-    if options.include_navigate:
+    # A recording that already opens with a navigation carries its own first navigate step, so the
+    # synthesized opening one is not added on top of it.
+    opens_with_navigate = bool(candidates) and candidates[0].action == "navigate"
+    if options.include_navigate and not opens_with_navigate:
         start = options.start_url or (candidates[0].url if candidates else "")
         if start:
             bodies.append(
@@ -305,6 +365,7 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
         )
 
     meta = _resolve_meta(parameterized, recording_urls, options, warnings)
+    _check_navigate_origins(parameterized, meta["allowed_origins"])
     recipe: dict[str, Any] = {
         "format_version": 1,
         "meta": meta,

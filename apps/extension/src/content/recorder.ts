@@ -9,6 +9,7 @@ import {
   computeFramePath,
   computeTargets,
   describeElement,
+  hasOnlyPositionalTargets,
   isCredentialContext,
   isPasswordField,
   isRichText,
@@ -31,6 +32,12 @@ const OBSERVATION_KIND = "observation";
 
 /** How long to watch the page after an action, in milliseconds. */
 const DEFAULT_OBSERVATION_WINDOW_MS = 1500;
+
+/**
+ * The recorder's caveat for a step whose only remaining rung is a positional path.
+ * It rides the event envelope, not the step, so a compiled recipe stays schema-valid.
+ */
+export const POSITIONAL_ONLY_WARNING = "only a positional selector remains";
 
 /**
  * How long the page an action navigated to looks for a confirmation after it loads.
@@ -256,8 +263,30 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): () => void 
 
   const active = (): boolean => hooks.isActive();
 
+  /**
+   * The recorder's caveat for a step, or undefined when at least one rung is durable.
+   * This is the one place the reason is decided; every event that carries a step goes
+   * through `stepEvent`, so no path can forget it.
+   */
+  function stepWarning(step: RecordedStep | null): string | undefined {
+    return step && hasOnlyPositionalTargets(step.targets) ? POSITIONAL_ONLY_WARNING : undefined;
+  }
+
+  /** The event that carries a step, with its warning attached when it has one. */
+  function stepEvent(kind: PendingEvent["kind"], step: RecordedStep | null): PendingEvent {
+    const warning = stepWarning(step);
+    return makeEvent({
+      kind,
+      url: url(),
+      step,
+      frame,
+      at: stamp(),
+      ...(warning ? { warning } : {}),
+    });
+  }
+
   function emitStep(kind: PendingEvent["kind"], step: RecordedStep): void {
-    hooks.send(makeEvent({ kind, url: url(), step, frame, at: stamp() }));
+    hooks.send(stepEvent(kind, step));
   }
 
   const observationWindowMs = hooks.observationWindowMs ?? DEFAULT_OBSERVATION_WINDOW_MS;
@@ -283,7 +312,7 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): () => void 
 
   /** Emit a click or a submit, then watch the page for what it changed. */
   function emitAction(kind: "click" | "submit", step: RecordedStep | null): void {
-    hooks.send(makeEvent({ kind, url: url(), step, frame, at: stamp() }));
+    hooks.send(stepEvent(kind, step));
     actionAwaitingEvidence = true;
     beginObservation();
   }

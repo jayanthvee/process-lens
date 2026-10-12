@@ -104,6 +104,25 @@ def test_a_save_with_no_observation_names_assert_after(
     assert any("assert_after" in problem for problem in problems), problems
 
 
+def test_a_recorded_navigate_outside_pinned_origins_is_a_422(client: TestClient) -> None:
+    """A navigate to an origin the caller did not pin is refused, and the problem names the url."""
+    recording = [
+        *a_demonstration(),
+        {"seq": 5, "kind": "navigate", "url": "https://evil.example.com/records/new"},
+    ]
+
+    response = client.post(
+        "/api/v1/recipes/compile",
+        json=request_body(recording, allowed_origins=["https://app.example.com"]),
+    )
+
+    assert response.status_code == 422, response.text
+    detail = response.json()["detail"]
+    assert detail["message"] == "a recorded navigation goes outside allowed_origins"
+    problems = detail["problems"]
+    assert any("https://evil.example.com/records/new" in problem for problem in problems), problems
+
+
 def test_the_extension_origin_compiles_but_may_not_cancel_a_run(
     connected: TestClient, ledger: Ledger, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -10,14 +10,13 @@ click or a submit. They are not actions, so they never become steps of their own
 each is folded onto the action it followed, where it becomes the evidence for
 that step's assertion.
 
-One more kind is dropped here rather than reported: ``navigate``. A top-level
-navigation nobody's click caused -- a typed URL, back/forward, a reload -- is a
-fact the recorder witnessed, not something the workflow does, so it becomes no
-step and earns no warning. A navigation a recorded click *did* cause says nothing
-either: the click is already the action, and the new page url is the assertion
-that follows it. An unknown kind keeps its warning, because a kind this module
-does not know about is something to re-record, not something to ignore in
-silence.
+A ``navigate`` event is kept here as it stands. A top-level navigation nobody's
+click caused -- a typed URL, back/forward, a reload -- is a fact the recorder
+witnessed, and the compiler later turns it into a ``navigate`` step at its
+position, so it survives this stage with its url and no step. It is neither an
+action nor noise, so it earns no warning. An unknown kind keeps its warning,
+because a kind this module does not know about is something to re-record, not
+something to ignore in silence.
 """
 
 from __future__ import annotations
@@ -31,8 +30,8 @@ from .errors import CompileError
 from .model import ACTIONABLE_KINDS, Event
 
 # The recorder's own event for a top-level navigation. It carries the url the page moved to, but no
-# action and no caller intent, so it is dropped exactly like an observation: deliberately, and
-# without the noise warning an unknown kind gets.
+# action and no caller intent. It is kept as its own event -- with its url and no step -- so the
+# compiler can turn it into a navigate step; it is not noise, so it earns no warning.
 NAVIGATE_EVENT_KIND = "navigate"
 
 
@@ -112,8 +111,10 @@ def parse_events(recording: Any) -> tuple[list[Event], list[str]]:
         seq = seq if isinstance(seq, int) else index + 1
 
         if kind == NAVIGATE_EVENT_KIND:
-            # Read and dropped on purpose: where the page moved on its own is recorded fact, not an
-            # action, so it is not a step and not noise either.
+            # A top-level navigation the recorder witnessed: kept with its url and no step, so the
+            # compiler can place a navigate step where it happened. It is not an action and not
+            # noise, so it is neither dropped nor warned about here.
+            events.append(Event(seq=seq, kind=kind, url=_coerce_text(raw.get("url")), step=None))
             continue
 
         observation = raw.get("observation")

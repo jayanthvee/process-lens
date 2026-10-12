@@ -30,6 +30,8 @@ export interface EventInput {
   at?: string;
   /** Present only on an `observation` event: what the page showed after an action. */
   observation?: Condition | undefined;
+  /** The recorder's own caveat about the step this event carries, if any. */
+  warning?: string | undefined;
 }
 
 export function makeEvent(input: EventInput): PendingEvent {
@@ -40,6 +42,7 @@ export function makeEvent(input: EventInput): PendingEvent {
     step: input.step,
   };
   if (input.observation) event.observation = input.observation;
+  if (input.warning) event.warning = input.warning;
   if (input.step && input.frame && input.frame.length > 0) {
     input.step.frame = input.frame;
   }

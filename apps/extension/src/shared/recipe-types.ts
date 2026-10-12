@@ -101,4 +101,10 @@ export interface RecordedEvent {
    * the service worker can attach across the navigation.
    */
   observation?: Condition;
+  /**
+   * The recorder's own caveat about this step (for example, only a positional selector
+   * remained). It lives on the event envelope, never on the step: the recipe schema forbids
+   * unknown step properties, so a warning there would make the compiled recipe invalid.
+   */
+  warning?: string;
 }

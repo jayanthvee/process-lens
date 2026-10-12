@@ -315,6 +315,24 @@ export function stableSelector(el: Element): string {
 }
 
 /**
+ * Whether every remaining rung on the ladder is merely positional.
+ *
+ * A positional path — `button`, `div > span:nth-of-type(2)` — says where an element sat,
+ * not what it is, so it survives nothing: the next layout change moves it and the step can
+ * no longer resolve. A `css` rung is durable only when its selector names something the
+ * page owns — an id, a class, or an attribute — which is why stability is read from `#`,
+ * `.` or `[` in the selector. A ladder left with no durable rung at all (including an
+ * empty one) is positional-only too; there is nothing better to fall back on either way.
+ */
+export function hasOnlyPositionalTargets(targets: LocatorRung[]): boolean {
+  return !targets.some((rung) => {
+    if (rung.by === "role" || rung.by === "testid" || rung.by === "label") return true;
+    if (rung.by === "css") return /[#.\[]/.test(rung.selector);
+    return false;
+  });
+}
+
+/**
  * The visible text a person would recognize the element by, as the last rung.
  *
  * A text field's `value` is deliberately never returned. It is the buffer the
