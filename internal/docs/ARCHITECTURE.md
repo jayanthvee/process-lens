@@ -113,8 +113,11 @@ Notes for PL-005:
 
 ## Open items (owner or a later ticket)
 
-- **Runner ↔ hub transport** (Postgres LISTEN/NOTIFY or internal HTTP). It must carry command ids and must not
-  replay commands. See P-001.
+- **Runner ↔ hub transport: resolved by PL-014.** The transport is the hub's own WebSocket relay
+  (`services/api/hub.py`), with the runner as a client of `/api/v1/runner/ws` rather than a second internal
+  protocol. Neither Postgres LISTEN/NOTIFY nor internal HTTP is used. A command carries a wire `command_id`
+  (a fresh uuid per send), and the hub never replays a message: a command for an absent peer is answered
+  `peer_unavailable` at once and forgotten.
 - **Cloud executor (phase 2)** becomes a new component with the same command protocol. Adding it is an
   architecture change under AGENTS.md rule 4.
 - **Python package names** are fixed by PL-002. The YAML stays path-based.

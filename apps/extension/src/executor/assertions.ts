@@ -48,8 +48,16 @@ export function conditionExpression(condition: Condition, ctx: ConditionContext)
     `String(${JSON.stringify(value)}).replace(/\\s+/g, " ").trim()`;
 
   if ("text_visible" in record) {
+    const wanted = record["text_visible"];
+    if (typeof wanted !== "string" || wanted.trim() === "") {
+      // Fail-closed (F3): `text_visible: ""` would make `includes("")` true for every page, so an
+      // empty or non-string needle would verify a commit the destination never made.
+      throw new Error(
+        `text_visible needs a non-empty string, got ${JSON.stringify(wanted)}`,
+      );
+    }
     return `(() => { const text = document.body ? document.body.innerText || document.body.textContent || "" : ""; return text.replace(/\\s+/g, " ").trim().includes(${normal(
-      record["text_visible"],
+      wanted,
     )}); })()`;
   }
   if ("text_absent" in record) {
@@ -76,8 +84,27 @@ export function conditionExpression(condition: Condition, ctx: ConditionContext)
     const spec = record["value_equals"] as {
       selector?: { targets?: unknown; within?: unknown };
       case_insensitive?: boolean;
+      value?: unknown;
     };
-    const expected = ctx.valueEquals ?? "";
+    // The runner resolves the value source before it sends a condition, so `value` is already a
+    // literal; `ctx.valueEquals` stays the fallback for a caller that supplies the value itself.
+    const declared = spec?.value;
+    // Fail-closed (F3): a non-string declared value would stringify into something nobody asked
+    // for, and comparing against it could pass. Only a string compares; a missing value is the
+    // caller's own literal, and if that is absent too the condition cannot be judged at all.
+    let expected: string;
+    if (declared === undefined) {
+      if (typeof ctx.valueEquals !== "string" || ctx.valueEquals === "") {
+        throw new Error("value_equals has no value to compare against");
+      }
+      expected = ctx.valueEquals;
+    } else if (typeof declared === "string") {
+      expected = declared;
+    } else {
+      throw new Error(
+        `value_equals needs a string value, got ${JSON.stringify(declared)}`,
+      );
+    }
     const insensitive = spec?.case_insensitive === true;
     const call = resolverCallExpression(ctx.resolverSource, {
       targets: spec?.selector?.targets ?? [],
@@ -104,12 +131,21 @@ export interface WaitOptions {
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
   contextId?: number;
+  /**
+   * Asked at the top of every poll; when it answers true the wait ends at once
+   * with `ok: false`, so an abort does not have to wait out the timeout.
+   */
+  aborted?: () => boolean;
 }
 
 export interface WaitResult {
   ok: boolean;
   polls: number;
   elapsedMs: number;
+  /** True when the `aborted` probe ended the poll rather than the timeout. */
+  aborted?: boolean;
+  /** Why the poll stopped early, when it was not the condition holding. */
+  reason?: string;
 }
 
 const defaultSleep = (ms: number): Promise<void> =>
@@ -117,7 +153,9 @@ const defaultSleep = (ms: number): Promise<void> =>
 
 /**
  * Poll a condition until it holds or the timeout elapses. Checks immediately,
- * then waits `pollMs` between checks. Returns `ok: false` on timeout.
+ * then waits `pollMs` between checks. Returns `ok: false` on timeout, and also
+ * as soon as the `aborted` probe answers true — an aborted run must not sit in
+ * a poll for the rest of its timeout.
  */
 export async function waitForCondition(
   cdp: CdpTransport,
@@ -135,13 +173,29 @@ export async function waitForCondition(
 
   for (;;) {
     polls += 1;
+    if (options.aborted && options.aborted()) {
+      return {
+        ok: false,
+        polls,
+        elapsedMs: now() - started,
+        aborted: true,
+        reason: "the run was aborted",
+      };
+    }
     const expression = conditionExpression(condition, ctx);
     const ok =
       (await evaluate(cdp, expression, options.contextId !== undefined ? { contextId: options.contextId } : {})) ===
       true;
     const elapsedMs = now() - started;
     if (ok) return { ok: true, polls, elapsedMs };
-    if (elapsedMs >= timeoutMs) return { ok: false, polls, elapsedMs };
+    if (elapsedMs >= timeoutMs) {
+      return {
+        ok: false,
+        polls,
+        elapsedMs,
+        reason: `the condition did not hold within ${timeoutMs}ms`,
+      };
+    }
     await sleep(pollMs);
   }
 }

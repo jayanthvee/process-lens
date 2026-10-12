@@ -13,6 +13,7 @@ import psycopg
 from fastapi import FastAPI
 
 from .approvals import router as approvals_router
+from .hub import router as hub_router
 from .recipes import router as recipes_router
 from .runs import router as runs_router
 
@@ -24,6 +25,7 @@ app = FastAPI(title="ProcessLens API", version="0.1.0")
 app.include_router(recipes_router)
 app.include_router(runs_router)
 app.include_router(approvals_router)
+app.include_router(hub_router)
 
 
 def database_available() -> bool:

@@ -62,16 +62,39 @@ describe("condition predicates", () => {
 
   it("value_equals compares a field's value", () => {
     document.body.innerHTML = "<input id='email' value='ravi@example.com'>";
+    // The runner renders the value source before it sends a condition, so the wire value is
+    // already the literal (F3); the fixture carries that shape.
     const eq = conditionExpression(
       {
         value_equals: {
           selector: { targets: [{ by: "css", selector: "#email" }] },
-          value: { kind: "constant", value: "ravi@example.com" },
+          value: "ravi@example.com",
         },
       },
       { ...ctx, valueEquals: "ravi@example.com" },
     );
     expect(run(eq)).toBe(true);
+  });
+
+  it("refuses a value_equals with a non-string value rather than stringifying it", () => {
+    // F3: stringifying a value nobody asked for could compare equal and verify a commit that
+    // never happened.
+    expect(() =>
+      conditionExpression(
+        {
+          value_equals: {
+            selector: { targets: [{ by: "css", selector: "#email" }] },
+            value: 42,
+          },
+        } as unknown as Condition,
+        ctx,
+      ),
+    ).toThrow(/string value/);
+  });
+
+  it("refuses an empty text_visible rather than matching every page", () => {
+    // F3: `includes("")` is true for every page, so `text_visible: ""` would verify anything.
+    expect(() => conditionExpression({ text_visible: "" }, ctx)).toThrow(/non-empty string/);
   });
 
   it("refuses a predicate it does not understand", () => {

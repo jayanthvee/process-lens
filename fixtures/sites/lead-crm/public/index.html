@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lead CRM</title>
+<link rel="stylesheet" href="/styles.css">
+<!--SWITCHES-->
+</head>
+<body>
+<header class="site-header">
+  <h1>Lead CRM</h1>
+  <nav class="site-nav">
+    <a class="button-link" id="new-lead-link" href="new-lead.html">New lead</a>
+    <!--PARTNER_LINK-->
+  </nav>
+</header>
+<main>
+  <form id="search-form" action="/" method="get" role="search">
+    <label for="lead-search">Search leads</label>
+    <input id="lead-search" name="q" type="text" data-testid="lead-search" value="{{Q}}" autocomplete="off" placeholder="ana@example.test">
+    <button id="lead-search-button" data-testid="lead-search-button" type="submit" role="button">Search</button>
+  </form>
+  <section id="results-section" aria-label="Lead search">
+    <!--RESULTS-->
+  </section>
+</main>
+<script src="/app.js"></script>
+</body>
+</html>

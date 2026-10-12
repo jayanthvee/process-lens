@@ -1,0 +1,187 @@
+/* Minimal styling for the synthetic lead-crm fixture.
+   Every interactive element gets a real box so document.elementFromPoint
+   hit-testing works, and the password field is genuinely visible.
+   No flex or grid is used on the ARIA table, so its roles stay exposed. */
+
+:root { color-scheme: light; }
+
+* { box-sizing: border-box; }
+
+[hidden] { display: none !important; }
+
+body {
+  margin: 0;
+  padding: 16px;
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Arial, sans-serif;
+  color: #1b1f23;
+  background: #ffffff;
+}
+
+h1 { font-size: 22px; margin: 0 0 10px; }
+
+.site-header { display: block; margin-bottom: 12px; }
+.site-nav { display: block; margin-bottom: 16px; }
+
+label {
+  display: block;
+  margin: 8px 0 2px;
+  font-weight: 600;
+}
+
+input,
+select,
+button {
+  display: block;
+  width: 320px;
+  min-height: 36px;
+  height: 36px;
+  margin: 0 0 12px;
+  padding: 6px 8px;
+  font: inherit;
+  color: #1b1f23;
+  background: #ffffff;
+  border: 1px solid #8d9299;
+  border-radius: 4px;
+}
+
+input[type="hidden"] { display: none; }
+
+select { height: 36px; }
+
+input:focus,
+select:focus,
+button:focus,
+a.button-link:focus { outline: 2px solid #1f4ed8; outline-offset: 1px; }
+
+button {
+  width: auto;
+  min-width: 140px;
+  background: #1f4ed8;
+  border-color: #1f4ed8;
+  color: #ffffff;
+  cursor: pointer;
+}
+
+a.button-link {
+  display: inline-block;
+  width: auto;
+  min-width: 140px;
+  min-height: 36px;
+  padding: 7px 12px;
+  margin: 0 8px 12px 0;
+  text-align: center;
+  text-decoration: none;
+  color: #1f4ed8;
+  background: #ffffff;
+  border: 1px solid #1f4ed8;
+  border-radius: 4px;
+}
+
+/* Search results: an ARIA table built from divs (one data-lead-row per lead).
+   block / inline-block keeps each cell a real box without hiding its role. */
+.results {
+  display: block;
+  width: 100%;
+  max-width: 720px;
+  margin-top: 8px;
+  border: 1px solid #d5d9de;
+  border-radius: 6px;
+  background: #ffffff;
+}
+
+.results-head,
+.results-body { display: block; }
+
+.result-row { display: block; border-top: 1px solid #eceff3; }
+.results-head .result-row { border-top: 0; }
+
+.result-cell,
+[role="columnheader"] {
+  display: inline-block;
+  width: 220px;
+  min-height: 26px;
+  padding: 5px 8px;
+  vertical-align: top;
+}
+
+.results-head [role="columnheader"] {
+  font-weight: 600;
+  background: #f5f7fa;
+}
+
+.empty {
+  display: block;
+  width: 100%;
+  max-width: 420px;
+  min-height: 28px;
+  margin: 8px 0;
+  padding: 8px 10px;
+  color: #4a5157;
+  background: #f5f7fa;
+  border: 1px solid #d5d9de;
+  border-radius: 4px;
+}
+
+/* The toast: `[role="status"]` needs a real box too, so a hit-test or a
+   visibility check can find it. The served markup stays the brief's bare
+   `<div role="status">Lead created</div>`; the box comes from here. */
+.toast,
+[role="status"] {
+  display: block;
+  width: 100%;
+  max-width: 420px;
+  min-height: 34px;
+  margin: 8px 0;
+  padding: 8px 12px;
+  color: #12492a;
+  background: #e6f4ea;
+  border: 1px solid #9cc7a8;
+  border-radius: 4px;
+}
+
+.toast.stale {
+  color: #6b4a12;
+  background: #fdf3e0;
+  border-color: #d9b26a;
+}
+
+.field-error {
+  display: block;
+  width: 100%;
+  max-width: 420px;
+  min-height: 30px;
+  margin: 8px 0;
+  padding: 7px 10px;
+  color: #8a1f1f;
+  background: #fdeaea;
+  border: 1px solid #d16666;
+  border-radius: 4px;
+}
+
+.hint {
+  display: block;
+  width: 100%;
+  max-width: 420px;
+  min-height: 20px;
+  margin: 4px 0;
+  color: #4a5157;
+}
+
+.field-frame {
+  display: block;
+  width: 340px;
+  height: 100px;
+  margin: 0 0 12px;
+  border: 1px solid #8d9299;
+  border-radius: 4px;
+  background: #ffffff;
+}
+
+.challenge { display: block; }
+.challenge-frame {
+  display: block;
+  width: 320px;
+  height: 120px;
+  border: 1px solid #d5d9de;
+  background: #ffffff;
+}

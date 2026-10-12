@@ -20,9 +20,10 @@ import psycopg
 
 from packages.ledger import StaleLease, heartbeat
 
+from .browser_executor import BrowserExecutor, ExecutorUnavailable
 from .clock import Clock, SystemClock
-from .executor import ConditionResult, Executor, StepCommand, StepResult
-from .reconcile import NoopReconciler, Reconciler
+from .executor import ConditionResult, ConfirmationProbe, Executor, StepCommand, StepResult
+from .reconcile import NoopReconciler, ParkingReconciler, Reconciler
 from .run_loop import RunLoop
 
 Connect = Callable[[str], Any]
@@ -129,6 +130,8 @@ class Worker:
         heartbeat_interval: float = DEFAULT_HEARTBEAT_INTERVAL,
         fallback_timeout_ms: int = 10_000,
         connect: Connect = default_connect,
+        events: Callable[[], list[tuple[str, str]]] | None = None,
+        reconnect: Callable[[], bool] | None = None,
     ) -> None:
         self.dsn = dsn
         self.worker_id = worker_id
@@ -141,10 +144,23 @@ class Worker:
         self.heartbeat_interval = heartbeat_interval
         self.fallback_timeout_ms = fallback_timeout_ms
         self.connect = connect
+        # PL-014 R6: the run-level event drain the executor collects into (None for the fake path).
+        self.events = events
+        # F5's other half: a worker whose executor dropped re-attaches before it gives up, so a
+        # transient disconnect does not stop it for the rest of its life (ticket criterion).
+        self.reconnect = reconnect
 
     def run_once(self) -> bool:
         """Claim or take over one run and process it. Returns False when there is nothing to do."""
         from packages.ledger import claim_run, find_stale_run, get_run, recover_run, take_over_run
+
+        # F5: a disconnected executor cannot drive a run, so claiming one would strand it in the
+        # commit window. The worker first tries to re-attach; only when that fails does it stand
+        # down, and the ticket's reconnect criterion is what makes the retry meaningful.
+        if getattr(self.executor, "disconnected", False) and (
+            self.reconnect is None or not self.reconnect()
+        ):
+            return False
 
         with self.connect(self.dsn) as conn:
             with conn.transaction():
@@ -188,6 +204,7 @@ class Worker:
                     fallback_timeout_ms=self.fallback_timeout_ms,
                     heartbeat_timeout_seconds=self.heartbeat_timeout_seconds,
                     lease_check=beat.check,
+                    events=self.events,
                 )
                 loop.process_run(conn, run, epoch)
         return True
@@ -230,7 +247,46 @@ class DisconnectedExecutor:
         step_id: str | None = None,
         record_key: str | None = None,
     ) -> ConditionResult:
-        return ConditionResult(passed=False)
+        # R1: with no browser there is no answer, and no answer is never "the condition is false".
+        return ConditionResult(passed=False, status="lost")
+
+    def probe_confirmation(
+        self,
+        condition: dict[str, Any],
+        *,
+        step_id: str | None = None,
+        record_key: str | None = None,
+    ) -> ConfirmationProbe:
+        # No page to look at, so the fresh-confirmation gate does not run.
+        return "unsupported"
+
+
+def _run_with_polling(
+    worker: Worker, *, max_runs: int | None, poll_seconds: float, stop_after_seconds: float
+) -> int:
+    """Process runs until the budget is spent. With ``poll_seconds > 0`` an idle queue waits.
+
+    The idle interval is an ``Event.wait``, not a fixed sleep: rule 20's "no fixed sleeps" governs
+    how the browser is driven (every step wait is a condition with a timeout), and an interruptible
+    event is what lets the worker stop promptly instead of blocking. ``poll_seconds == 0`` exits as
+    soon as the queue is empty.
+    """
+    import threading
+    import time
+
+    idle = threading.Event()
+    processed = 0
+    deadline = time.monotonic() + stop_after_seconds if stop_after_seconds > 0 else None
+    while max_runs is None or processed < max_runs:
+        if worker.run_once():
+            processed += 1
+            continue
+        if poll_seconds <= 0:
+            break
+        if deadline is not None and time.monotonic() >= deadline:
+            break
+        idle.wait(poll_seconds)
+    return processed
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -250,9 +306,38 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-runs", type=int, default=None)
     parser.add_argument(
         "--executor",
-        choices=["disconnected"],
+        choices=["disconnected", "browser"],
         default="disconnected",
-        help="The browser executor. PL-014 adds the WebSocket executor.",
+        help="`browser` drives the real extension over the hub (PL-014).",
+    )
+    parser.add_argument("--session", default=None, help="The hub session id (browser executor).")
+    parser.add_argument(
+        "--hub-url",
+        default="ws://127.0.0.1:8000",
+        help="The hub's base URL; the runner channel is derived from it.",
+    )
+    parser.add_argument(
+        "--runner-secret",
+        default=None,
+        help="Defaults to PROCESSLENS_RUNNER_SECRET. Required with --executor browser.",
+    )
+    parser.add_argument(
+        "--peer-timeout",
+        type=float,
+        default=10.0,
+        help="Seconds to wait for the extension to attach before refusing to claim (S5).",
+    )
+    parser.add_argument(
+        "--poll-seconds",
+        type=float,
+        default=0.0,
+        help="Keep waiting for runs; 0 exits when the queue is empty.",
+    )
+    parser.add_argument(
+        "--max-seconds",
+        type=float,
+        default=0.0,
+        help="Stop waiting after this long; 0 means no limit.",
     )
     args = parser.parse_args(argv)
 
@@ -261,7 +346,69 @@ def main(argv: list[str] | None = None) -> int:
         print("services.runner: DATABASE_URL is not set")
         return 2
 
-    # The real executor arrives with PL-014. Until then the worker refuses to claim runs, so it
-    # never writes a ledger row it cannot act on.
-    print("services.runner: no browser executor is connected yet (PL-014); refusing to claim runs")
+    if args.executor == "disconnected":
+        # Fail closed: with no browser the worker refuses to claim, so it never writes a ledger
+        # row it cannot act on.
+        print(
+            "services.runner: no browser executor is connected (--executor disconnected); "
+            "refusing to claim runs"
+        )
+        return 0
+
+    session = (args.session or "").strip()
+    secret = (args.runner_secret or os.environ.get("PROCESSLENS_RUNNER_SECRET", "")).strip()
+    if not session:
+        print("services.runner: --session is required with --executor browser")
+        return 2
+    if not secret:
+        print("services.runner: PROCESSLENS_RUNNER_SECRET is not set")
+        return 2
+
+    url = f"{args.hub_url.rstrip('/')}/api/v1/runner/ws?session={session}"
+    executor = BrowserExecutor(url=url, secret=secret, session=session, worker_id=args.worker_id)
+    try:
+        executor.connect()
+        # S5: claim nothing until the extension is attached, not merely until the socket is open.
+        executor.wait_for_peer_or_raise(args.peer_timeout)
+    except ExecutorUnavailable as exc:
+        print(f"services.runner: {exc}")
+        executor.close()
+        return 3
+
+    def reconnect() -> bool:
+        """F5: try to bring a dropped executor back before a claim is refused.
+
+        A disconnect is not necessarily permanent: the extension re-attaches to the same session
+        with its resume token, and the ticket's reconnect criterion expects the run to continue.
+        Close the dead socket first so a half-open one is never reused.
+        """
+        executor.close()
+        try:
+            executor.connect()
+            executor.wait_for_peer_or_raise(args.peer_timeout)
+        except ExecutorUnavailable:
+            return False
+        return True
+
+    worker = Worker(
+        dsn,
+        worker_id=args.worker_id,
+        executor=executor,
+        # PL-014: until P-003 is decided, an uncertain save is parked for a person.
+        reconciler=ParkingReconciler(),
+        heartbeat_timeout_seconds=args.heartbeat_timeout,
+        heartbeat_interval=args.heartbeat_interval,
+        events=executor.take_events,
+        reconnect=reconnect,
+    )
+    try:
+        processed = _run_with_polling(
+            worker,
+            max_runs=args.max_runs,
+            poll_seconds=args.poll_seconds,
+            stop_after_seconds=args.max_seconds,
+        )
+    finally:
+        executor.close()
+    print(f"services.runner: processed {processed} run(s)")
     return 0

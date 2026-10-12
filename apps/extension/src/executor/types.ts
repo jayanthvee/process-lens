@@ -4,6 +4,7 @@
 // actions it can perform (navigate, fill, select, click), the ordered target
 // ladder, the post-condition it verifies, and the value sources it can resolve.
 import type { Condition, FrameStep, LocatorRung, ValueSource } from "../shared/recipe-types";
+import type { EventKind } from "../shared/command-protocol";
 
 /** The actions the attended executor performs itself. */
 export type ExecutedAction = "navigate" | "fill" | "select" | "click";
@@ -23,6 +24,8 @@ export interface ExecutorStep {
   value?: ValueSource;
   clear_first?: boolean;
   option_match?: "text" | "value" | "index";
+  /** Only a step that says so may click a control whose name looks destructive. */
+  allow_destructive_control?: boolean;
   url?: string;
   condition?: Condition;
 }
@@ -81,12 +84,18 @@ export interface RunStatus {
 /**
  * Thrown when a step cannot be completed. A `park` disposition means a person
  * must look at the record; the caller must not retry it blindly.
+ *
+ * `event`, when set, is a run-level event this failure causes — a challenge, a login wall, an
+ * off-origin page. The caller sends that event BEFORE the refusal it produces (R6): the runner
+ * needs the event to decide whether the record is released and the run paused, or the record is
+ * parked, and a refusal alone cannot express that.
  */
 export class ExecutorError extends Error {
   constructor(
     message: string,
     readonly stepId?: string,
     readonly disposition: FailureDisposition = "park",
+    readonly event?: EventKind,
   ) {
     super(message);
     this.name = "ExecutorError";

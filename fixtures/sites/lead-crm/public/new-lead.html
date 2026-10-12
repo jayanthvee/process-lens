@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>New lead</title>
+<link rel="stylesheet" href="/styles.css">
+<!--SWITCHES-->
+</head>
+<body>
+<header class="site-header">
+  <h1>New lead</h1>
+  <nav class="site-nav">
+    <a class="button-link" href="index.html">Back to search</a>
+  </nav>
+</header>
+<!--TOAST-->
+<!--FIELD_ERROR-->
+<main>
+  <form id="new-lead-form" action="/leads/new" method="post">
+    <!--EMAIL_FIELD-->
+    <label for="lead-interest">Interest</label>
+    <select id="lead-interest" name="interest" data-testid="lead-interest">
+      <option value="">Interest</option>
+      <option value="Data course"{{DATA_SELECTED}}>Data course</option>
+    </select>
+    <div role="listbox" hidden><div role="option">Data course</div><div role="option">Data course</div></div>
+    <label for="lead-company">Company</label>
+    <input id="lead-company" name="company" type="text" data-testid="lead-company" autocomplete="off" value="{{COMPANY_VALUE}}">
+    <button id="lead-save-button" data-testid="lead-save" type="submit" role="button">Save</button>
+    <p id="save-hint" class="hint" hidden></p>
+  </form>
+</main>
+<script src="/app.js"></script>
+</body>
+</html>

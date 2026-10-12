@@ -12,6 +12,17 @@ This module holds the logic the plan's pseudocode describes, amended for T1's re
 * S1  the acknowledgement is checked before a rejection.
 * S2  a reconcile error parks the record, it never fails it.
 * S4  every executor step writes a ``step_events`` row.
+
+PL-014 adds the real-extension path, and three of its rules live here:
+
+* R1  a condition check that got no answer never counts as "false". ``passed=False`` is only an
+      answer when the executor actually polled; anything else parks (or reconciles) instead of
+going down the ``else`` branch of a duplicate search.
+* R2  every condition is rendered before it reaches the executor; the recipe's own
+      ``{{row.email | lower}}`` must arrive as the record's email, never as the placeholder.
+* R6  a run-level event beats the step result. Events are drained *before* a result is
+      interpreted, so a challenge releases a pre-commit record instead of parking it through the
+      ``refused`` rule, and ``peer_gone`` is authoritative rather than a hint.
 """
 
 from __future__ import annotations
@@ -26,7 +37,9 @@ import psycopg
 from psycopg.rows import dict_row
 
 from packages.ledger import (
+    COMMIT_WINDOW_STATES,
     LEGAL_TRANSITIONS,
+    WORKING_STATES,
     IllegalTransition,
     LedgerError,
     RecordClaim,
@@ -56,7 +69,7 @@ from packages.ledger import (
 from .approvals import evaluate_policy
 from .clock import Clock
 from .conditions import condition_timeout
-from .executor import Executor, StepCommand
+from .executor import ConditionResult, ConfirmationProbe, Executor, StepCommand
 from .reconcile import Reconciler, outcome_of
 from .templates import TemplateError, is_template, render
 
@@ -75,6 +88,21 @@ INTERNAL_ERROR = "internal_error"
 HEARTBEAT_TIMEOUT_SAFETY_FACTOR = 3.0
 DISPATCH_BUDGET_SECONDS = 5.0
 
+# PL-014: the run-level events that pause a run, and the pause reason each produces.
+PAUSE_EVENTS = frozenset({"challenge", "login_required", "policy_blocked"})
+DISCONNECT_EVENTS = frozenset({"detached", "tab_closed"})
+EXECUTOR_DISCONNECTED = "executor_disconnected"
+
+# R1: a condition check the browser never answered decided nothing.
+UNANSWERED_CONDITION_REASON = "the browser could not answer a condition check"
+
+# PL-014 requirement 4: a confirmation already on the page proves nothing about this save.
+ALREADY_ON_PAGE_REASON = "the confirmation was already on the page before saving"
+UNKNOWN_CONFIRMATION_REASON = "could not tell whether the confirmation was already on the page"
+
+# The freshness probe asks "is it there now", so it polls once at the schema's own minimum.
+CONFIRMATION_PROBE_TIMEOUT_MS = 100
+
 _PRE_EXIT = {"skip": "skipped", "park": "parked", "fail": "failed"}
 
 _SELECT_INPUT_ROW = "SELECT raw, clean FROM input_records WHERE id = %(id)s"
@@ -86,6 +114,11 @@ _RESOLVABLE_SOURCES = frozenset({"input", "constant"})
 
 class RunnerConfigError(RuntimeError):
     """The worker's configuration cannot safely run this recipe (R6)."""
+
+
+def _pause_reason_for(kind: str) -> str:
+    """The pause reason a run-level event produces (PL-014)."""
+    return EXECUTOR_DISCONNECTED if kind in DISCONNECT_EVENTS else kind
 
 
 @dataclass
@@ -109,6 +142,7 @@ class RunLoop:
         fallback_timeout_ms: int = 10_000,
         heartbeat_timeout_seconds: float | None = None,
         lease_check: Callable[[], None] | None = None,
+        events: Callable[[], list[tuple[str, str]]] | None = None,
     ) -> None:
         self.worker_id = worker_id
         self.executor = executor
@@ -118,8 +152,12 @@ class RunLoop:
         self.fallback_timeout_ms = fallback_timeout_ms
         self.heartbeat_timeout_seconds = heartbeat_timeout_seconds
         self.lease_check = lease_check or (lambda: None)
+        # R6: the drain the loop reads run-level events through. A test injects any sequence.
+        self.events = events
         self._epoch = 0
         self._canary: uuid.UUID | None = None
+        self._allowed_origins: tuple[str, ...] = ()
+        self._deferred_events: list[tuple[str, str]] = []
 
     # -- the run -----------------------------------------------------------
 
@@ -129,6 +167,8 @@ class RunLoop:
         recipe = self._recipe(conn, run)
         meta = recipe.get("meta") if isinstance(recipe.get("meta"), dict) else {}
         rules = _rules(meta)
+        origins = meta.get("allowed_origins")
+        self._allowed_origins = tuple(str(o) for o in origins) if isinstance(origins, list) else ()
 
         # R6: never start a run whose lease could lapse mid-step: the heartbeat must outlive
         # three times the longest step in the recipe plus the dispatch budget.
@@ -157,6 +197,12 @@ class RunLoop:
                     continue
                 return
 
+            # R6: a run-level event that arrived between records pauses the run before the next
+            # claim, so no new record is started against a page that is showing a challenge.
+            if self._pause_for_events(conn, run, epoch):
+                self._hand_back(conn, run)
+                return
+
             with conn.transaction():
                 record = claim_record(conn, run.id, self.worker_id, epoch)
             if record is None:
@@ -169,6 +215,9 @@ class RunLoop:
                 # legal; otherwise pause the run for a person.
                 outcome = self._handle_refused(conn, record, run, epoch, exc)
                 if outcome is None:
+                    # PL-013 follow-up: the internal_error pause hands the run back too, so a
+                    # resume can claim it at once instead of finding it owned by a stopped worker.
+                    self._hand_back(conn, run)
                     return
             if self._canary == record.id and outcome in _FAILURE_STATES:
                 with conn.transaction():
@@ -364,11 +413,27 @@ class RunLoop:
             action = step.get("action")
 
             if action == "branch":
-                condition = step.get("when", {})
-                passed = self._check(
-                    condition, step_id=step.get("id"), record_key=record.record_key
-                )
-                branch = step.get("then", []) if passed else step.get("else", [])
+                # F4: `_check` renders the condition, and an unrenderable `when` must park the
+                # record rather than raise out of the loop and kill the worker.
+                try:
+                    verdict = self._check(
+                        step.get("when", {}),
+                        step_id=step.get("id"),
+                        record_key=record.record_key,
+                        row=row,
+                        variables=variables,
+                    )
+                except TemplateError as exc:
+                    return self._park_for_template_error(conn, record, box, exc)
+                # R6: a condition check is an executor call, so an event that arrived while it ran
+                # beats its verdict.
+                stopped = self._drain_events(conn, record, run, epoch, box)
+                if stopped is not None:
+                    return stopped
+                unanswered = self._no_answer(conn, record, run, epoch, box, verdict)
+                if unanswered is not None:
+                    return unanswered
+                branch = step.get("then", []) if verdict.passed else step.get("else", [])
                 terminal = self._run_steps(conn, record, run, epoch, branch, row, variables, box)
                 if terminal is not None:
                     return terminal
@@ -376,10 +441,27 @@ class RunLoop:
 
             if action == "approval_gate":
                 when = step.get("when")
-                if when and not self._check(
-                    when, step_id=step.get("id"), record_key=record.record_key
-                ):
-                    continue
+                if when:
+                    # F4: same rule as a branch `when` — a gate condition that cannot be rendered
+                    # parks the record instead of crashing the worker.
+                    try:
+                        verdict = self._check(
+                            when,
+                            step_id=step.get("id"),
+                            record_key=record.record_key,
+                            row=row,
+                            variables=variables,
+                        )
+                    except TemplateError as exc:
+                        return self._park_for_template_error(conn, record, box, exc)
+                    stopped = self._drain_events(conn, record, run, epoch, box)
+                    if stopped is not None:
+                        return stopped
+                    unanswered = self._no_answer(conn, record, run, epoch, box, verdict)
+                    if unanswered is not None:
+                        return unanswered
+                    if not verdict.passed:
+                        continue
                 shown = _gate_values(step, row, variables)
                 verdict = self._gate(conn, record, run, box.state, step_id=step["id"], shown=shown)
                 if verdict == "approved":
@@ -408,9 +490,9 @@ class RunLoop:
                 box.state = "filling"
 
             if step.get("commit") is True:
-                terminal = self._commit_step(conn, record, run, epoch, step, row, variables)
+                terminal = self._commit_step(conn, record, run, epoch, step, row, variables, box)
             else:
-                terminal = self._simple_step(conn, record, run, step, row, variables)
+                terminal = self._simple_step(conn, record, run, epoch, step, row, variables, box)
             if terminal is not None:
                 return terminal
 
@@ -425,6 +507,7 @@ class RunLoop:
         step: Mapping[str, Any],
         row: Mapping[str, Any],
         variables: Mapping[str, Any],
+        box: _Box,
     ) -> str | None:
         if self._canary is None:
             self._canary = record.id  # the first record to reach a commit step is the canary
@@ -437,6 +520,28 @@ class RunLoop:
 
         # R2: resolve and hit-test BEFORE the write-ahead; a locator failure is not a commit.
         prepared = self.executor.prepare(command)
+
+        # R6: an event that arrived while the target was resolved beats the result it produced.
+        stopped = self._drain_events(conn, record, run, epoch, box)
+        if stopped is not None:
+            return stopped
+
+        if prepared.status == "refused":
+            # PL-014: a guard refused it, so no input was sent. Parking is legal from `filling`,
+            # and that is the outcome the ticket asks for (off-origin, destructive control).
+            self._transition(
+                conn,
+                record,
+                "filling",
+                "parked",
+                prepared.error or "the extension refused the command",
+                step=step,
+                outcome="failed",
+                error=prepared.error,
+                rung=prepared.rung,
+            )
+            return "parked"
+
         if prepared.status != "ok":
             self._transition(
                 conn,
@@ -450,6 +555,28 @@ class RunLoop:
                 rung=prepared.rung,
             )
             return "parked"
+
+        # PL-014 item 4 (fresh confirmation), R1: only a definite "it is not there" may save.
+        confirmation = step.get("assert_after")
+        if confirmation:
+            probe = self._probe_confirmation(
+                confirmation,
+                step_id=step["id"],
+                record_key=record.record_key,
+                row=row,
+                variables=variables,
+            )
+            if probe in ("present", "unanswered"):
+                self._transition(
+                    conn,
+                    record,
+                    "filling",
+                    "parked",
+                    ALREADY_ON_PAGE_REASON if probe == "present" else UNKNOWN_CONFIRMATION_REASON,
+                    step=step,
+                    outcome="failed",
+                )
+                return "parked"
 
         # R3: the policy gate sits immediately before begin_commit.
         policy_gates = evaluate_policy(
@@ -473,6 +600,10 @@ class RunLoop:
 
         with conn.transaction():
             begin_commit(conn, record.id, worker=self.worker_id, epoch=epoch)
+        # The box must follow the record into the commit window. An event drained after this point
+        # decides the record's fate from `box.state`, and a stale `filling` there would ask the
+        # ledger for `filling -> pending` on a record that is already `submitting`.
+        box.state = "submitting"
         self._crash("after_submitting")
 
         acked = {"value": False}
@@ -480,11 +611,19 @@ class RunLoop:
         def on_dispatched() -> None:
             with conn.transaction():
                 mark_submitted_unverified(conn, record.id, worker=self.worker_id, epoch=epoch)
+            box.state = "submitted_unverified"
             acked["value"] = True
             self._crash("after_ack")
 
         result = self.executor.dispatch(command, on_dispatched)
         self._crash("after_dispatch")
+
+        # R6: drain BEFORE interpreting the result. The extension sends an event ahead of the
+        # `result refused` it causes, so a challenge releases a pre-commit record here instead of
+        # being read as a refusal and parked.
+        stopped = self._drain_events(conn, record, run, epoch, box)
+        if stopped is not None:
+            return stopped
 
         if acked["value"]:
             # S1: a rejection is applied only from submitted_unverified, never from submitting.
@@ -515,6 +654,21 @@ class RunLoop:
                 error=result.error,
             )
             return "failed"
+        elif result.status == "refused":
+            # PL-014 + T1's answer 1: a guard refused the dispatch after a successful prepare, so
+            # no input was sent and that is evidence. `submitting -> parked` is not legal, so the
+            # honest ledger outcome is `failed` with the refusal as its reason.
+            self._transition(
+                conn,
+                record,
+                "submitting",
+                "failed",
+                result.error or "the extension refused the commit",
+                step=step,
+                outcome="failed",
+                error=result.error,
+            )
+            return "failed"
         else:
             self._transition(
                 conn,
@@ -529,10 +683,25 @@ class RunLoop:
             return self._reconcile(conn, record, run, epoch, step)
 
         condition = step.get("assert_after", {})
-        passed = self._check(condition, step_id=step.get("id"), record_key=record.record_key)
+        # R1: only a real answer decides. A check nobody answered is not "the assertion failed";
+        # it takes the not-passed path (reconcile), which never marks a commit verified.
+        verdict = self._check(
+            condition,
+            step_id=step.get("id"),
+            record_key=record.record_key,
+            row=row,
+            variables=variables,
+        )
         self._crash("after_assert")
 
-        if passed:
+        # R6: the assertion is another executor call, so an event that arrived while it ran still
+        # beats its result. Without this drain a disconnect during the assertion would reconcile
+        # the record and then pause the run `canary_failed`, not `executor_disconnected`.
+        stopped = self._drain_events(conn, record, run, epoch, box)
+        if stopped is not None:
+            return stopped
+
+        if verdict.passed:
             with conn.transaction():
                 verified = verify_commit(
                     conn,
@@ -578,9 +747,11 @@ class RunLoop:
         conn: psycopg.Connection,
         record: RecordClaim,
         run: RunClaim,
+        epoch: int,
         step: Mapping[str, Any],
         row: Mapping[str, Any],
         variables: Mapping[str, Any],
+        box: _Box,
     ) -> str | None:
         try:
             command = self._command(record, run, self._epoch, step, row, variables, commit=False)
@@ -589,6 +760,12 @@ class RunLoop:
             return "parked"
 
         result = self.executor.perform(command, None)
+
+        # R6: an event that arrived while the step ran beats the result.
+        stopped = self._drain_events(conn, record, run, epoch, box)
+        if stopped is not None:
+            return stopped
+
         if result.status == "ok":
             # S4: every executor step writes a step event, in its own transaction.
             with conn.transaction():
@@ -602,7 +779,13 @@ class RunLoop:
                 )
             return None
 
-        fail_to = "failed" if step.get("on_failure") == "fail" else "parked"
+        # PL-014: a refusal always parks, whatever the recipe's `on_failure` says. A guard is a
+        # rule about what the extension will not do, and a compiler-written recipe must not be able
+        # to turn it into a `failed` record.
+        if result.status == "refused":
+            fail_to = "parked"
+        else:
+            fail_to = "failed" if step.get("on_failure") == "fail" else "parked"
         self._transition(
             conn,
             record,
@@ -718,6 +901,158 @@ class RunLoop:
         )
         return "parked"
 
+    # -- PL-014: run-level events (R6) -------------------------------------
+
+    def _take_events(self) -> list[tuple[str, str]]:
+        """Drain the run-level events the executor collected. Empty when there is no drain."""
+        deferred, self._deferred_events = self._deferred_events, []
+        return deferred + (list(self.events()) if self.events is not None else [])
+
+    def _put_back(self, events: list[tuple[str, str]]) -> None:
+        """Hold events this pass did not act on, in order, for the next drain."""
+        self._deferred_events = list(events) + self._deferred_events
+
+    def _pause_for_events(self, conn: psycopg.Connection, run: RunClaim, epoch: int) -> bool:
+        """A pause event between records stops the run before the next claim. True when it did.
+
+        Events this pass does not act on are held back rather than dropped: an ``off_origin`` seen
+        before a claim still belongs to the record the runner is about to start.
+        """
+        pending = self._take_events()
+        unhandled: list[tuple[str, str]] = []
+        for kind, detail in pending:
+            if kind in PAUSE_EVENTS or kind in DISCONNECT_EVENTS:
+                with conn.transaction():
+                    set_run_status(
+                        conn,
+                        run.id,
+                        "paused",
+                        pause_reason=_pause_reason_for(kind),
+                        worker=self.worker_id,
+                        epoch=epoch,
+                    )
+                logger.warning("run %s paused on a %s event: %s", run.id, kind, detail)
+                continue
+            unhandled.append((kind, detail))
+        self._put_back(unhandled)
+        return len(unhandled) != len(pending)
+
+    def _drain_events(
+        self,
+        conn: psycopg.Connection,
+        record: RecordClaim,
+        run: RunClaim,
+        epoch: int,
+        box: _Box,
+    ) -> str | None:
+        """R6: events are applied **before** any result is interpreted.
+
+        Returns an outcome string when the run stops, or ``None`` to carry on.
+        """
+        for kind, detail in self._take_events():
+            outcome = self._apply_event(conn, record, run, epoch, box, kind, detail)
+            if outcome is not None:
+                return outcome
+        return None
+
+    def _apply_event(
+        self,
+        conn: psycopg.Connection,
+        record: RecordClaim,
+        run: RunClaim,
+        epoch: int,
+        box: _Box,
+        kind: str,
+        detail: str,
+    ) -> str | None:
+        """Turn one event into a record outcome and, where the ticket says so, a run pause."""
+        if kind in PAUSE_EVENTS or kind in DISCONNECT_EVENTS:
+            self._stop_record_for_event(conn, record, run, epoch, box, kind, detail)
+            with conn.transaction():
+                set_run_status(
+                    conn,
+                    run.id,
+                    "paused",
+                    pause_reason=_pause_reason_for(kind),
+                    worker=self.worker_id,
+                    epoch=epoch,
+                )
+            logger.warning("run %s paused on a %s event: %s", run.id, kind, detail)
+            return "paused"
+        if kind == "off_origin":
+            reason = detail or "the page moved off the allowed origin"
+            if box.state in WORKING_STATES:
+                self._transition(conn, record, box.state, "parked", reason)
+                box.state = "parked"
+                return "parked"
+        return None
+
+    def _stop_record_for_event(
+        self,
+        conn: psycopg.Connection,
+        record: RecordClaim,
+        run: RunClaim,
+        epoch: int,
+        box: _Box,
+        kind: str,
+        detail: str,
+    ) -> None:
+        """The ticket's rule: before the commit the record is released; inside it, reconcile."""
+        reason = detail or kind
+        if box.state in WORKING_STATES:
+            self._transition(conn, record, box.state, "pending", reason)
+            box.state = "pending"
+            return
+        if box.state in COMMIT_WINDOW_STATES:
+            if box.state != "reconciling":
+                self._transition(conn, record, box.state, "reconciling", reason)
+                box.state = "reconciling"
+            self._reconcile(conn, record, run, epoch)
+
+    def _no_answer(
+        self,
+        conn: psycopg.Connection,
+        record: RecordClaim,
+        run: RunClaim,
+        epoch: int,
+        box: _Box,
+        verdict: ConditionResult,
+    ) -> str | None:
+        """R1: a condition check nobody answered decides nothing.
+
+        Neither branch is taken; the record is parked, or released and the run paused when a
+        run-level event explains the silence (R6).
+        """
+        if verdict.answered:
+            return None
+        stopped = self._drain_events(conn, record, run, epoch, box)
+        if stopped is not None:
+            return stopped
+        if box.state in WORKING_STATES:
+            self._transition(conn, record, box.state, "parked", UNANSWERED_CONDITION_REASON)
+            box.state = "parked"
+            return "parked"
+        return "paused"
+
+    def _park_for_template_error(
+        self,
+        conn: psycopg.Connection,
+        record: RecordClaim,
+        box: _Box,
+        exc: TemplateError,
+    ) -> str:
+        """F4: a ``when`` that cannot be rendered parks the record, never the worker.
+
+        A branch or gate condition reaches the executor through the same renderer a commit step
+        uses, so a missing column or variable there used to raise out of ``_run_steps`` and kill the
+        worker. Parking keeps the record for a person, exactly as ``_commit_step`` does.
+        """
+        if box.state in WORKING_STATES:
+            self._transition(conn, record, box.state, "parked", str(exc))
+            box.state = "parked"
+            return "parked"
+        return "paused"
+
     # -- primitives --------------------------------------------------------
 
     def _transition(
@@ -758,15 +1093,45 @@ class RunLoop:
                 )
 
     def _check(
-        self, condition: Mapping[str, Any], *, step_id: str | None, record_key: str | None
-    ) -> bool:
-        result = self.executor.check_condition(
-            dict(condition),
-            timeout_ms=condition_timeout(condition, self.fallback_timeout_ms),
+        self,
+        condition: Mapping[str, Any],
+        *,
+        step_id: str | None,
+        record_key: str | None,
+        row: Mapping[str, Any] | None = None,
+        variables: Mapping[str, Any] | None = None,
+    ) -> ConditionResult:
+        """Check a page condition, rendering its templates first (R2).
+
+        The recipe's own duplicate search looks for ``{{row.email | lower}}``; sent unrendered, the
+        extension would search for that literal text, find nothing, and create a duplicate of every
+        existing record. Every condition therefore passes through :func:`_render_condition` here,
+        which is the one place a condition reaches the executor.
+        """
+        rendered = _render_condition(dict(condition), row or {}, variables or {})
+        return self.executor.check_condition(
+            rendered,
+            timeout_ms=condition_timeout(rendered, self.fallback_timeout_ms),
             step_id=step_id,
             record_key=record_key,
         )
-        return result.passed
+
+    def _probe_confirmation(
+        self,
+        condition: Mapping[str, Any],
+        *,
+        step_id: str | None,
+        record_key: str | None,
+        row: Mapping[str, Any] | None = None,
+        variables: Mapping[str, Any] | None = None,
+    ) -> ConfirmationProbe:
+        """PL-014 item 4: is the confirmation already on the page, before the save is sent?
+
+        ``"unsupported"`` means the executor cannot see page state, so the gate does not run; that
+        is what keeps the scripted fake's behaviour unchanged. ``"unanswered"`` parks (R1).
+        """
+        rendered = _render_condition(dict(condition), row or {}, variables or {})
+        return self.executor.probe_confirmation(rendered, step_id=step_id, record_key=record_key)
 
     def _command(
         self,
@@ -780,11 +1145,31 @@ class RunLoop:
         commit: bool,
     ) -> StepCommand:
         rendered: dict[str, Any] = {"id": step["id"], "action": step["action"]}
-        for key in ("targets", "within", "frame", "clear_first", "option_match", "timeout_ms"):
+        for key in ("targets", "within", "frame", "clear_first", "option_match"):
             if key in step:
                 rendered[key] = step[key]
+        # The runner always states on the wire the deadline it will wait for (`_result_budget`
+        # is this value plus the ack slack). A step that names no `timeout_ms` of its own gets
+        # the fallback, so the extension never falls back to a default of its own that outlives
+        # the wait — an 8s navigate load wait against a 5s budget is how R4 paused a live run.
+        own_timeout = step.get("timeout_ms")
+        rendered["timeout_ms"] = (
+            own_timeout if isinstance(own_timeout, int) else self.fallback_timeout_ms
+        )
+        # `navigate` carries its destination here, and it is a template (`{{crm_base}}/` or a
+        # `{{row.*}}` value): unrendered, the extension would navigate nowhere.
+        if "url" in step:
+            rendered["url"] = _safe_text(step["url"], row, variables)
+        if isinstance(rendered.get("within"), str):
+            rendered["within"] = _safe_text(rendered["within"], row, variables)
         if "value" in step:
-            rendered["value"] = _render_value_source(step["value"], row, variables)
+            # The runner resolves the value source; the extension receives a constant it can use
+            # as-is. A bare literal here would arrive with no `kind` and the extension would refuse
+            # it, and an `input` source would have nothing to read against in command mode.
+            rendered["value"] = {
+                "kind": "constant",
+                "value": _render_value_source(step["value"], row, variables),
+            }
         if "condition" in step:
             rendered["condition"] = _render_condition(step["condition"], row, variables)
         if "assert_after" in step:
@@ -804,6 +1189,7 @@ class RunLoop:
             commit=commit,
             expires_at=self.clock.time()
             + condition_timeout(step.get("assert_after", {}), self.fallback_timeout_ms) / 1000.0,
+            allowed_origins=self._allowed_origins,
         )
 
     def _crash(self, point: str) -> None:
@@ -983,6 +1369,21 @@ def _render_condition(
         rendered["element_present"] = _render_selector(rendered["element_present"], row, variables)
     if isinstance(rendered.get("element_absent"), dict):
         rendered["element_absent"] = _render_selector(rendered["element_absent"], row, variables)
+    # `value_equals` carries a value source, and the page comparison is only meaningful once that
+    # source is a literal. Left unrendered, the extension compares the field against "".
+    equals = rendered.get("value_equals")
+    if isinstance(equals, dict):
+        spec = dict(equals)
+        if isinstance(spec.get("selector"), dict):
+            spec["selector"] = _render_selector(spec["selector"], row, variables)
+        if "value" in spec:
+            resolved = _render_value_source(spec["value"], row, variables)
+            if resolved is None:
+                # F3: no fail-open. A value source that resolved to nothing used to become "",
+                # which silently compared the field against an empty string; refuse instead.
+                raise TemplateError("the value_equals source resolved to nothing")
+            spec["value"] = str(resolved)
+        rendered["value_equals"] = spec
     return rendered
 
 

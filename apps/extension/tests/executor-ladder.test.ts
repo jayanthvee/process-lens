@@ -22,7 +22,7 @@ describe("rung 1: role and accessible name", () => {
     document.body.innerHTML = "<button id='save'>Save</button>";
     const result = resolveTargetInPage(query([{ by: "role", role: "button", name: "Save" }]));
     expect(result.ok).toBe(true);
-    expect(result.rung).toBe(0);
+    expect(result.rung).toBe(1); // rungs are reported 1 to 5 (Requirement 5)
     expect(result.by).toBe("role");
     expect(marked()?.id).toBe("save");
   });
@@ -56,8 +56,8 @@ describe("rung 1: role and accessible name", () => {
       ]),
     );
     expect(result.ok).toBe(true);
-    expect(result.rung).toBe(1);
-    expect(result.attempts[0]).toMatchObject({ rung: 0, matches: 2, reason: "more than one match" });
+    expect(result.rung).toBe(2); // climbed past rung 1
+    expect(result.attempts[0]).toMatchObject({ rung: 1, matches: 2, reason: "more than one match" });
     expect(marked()?.id).toBe("explicit");
   });
 
@@ -115,7 +115,7 @@ describe("rungs 2 to 5", () => {
       ]),
     );
     expect(result.ok).toBe(true);
-    expect(result.rung).toBe(1);
+    expect(result.rung).toBe(4); // the css rung is rank 4; the invalid selector was skipped
     expect(result.attempts[0]?.reason).toContain("invalid selector");
   });
 

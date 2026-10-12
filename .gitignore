@@ -36,6 +36,11 @@ coverage/
 playwright-report/
 test-results/
 
+# Playwright's browser (R9: it must live inside the repo, never in %LOCALAPPDATA%).
+# The e2e harness also keeps its worker logs and browser profiles here (constitution §2.1),
+# so nothing it writes lands in %TEMP%.
+.cache/
+
 # Local services
 .data/
 *.sqlite
