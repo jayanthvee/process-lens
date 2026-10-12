@@ -70,3 +70,27 @@ that tolerated `testserver` would be the hole requirement 1 closes, so the tests
 3. Run `tests/e2e/test_batch_real_extension.py` once.
 4. Add a "Review fixes" section to `internal/agent/reports/PL-015.md` with the real output. Commit it with this review,
    push, and stop for T1.
+
+---
+
+## Re-review: approved
+
+Reviewed commit: 867912c (branch `pl-015`) · Verdict: **approved for merge**.
+
+```
+python -m pytest -q                       619 passed
+ruff check . / ruff format --check .      clean / 167 files already formatted
+npm --prefix apps/extension run check     202 tests passed, build ok, validation passed
+npm --prefix apps/web run check           28 tests passed, build ok
+e2e test_batch_real_extension.py (once)   3 passed (T2): the real popup connects through the front door
+```
+
+- **B1.** The extension origin is accepted only on `POST /api/v1/executor/sessions`, and only for the pinned id,
+  through the hub's own `origin_is_extension`. An unset id accepts nothing. All four tests are present, and the
+  negative control fails as expected.
+- **B2.** Both dismiss updates use `state = 'parked'`. A `prechecked` record gets 409.
+- **The ruling.** Only the client line changed in the three `tests/db` files.
+
+**Process note, not a code issue.** Helper agents again ran in `worktree: true` worktrees outside the repo: four
+`codex/agent-*` worktrees, one of them holding an "unreviewed salvage" checkpoint. None of it is on `pl-015`. Remove
+them, and make sure the next session's profiles and prompt forbid isolated worktrees.
