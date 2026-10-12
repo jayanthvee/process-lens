@@ -29,6 +29,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -101,9 +102,17 @@ def _http_json(
 
 
 def _wait_until(
-    predicate: Callable[[], Any], *, timeout: float, interval: float = 0.2, message: str
+    predicate: Callable[[], Any],
+    *,
+    timeout: float,
+    interval: float = 0.2,
+    message: str | Callable[[], str],
 ) -> Any:
-    """Poll ``predicate`` until it returns a truthy value, or fail after ``timeout`` seconds."""
+    """Poll ``predicate`` until it returns a truthy value, or fail after ``timeout`` seconds.
+
+    ``message`` may be a callable, so a failure can describe the current state instead of only
+    naming what was expected.
+    """
     deadline = time.monotonic() + timeout
     last: Any = None
     while time.monotonic() < deadline:
@@ -111,7 +120,8 @@ def _wait_until(
         if last:
             return last
         time.sleep(interval)
-    raise AssertionError(f"timed out after {timeout:g}s: {message} (last={last!r})")
+    text = message() if callable(message) else message
+    raise AssertionError(f"timed out after {timeout:g}s: {text} (last={last!r})")
 
 
 def _free_port() -> int:
@@ -184,6 +194,7 @@ class Harness:
     page: Any  # the CRM tab Playwright drives and the extension bound at Connect
     popup: Any  # the extension popup page
     workers: list[subprocess.Popen] = field(default_factory=list)
+    worker_logs: list[Path] = field(default_factory=list)
 
     # -- HTTP ------------------------------------------------------------
     def api_get(self, path: str) -> Any:
@@ -350,12 +361,38 @@ class Harness:
             command,
             cwd=str(REPO_ROOT),
             env=env,
-            stdout=subprocess.PIPE,
+            stdout=self._log_handle(worker_id),
             stderr=subprocess.STDOUT,
             text=True,
         )
         self.workers.append(process)
         return process
+
+    def _log_handle(self, worker_id: str) -> Any:
+        """A per-worker log file.
+
+        A worker's output must go to a file, never to an unread pipe: the pipe would fill and block
+        the worker, and it would also hide the exact error the worker printed — which is the single
+        most useful thing to see when a run does not progress.
+        """
+        path = Path(tempfile.mkdtemp(prefix="processlens-e2e-worker-")) / f"{worker_id}.log"
+        self.worker_logs.append(path)
+        return path.open("w", encoding="utf-8")
+
+    def worker_output(self, *, tail: int = 1200) -> str:
+        """The tail of the most recent worker's log, for a failure message."""
+        for path in reversed(self.worker_logs):
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace").strip()
+            except OSError:
+                continue
+            if text:
+                return text[-tail:]
+        return ""
+
+    def workers_exited(self) -> bool:
+        """True when a worker was started and none is still running."""
+        return bool(self.workers) and all(process.poll() is not None for process in self.workers)
 
     def stop_workers(self) -> None:
         for process in self.workers:
@@ -369,6 +406,28 @@ class Harness:
         self.workers.clear()
 
     # -- polling ---------------------------------------------------------
+    def describe(self, run_id: str) -> str:
+        """The run and every record, compact, for a failure message.
+
+        A bare "timed out" hides the answer. The status, the pause reason and each record's state
+        and reason are exactly what a person needs to see, and they cost one request each.
+        """
+        try:
+            detail = self.api_get(f"/api/v1/runs/{run_id}")
+            records = self.api_get(f"/api/v1/runs/{run_id}/records")
+        except Exception as error:  # noqa: BLE001 - a diagnostic must never raise
+            return f"<could not read run {run_id}: {error}>"
+        rows = "; ".join(
+            f"{record.get('record_key')}={record.get('state')}({record.get('reason')})"
+            for record in records
+        )
+        output = self.worker_output()
+        suffix = f" | worker: {output!r}" if output else ""
+        return (
+            f"status={detail.get('status')} pause_reason={detail.get('pause_reason')!r} "
+            f"records=[{rows}]{suffix}"
+        )
+
     def wait_for_run(
         self,
         run_id: str,
@@ -380,16 +439,40 @@ class Harness:
         return _wait_until(
             lambda: predicate(self.api_get(f"/api/v1/runs/{run_id}/records")),
             timeout=timeout,
-            message=f"run {run_id} records never satisfied the predicate",
+            message=lambda: (
+                f"run {run_id} records never satisfied the predicate: " + self.describe(run_id)
+            ),
         )
 
     def wait_for_run_detail(
         self, run_id: str, predicate: Callable[[dict[str, Any]], Any], *, timeout: float = 90.0
     ) -> Any:
+        """Wait until the run body satisfies ``predicate``.
+
+        A run that reached ``completed``, ``cancelled`` or ``failed`` can never satisfy a predicate
+        about *how* it paused, so the wait stops there instead of burning the whole timeout.
+        """
+        terminal = {"completed", "cancelled", "failed"}
+
+        def satisfied() -> Any:
+            body = self.api_get(f"/api/v1/runs/{run_id}")
+            if predicate(body):
+                return body
+            if body.get("status") in terminal:
+                raise AssertionError(
+                    f"run {run_id} ended as {body.get('status')} and can never satisfy the "
+                    f"predicate: {self.describe(run_id)}"
+                )
+            if self.workers_exited():
+                raise AssertionError(
+                    f"every worker exited and run {run_id} cannot progress: {self.describe(run_id)}"
+                )
+            return None
+
         return _wait_until(
-            lambda: predicate(self.api_get(f"/api/v1/runs/{run_id}")),
+            satisfied,
             timeout=timeout,
-            message=f"run {run_id} never satisfied the predicate",
+            message=lambda: f"run {run_id} never satisfied the predicate: " + self.describe(run_id),
         )
 
     def wait_for_terminal(self, run_id: str, *, timeout: float = 120.0) -> list[dict[str, Any]]:
@@ -405,7 +488,11 @@ class Harness:
                 return records
             return None
 
-        return _wait_until(settled, timeout=timeout, message=f"run {run_id} never settled")
+        return _wait_until(
+            settled,
+            timeout=timeout,
+            message=lambda: f"run {run_id} never settled: " + self.describe(run_id),
+        )
 
     def states(self, run_id: str) -> dict[str, str]:
         """``record_key -> state`` for a run, read through the API."""
@@ -703,6 +790,52 @@ def _health_ok(base: str) -> bool:
         return False
 
 
+def _poll_until_steady(harness: Harness, run_id: str, timeout: float = 90.0) -> None:
+    """Wait for a run to reach a state that will not change."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        body = harness.api_get(f"/api/v1/runs/{run_id}")
+        if body["status"] in {"completed", "paused", "cancelled", "failed"}:
+            return
+        time.sleep(0.25)
+    raise AssertionError(f"the warm-up run never settled: {harness.describe(run_id)}")
+
+
+def warm_up(harness: Harness) -> None:
+    """Run one trivial batch before the real cases.
+
+    The first command a freshly launched Chromium handles is the slowest: the MV3 service worker is
+    cold, the debugger attaches for the first time, and the page-side resolver is compiled. On this
+    machine that cold command occasionally exceeded the runner's five-second ack budget, so the very
+    first test would park a record as "the extension did not answer" while every later test passed.
+    A throwaway run moves that one-off cost out of the cases under test. It asserts nothing and it
+    is not part of any acceptance criterion.
+    """
+    recipe = simple_recipe(
+        [
+            {
+                "id": "warm-open",
+                "action": "navigate",
+                "url": f"{harness.crm_url}/new-lead.html",
+            },
+            {
+                "id": "warm-end",
+                "action": "end_record",
+                "outcome": "skipped",
+                "reason": "warm-up",
+            },
+        ],
+        origin=harness.crm_url,
+    )
+    harness.set_switches()
+    run_id = harness.make_run([{"email": "warmup@example.test", "company": "Warm"}], recipe=recipe)
+    harness.start_worker(worker_id="warm-up", max_seconds=90)
+    try:
+        _poll_until_steady(harness, run_id)
+    finally:
+        harness.stop_workers()
+
+
 @pytest.fixture(scope="session")
 def harness(
     context: Any,
@@ -746,6 +879,7 @@ def harness(
         popup=popup,
     )
     try:
+        warm_up(ready)
         yield ready
     finally:
         ready.stop_workers()

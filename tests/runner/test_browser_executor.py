@@ -144,14 +144,19 @@ def test_a_stale_ack_alone_leaves_the_command_lost() -> None:
 
 def test_the_wire_expiry_uses_the_ack_budget_for_a_dispatch() -> None:
     """R4: a dispatch is valid only as long as the runner keeps waiting for its ack."""
-    executor, socket = make_executor([], now=lambda: 1000.0, ack_budget_seconds=5.0)
-    executor.prepare(a_command())
-    prepared_expiry = socket.sent[-1]["expires_at"]
-    assert prepared_expiry == 1_060_000, "a non-commit command keeps the roomier default TTL"
+    # One executor per assertion: a command that runs out of budget also ends the executor's
+    # connection (R4), so the second call needs a fresh one.
+    prepared, prepared_socket = make_executor([], now=lambda: 1000.0, ack_budget_seconds=5.0)
+    prepared.prepare(a_command())
+    assert prepared_socket.sent[-1]["expires_at"] == 1_060_000, (
+        "a non-commit command keeps the roomier default TTL"
+    )
 
-    executor.dispatch(a_command(commit=True))
-    dispatched_expiry = socket.sent[-1]["expires_at"]
-    assert dispatched_expiry == 1_005_000, "a dispatch expires with the ack budget, not 60s later"
+    dispatched, dispatch_socket = make_executor([], now=lambda: 1000.0, ack_budget_seconds=5.0)
+    dispatched.dispatch(a_command(commit=True))
+    assert dispatch_socket.sent[-1]["expires_at"] == 1_005_000, (
+        "a dispatch expires with the ack budget, not 60s later"
+    )
 
 
 def test_a_check_expires_with_its_own_polling_budget() -> None:
@@ -274,6 +279,17 @@ def test_await_peer_needs_a_peer_ready() -> None:
 
     lonely, _socket2 = make_executor([wire(type="hub_error", code="peer_unavailable")])
     assert lonely.await_peer(1.0) is False
+
+
+def test_no_reply_within_budget_pauses_the_run() -> None:
+    """R4: a command that ran out of budget with the socket up must not let the runner move on."""
+    executor, _socket = make_executor([])
+    result = executor.prepare(a_command())
+    assert result.status == "lost"
+    # The same flag a lost socket raises, so the run pauses `executor_disconnected` rather than
+    # sending the next command to an extension that may still be acting on this one.
+    assert executor.disconnected is True
+    assert [kind for kind, _detail in executor.take_events()] == ["detached"]
 
 
 def test_connect_refuses_when_the_hub_will_not_have_us() -> None:

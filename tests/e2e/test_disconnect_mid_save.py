@@ -21,15 +21,46 @@ def _row() -> dict[str, str]:
     return {"email": NEW_EMAILS[0], "interest": "Data course", "company": "Disc Co"}
 
 
-def _wait_until_saving(harness) -> None:
-    """Wait until the fixture reports the save landed inside the disconnect window."""
-    _poll(lambda: harness.fixture_state()["disconnect_pending"], "the save never left a disconnect")
+def _poll(predicate, message: str, harness, run_id: str, timeout: float = 60.0) -> None:
+    """Poll, and describe the run when it times out.
 
-
-def _poll(predicate, message: str, timeout: float = 60.0) -> None:
+    A bare "the save never reached the server" cannot say whether the record was parked before the
+    save, the worker died, or the run never started, and each of those needs a different fix.
+    """
     from .conftest import _wait_until
 
-    _wait_until(predicate, timeout=timeout, message=message)
+    _wait_until(
+        predicate,
+        timeout=timeout,
+        message=lambda: f"{message}: {harness.describe(run_id)}",
+    )
+
+
+def _wait_for_lead(harness, email: str, *, count: int = 1, timeout: float = 30.0) -> None:
+    """Wait for the destination to hold this lead exactly `count` times.
+
+    The save is driven by the browser, so it lands a little after the ledger settles; asserting
+    immediately after the run would race the destination rather than test it.
+    """
+    from .conftest import _wait_until
+
+    _wait_until(
+        lambda: harness.fixture_state()["leads"].get(email, 0) == count,
+        timeout=timeout,
+        message=lambda: (
+            f"{email!r} is {harness.fixture_state()['leads'].get(email, 0)} times, not {count}"
+        ),
+    )
+
+
+def _wait_until_saving(harness, run_id: str) -> None:
+    """Wait until the fixture reports the save landed inside the disconnect window."""
+    _poll(
+        lambda: harness.fixture_state()["disconnect_pending"],
+        "the save never left a disconnect",
+        harness,
+        run_id,
+    )
 
 
 def test_a_disconnect_mid_save_parks_the_record_without_a_duplicate(harness) -> None:
@@ -38,7 +69,9 @@ def test_a_disconnect_mid_save_parks_the_record_without_a_duplicate(harness) -> 
     run_id = harness.make_run([_row()])
     harness.start_worker(max_seconds=150)
 
-    _wait_until_saving(harness)
+    # Detach the moment the write-ahead has committed and the save is out: the disconnect lands
+    # inside the commit window every time, rather than racing the fixture's own flag.
+    _wait_until_in_the_commit_window(harness, run_id)
     harness.close_session()
 
     harness.wait_for_run_detail(
@@ -47,7 +80,7 @@ def test_a_disconnect_mid_save_parks_the_record_without_a_duplicate(harness) -> 
     records = harness.api_get(f"/api/v1/runs/{run_id}/records")
     parked = [record for record in records if record["record_key"] == email]
     assert parked and parked[0]["state"] == "parked"
-    assert harness.fixture_state()["leads"].get(email, 0) == 1, "no duplicate, and it did save once"
+    _wait_for_lead(harness, email, count=1)
 
 
 def test_reconnecting_and_resuming_continues_the_run(harness) -> None:
@@ -56,7 +89,7 @@ def test_reconnecting_and_resuming_continues_the_run(harness) -> None:
     run_id = harness.make_run([_row()])
     harness.start_worker(max_seconds=180)
 
-    _wait_until_saving(harness)
+    _wait_until_in_the_commit_window(harness, run_id)
     harness.close_session()
     harness.wait_for_run_detail(
         run_id, lambda detail: detail["pause_reason"] == "executor_disconnected", timeout=90
@@ -70,13 +103,31 @@ def test_reconnecting_and_resuming_continues_the_run(harness) -> None:
     harness.api_post(f"/api/v1/runs/{run_id}/resume")
     harness.wait_for_terminal(run_id, timeout=180)
 
-    assert harness.fixture_state()["leads"].get(email, 0) == 1
+    _wait_for_lead(harness, email, count=1)
+
+
+def _wait_until_in_the_commit_window(harness, run_id: str) -> None:
+    """Wait until the write-ahead has committed and the commit has been dispatched.
+
+    This is the deterministic version of "crash the runner mid-save". Waiting for the fixture to
+    notice a save is a race against the runner's own step budgets; waiting for the *ledger* to say
+    `submitted_unverified` is exactly the moment the ticket describes, and it cannot be mistimed.
+    """
+    _poll(
+        lambda: any(
+            record["state"] == "submitted_unverified"
+            for record in harness.api_get(f"/api/v1/runs/{run_id}/records")
+        ),
+        "the record never reached the commit window",
+        harness,
+        run_id,
+    )
 
 
 def test_a_runner_crash_and_takeover_parks_without_a_duplicate(harness) -> None:
-    # A small heartbeat timeout so the crashed run is seen stale quickly; it must still
+    # A slow save keeps the destination busy while the runner dies; the heartbeat timeout must still
     # outlive 3x the longest step (the recipe's 8s assertion) plus the dispatch budget.
-    harness.set_switches(slow_save_ms=8000)
+    harness.set_switches(slow_save_ms=4000)
     email = NEW_EMAILS[0]
     run_id = harness.make_run([_row()])
     crashed = harness.start_worker(
@@ -86,8 +137,9 @@ def test_a_runner_crash_and_takeover_parks_without_a_duplicate(harness) -> None:
         heartbeat_interval=1.0,
     )
 
-    # The save reached the server, so the record is in its commit window; crash there.
-    _poll(lambda: harness.fixture_state()["save_posts"] >= 1, "the save never reached the server")
+    # Kill the worker the moment the record is in its commit window: the save is out, and whether
+    # the destination took it is unknown.
+    _wait_until_in_the_commit_window(harness, run_id)
     crashed.kill()
     crashed.wait(timeout=10)
 
@@ -101,4 +153,5 @@ def test_a_runner_crash_and_takeover_parks_without_a_duplicate(harness) -> None:
 
     parked = [record for record in records if record["record_key"] == email]
     assert parked and parked[0]["state"] == "parked", "an uncertain save is parked, never guessed"
-    assert harness.fixture_state()["leads"].get(email, 0) == 1, "no duplicate after the takeover"
+    assert "could not verify" in (parked[0].get("reason") or ""), "parked by the parking reconciler"
+    _wait_for_lead(harness, email, count=1)
