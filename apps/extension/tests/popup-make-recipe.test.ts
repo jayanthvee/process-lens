@@ -313,3 +313,70 @@ describe("recorded values", () => {
     expect(request.commit_step_ids).toEqual([]);
   });
 });
+
+describe("allowed origins", () => {
+  const OTHER_PAGE = "https://portal.example.test/review";
+
+  /** The lead recording, with one event captured on a second origin. */
+  function twoOriginRecording(): RecordedEvent[] {
+    return [
+      clickEvent(1, "click-1", "New lead"),
+      { ...fillEvent(2, "fill-1", "Email", "ravi@example.test"), url: OTHER_PAGE },
+      clickEvent(3, "click-2", "Save"),
+    ];
+  }
+
+  function originBoxes(): HTMLInputElement[] {
+    return Array.from(
+      control("make-origins").querySelectorAll<HTMLInputElement>('input[type="checkbox"]'),
+    );
+  }
+
+  it("lists the derived origins", () => {
+    const { fetchImpl } = fakeFetch({});
+    const form = mount(fetchImpl);
+
+    form.refresh(twoOriginRecording());
+
+    const boxes = originBoxes();
+    expect(boxes.map((box) => box.value)).toEqual([
+      "https://crm.example.test",
+      "https://portal.example.test",
+    ]);
+    expect(boxes.every((box) => box.checked)).toBe(true);
+    expect(control("make-origins").textContent).toContain("https://crm.example.test");
+    expect(control("make-origins").textContent).toContain("https://portal.example.test");
+  });
+
+  it("sends the pinned list when one is unticked", async () => {
+    const { fetchImpl, calls } = fakeFetch({ recipe: { id: "new-lead" }, warnings: [] });
+    const form = mount(fetchImpl);
+
+    form.refresh(twoOriginRecording());
+    const boxes = originBoxes();
+    boxes[1]!.checked = false;
+
+    await form.submit();
+
+    const body = JSON.parse(String(calls[0]!.init?.body)) as Record<string, unknown>;
+    expect(body["allowed_origins"]).toEqual(["https://crm.example.test"]);
+  });
+
+  it("shows a 422 in plain words", async () => {
+    const problem = "navigate step click-2 is not in allowed_origins";
+    const { fetchImpl } = fakeFetch(
+      { detail: { message: "the recording cannot be compiled", problems: [problem] } },
+      { ok: false, status: 422 },
+    );
+    const storage = fakeStorage();
+    const form = mount(fetchImpl, storage);
+
+    form.refresh(twoOriginRecording());
+    originBoxes()[1]!.checked = false;
+
+    await form.submit();
+
+    expect(control("make-warnings").textContent).toContain(problem);
+    expect(storage.writes).toHaveLength(0);
+  });
+});

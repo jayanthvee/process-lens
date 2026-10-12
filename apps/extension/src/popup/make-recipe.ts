@@ -146,7 +146,7 @@ export function commitChoices(events: RecordedEvent[]): { id: string; label: str
 }
 
 /** The distinct origins the recording visited, in recording order. */
-function recordedOrigins(events: RecordedEvent[]): string[] {
+export function recordedOrigins(events: RecordedEvent[]): string[] {
   const origins: string[] = [];
   for (const event of events) {
     try {
@@ -161,7 +161,12 @@ function recordedOrigins(events: RecordedEvent[]): string[] {
 
 export function makeRecipeRequest(
   events: RecordedEvent[],
-  choice: { name: string; recordKeyColumn: string; commitStepId: string | null },
+  choice: {
+    name: string;
+    recordKeyColumn: string;
+    commitStepId: string | null;
+    allowedOrigins?: string[];
+  },
 ): CompileRequestBody {
   const sampleRow: Record<string, string> = {};
   for (const value of recordedValues(events)) sampleRow[value.column] = value.value;
@@ -174,7 +179,9 @@ export function makeRecipeRequest(
     when_to_use: choice.name,
     sample_row: sampleRow,
     record_key_column: choice.recordKeyColumn,
-    allowed_origins: recordedOrigins(events),
+    // The form pins the origins the person ticked; a direct caller that names none
+    // gets the recording's own origins, exactly as before this field existed.
+    allowed_origins: choice.allowedOrigins ?? recordedOrigins(events),
     commit_step_ids: choice.commitStepId ? [choice.commitStepId] : [],
   };
 }
@@ -269,6 +276,20 @@ function option(value: string, text: string): HTMLOptionElement {
   return el;
 }
 
+/** One origin's row: a checkbox, ticked, next to the origin it names. */
+function originRow(origin: string): HTMLLabelElement {
+  const row = document.createElement("label");
+  row.className = "field__choice";
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  box.value = origin;
+  box.checked = true;
+  const text = document.createElement("span");
+  text.textContent = origin;
+  row.append(box, text);
+  return row;
+}
+
 /** A name to offer before the person types one of their own. */
 function defaultName(events: RecordedEvent[]): string {
   try {
@@ -285,7 +306,7 @@ function describe(error: unknown): string {
 
 /**
  * The "Make recipe" form over the ids in popup.html: `make-name`, `make-key`,
- * `make-commit`, `make-go`, `make-result` and `make-warnings`.
+ * `make-commit`, `make-origins`, `make-go`, `make-result` and `make-warnings`.
  *
  * `refresh` mirrors a recording into the controls and `submit` posts it; the
  * caller wires the button, so it can point `baseUrl` at the hub field first.
@@ -295,6 +316,7 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
   const nameEl = control<HTMLInputElement>(scope, "make-name");
   const keyEl = control<HTMLSelectElement>(scope, "make-key");
   const commitEl = control<HTMLSelectElement>(scope, "make-commit");
+  const originsEl = control<HTMLFieldSetElement>(scope, "make-origins");
   const goEl = control<HTMLButtonElement>(scope, "make-go");
   const resultEl = control<HTMLParagraphElement>(scope, "make-result");
   const warningsEl = control<HTMLParagraphElement>(scope, "make-warnings");
@@ -330,10 +352,23 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
     commitEl.value = defaultCommitStepId(events) ?? "";
     commitEl.disabled = choices.length === 0;
 
+    // Every origin starts ticked; the legend stays put when the recording has none.
+    const legend = originsEl.querySelector("legend");
+    const rows = recordedOrigins(events).map((origin) => originRow(origin));
+    originsEl.replaceChildren(...(legend ? [legend] : []), ...rows);
+
     goEl.disabled = events.length === 0 || busy;
     warningsEl.textContent = recordedWarnings(events).join("\n");
     if (events.length === 0) notice(NO_EVENTS);
     else resultEl.textContent = "";
+  }
+
+  /** The origins still ticked, in the order the form rendered them. */
+  function checkedOrigins(): string[] {
+    const boxes = originsEl.querySelectorAll<HTMLInputElement>('input[type="checkbox"]');
+    return Array.from(boxes)
+      .filter((box) => box.checked)
+      .map((box) => box.value);
   }
 
   async function submit(): Promise<void> {
@@ -352,6 +387,9 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
       name,
       recordKeyColumn: keyEl.value,
       commitStepId: commitEl.value.length > 0 ? commitEl.value : null,
+      // Unticking an origin the recording visited pins the shorter list, and the
+      // route answers 422 naming that origin.
+      allowedOrigins: checkedOrigins(),
     });
 
     busy = true;
