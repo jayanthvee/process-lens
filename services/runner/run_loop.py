@@ -1116,9 +1116,17 @@ class RunLoop:
         commit: bool,
     ) -> StepCommand:
         rendered: dict[str, Any] = {"id": step["id"], "action": step["action"]}
-        for key in ("targets", "within", "frame", "clear_first", "option_match", "timeout_ms"):
+        for key in ("targets", "within", "frame", "clear_first", "option_match"):
             if key in step:
                 rendered[key] = step[key]
+        # The runner always states on the wire the deadline it will wait for (`_result_budget`
+        # is this value plus the ack slack). A step that names no `timeout_ms` of its own gets
+        # the fallback, so the extension never falls back to a default of its own that outlives
+        # the wait — an 8s navigate load wait against a 5s budget is how R4 paused a live run.
+        own_timeout = step.get("timeout_ms")
+        rendered["timeout_ms"] = (
+            own_timeout if isinstance(own_timeout, int) else self.fallback_timeout_ms
+        )
         # `navigate` carries its destination here, and it is a template (`{{crm_base}}/` or a
         # `{{row.*}}` value): unrendered, the extension would navigate nowhere.
         if "url" in step:

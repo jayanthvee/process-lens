@@ -12,8 +12,11 @@ import uuid
 from collections.abc import Callable
 from typing import Any
 
+from packages.ledger import RecordClaim, RunClaim
 from services.runner.browser_executor import BrowserExecutor
 from services.runner.executor import StepCommand
+from services.runner.run_loop import RunLoop
+from services.runner.testing import FakeDestination, FakeExecutor, FakeReconciler, FrozenClock
 
 
 class FakeSocket:
@@ -85,6 +88,44 @@ def a_command(step: dict[str, Any] | None = None, *, commit: bool = False) -> St
     )
 
 
+def a_record() -> RecordClaim:
+    """A claimed ``run_records`` row, built by hand: the wire test needs no database."""
+    return RecordClaim(
+        id=uuid.uuid4(),
+        tenant_id=uuid.uuid4(),
+        run_id=uuid.uuid4(),
+        input_record_id=uuid.uuid4(),
+        record_key="a@x.test",
+        idempotency_key="a@x.test",
+        state="filling",
+        attempts=0,
+        max_attempts=3,
+        commit_attempted=False,
+        reason=None,
+        destination_ref=None,
+        claimed_by="w1",
+    )
+
+
+def a_run() -> RunClaim:
+    """The run row that record belongs to."""
+    return RunClaim(
+        id=uuid.uuid4(),
+        tenant_id=uuid.uuid4(),
+        workflow_id=uuid.uuid4(),
+        recipe_version_id=uuid.uuid4(),
+        input_batch_id=None,
+        mode="batch",
+        status="running",
+        pause_reason=None,
+        approval_policy={},
+        destination_key="crm",
+        worker_id="w1",
+        lease_epoch=1,
+        cancel_requested_at=None,
+    )
+
+
 def test_a_lost_socket_is_a_lost_step_not_a_failure() -> None:
     executor, _socket = make_executor([ConnectionError("the hub went away")])
     result = executor.prepare(a_command())
@@ -142,20 +183,62 @@ def test_a_stale_ack_alone_leaves_the_command_lost() -> None:
     assert observed == []
 
 
-def test_the_wire_expiry_uses_the_ack_budget_for_a_dispatch() -> None:
-    """R4: a dispatch is valid only as long as the runner keeps waiting for its ack."""
+def test_the_wire_deadline_is_the_reply_budget_for_every_command() -> None:
+    """R4: the extension's own deadline is the instant the runner stops waiting.
+
+    Every command stops being valid with its reply budget — the step's ``timeout_ms`` (which the
+    run loop always puts on the wire) plus the ack slack — so no command is acted on after the
+    runner has given up, and none is written off before the timeout it was given.
+    """
     # One executor per assertion: a command that runs out of budget also ends the executor's
     # connection (R4), so the second call needs a fresh one.
     prepared, prepared_socket = make_executor([], now=lambda: 1000.0, ack_budget_seconds=5.0)
     prepared.prepare(a_command())
-    assert prepared_socket.sent[-1]["expires_at"] == 1_060_000, (
-        "a non-commit command keeps the roomier default TTL"
+    assert prepared_socket.sent[-1]["expires_at"] == 1_008_000, (
+        "a prepare expires with its reply budget, not 60s later"
     )
 
     dispatched, dispatch_socket = make_executor([], now=lambda: 1000.0, ack_budget_seconds=5.0)
     dispatched.dispatch(a_command(commit=True))
-    assert dispatch_socket.sent[-1]["expires_at"] == 1_005_000, (
-        "a dispatch expires with the ack budget, not 60s later"
+    assert dispatch_socket.sent[-1]["expires_at"] == 1_008_000, (
+        "a dispatch expires with its reply budget, not 60s later"
+    )
+
+
+def test_a_step_without_a_timeout_reaches_the_extension_with_the_fallback() -> None:
+    """The runner states the deadline it waits for, and waits longer than it.
+
+    A step that names no ``timeout_ms`` used to reach the extension with none: the runner waited
+    its bare 5s ack budget while the extension was free to spend a default of its own (8s for a
+    navigation's load), and R4 then paused a live run. The wire now carries the run loop's
+    fallback, and the wire deadline is that fallback plus the ack slack.
+    """
+    destination = FakeDestination()
+    loop = RunLoop(
+        worker_id="w1",
+        executor=FakeExecutor(destination),
+        reconciler=FakeReconciler(destination),
+        clock=FrozenClock(),
+        fallback_timeout_ms=10_000,
+    )
+    command = loop._command(
+        a_record(),
+        a_run(),
+        1,
+        {"id": "open-lead", "action": "navigate", "url": "https://crm.test/leads"},
+        {},
+        {},
+        commit=False,
+    )
+    assert command.step["timeout_ms"] == 10_000, "the fallback travels on the wire"
+
+    executor, socket = make_executor([], now=lambda: 1000.0, ack_budget_seconds=5.0)
+    executor.prepare(command)
+    sent = socket.sent[-1]
+    assert sent["step"]["timeout_ms"] == 10_000, "the extension is given the fallback, not nothing"
+    assert sent["expires_at"] == 1_015_000, "the wire deadline is the timeout plus the ack slack"
+    assert sent["expires_at"] / 1000.0 - 1000.0 > sent["step"]["timeout_ms"] / 1000.0, (
+        "the runner must outwait the timeout it gave the extension"
     )
 
 

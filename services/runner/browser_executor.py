@@ -11,8 +11,10 @@ Three rules from the plan review live here:
 * **R3** every reply is matched against the command it answers. A late ``ack`` for an
   earlier command must never fire *this* command's ``on_dispatched``.
 * **R4** the wire ``expires_at`` is minted at send time and is *not*
-  :attr:`StepCommand.expires_at` — a `dispatch` that expects an ack expires with the ack
-  budget, so the extension can never act after the runner has stopped waiting.
+  :attr:`StepCommand.expires_at` — it is the instant this executor stops waiting for the
+  reply, so the extension can never act after the runner has given up. Everything this
+  executor waits for is the step's own ``timeout_ms`` (which the run loop always puts on the
+  wire) plus the ack slack, and the wire says exactly that.
 * **R7** the wire ``command_id`` is a fresh uuid, so a restarted worker cannot mint an id
   the extension still remembers from before a crash.
 
@@ -152,20 +154,25 @@ class BrowserExecutor:
     # -- the Executor protocol --------------------------------------------
 
     def prepare(self, command: StepCommand) -> StepResult:
-        wire_id = self._send_command("prepare", command, extra=self._step_payload(command))
-        return self._step_result(wire_id, deadline=self._now() + self._result_budget(command))
+        budget = self._result_budget(command)
+        wire_id = self._send_command(
+            "prepare", command, extra=self._step_payload(command), ttl=budget
+        )
+        return self._step_result(wire_id, deadline=self._now() + budget)
 
     def dispatch(
         self, command: StepCommand, on_dispatched: OnDispatched | None = None
     ) -> StepResult:
-        # R4: a dispatch that expects an ack is valid only as long as the runner will wait for it.
+        # R4: a dispatch that expects an ack is valid only as long as the runner will wait for it,
+        # so the wire deadline, the ack deadline and the reply deadline are one instant.
+        budget = self._result_budget(command)
         wire_id = self._send_command(
             "dispatch",
             command,
             extra=self._step_payload(command),
-            ttl=self.ack_budget_seconds,
+            ttl=budget,
         )
-        ack_deadline = self._now() + self.ack_budget_seconds
+        ack_deadline = self._now() + budget
         acked = False
         while not acked:
             kind, message = self._read(ack_deadline, command_id=wire_id)
@@ -179,13 +186,16 @@ class BrowserExecutor:
                 # A result can overtake its ack only if the extension misbehaved; take it.
                 return self._status_to_result(message)
             return self._lost(kind, message)
-        return self._step_result(wire_id, deadline=self._now() + self._result_budget(command))
+        return self._step_result(wire_id, deadline=self._now() + budget)
 
     def perform(
         self, command: StepCommand, on_dispatched: OnDispatched | None = None
     ) -> StepResult:
-        wire_id = self._send_command("dispatch", command, extra=self._step_payload(command))
-        return self._step_result(wire_id, deadline=self._now() + self._result_budget(command))
+        budget = self._result_budget(command)
+        wire_id = self._send_command(
+            "dispatch", command, extra=self._step_payload(command), ttl=budget
+        )
+        return self._step_result(wire_id, deadline=self._now() + budget)
 
     def check_condition(
         self,
@@ -284,6 +294,12 @@ class BrowserExecutor:
         )
 
     def _result_budget(self, command: StepCommand) -> float:
+        """How long this executor waits for a command's reply: its timeout plus the ack slack.
+
+        The run loop always writes ``timeout_ms`` onto the wire (a step that names none gets
+        the run loop's fallback), and the wire ``expires_at`` is minted from this same number,
+        so the extension's own deadline and this wait are the same instant (R4).
+        """
         own = command.step.get("timeout_ms")
         seconds = float(own) / 1000.0 if isinstance(own, int) else 0.0
         return max(seconds, 0.0) + self.ack_budget_seconds
