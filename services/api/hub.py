@@ -435,23 +435,30 @@ async def executor_socket(websocket: WebSocket, session: str | None = None) -> N
         await _refuse(websocket, PROTOCOL_ERROR_CODE)
         return
     token = _offered_token(offered)
-    row = _sessions.get(session or "")
-    matched = None if row is None else _match_token(row, token or "", time.time())
-    if matched is None:
-        await _refuse(websocket, UNAUTHORIZED_CODE)
-        return
-    if row.extension is not None:
-        await _refuse(websocket, FORBIDDEN_CODE)
+    peer = Peer(role=ROLE_EXTENSION, websocket=websocket)
+    resume_token = secrets.token_urlsafe(32)
+    row: Session | None = None
+    refusal: int | None = None
+    # The token match and the slot reservation are one critical section, and the slot is reserved
+    # before `accept` yields to the event loop. Two sockets that present the same token at the same
+    # instant must not both pass, or the second attaches over the first and single use (R5) is gone.
+    async with _sessions_lock:
+        row = _sessions.get(session or "")
+        matched = None if row is None else _match_token(row, token or "", time.time())
+        if matched is None:
+            refusal = UNAUTHORIZED_CODE
+        elif row.extension is not None:
+            refusal = FORBIDDEN_CODE
+        else:
+            if matched == SESSION_TOKEN_KIND:
+                row.claimed = True
+            row.resume_token = resume_token
+            row.extension = peer
+    if refusal is not None:
+        await _refuse(websocket, refusal)
         return
 
     await websocket.accept(subprotocol=PROTOCOL_SUBPROTOCOL)
-    peer = Peer(role=ROLE_EXTENSION, websocket=websocket)
-    resume_token = secrets.token_urlsafe(32)
-    async with _sessions_lock:
-        if matched == SESSION_TOKEN_KIND:
-            row.claimed = True
-        row.resume_token = resume_token
-        row.extension = peer
     runner = row.runner
     await _send_frame(peer, _frame("session", resume_token=resume_token))
     await _send_frame(peer, _frame("peer_ready"))
@@ -473,21 +480,29 @@ async def runner_socket(websocket: WebSocket, session: str | None = None) -> Non
     if not _bearer_matches(websocket.headers.get("authorization")):
         await _refuse(websocket, UNAUTHORIZED_CODE)
         return
-    row = _sessions.get(session or "")
-    if row is None or time.time() >= row.expires_at:
-        await _refuse(websocket, UNAUTHORIZED_CODE)
-        return
-    if row.runner is not None:
-        await _refuse(websocket, FORBIDDEN_CODE)
+    peer = Peer(role=ROLE_RUNNER, websocket=websocket)
+    row: Session | None = None
+    refusal: int | None = None
+    # The expiry re-check and the slot reservation are one critical section, and the slot is
+    # reserved before `accept` yields: two runners that race on one session must not both attach.
+    async with _sessions_lock:
+        row = _sessions.get(session or "")
+        if row is None or time.time() >= row.expires_at:
+            refusal = UNAUTHORIZED_CODE
+        elif row.runner is not None:
+            refusal = FORBIDDEN_CODE
+        else:
+            row.runner = peer
+    if refusal is not None:
+        await _refuse(websocket, refusal)
         return
 
     await websocket.accept()
-    peer = Peer(role=ROLE_RUNNER, websocket=websocket)
-    async with _sessions_lock:
-        row.runner = peer
     extension = row.extension
-    await _send_frame(peer, _frame("peer_ready"))
+    # S5: the runner waits on `peer_ready` before it claims a run, so it may not be told until the
+    # extension is attached, or it claims against a session no extension will ever serve.
     if extension is not None:
+        await _send_frame(peer, _frame("peer_ready"))
         await _send_frame(extension, _frame("peer_ready"))
     await _relay(row, peer)
 

@@ -9,6 +9,7 @@ explicit local ``Host`` header, because the hub's own front door refuses anythin
 from __future__ import annotations
 
 import json
+import threading
 import time
 import uuid
 from collections.abc import Iterator
@@ -340,13 +341,13 @@ def test_close_detaches_the_session_and_the_extension_re_attaches(client: TestCl
 
 
 def test_the_hub_never_queues_a_command_for_an_absent_peer(client: TestClient) -> None:
-    """A command with no extension attached is answered, not held until one arrives."""
+    """A command with no extension attached is answered, not held, and no `peer_ready` is sent."""
     created = _create_session(client)
     session_id = created["session_id"]
     command = '{"protocol": 1, "type": "step_command", "command_id": "absent"}'
 
     with client.websocket_connect(_runner_url(session_id), headers=_runner_headers()) as runner:
-        assert json.loads(runner.receive_text())["type"] == "peer_ready"
+        assert _pending_frames(session_id, "runner") == 0
         runner.send_text(command)
         error = json.loads(runner.receive_text())
         assert error == {
@@ -474,3 +475,48 @@ def test_the_completed_session_returns_the_resume_token_exactly_once(client: Tes
         assert resumed["resume_token"] not in {session_token, resume}
         assert json.loads(reattached.receive_text())["type"] == "peer_ready"
         assert _pending_frames(session_id, "extension") == 0
+
+
+def test_two_concurrent_attaches_with_one_token_leave_exactly_one(client: TestClient) -> None:
+    """B5: the token match and the slot reservation are one critical section.
+
+    Two extension sockets that present the same session token at the same instant must not both
+    attach: the loser would overwrite the winner's slot, inject frames, and announce a false
+    ``peer_gone`` when it retires.
+    """
+    created = _create_session(client)
+    session_id = created["session_id"]
+    token = created["session_token"]
+    start = threading.Barrier(2)
+    collected = threading.Lock()
+    results: list[tuple[str, int | None]] = []
+
+    def attach() -> None:
+        start.wait()
+        with client.websocket_connect(
+            _extension_url(session_id),
+            subprotocols=_extension_subprotocols(token),
+            headers=_extension_headers(),
+        ) as socket:
+            try:
+                first = json.loads(socket.receive_text())["type"]
+            except WebSocketDisconnect as refused:
+                with collected:
+                    results.append(("refused", refused.code))
+                return
+            with collected:
+                results.append((first, None))
+
+    threads = [threading.Thread(target=attach) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+        assert not thread.is_alive()
+
+    winners = [kind for kind, _code in results if kind == "session"]
+    refused = [code for kind, code in results if kind == "refused"]
+    assert winners == ["session"]
+    assert len(refused) == 1
+    assert refused[0] in (4401, 4403)
+    assert hub._sessions[session_id].claimed is True
