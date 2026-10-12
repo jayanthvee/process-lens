@@ -724,6 +724,51 @@ def test_an_expired_session_is_removed_by_the_purge(client: TestClient) -> None:
     assert kept["session_id"] in hub._sessions
 
 
+def test_a_claimed_session_with_a_peer_attached_is_not_expired(client: TestClient) -> None:
+    """R2: a claimed session outlives its creation TTL while a peer is still attached.
+
+    The creation TTL applies only to an unclaimed session. A claimed one is given its full ten
+    minutes when the pair is gone, so while either peer is attached the clock must not be read at
+    all -- otherwise a run longer than ten minutes loses the re-attach the extension needs, and the
+    session is simultaneously unpurgeable because a socket still holds it.
+    """
+    created = _create_session(client)
+    session_id = created["session_id"]
+    token = created["session_token"]
+
+    with client.websocket_connect(
+        _extension_url(session_id),
+        subprotocols=_extension_subprotocols(token),
+        headers=_extension_headers(),
+    ) as extension:
+        first = json.loads(extension.receive_text())
+        assert first["type"] == "session"
+        resume = first["resume_token"]
+        assert hub._sessions[session_id].claimed is True
+
+        with client.websocket_connect(_runner_url(session_id), headers=_runner_headers()) as runner:
+            assert json.loads(runner.receive_text())["type"] == "peer_ready"
+            assert json.loads(extension.receive_text())["type"] == "peer_ready"
+
+            # The run outlives the ten minutes the session was created with.
+            hub._sessions[session_id].expires_at = time.time() - 1
+
+            # The extension drops and re-attaches with its resume token. The runner is still on the
+            # session, so it must be accepted, not refused as expired.
+            extension.close()
+            assert json.loads(runner.receive_text())["type"] == "peer_gone"
+            assert session_id in hub._sessions
+
+            with client.websocket_connect(
+                _extension_url(session_id),
+                subprotocols=_extension_subprotocols(resume),
+                headers=_extension_headers(),
+            ) as reattached:
+                assert json.loads(reattached.receive_text())["type"] == "session", (
+                    "a claimed session with a peer attached is not expired"
+                )
+
+
 def test_a_claimed_session_expires_only_after_the_last_peer_leaves(client: TestClient) -> None:
     """R2: a claimed session's ten minutes start when the pair is gone, not at creation."""
     created = _create_session(client)
@@ -748,8 +793,10 @@ def test_a_claimed_session_expires_only_after_the_last_peer_leaves(client: TestC
 
             extension.close()
             assert json.loads(runner.receive_text())["type"] == "peer_gone"
-            # The runner is still attached, so the session is live and keeps its stale lifetime.
+            # The runner is still attached, so the session is live and keeps its stale lifetime: the
+            # clock is not consulted while a peer is present (see `_is_expired`).
             assert hub._sessions[session_id].expires_at == stale
+            assert not hub._is_expired(hub._sessions[session_id], time.time())
 
     _wait_for(lambda: hub._sessions[session_id].expires_at > time.time())
 

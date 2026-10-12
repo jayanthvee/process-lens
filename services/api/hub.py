@@ -193,8 +193,22 @@ def _purge_expired(now: float) -> None:
     is the one it had before that peer dialled in, and it is only renewed once the last one leaves.
     """
     for session_id, row in list(_sessions.items()):
-        if now >= row.expires_at and row.extension is None and row.runner is None:
+        if _is_expired(row, now) and row.extension is None and row.runner is None:
             del _sessions[session_id]
+
+
+def _is_expired(session: Session, now: float) -> bool:
+    """Whether a session's life has run out (PL-014b requirement 2).
+
+    An UNCLAIMED session expires ``SESSION_TTL_SECONDS`` after the popup created it. A CLAIMED one
+    expires ``SESSION_TTL_SECONDS`` after **both** peers have gone: while either is still attached
+    the clock is not read at all. Reading it there is what would make a run longer than ten minutes
+    lose the re-attach it needs -- and leave the session unpurgeable, because a socket still holds
+    it -- so the claimed case answers "live" whenever a peer is present.
+    """
+    if session.claimed and (session.extension is not None or session.runner is not None):
+        return False
+    return now >= session.expires_at
 
 
 # ---------------------------------------------------------------- the frames
@@ -374,7 +388,7 @@ def _match_token(session: Session, offered: str, now: float) -> str | None:
     has expired. The token of an attach in flight counts as live, so the extension may dial with
     the one the hub just handed it. All comparisons are constant time.
     """
-    if now >= session.expires_at or not offered.isascii():
+    if _is_expired(session, now) or not offered.isascii():
         return None
     if not session.claimed and secrets.compare_digest(offered, session.session_token):
         return SESSION_TOKEN_KIND
@@ -541,7 +555,7 @@ async def runner_socket(websocket: WebSocket, session: str | None = None) -> Non
     async with _sessions_lock:
         _purge_expired(time.time())
         row = _sessions.get(session or "")
-        if row is None or time.time() >= row.expires_at:
+        if row is None or _is_expired(row, time.time()):
             refusal = UNAUTHORIZED_CODE
         elif row.runner is not None:
             refusal = FORBIDDEN_CODE
