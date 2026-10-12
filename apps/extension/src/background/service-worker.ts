@@ -348,7 +348,7 @@ function commandStorage(): SessionDeps["storage"] {
  */
 async function runCommandStep(
   step: unknown,
-  opts: { sentInput: () => void; allowedOrigins?: string[] },
+  opts: { sentInput: () => void; phase: "prepare" | "dispatch"; allowedOrigins?: string[] },
 ): Promise<StepReport> {
   const executorStep = step as ExecutorStep;
   const tabId = commandBoundTabId;
@@ -371,14 +371,27 @@ async function runCommandStep(
     const destructive = checkDestructive(guardContext);
     if (!destructive.ok) throw new ExecutorError(destructive.reason, executorStep.id, "park");
 
-    const resolved = await resolveStepTarget(executorStep, deps);
-    if (!resolved.ok) {
-      throw new ExecutorError(
-        `the ${executorStep.action} target could not be resolved: ${resolved.error}`,
-        executorStep.id,
-        "park",
-      );
+    // `navigate` carries a url and no target ladder, so it is never resolved: it is performed.
+    const needsTarget = executorStep.action !== "navigate";
+    let rung: number | undefined;
+    if (needsTarget) {
+      const resolved = await resolveStepTarget(executorStep, deps);
+      if (!resolved.ok) {
+        throw new ExecutorError(
+          `the ${executorStep.action} target could not be resolved: ${resolved.error}`,
+          executorStep.id,
+          "park",
+        );
+      }
+      rung = resolved.rung;
     }
+
+    // R2: a `prepare` stops here. It has proved the target resolves and is hit-testable, and it
+    // has sent no input; the runner writes `submitting` only after this returns.
+    if (opts.phase === "prepare") {
+      return { id: executorStep.id, action: executorStep.action, outcome: "done", rung };
+    }
+
     return await performStep(executorStep, { row: {} }, opts.allowedOrigins, deps, opts.sentInput);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

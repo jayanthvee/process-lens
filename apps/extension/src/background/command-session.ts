@@ -57,8 +57,14 @@ export interface SessionDeps {
   /** Returns a cancel for the timer. */
   setInterval: (fn: () => void, ms: number) => () => void;
   bindActiveTab: () => Promise<number | null>;
-  /** Wraps step-runner: resolve, guard, perform. `sentInput` fires after the input. */
-  runStep: (step: unknown, opts: { sentInput: () => void }) => Promise<StepReport>;
+  /**
+   * Wraps step-runner: guard, and either resolve only (`prepare`) or resolve and perform
+   * (`dispatch`). `sentInput` fires after the trusted input event.
+   */
+  runStep: (
+    step: unknown,
+    opts: { sentInput: () => void; phase: "prepare" | "dispatch"; allowedOrigins?: string[] },
+  ) => Promise<StepReport>;
   checkCondition: (condition: unknown, timeoutMs: number, aborted: () => boolean) => Promise<boolean>;
   onState: (state: SessionState) => void;
 }
@@ -482,6 +488,11 @@ export class CommandSession {
               this.send({ protocol: PROTOCOL, type: "ack", command_id: command.command_id });
             }
           },
+          // R2: a `prepare` resolves and hit-tests the target and sends NOTHING. The runner's
+          // write-ahead only happens after a successful prepare, so a prepare that typed or
+          // clicked would make a mere locator failure look like a commit attempt — and would
+          // dispatch every commit twice.
+          phase: command.type === "prepare" ? ("prepare" as const) : ("dispatch" as const),
           allowedOrigins: command.allowed_origins,
         };
         this.setState("executing");

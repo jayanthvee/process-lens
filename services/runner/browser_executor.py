@@ -26,6 +26,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import time
 import uuid
 from collections import deque
 from collections.abc import Callable
@@ -91,7 +92,10 @@ class BrowserExecutor:
         self.session = session
         self.worker_id = worker_id
         self._connector = connector or _default_connector
-        self._now = now or (lambda: __import__("time").monotonic())
+        # Wall clock, not a monotonic clock: `expires_at` travels to the browser, which compares it
+        # against `Date.now()`. A monotonic reading (seconds since boot) is decades behind epoch
+        # milliseconds, so every command would look long expired on arrival.
+        self._now = now or time.time
         self.ack_budget_seconds = ack_budget_seconds
         self.command_ttl_seconds = command_ttl_seconds
         self._socket: Any | None = None

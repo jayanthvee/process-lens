@@ -76,8 +76,12 @@ export function conditionExpression(condition: Condition, ctx: ConditionContext)
     const spec = record["value_equals"] as {
       selector?: { targets?: unknown; within?: unknown };
       case_insensitive?: boolean;
+      value?: unknown;
     };
-    const expected = ctx.valueEquals ?? "";
+    // The runner resolves the value source before it sends a condition, so `value` is already a
+    // literal; `ctx.valueEquals` stays the fallback for a caller that supplies the value itself.
+    const declared = spec?.value;
+    const expected = typeof declared === "string" ? declared : (ctx.valueEquals ?? "");
     const insensitive = spec?.case_insensitive === true;
     const call = resolverCallExpression(ctx.resolverSource, {
       targets: spec?.selector?.targets ?? [],

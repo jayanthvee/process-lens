@@ -1099,8 +1099,20 @@ class RunLoop:
         for key in ("targets", "within", "frame", "clear_first", "option_match", "timeout_ms"):
             if key in step:
                 rendered[key] = step[key]
+        # `navigate` carries its destination here, and it is a template (`{{crm_base}}/` or a
+        # `{{row.*}}` value): unrendered, the extension would navigate nowhere.
+        if "url" in step:
+            rendered["url"] = _safe_text(step["url"], row, variables)
+        if isinstance(rendered.get("within"), str):
+            rendered["within"] = _safe_text(rendered["within"], row, variables)
         if "value" in step:
-            rendered["value"] = _render_value_source(step["value"], row, variables)
+            # The runner resolves the value source; the extension receives a constant it can use
+            # as-is. A bare literal here would arrive with no `kind` and the extension would refuse
+            # it, and an `input` source would have nothing to read against in command mode.
+            rendered["value"] = {
+                "kind": "constant",
+                "value": _render_value_source(step["value"], row, variables),
+            }
         if "condition" in step:
             rendered["condition"] = _render_condition(step["condition"], row, variables)
         if "assert_after" in step:
@@ -1300,6 +1312,17 @@ def _render_condition(
         rendered["element_present"] = _render_selector(rendered["element_present"], row, variables)
     if isinstance(rendered.get("element_absent"), dict):
         rendered["element_absent"] = _render_selector(rendered["element_absent"], row, variables)
+    # `value_equals` carries a value source, and the page comparison is only meaningful once that
+    # source is a literal. Left unrendered, the extension compares the field against "".
+    equals = rendered.get("value_equals")
+    if isinstance(equals, dict):
+        spec = dict(equals)
+        if isinstance(spec.get("selector"), dict):
+            spec["selector"] = _render_selector(spec["selector"], row, variables)
+        if "value" in spec:
+            resolved = _render_value_source(spec["value"], row, variables)
+            spec["value"] = "" if resolved is None else str(resolved)
+        rendered["value_equals"] = spec
     return rendered
 
 
