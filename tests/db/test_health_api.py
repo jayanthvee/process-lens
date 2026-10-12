@@ -11,7 +11,7 @@ from pytest import MonkeyPatch
 
 from services.api.main import app
 
-client = TestClient(app)
+client = TestClient(app, base_url="http://127.0.0.1:8000", client=("127.0.0.1", 51234))
 
 
 def test_health_reports_a_reachable_database(monkeypatch: MonkeyPatch, database_url: str) -> None:

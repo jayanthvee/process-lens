@@ -18,7 +18,7 @@ from pytest import MonkeyPatch
 
 from services.api.main import app
 
-client = TestClient(app)
+client = TestClient(app, base_url="http://127.0.0.1:8000", client=("127.0.0.1", 51234))
 
 ORIGIN = "http://localhost:5173"
 
