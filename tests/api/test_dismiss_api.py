@@ -104,5 +104,18 @@ def test_dismiss_a_verified_record_is_409(
     assert _state_of(conn, record_id) == "verified"
 
 
+def test_dismiss_a_prechecked_record_is_409(
+    connected: TestClient, conn: psycopg.Connection, ledger: Ledger
+) -> None:
+    """A prechecked record is being worked by a runner, so dismiss never skips it."""
+    run = ledger.new_run()
+    record_id = ledger.add_record(run, state="prechecked")
+
+    response = connected.post(f"/api/v1/records/{record_id}/dismiss", json={})
+
+    assert response.status_code == 409, response.text
+    assert _state_of(conn, record_id) == "prechecked"
+
+
 def test_dismiss_a_missing_record_is_404(connected: TestClient) -> None:
     assert connected.post(f"/api/v1/records/{uuid.uuid4()}/dismiss", json={}).status_code == 404

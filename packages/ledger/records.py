@@ -223,7 +223,7 @@ def dismiss_record(
     reason: str,
     destination_checked_by: uuid.UUID | None = None,
 ) -> str:
-    """Dismiss a parked or prechecked record as ``skipped``; return the state it moved to.
+    """Dismiss a parked record as ``skipped``; return the state it moved to.
 
     A record that never reached a commit goes straight to ``skipped``. A commit-attempted record is
     only dismissed when the same update records a fresh destination check, and the guard is the
@@ -239,21 +239,21 @@ def dismiss_record(
             cur.execute(
                 "UPDATE run_records SET state = 'skipped', reason = %(reason)s,"
                 " destination_checked_by = %(checked_by)s, destination_checked_at = now()"
-                " WHERE id = %(record)s AND state IN ('parked', 'prechecked')"
+                " WHERE id = %(record)s AND state = 'parked'"
                 " AND commit_attempted = true",
                 {"reason": reason, "record": record_id, "checked_by": destination_checked_by},
             )
             if cur.rowcount == 0:
-                raise StateConflict(f"run_record {record_id} is not parked or prechecked")
+                raise StateConflict(f"run_record {record_id} is not parked")
         return "skipped"
 
     with conn.cursor() as cur, guard_refusal_is_typed():
         cur.execute(
             "UPDATE run_records SET state = 'skipped', reason = %(reason)s"
-            " WHERE id = %(record)s AND state IN ('parked', 'prechecked')"
+            " WHERE id = %(record)s AND state = 'parked'"
             " AND commit_attempted = false",
             {"reason": reason, "record": record_id},
         )
         if cur.rowcount == 0:
-            raise StateConflict(f"run_record {record_id} is not parked or prechecked")
+            raise StateConflict(f"run_record {record_id} is not parked")
     return "skipped"
