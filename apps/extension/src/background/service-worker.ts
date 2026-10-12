@@ -14,6 +14,7 @@ import {
 } from "../shared/messages";
 import type { PendingEvent } from "../shared/events";
 import type { Condition, RecordedEvent } from "../shared/recipe-types";
+import type { EventKind } from "../shared/command-protocol";
 import {
   attachDebugger,
   chromeDebuggerTransport,
@@ -25,12 +26,13 @@ import { RunControl } from "../executor/control";
 import { runRecipe, validateRecipe } from "../executor/executor";
 import { FrameContexts } from "../executor/frames";
 import { waitForCondition } from "../executor/assertions";
-import { POLICY_BLOCKED_MESSAGE, classifyAttachError } from "../executor/guards";
+import { POLICY_BLOCKED_MESSAGE, checkChallengeOrLogin, classifyAttachError } from "../executor/guards";
 import { resolverExpression } from "../executor/ladder";
 import type { ExecutorRecipe, StepReport } from "../executor/types";
 import { dispatchCommandStep, prepareCommandStep } from "./command-step";
 import {
   CommandSession,
+  type CheckAnswer,
   type SessionDeps,
   type SessionState,
   type StoredSession,
@@ -470,18 +472,50 @@ async function runCommandStep(
 }
 
 /**
+ * Probe the bound tab for a challenge or a login wall (C3).
+ *
+ * A `check` carries no step, so the guard gets a minimal one: with no targets declared, any visible
+ * password field is a login this check is not performing — exactly the wall this is looking for —
+ * and the step id is only a label (the guard's reasons name the marker, not the step). A probe
+ * that itself throws changes nothing: the poll's answer already stands and a wall is never guessed
+ * from a failed evaluation, so the caller keeps the "no" it had.
+ */
+async function probeWallForCheck(
+  cdp: CdpTransport,
+): Promise<{ event: EventKind; detail: string } | null> {
+  try {
+    const guard = await checkChallengeOrLogin({
+      cdp,
+      step: { id: "check", action: "check", targets: [] },
+      allowedOrigins: undefined,
+    });
+    if (guard.ok || !guard.event) return null;
+    return { event: guard.event, detail: guard.reason };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Evaluate one `check` command's condition against the bound tab.
  *
  * B1: a check that could not be evaluated is a *refusal*, not a "no". Returning `false` for a
  * missing tab, a throwing evaluate, or a malformed condition would reach the runner as a real
  * answered "no" — a failed duplicate search would then take the `else` branch and create the
  * lead a second time, and a failed fresh-confirmation probe would report "absent".
+ *
+ * C2: a poll that never evaluated cleanly is the same kind of not-answered. `waitForCondition`
+ * flags it `unanswered`, and it becomes a refusal here rather than `passed: false`.
+ *
+ * C3: a clean `passed: false` also probes the page for a wall. A challenge or a login the recipe
+ * does not describe is reported as the answer's event, so the session can send it before the
+ * condition reply (R6) and the run pauses with the wall's reason. The answer itself is unchanged.
  */
 async function checkCommandCondition(
   condition: unknown,
   timeoutMs: number,
   aborted: () => boolean,
-): Promise<{ ok: true; passed: boolean } | { ok: false; reason: string }> {
+): Promise<CheckAnswer> {
   const tabId = commandBoundTabId;
   if (tabId === null || tabId < 0) {
     return { ok: false, reason: "no tab is bound to this session" };
@@ -507,7 +541,18 @@ async function checkCommandCondition(
     if (outcome.aborted === true) {
       return { ok: false, reason: outcome.reason ?? "the command was withdrawn" };
     }
-    return { ok: true, passed: outcome.ok };
+    // C2: the poll timed out without ever evaluating the condition cleanly (the last attempt threw
+    // a transient navigation error). Nobody saw the page, so there is no "no" to report.
+    if (outcome.unanswered === true) {
+      return { ok: false, reason: outcome.reason ?? "the condition could not be evaluated" };
+    }
+    if (outcome.ok) return { ok: true, passed: true };
+    // C3: the condition was evaluated and did not hold. A wall under the answer explains it, so ask
+    // the page before reporting the "no". The reply still carries `passed: false` either way.
+    const wall = await probeWallForCheck(cdp);
+    return wall
+      ? { ok: true, passed: false, event: wall.event, eventDetail: wall.detail }
+      : { ok: true, passed: false };
   } catch (error) {
     // The attach failed, the evaluate threw, or the condition is one the executor does not
     // understand: none of those is a page that said "no".

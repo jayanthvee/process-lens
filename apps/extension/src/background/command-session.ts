@@ -50,6 +50,32 @@ export interface StoredSession {
   boundTabId: number;
 }
 
+/**
+ * The answer to one `check`.
+ *
+ * `ok: false` means the check could not be evaluated at all (no bound tab, a CDP failure, a
+ * condition the executor does not understand, a withdrawn command, or a poll that never evaluated
+ * cleanly) — the session reports that as a *refusal*, never as a real "no" (B1, C2). `ok: true`
+ * carries the answer: `passed: true` when the condition held, `passed: false` when the page was
+ * evaluated and the condition did not hold.
+ */
+export type CheckAnswer =
+  | {
+      ok: true;
+      passed: boolean;
+      /**
+       * C3: the run-level event the page is showing — a challenge or a login wall the recipe does
+       * not describe — when the condition was evaluated cleanly and did not hold on a page that
+       * needs a person. Absent on a clean page and on a `passed: true` answer, so only a wall ever
+       * produces an event. The session sends it BEFORE the condition reply (R6); it never changes
+       * the answer.
+       */
+      event?: EventKind;
+      /** The guard's readable reason, sent as the event's detail. */
+      eventDetail?: string;
+    }
+  | { ok: false; reason: string };
+
 /** Every side effect, injected. */
 export interface SessionDeps {
   createSocket: (url: string, protocols: string[]) => WebSocketLike;
@@ -75,14 +101,18 @@ export interface SessionDeps {
   /**
    * Evaluate a `check` command's condition. A poll that completed answers with `ok: true`; a
    * check that could not be evaluated at all \u2014 no bound tab, a CDP failure, a condition the
-   * executor does not understand, a withdrawn command \u2014 answers `ok: false`, which the session
-   * reports as a *refusal*, never as a real "no" (B1).
+   * executor does not understand, a withdrawn command, a poll whose last attempt threw a transient
+   * navigation error (C2) \u2014 answers `ok: false`, which the session reports as a *refusal*,
+   * never as a real "no" (B1).
+   *
+   * A clean `passed: false` may carry the `event` of a challenge or login wall the page is showing
+   * (C3); the session sends that event before the condition reply.
    */
   checkCondition: (
     condition: unknown,
     timeoutMs: number,
     aborted: () => boolean,
-  ) => Promise<{ ok: true; passed: boolean } | { ok: false; reason: string }>;
+  ) => Promise<CheckAnswer>;
   /**
    * Confirm a stored bound tab still exists, and adopt it as the session's bound tab (B2).
    * Returns false when the tab is gone. Restore never binds the active tab.
@@ -575,6 +605,17 @@ export class CommandSession {
         );
         if (current()) {
           if (answer.ok) {
+            // C3 (R6): the page is showing a wall the check just found under a clean "no". The
+            // event goes out BEFORE the condition reply it explains, only while this command is
+            // still current (item 7), so the runner can release the record and pause the run with
+            // the wall's reason instead of taking an `else` branch on a page that needs a person.
+            // The answer is unchanged: the reply below still carries the same `passed` value.
+            if (answer.event) {
+              this.sendEvent(
+                answer.event,
+                answer.eventDetail ?? "the page needs a person before this condition can hold",
+              );
+            }
             this.send({
               protocol: PROTOCOL,
               type: "condition",
