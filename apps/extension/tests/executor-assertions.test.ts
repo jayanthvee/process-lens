@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import {
   conditionExpression,
   conditionTimeout,
+  isTransientEvaluateError,
   waitForCondition,
 } from "../src/executor/assertions";
 import { resolverExpression } from "../src/executor/ladder";
@@ -156,5 +157,79 @@ describe("waitForCondition", () => {
     expect(result.ok).toBe(false);
     expect(result.polls).toBeGreaterThanOrEqual(2);
     expect(result.elapsedMs).toBeGreaterThanOrEqual(100);
+  });
+
+  it("retries a transient evaluate error, so a navigated page still verifies", async () => {
+    // Requirement 4: a Save that redirects destroys the execution context mid-poll. Treating that
+    // throw as "not yet" is what lets `assert_after` verify on the page the redirect landed on.
+    let clock = 0;
+    let attempts = 0;
+    const { cdp } = fakeCdp((_method) => {
+      attempts += 1;
+      if (attempts === 1) {
+        throw new Error("Execution context was destroyed, most likely because of a navigation.");
+      }
+      return { result: { value: true } };
+    });
+
+    const result = await waitForCondition(
+      cdp,
+      { text_visible: "Record created", timeout_ms: 1000 },
+      ctx,
+      { pollMs: 10, now: () => clock, sleep: async (ms) => { clock += ms; } },
+    );
+
+    expect(result).toMatchObject({ ok: true, polls: 2, transientRetries: 1 });
+    expect(result.elapsedMs).toBe(10);
+  });
+
+  it("counts a transient error toward the timeout instead of refusing at once", async () => {
+    let clock = 0;
+    const { cdp } = fakeCdp(() => {
+      throw new Error("Cannot find context with specified id");
+    });
+
+    const result = await waitForCondition(
+      cdp,
+      { text_visible: "never", timeout_ms: 100 },
+      ctx,
+      { pollMs: 40, now: () => clock, sleep: async (ms) => { clock += ms; } },
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.reason ?? "").toMatch(/did not hold within 100ms/);
+    expect(result.transientRetries ?? 0).toBeGreaterThanOrEqual(2);
+    expect(result.transientRetries ?? 0).toBe(result.polls);
+  });
+
+  it("propagates a persistent evaluate error, so a dead context still refuses", async () => {
+    const { cdp } = fakeCdp(() => {
+      throw new Error("Target closed");
+    });
+
+    await expect(
+      waitForCondition(
+        cdp,
+        { text_visible: "x", timeout_ms: 1000 },
+        ctx,
+        { pollMs: 10, now: () => 0, sleep: async () => {} },
+      ),
+    ).rejects.toThrow(/Target closed/);
+  });
+});
+
+describe("isTransientEvaluateError", () => {
+  it("recognises the execution-context errors a navigation throws", () => {
+    expect(isTransientEvaluateError(new Error("Execution context was destroyed."))).toBe(true);
+    expect(isTransientEvaluateError("Cannot find context with specified id")).toBe(true);
+    expect(isTransientEvaluateError(new Error("context WAS DESTROYED"))).toBe(true);
+  });
+
+  it("does not call a persistent failure transient", () => {
+    expect(isTransientEvaluateError(new Error("Target closed"))).toBe(false);
+    expect(
+      isTransientEvaluateError(new Error("the executor does not understand the condition: {}")),
+    ).toBe(false);
+    expect(isTransientEvaluateError(undefined)).toBe(false);
   });
 });

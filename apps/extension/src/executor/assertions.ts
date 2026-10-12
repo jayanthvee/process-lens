@@ -125,6 +125,27 @@ export function conditionExpression(condition: Condition, ctx: ConditionContext)
   throw new Error(`the executor does not understand the condition: ${JSON.stringify(condition)}`);
 }
 
+/**
+ * Whether a thrown `evaluate` error is TRANSIENT — that is, the page navigated
+ * under the poll and the next poll will simply evaluate in the new document.
+ *
+ * Chrome throws "Execution context was destroyed" (and "Cannot find context
+ * with specified id") while a redirect tears down the old execution context: a
+ * Save that lands on a new URL does exactly this. The throw says nothing about
+ * the condition — only that *this* poll happened to run mid-navigation — so the
+ * poll can be treated like one that answered false: sleep `pollMs` and
+ * re-evaluate in the new document. Refusing the whole check here would park
+ * every record on a CRM that redirects after saving.
+ *
+ * Only an execution-context error qualifies. A detach, a malformed condition, or
+ * a missing tab is persistent: retrying it would only burn the timeout, so it
+ * must reach the caller and refuse the check.
+ */
+export function isTransientEvaluateError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return /execution context was destroyed|cannot find context|was destroyed/i.test(message);
+}
+
 export interface WaitOptions {
   timeoutMs?: number;
   pollMs?: number;
@@ -146,6 +167,8 @@ export interface WaitResult {
   aborted?: boolean;
   /** Why the poll stopped early, when it was not the condition holding. */
   reason?: string;
+  /** How many polls ended in a transient evaluate error and were retried. */
+  transientRetries?: number;
 }
 
 const defaultSleep = (ms: number): Promise<void> =>
@@ -156,6 +179,11 @@ const defaultSleep = (ms: number): Promise<void> =>
  * then waits `pollMs` between checks. Returns `ok: false` on timeout, and also
  * as soon as the `aborted` probe answers true — an aborted run must not sit in
  * a poll for the rest of its timeout.
+ *
+ * A *transient* evaluate error (the page navigated mid-poll) is treated as a
+ * poll that answered false: it counts toward the timeout and the loop sleeps
+ * `pollMs` and tries again, so a commit whose redirect destroys the execution
+ * context still verifies. Any other throw is rethrown and refuses the check.
  */
 export async function waitForCondition(
   cdp: CdpTransport,
@@ -170,6 +198,7 @@ export async function waitForCondition(
 
   const started = now();
   let polls = 0;
+  let transientRetries = 0;
 
   for (;;) {
     polls += 1;
@@ -179,20 +208,34 @@ export async function waitForCondition(
         polls,
         elapsedMs: now() - started,
         aborted: true,
+        transientRetries,
         reason: "the run was aborted",
       };
     }
     const expression = conditionExpression(condition, ctx);
-    const ok =
-      (await evaluate(cdp, expression, options.contextId !== undefined ? { contextId: options.contextId } : {})) ===
-      true;
+    let ok = false;
+    try {
+      ok =
+        (await evaluate(
+          cdp,
+          expression,
+          options.contextId !== undefined ? { contextId: options.contextId } : {},
+        )) === true;
+    } catch (error) {
+      // A transient error is a poll that answered "not yet": the page navigated under us and the
+      // next attempt evaluates in the new document. It counts toward the timeout like any other
+      // poll, and the loop keeps going. A persistent error still refuses the check.
+      if (!isTransientEvaluateError(error)) throw error;
+      transientRetries += 1;
+    }
     const elapsedMs = now() - started;
-    if (ok) return { ok: true, polls, elapsedMs };
+    if (ok) return { ok: true, polls, elapsedMs, transientRetries };
     if (elapsedMs >= timeoutMs) {
       return {
         ok: false,
         polls,
         elapsedMs,
+        transientRetries,
         reason: `the condition did not hold within ${timeoutMs}ms`,
       };
     }
