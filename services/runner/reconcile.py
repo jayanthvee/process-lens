@@ -42,6 +42,23 @@ class NoopReconciler:
         return ReconciledDiff(matches=0)
 
 
+# PL-014: the reason a record is parked because nobody could check the destination.
+PARKING_REASON = "could not verify the save automatically; check the destination"
+
+
+class ParkingReconciler:
+    """The reconciler for a real run until P-003 is decided (PL-014).
+
+    A real run has no reconcile definition to run (the recipe format has none yet), so there is no
+    way to prove the destination does *not* have the record. It therefore always reports an error,
+    and :func:`outcome_of` maps an error to ``parked`` — never to ``pending``. "Not found" would
+    prove nothing, so a person checks the destination.
+    """
+
+    def search(self, record: RecordClaim) -> ReconciledDiff:
+        return ReconciledDiff(matches=0, error=PARKING_REASON)
+
+
 def outcome_of(diff: ReconciledDiff) -> ReconcileOutcome:
     """Turn a search result into a ledger outcome (S2: an error parks, it never fails)."""
     if diff.error is not None:

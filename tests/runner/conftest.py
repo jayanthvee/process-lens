@@ -303,17 +303,19 @@ def make_worker(database_url: str) -> Callable[..., Worker]:
         heartbeat_interval: float = 3600.0,
         heartbeat_timeout_seconds: float = DEFAULT_HEARTBEAT_TIMEOUT_SECONDS,
         fallback_timeout_ms: int = 10_000,
+        reconciler: object | None = None,
     ) -> Worker:
         return Worker(
             database_url,
             worker_id=worker_id,
             executor=scripted.executor,
-            reconciler=scripted.reconciler,
+            reconciler=reconciler or scripted.reconciler,
             clock=scripted.clock,
             crash_hooks=scripted.crash_hooks,
             heartbeat_interval=heartbeat_interval,
             heartbeat_timeout_seconds=heartbeat_timeout_seconds,
             fallback_timeout_ms=fallback_timeout_ms,
+            events=scripted.events,
         )
 
     return factory

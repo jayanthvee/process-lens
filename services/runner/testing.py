@@ -13,7 +13,7 @@ from typing import Any
 
 from packages.ledger import RecordClaim
 
-from .executor import ConditionResult, OnDispatched, StepCommand, StepResult
+from .executor import ConditionResult, ConfirmationProbe, OnDispatched, StepCommand, StepResult
 
 REJECTED = "rejected"
 DUPLICATE = "duplicate"
@@ -94,8 +94,12 @@ class FakeExecutor:
 
     Plan keys are either a step id (``"save-lead"``) or ``"<record_key>:<step_id>"``, for a
     per-record override. Behaviors: ``ok``, ``locator_failure``, ``rejected``, ``timeout``,
-    ``failure``, ``lost_dispatch`` (dispatch reports ``not_dispatched``). Conditions default to
-    True and are keyed the same way.
+    ``failure``, ``lost_dispatch`` (dispatch reports ``not_dispatched``), ``refused`` (a guard
+    refused it before any input). Conditions default to True and are keyed the same way.
+
+    ``probe_confirmation`` returns ``"unsupported"`` (PL-014 R1): a scripted fake has no page, so it
+    can never report a confirmation that is already on screen. Reporting "unsupported" rather than
+    "absent" is what keeps the fresh-confirmation gate from changing what any existing test means.
     """
 
     def __init__(
@@ -105,13 +109,18 @@ class FakeExecutor:
         plan: Mapping[str, str] | None = None,
         conditions: Mapping[str, bool] | None = None,
         lost: Iterable[str] = (),
+        condition_statuses: Mapping[str, str] | None = None,
+        confirmation: ConfirmationProbe = "unsupported",
     ) -> None:
         self.destination = destination
         self.plan = dict(plan or {})
         self.conditions = dict(conditions or {})
         self.lost = set(lost)
+        self.condition_statuses = dict(condition_statuses or {})
+        self.confirmation = confirmation
         self.commands: list[StepCommand] = []
         self.prepared: list[StepCommand] = []
+        self.probes: list[tuple[str | None, str | None]] = []
 
     def _behavior(self, command: StepCommand) -> str:
         step_id = str(command.step.get("id", ""))
@@ -139,6 +148,9 @@ class FakeExecutor:
         behavior = self._behavior(command)
         if behavior == "lost_dispatch" or command.command_id in self.lost:
             return StepResult(status="not_dispatched", error="the command was not dispatched")
+        if behavior == "refused":
+            # A guard refused it before any input: an off-origin page, a destructive control.
+            return StepResult(status="refused", error="a guard refused the command")
         if behavior == "rejected_no_ack":
             # A rejection reported without ever firing the acknowledgement callback.
             return StepResult(status="rejected", error="the destination rejected the change")
@@ -173,6 +185,8 @@ class FakeExecutor:
         behavior = self._behavior(command)
         if behavior in ("failure", "locator_failure"):
             return StepResult(status="locator_failed", error="the target could not be resolved")
+        if behavior == "refused":
+            return StepResult(status="refused", error="a guard refused the command")
         if behavior == "rejected":
             return StepResult(status="rejected", error="the destination rejected the change")
         if behavior == "timeout":
@@ -187,7 +201,30 @@ class FakeExecutor:
         step_id: str | None = None,
         record_key: str | None = None,
     ) -> ConditionResult:
+        status = self._status(step_id, record_key)
+        if status != "ok":
+            return ConditionResult(passed=False, status=status)  # type: ignore[arg-type]
         return ConditionResult(passed=self._condition(step_id, record_key))
+
+    def _status(self, step_id: str | None, record_key: str | None) -> str:
+        """The scripted answer status (R1 tests use ``lost`` and ``refused``)."""
+        if step_id is not None and record_key is not None:
+            key = f"{record_key}:{step_id}"
+            if key in self.condition_statuses:
+                return self.condition_statuses[key]
+        if step_id is not None and step_id in self.condition_statuses:
+            return self.condition_statuses[step_id]
+        return "ok"
+
+    def probe_confirmation(
+        self,
+        condition: Mapping[str, Any],
+        *,
+        step_id: str | None = None,
+        record_key: str | None = None,
+    ) -> ConfirmationProbe:
+        self.probes.append((step_id, record_key))
+        return self.confirmation
 
 
 class SimulatedCrash(RuntimeError):
@@ -224,6 +261,24 @@ class FrozenClock:
         self._now += seconds
 
 
+class EventDrain:
+    """A scripted run-level event queue (PL-014 R6).
+
+    The run loop drains through a callable, so a test can inject any sequence, including one that
+    arrives *between* a dispatch and its result.
+    """
+
+    def __init__(self, events: Iterable[tuple[str, str]] = ()) -> None:
+        self.pending: list[tuple[str, str]] = list(events)
+
+    def __call__(self) -> list[tuple[str, str]]:
+        drained, self.pending = self.pending, []
+        return drained
+
+    def push(self, kind: str, detail: str = "") -> None:
+        self.pending.append((kind, detail))
+
+
 @dataclass
 class ScriptedRun:
     """A bundle of the fakes a runner test needs."""
@@ -233,6 +288,7 @@ class ScriptedRun:
     reconciler: FakeReconciler
     clock: FrozenClock
     crash_hooks: CrashHooks | None = None
+    events: EventDrain | None = None
 
     @classmethod
     def build(
@@ -244,14 +300,24 @@ class ScriptedRun:
         ambiguous: Iterable[str] = (),
         errors: Iterable[str] = (),
         crash_at: Iterable[str] = (),
+        condition_statuses: Mapping[str, str] | None = None,
+        confirmation: ConfirmationProbe = "unsupported",
+        events: Iterable[tuple[str, str]] = (),
     ) -> ScriptedRun:
         destination = FakeDestination(destination_plan)
         return cls(
             destination=destination,
-            executor=FakeExecutor(destination, plan=plan, conditions=conditions),
+            executor=FakeExecutor(
+                destination,
+                plan=plan,
+                conditions=conditions,
+                condition_statuses=condition_statuses,
+                confirmation=confirmation,
+            ),
             reconciler=FakeReconciler(destination, ambiguous=ambiguous, errors=errors),
             clock=FrozenClock(),
             crash_hooks=CrashHooks(crash_at) if crash_at else None,
+            events=EventDrain(events),
         )
 
 
@@ -259,6 +325,7 @@ __all__ = [
     "DUPLICATE",
     "REJECTED",
     "CrashHooks",
+    "EventDrain",
     "FakeDestination",
     "FakeExecutor",
     "FakeReconciler",
