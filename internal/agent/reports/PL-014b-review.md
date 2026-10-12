@@ -114,3 +114,36 @@ e2e (T2, one run)                         8 / 11
    Report it as it shows. No full-suite run and no re-runs.
 4. Add a "Review fixes" section to `internal/agent/reports/PL-014b.md` with the real output. Commit this review with
    it, push, and stop for T1.
+
+---
+
+## Re-review: approved
+
+Reviewed commit: c9d75b6 (branch `pl-014b`) · Verdict: **approved for merge**.
+
+```
+python -m pytest -q                       597 passed
+ruff check . / ruff format --check .      clean / 158 files already formatted
+npm --prefix apps/extension run check     202 tests passed, build ok, validation passed
+e2e (T2, the two changed files once)      5 / 5
+```
+
+- **C1.** `used_token` keeps the token the extension holds valid beside the new one, and the next completed attach
+  supersedes it. A lost first `session` frame keeps the spent session token usable as a resume token. At most two
+  resume tokens are live.
+- **C2.** `passed: false` now requires a clean last poll, otherwise the result is `unanswered` and becomes a
+  refusal. The regex matches only the three real messages.
+- **C3.** A clean "no" probes for a wall, and the event goes out before the `condition` reply, gated by
+  `current()`, with the answer unchanged. The e2e wall cases now pause `challenge` / `login_required` from the
+  save itself.
+- **C4.** Accepted, including the off-origin split.
+
+**Rulings on T2's two questions:**
+1. **Both changed tests are accepted.** `test_a_resume_token_is_single_use` returning 4403 is correct under C1: the
+   used token is live, so the third socket is refused for the held slot. The single-use guarantee is now carried by
+   `test_a_superseded_used_token_is_refused`. The replaced assertions test pinned the C2 bug.
+2. **The C3 runner test as a regression guard: accepted.** A commit-window record going back to `pending` after a
+   *clean* "absent" from the reconciler is the ledger's designed path: the destination is checked before any
+   retry. It is not a change for this ticket.
+
+No follow-ups block this merge.
