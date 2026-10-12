@@ -646,8 +646,10 @@ exactly this, and nothing else is a gap.
 ```python
 class ParkingReconciler:
     """The default for a real run until P-003 is decided: a person checks the destination."""
+
     def search(self, record: RecordClaim) -> ReconciledDiff:
         return ReconciledDiff(matches=0, error=PARKING_REASON)
+
 
 PARKING_REASON = "could not verify the save automatically; check the destination"
 ```
@@ -664,10 +666,17 @@ In `_commit_step`, after `prepare` succeeds and **before** `begin_commit`:
 ```python
 # one bounded evaluation, not the step's own polling budget: the question is "is the
 # confirmation on the page now", and `_check` would otherwise poll for the full fallback timeout
-verdict = self._probe_confirmation(conn, record, step["assert_after"])   # True | False | None
-if verdict is not False:          # R1: True *or* no answer -> park. Never treat "no answer" as "absent".
-    self._transition(conn, record, box.state, "parked",
-                     ALREADY_ON_PAGE_REASON if verdict is True else UNKNOWN_CONFIRMATION_REASON)
+verdict = self._probe_confirmation(
+    conn, record, step["assert_after"]
+)  # present/absent/unanswered/unsupported
+if verdict in ("present", "unanswered"):  # R1: only a definite "absent" may save
+    self._transition(
+        conn,
+        record,
+        box.state,
+        "parked",
+        ALREADY_ON_PAGE_REASON if verdict == "present" else UNKNOWN_CONFIRMATION_REASON,
+    )
     return "parked"
 ALREADY_ON_PAGE_REASON = "the confirmation was already on the page before saving"
 UNKNOWN_CONFIRMATION_REASON = "could not tell whether the confirmation was already on the page"
@@ -675,11 +684,14 @@ UNKNOWN_CONFIRMATION_REASON = "could not tell whether the confirmation was alrea
 
 **R1 at the probe: no answer means park, never "absent".** The probe is the one place where a no-answer would
 be consumed as a *negative*, and a negative here means "the page is clean, go ahead and save" — which can
-duplicate a record whose confirmation the extension merely failed to read. So the probe's three outcomes are
-`True` (already there → park, the confirmation could not be trusted), `False` (a real poll to the timeout found
-nothing → save), and **no answer → park**. The two parked reasons are distinct on purpose: one says a stale
-confirmation was seen, the other says the runner could not tell, and a person reading the ledger needs to know
-which.
+duplicate a record whose confirmation the extension merely failed to read. So the probe has four outcomes,
+not three: `"present"` (already there → park, the confirmation could not be trusted), `"absent"` (a real poll to
+the timeout found nothing → save), **`"unanswered"` → park**, and `"unsupported"` (this executor cannot see
+page state at all — the scripted fake — so the gate does not run, which is what keeps the existing suite
+meaning what it meant). The two parked reasons are distinct on purpose: one says a stale confirmation was seen,
+the other says the runner could not tell, and a person reading the ledger needs to know which. A plain
+`bool | None` was not enough, because `None` had to mean both "the fake has no page" and "the page did not
+answer", and those are opposite decisions.
 
 `_confirmation_present` asks the **page**, so it must be a probe the executor can decline. It is gated on a new
 capability on the `Executor` seam: `probe_confirmation(condition, *, step_id, record_key) -> bool | None`,
