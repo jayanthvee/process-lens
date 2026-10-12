@@ -23,6 +23,7 @@ import {
   type OutgoingMessage,
 } from "../shared/command-protocol";
 import type { StepReport } from "../executor/types";
+import { ExecutorError } from "../executor/types";
 import { POLICY_BLOCKED_MESSAGE } from "../executor/guards";
 
 /** The socket surface the session needs; a plain object satisfies it. */
@@ -515,6 +516,11 @@ export class CommandSession {
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      // R6: a run-level event is sent BEFORE the refusal it causes, so the runner can release the
+      // record and pause the run instead of reading only the refusal and parking the record.
+      if (error instanceof ExecutorError && error.event) {
+        this.sendEvent(error.event, message);
+      }
       // A policy-blocked attach is a run-level event, not just a failed command.
       if (message === POLICY_BLOCKED_MESSAGE) this.sendEvent("policy_blocked", message);
       if (current()) {

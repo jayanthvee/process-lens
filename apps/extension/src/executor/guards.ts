@@ -184,13 +184,15 @@ function declaredName(step: ExecutorStep): string {
  * carries `allow_destructive_control`. Only a click can commit a deletion, a
  * refund, or a payment, so a fill or a select passes.
  *
- * The accessible name is the resolved name (the caller stamps it on the step),
- * falling back to the name the step's ladder declares.
+ * The name to judge is the *accessible name of the element the ladder matched* — what a person
+ * reading the page sees — which the caller passes once it has resolved the target. The step's own
+ * declared name is the fallback, for a caller that has not resolved one yet.
  */
-export function checkDestructive(ctx: GuardContext): GuardResult {
+export function checkDestructive(ctx: GuardContext, accessibleName?: string): GuardResult {
   if (ctx.step.action !== "click") return { ok: true };
   if (allowsDestructive(ctx.step)) return { ok: true };
-  const name = ctx.step.name ?? declaredName(ctx.step);
+  const declared = ctx.step.name ?? declaredName(ctx.step);
+  const name = accessibleName || declared;
   const matched = destructiveMatch(name);
   if (!matched) return { ok: true };
   return {

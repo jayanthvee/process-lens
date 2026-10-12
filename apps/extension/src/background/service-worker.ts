@@ -14,7 +14,13 @@ import {
 } from "../shared/messages";
 import type { PendingEvent } from "../shared/events";
 import type { Condition, RecordedEvent } from "../shared/recipe-types";
-import { attachDebugger, chromeDebuggerTransport, detachDebugger, onDebuggerDetach } from "../executor/cdp";
+import {
+  attachDebugger,
+  chromeDebuggerTransport,
+  detachDebugger,
+  onDebuggerDetach,
+  type CdpTransport,
+} from "../executor/cdp";
 import { RunControl } from "../executor/control";
 import { runRecipe, validateRecipe } from "../executor/executor";
 import { FrameContexts } from "../executor/frames";
@@ -342,8 +348,49 @@ function commandStorage(): SessionDeps["storage"] {
 }
 
 /**
- * Perform one command's step: attach, guard, prepare, then dispatch. Every guard
- * runs before any input and refuses fail-closed; a policy-blocked attach becomes
+ * The debugger for the bound tab, kept for the session's life.
+ *
+ * Attaching per command was measurably too slow: a command could exceed the runner's five-second
+ * ack budget after only a handful of CDP round trips, and the record was then parked as
+ * "the extension did not answer". One attach for the whole session matches how the attended
+ * executor already works (D-006) and keeps each command to the round trips it actually needs.
+ */
+let commandCdpToken: CdpTransport | null = null;
+let commandCdpTabId: number | null = null;
+
+async function ensureDebugger(tabId: number): Promise<CdpTransport> {
+  if (commandCdpToken && commandCdpTabId === tabId) return commandCdpToken;
+  if (commandCdpTabId !== null) await releaseDebugger();
+  try {
+    await attachDebugger(tabId);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    // An MV3 service worker is suspended and restarted routinely, which resets the flag above to
+    // null while Chrome keeps the tab attached. "Already attached" therefore means the debugger is
+    // ours from a previous incarnation, not that someone else holds the tab. Any other attach
+    // failure is real and propagates.
+    if (!/already attached/i.test(message)) throw error;
+  }
+  const cdp = chromeDebuggerTransport(tabId);
+  // Enabling an already-enabled domain is idempotent, so this is safe in both cases.
+  await cdp.send("Runtime.enable");
+  await cdp.send("Page.enable");
+  commandCdpTabId = tabId;
+  commandCdpToken = cdp;
+  return cdp;
+}
+
+/** Drop the debugger. The next command attaches again. */
+async function releaseDebugger(): Promise<void> {
+  const tabId = commandCdpTabId;
+  commandCdpTabId = null;
+  commandCdpToken = null;
+  if (tabId !== null) await detachDebugger(tabId);
+}
+
+/**
+ * Perform one command's step: guard, resolve, then dispatch. Every guard runs
+ * before any input and refuses fail-closed; a policy-blocked attach becomes
  * the readable sentence instead of Chrome's raw error.
  */
 async function runCommandStep(
@@ -356,24 +403,28 @@ async function runCommandStep(
 
   let attached = false;
   try {
-    await attachDebugger(tabId);
+    const cdp = await ensureDebugger(tabId);
     attached = true;
-    const cdp = chromeDebuggerTransport(tabId);
-    await cdp.send("Runtime.enable");
-    await cdp.send("Page.enable");
     const deps = { cdp };
 
     const guardContext = { cdp, step: executorStep, allowedOrigins: opts.allowedOrigins };
+    // R6: each guard that has a run-level meaning carries its event on the error, so the session
+    // sends the event before the refusal it causes. Without this a challenge would park the record
+    // instead of pausing the run for a person.
     const origin = await checkOrigin(guardContext);
-    if (!origin.ok) throw new ExecutorError(origin.reason, executorStep.id, "park");
+    if (!origin.ok) {
+      throw new ExecutorError(origin.reason, executorStep.id, "park", origin.event);
+    }
     const challenge = await checkChallengeOrLogin(guardContext);
-    if (!challenge.ok) throw new ExecutorError(challenge.reason, executorStep.id, "park");
-    const destructive = checkDestructive(guardContext);
-    if (!destructive.ok) throw new ExecutorError(destructive.reason, executorStep.id, "park");
+    if (!challenge.ok) {
+      throw new ExecutorError(challenge.reason, executorStep.id, "park", challenge.event);
+    }
 
     // `navigate` carries a url and no target ladder, so it is never resolved: it is performed.
     const needsTarget = executorStep.action !== "navigate";
     let rung: number | undefined;
+    let accessibleName = "";
+    let resolvedTarget: Awaited<ReturnType<typeof resolveStepTarget>> | undefined;
     if (needsTarget) {
       const resolved = await resolveStepTarget(executorStep, deps);
       if (!resolved.ok) {
@@ -384,21 +435,44 @@ async function runCommandStep(
         );
       }
       rung = resolved.rung;
+      accessibleName = resolved.name;
+      resolvedTarget = resolved;
     }
 
-    // R2: a `prepare` stops here. It has proved the target resolves and is hit-testable, and it
-    // has sent no input; the runner writes `submitting` only after this returns.
+    // The destructive check runs AFTER resolution on purpose: it judges the accessible name of the
+    // control the ladder actually matched, not what the ladder happened to declare. A recipe can
+    // point at a plain `#danger` and the guard still sees "Delete lead".
+    const destructive = checkDestructive(guardContext, accessibleName);
+    if (!destructive.ok) {
+      throw new ExecutorError(destructive.reason, executorStep.id, "park", destructive.event);
+    }
+
+    // R2: a `prepare` stops here. It has proved the target resolves, is hit-testable and passes
+    // every guard, and it has sent no input; the runner writes `submitting` only after this returns.
     if (opts.phase === "prepare") {
       return { id: executorStep.id, action: executorStep.action, outcome: "done", rung };
     }
 
+    // The same element the guards just approved is acted on: no second resolve, no second measure.
+    if (resolvedTarget && resolvedTarget.ok) {
+      return await performStep(
+        executorStep,
+        { row: {} },
+        opts.allowedOrigins,
+        deps,
+        opts.sentInput,
+        resolvedTarget,
+      );
+    }
     return await performStep(executorStep, { row: {} }, opts.allowedOrigins, deps, opts.sentInput);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (classifyAttachError(message) === "policy_blocked") throw new Error(POLICY_BLOCKED_MESSAGE);
     throw error;
   } finally {
-    if (attached) await detachDebugger(tabId);
+    // The debugger stays attached between commands; a failure that may have torn it down drops the
+    // cached transport so the next command re-attaches.
+    if (!attached) commandCdpToken = null;
   }
 }
 
@@ -412,11 +486,8 @@ async function checkCommandCondition(
   if (tabId === null || tabId < 0) return false;
   let attached = false;
   try {
-    await attachDebugger(tabId);
+    const cdp = await ensureDebugger(tabId);
     attached = true;
-    const cdp = chromeDebuggerTransport(tabId);
-    await cdp.send("Runtime.enable");
-    await cdp.send("Page.enable");
     const outcome = await waitForCondition(
       cdp,
       condition as Condition,
@@ -433,7 +504,7 @@ async function checkCommandCondition(
   } catch {
     return false;
   } finally {
-    if (attached) await detachDebugger(tabId);
+    if (!attached) commandCdpToken = null;
   }
 }
 
@@ -459,6 +530,8 @@ function getCommandSession(): CommandSession {
     onState: (state: SessionState) => {
       commandSessionState = state;
       broadcastCommandSession();
+      // A session that is no longer attached must not keep the debugger on the person's tab.
+      if (state === "disconnected" || state === "idle") void releaseDebugger();
     },
   };
   commandSession = new CommandSession(deps);

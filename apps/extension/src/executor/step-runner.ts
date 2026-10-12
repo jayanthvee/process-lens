@@ -8,12 +8,13 @@
 // implementation of resolving, selecting, filling, clicking, and navigating.
 //
 // `resolveStepTarget` is the prepare half; `performStep` is the dispatch half.
-// `performStep` deliberately does not verify `assert_after` — the caller owns
+// `performStep` deliberately does not verify `assert_after` ------ the caller owns
 // that, because in command mode the runner sends a separate `check`.
 import type { ValueSource } from "../shared/recipe-types";
 import type { ConditionContext } from "./assertions";
 import type { CdpTransport } from "./cdp";
 import { dispatchClick, dispatchFill, dispatchNavigate, dispatchSelect, measureTarget } from "./dispatch";
+import { destructiveMatch } from "./guards";
 import { readFrameTree, selectFrame, type FrameContexts } from "./frames";
 import {
   resolverExpression,
@@ -40,6 +41,8 @@ export interface ResolvedTarget {
   rung: number;
   by: string;
   tag: string;
+  /** The matched element's accessible name, for the destructive-control guard. */
+  name: string;
 }
 
 /** Why a step's target could not be resolved. */
@@ -187,7 +190,7 @@ export function assertionContext(deps: StepRunDeps): ConditionContext {
  * A control that names its listbox (`aria-controls`/`aria-owns`) is trusted to
  * that element; otherwise the one open `[role=listbox]` is used. Searching the
  * whole document for a `role=option` would let an option belonging to another
- * listbox be clicked — the wrong record's value — so a listbox that cannot be
+ * listbox be clicked ------ the wrong record's value ------ so a listbox that cannot be
  * resolved is a refusal, not a document-wide search.
  */
 async function resolveListboxDescriptor(
@@ -237,7 +240,28 @@ async function resolveStep(
   deps: StepRunDeps,
   contextId: number | undefined,
   ladder: ResolveRung[] = (step.targets ?? []) as ResolveRung[],
+  preset?: ResolvedTarget,
 ): Promise<{ result: ResolveResult; token: string }> {
+  // A target may be handed in already resolved and hit-tested by the guard phase. Resolving it a
+  // second time doubles the CDP round trips for every step, and those round trips are the dominant
+  // cost of a command against the runner's five-second ack budget. Reusing the guard's element is
+  // also the more honest thing to act on: it is exactly the element the guards approved.
+  if (preset) {
+    return {
+      result: {
+        ok: true,
+        rung: preset.rung,
+        by: preset.by,
+        name: preset.name,
+        marker: preset.token,
+        x: 0,
+        y: 0,
+        tag: preset.tag,
+        attempts: [],
+      },
+      token: preset.token,
+    };
+  }
   const token = nextToken();
   const query: ResolveQuery = {
     targets: ladder,
@@ -281,18 +305,34 @@ export async function resolveStepTarget(
         return { ok: false, error: error instanceof Error ? error.message : String(error) };
       }
     }
-    return { ok: true, token, rung: result.rung, by: result.by, tag: result.tag };
+    return {
+      ok: true,
+      token,
+      rung: result.rung,
+      by: result.by,
+      tag: result.tag,
+      name: result.name ?? "",
+    };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
   }
 }
 
 /**
+ * The accessible name carried by a resolver result. `resolveStep` returns a `ResolveResult`, whose
+ * `name` is set by the page-side resolver when a rung matched.
+ */
+function nameOf(result: ResolveResult): string {
+  const name = (result as { name?: unknown }).name;
+  return typeof name === "string" ? name : "";
+}
+
+/**
  * Perform one step's action: navigate, fill, select, or click. It does NOT
- * verify `assert_after` — the caller does that, because in command mode a
+ * verify `assert_after` ------ the caller does that, because in command mode a
  * separate `check` command carries the post-condition.
  *
- * `onInputDispatched` fires once, immediately after the trusted input event — for
+ * `onInputDispatched` fires once, immediately after the trusted input event ------ for
  * a click after the mouse release, for a fill or a select after the last
  * keystroke or change. It is the extension's acknowledgement that the
  * destination has been handed the input (R2), and it is never fired for a step
@@ -304,6 +344,7 @@ export async function performStep(
   allowedOrigins: string[] | undefined,
   deps: StepRunDeps,
   onInputDispatched?: () => void,
+  preset?: ResolvedTarget,
 ): Promise<StepReport> {
   const contextId = await frameContextId(deps.cdp, step, deps.frames);
 
@@ -324,7 +365,7 @@ export async function performStep(
         "park",
       );
     }
-    const { result, token } = await resolveStep(deps.cdp, step, deps, contextId);
+    const { result, token } = await resolveStep(deps.cdp, step, deps, contextId, undefined, preset);
     if (!result.ok) {
       throw new ExecutorError(
         `the fill target for step ${step.id} could not be resolved: ${result.error ?? "no rung matched"}`,
@@ -343,7 +384,7 @@ export async function performStep(
   if (step.action === "select") {
     const value = resolveValue(step.value, context);
     const wanted = value === undefined ? "" : String(value);
-    const { result, token } = await resolveStep(deps.cdp, step, deps, contextId);
+    const { result, token } = await resolveStep(deps.cdp, step, deps, contextId, undefined, preset);
     if (!result.ok) {
       throw new ExecutorError(
         `the select target for step ${step.id} could not be resolved: ${result.error ?? "no rung matched"}`,
@@ -390,13 +431,27 @@ export async function performStep(
   }
 
   // click
-  const { result, token } = await resolveStep(deps.cdp, step, deps, contextId);
+  const { result, token } = await resolveStep(deps.cdp, step, deps, contextId, undefined, preset);
   if (!result.ok) {
     throw new ExecutorError(
       `the click target for step ${step.id} could not be resolved: ${result.error ?? "no rung matched"}`,
       step.id,
       "park",
     );
+  }
+  // The destructive-control invariant is checked HERE, at the last moment before the click, using
+  // the accessible name of the element the ladder actually matched. That covers both the command
+  // mode (whose handler checks it earlier, on the same name) and the local test run, and it cannot
+  // be bypassed by a recipe that points at a bare CSS selector.
+  if (!step.allow_destructive_control) {
+    const blocked = destructiveMatch(nameOf(result));
+    if (blocked) {
+      throw new ExecutorError(
+        `refusing to click a destructive control ("${blocked}"): set allow_destructive_control on step ${step.id} to permit it`,
+        step.id,
+        "park",
+      );
+    }
   }
   await dispatchClick(deps.cdp, token, contextId);
   onInputDispatched?.();

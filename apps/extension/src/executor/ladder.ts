@@ -54,6 +54,11 @@ export interface ResolveResult {
   x: number;
   y: number;
   tag: string;
+  /**
+   * The element's accessible name, when a rung matched. The destructive-control guard is about the
+   * control a person sees, not about what the ladder happened to declare, so it needs this.
+   */
+  name?: string;
   attempts: RungAttempt[];
   error?: string;
 }
@@ -490,6 +495,7 @@ export function resolveTargetInPage(query: ResolveQuery): ResolveResult {
         x: box.x,
         y: box.y,
         tag: element.tagName.toLowerCase(),
+        name: accessibleNameOf(element),
         attempts,
       };
     }

@@ -338,6 +338,57 @@ describe("navigate", () => {
   });
 });
 
+describe("the destructive-control guard", () => {
+  it("refuses a click by the resolved accessible name, not the ladder's declaration", async () => {
+    // The recipe points at a bare CSS selector, so the ladder declares no name at all. The guard
+    // must judge the control a person sees, or a `#danger` button reading "Delete lead" clicks.
+    document.body.innerHTML = "<button id='danger'>Delete lead</button>";
+    const { cdp } = fakeCdp();
+    const step = {
+      id: "delete-lead",
+      action: "click",
+      targets: [{ by: "css", selector: "#danger" }],
+    } as unknown as ExecutorStep;
+
+    const error = await performStep(step, { row: {} }, undefined, { cdp }).catch(
+      (thrown: unknown) => thrown,
+    );
+
+    expect(error).toBeInstanceOf(ExecutorError);
+    expect((error as ExecutorError).disposition).toBe("park");
+    expect((error as ExecutorError).message).toContain("delete");
+  });
+
+  it("permits it when the step sets allow_destructive_control", async () => {
+    document.body.innerHTML = "<button id='danger'>Delete lead</button>";
+    const { cdp } = fakeCdp();
+    const step = {
+      id: "delete-lead",
+      action: "click",
+      allow_destructive_control: true,
+      targets: [{ by: "css", selector: "#danger" }],
+    } as unknown as ExecutorStep;
+
+    const report = await performStep(step, { row: {} }, undefined, { cdp });
+
+    expect(report.outcome).toBe("done");
+  });
+
+  it("leaves an ordinary click alone", async () => {
+    document.body.innerHTML = "<button id='save'>Save</button>";
+    const { cdp } = fakeCdp();
+    const step = {
+      id: "save",
+      action: "click",
+      targets: [{ by: "css", selector: "#save" }],
+    } as unknown as ExecutorStep;
+
+    const report = await performStep(step, { row: {} }, undefined, { cdp });
+
+    expect(report.outcome).toBe("done");
+  });
+});
+
 describe("select and the fuzzy rung", () => {
   it("a combobox option is found only inside its listbox", async () => {
     document.body.innerHTML =

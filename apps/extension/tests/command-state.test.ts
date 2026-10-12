@@ -9,7 +9,7 @@ import {
   type StoredSession,
   type WebSocketLike,
 } from "../src/background/command-session";
-import type { StepReport } from "../src/executor/types";
+import { ExecutorError, type StepReport } from "../src/executor/types";
 
 /** A socket shaped exactly like the interface, so a plain object satisfies it. */
 class FakeSocket implements WebSocketLike {
@@ -194,6 +194,44 @@ function deferredStep(): { promise: Promise<StepReport>; resolve: (report: StepR
 }
 
 describe("CommandSession", () => {
+  it("a guard failure sends its run-level event before the refusal it causes", async () => {
+    // R6: the runner decides from the event whether the record is released and the run paused, or
+    // the record is parked. A refusal alone cannot express that, so the order is the contract.
+    const harness = makeHarness({
+      runStep: async () => {
+        throw new ExecutorError("the page is showing a challenge", "open", "park", "challenge");
+      },
+    });
+    const socket = await openSession(harness);
+
+    deliver(socket, command({ command_id: "c-event", type: "dispatch" }));
+    await flush();
+
+    const kinds = socket.messages().map((message) => message["type"]);
+    const eventAt = kinds.indexOf("event");
+    const resultAt = kinds.indexOf("result");
+    expect(eventAt).toBeGreaterThanOrEqual(0);
+    expect(resultAt).toBeGreaterThan(eventAt);
+    const sent = socket.messages()[eventAt];
+    expect(sent?.["kind"]).toBe("challenge");
+  });
+
+  it("a guard failure with no run-level meaning sends no event", async () => {
+    // A destructive-control refusal is a refusal, not an event: the record parks, the run does not.
+    const harness = makeHarness({
+      runStep: async () => {
+        throw new ExecutorError("refusing to click Delete lead", "delete", "park");
+      },
+    });
+    const socket = await openSession(harness);
+
+    deliver(socket, command({ command_id: "c-plain", type: "dispatch" }));
+    await flush();
+
+    expect(socket.messages().some((message) => message["type"] === "event")).toBe(false);
+    expect(socket.lastResult()?.["status"]).toBe("not_dispatched");
+  });
+
   it("a stale lease epoch is refused", async () => {
     const harness = makeHarness();
     const socket = await openSession(harness);
