@@ -35,6 +35,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -44,6 +45,17 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PLAYWRIGHT_BROWSERS_PATH = REPO_ROOT / ".cache" / "ms-playwright"
+# Constitution §2.1: every artifact this harness creates lives under the repo's gitignored
+# ``.cache/`` — worker logs and browser profiles included — never in ``%TEMP%``.
+E2E_SCRATCH = REPO_ROOT / ".cache" / "e2e"
+
+
+def _scratch_dir(name: str) -> Path:
+    """A gitignored scratch directory inside the repo, created on demand."""
+    path = E2E_SCRATCH / name
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
 
 # R9: set before Playwright is imported anywhere in this process or its children.
 os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(PLAYWRIGHT_BROWSERS_PATH)
@@ -375,7 +387,7 @@ class Harness:
         the worker, and it would also hide the exact error the worker printed — which is the single
         most useful thing to see when a run does not progress.
         """
-        path = Path(tempfile.mkdtemp(prefix="processlens-e2e-worker-")) / f"{worker_id}.log"
+        path = _scratch_dir("worker-logs") / f"{worker_id}-{uuid.uuid4().hex[:8]}.log"
         self.worker_logs.append(path)
         return path.open("w", encoding="utf-8")
 
@@ -657,16 +669,15 @@ def context(_playwright: Any, built_extension: Path) -> Iterator[Any]:
     """A persistent Chromium with the unpacked extension loaded.
 
     ``channel="chromium"`` selects Playwright's bundled build: branded Chrome and Edge no
-    longer load an unpacked extension from the command line. The profile is a temp dir, and
-    the browser binary lives under ``.cache/ms-playwright`` (R9).
+    longer load an unpacked extension from the command line. The profile lives under the repo's
+    gitignored ``.cache/`` (constitution §2.1), and the browser binary lives under
+    ``.cache/ms-playwright`` (R9).
     """
-    import tempfile
-
     args = [
         f"--disable-extensions-except={built_extension}",
         f"--load-extension={built_extension}",
     ]
-    profile = tempfile.mkdtemp(prefix="processlens-e2e-")
+    profile = tempfile.mkdtemp(prefix="processlens-e2e-", dir=str(_scratch_dir("profiles")))
     browser_context = _launch_with_install(_playwright, profile, args)
     try:
         yield browser_context
