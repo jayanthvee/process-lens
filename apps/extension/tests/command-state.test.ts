@@ -599,4 +599,89 @@ describe("CommandSession", () => {
     expect(socket.lastResult()?.["status"]).toBe("refused");
     expect(String(socket.lastResult()?.["error"])).toMatch(/stale lease/);
   });
+
+  it("a debugger detach sends `detached` and aborts the in-flight command", async () => {
+    // Item 6: the browser detached the debugger mid-command. The runner must learn at once, and the
+    // abandoned dispatch must not still type or click.
+    let gate: (() => void) | null = null;
+    const pending = deferredStep();
+    const harness = makeHarness({
+      runStep: async (_step, opts) => {
+        gate = opts.beforeInput;
+        opts.beforeInput();
+        return pending.promise;
+      },
+    });
+    const socket = await openSession(harness);
+
+    deliver(socket, command({ command_id: "c1" }));
+    await flush();
+    expect(harness.session.currentState).toBe("executing");
+
+    // The browser detaches while the command is in flight.
+    harness.session.notifyDebuggerDetached("target closed");
+
+    const event = socket.messages().find((message) => message["type"] === "event");
+    expect(event?.["kind"]).toBe("detached");
+    expect(String(event?.["detail"])).toMatch(/debugger detached from the bound tab/);
+
+    // The in-flight command is withdrawn: its next input gate refuses, so the command stops.
+    expect(() => gate?.()).toThrow(/withdrawn/);
+
+    pending.resolve({ id: "step-1", action: "click", outcome: "done" });
+    await flush();
+  });
+
+  it("a debugger detach with no command in flight sends no event", async () => {
+    // Item 7: an event belongs to a current command. With none, there is no record for it to land
+    // on, so nothing is sent.
+    const harness = makeHarness();
+    const socket = await openSession(harness);
+
+    deliver(socket, command({ command_id: "c1" }));
+    await flush();
+    expect(socket.lastResult()?.["status"]).toBe("ok");
+
+    harness.session.notifyDebuggerDetached("target closed");
+    await flush();
+
+    expect(socket.messages().some((message) => message["type"] === "event")).toBe(false);
+  });
+
+  it("an aborted command's run-level event is not sent on the reconnected socket", async () => {
+    // Item 7: the challenge belonged to the command the dropped socket abandoned. Sending it on the
+    // reconnected socket would land it on the next record's run and pause the wrong thing.
+    const gate: { release: (() => void) | null } = { release: null };
+    const harness = makeHarness({
+      runStep: async () => {
+        await new Promise<void>((done) => {
+          gate.release = done;
+        });
+        throw new ExecutorError("the page is showing a challenge", "s1", "park", "challenge");
+      },
+    });
+    const socket = await openSession(harness);
+
+    deliver(socket, command({ command_id: "c1" }));
+    await flush();
+
+    socket.emit("close");
+    expect(harness.fireTimers(500)).toBe(1);
+    const reconnected = harness.sockets[1];
+    reconnected?.emit("open");
+    await flush();
+    expect(
+      reconnected?.messages().some(
+        (message) => message["type"] === "result" && message["status"] === "lost",
+      ),
+    ).toBe(true);
+
+    // The abandoned step finally fails with its run-level event.
+    gate.release?.();
+    await flush();
+
+    expect(reconnected?.messages().some((message) => message["type"] === "event")).toBe(false);
+    // And no second, contradictory result either: the outcome was already reported lost.
+    expect(reconnected?.messages().filter((message) => message["type"] === "result")).toHaveLength(1);
+  });
 });

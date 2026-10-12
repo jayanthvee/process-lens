@@ -260,6 +260,23 @@ export class CommandSession {
     this.setState("idle");
   }
 
+  /**
+   * The browser detached the debugger from the bound tab (PL-014b item 6). The service worker drops
+   * its cached transport before calling this, so the next command re-attaches; the session is what
+   * knows whether a command is in flight, so the session decides what to say.
+   *
+   * The runner must learn at once and the abandoned command must stop. `event detached` is sent
+   * only while a command is current (item 7): the event belongs to the command, not to the session,
+   * and an event with no current command would land on whatever record comes next. The abort makes
+   * the command's own probe refuse its next input, so a dispatch the runner has written off cannot
+   * still type or click.
+   */
+  notifyDebuggerDetached(reason: string): void {
+    if (this.inFlight === null) return;
+    this.sendEvent("detached", `the debugger detached from the bound tab (${reason})`);
+    this.currentAbort?.abort();
+  }
+
   private async activeTabInfo(): Promise<{ id: number | null; url: string; title: string }> {
     const tabs = chromeTabs();
     if (!tabs) return { id: null, url: "", title: "" };
@@ -625,12 +642,15 @@ export class CommandSession {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       // R6: a run-level event is sent BEFORE the refusal it causes, so the runner can release the
-      // record and pause the run instead of reading only the refusal and parking the record.
+      // record and pause the run instead of reading only the refusal and parking the record. Item 7:
+      // it is sent only while this command is still current — an event from a command the socket
+      // abandoned must not land on the next record's socket.
       if (error instanceof ExecutorError && error.event) {
-        this.sendEvent(error.event, message);
+        if (current()) this.sendEvent(error.event, message);
       }
-      // A policy-blocked attach is a run-level event, not just a failed command.
-      if (message === POLICY_BLOCKED_MESSAGE) this.sendEvent("policy_blocked", message);
+      // A policy-blocked attach is a run-level event, not just a failed command. Gated the same
+      // way: it, too, belongs to the command that is current.
+      if (message === POLICY_BLOCKED_MESSAGE && current()) this.sendEvent("policy_blocked", message);
       if (current()) {
         // F2: once any input event has reached the page the outcome is unknown, so the honest
         // report is `lost` (the runner reconciles) — never `rejected`, which would assert a
