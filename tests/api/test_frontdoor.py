@@ -9,12 +9,15 @@ local caller reaches the route), and the loopback and host cases would reach a l
 from __future__ import annotations
 
 import psycopg
+import pytest
 from fastapi.testclient import TestClient
 
 from services.api.main import app
 from tests.db.seed import Ledger
 
 LOCAL_BASE_URL = "http://127.0.0.1:8000"
+EXTENSION_ID = "abcdefghijklmnopabcdefghijklmnop"
+EXTENSION_ORIGIN = f"chrome-extension://{EXTENSION_ID}"
 
 
 def test_a_non_loopback_client_is_refused(client: TestClient) -> None:
@@ -78,3 +81,67 @@ def test_an_absent_origin_from_a_local_client_is_accepted(
 
     assert response.status_code == 200, response.text
     assert response.json()["status"] == "paused"
+
+
+def test_the_pinned_extension_origin_may_open_a_session(
+    connected: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The extension's service worker opens its session from ``chrome-extension://<id>``."""
+    monkeypatch.setenv("PROCESSLENS_EXTENSION_ID", EXTENSION_ID)
+
+    response = connected.post(
+        "/api/v1/executor/sessions",
+        json={},
+        headers={"origin": EXTENSION_ORIGIN, "x-processlens-client": "extension"},
+    )
+
+    assert response.status_code == 201, response.text
+    assert response.json()["session_token"]
+
+
+def test_another_extension_id_may_not_open_a_session(
+    connected: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only the pinned id passes: a different extension origin is still a stranger."""
+    monkeypatch.setenv("PROCESSLENS_EXTENSION_ID", EXTENSION_ID)
+
+    response = connected.post(
+        "/api/v1/executor/sessions",
+        json={},
+        headers={
+            "origin": "chrome-extension://bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "x-processlens-client": "extension",
+        },
+    )
+
+    assert response.status_code == 403, response.text
+    assert "origin" in response.json()["detail"]
+
+
+def test_the_extension_origin_opens_no_other_route(
+    connected: TestClient, ledger: Ledger, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The exception is the session endpoint alone: a run cancel still wants this API's origin."""
+    monkeypatch.setenv("PROCESSLENS_EXTENSION_ID", EXTENSION_ID)
+    run = ledger.new_run()
+
+    response = connected.post(f"/api/v1/runs/{run.id}/cancel", headers={"origin": EXTENSION_ORIGIN})
+
+    assert response.status_code == 403, response.text
+    assert "origin" in response.json()["detail"]
+
+
+def test_an_unset_extension_id_accepts_no_extension_origin(
+    connected: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No pinned id means no extension origin at all, not every extension origin."""
+    monkeypatch.delenv("PROCESSLENS_EXTENSION_ID", raising=False)
+
+    response = connected.post(
+        "/api/v1/executor/sessions",
+        json={},
+        headers={"origin": EXTENSION_ORIGIN, "x-processlens-client": "extension"},
+    )
+
+    assert response.status_code == 403, response.text
+    assert "origin" in response.json()["detail"]
