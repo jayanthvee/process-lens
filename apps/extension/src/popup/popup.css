@@ -58,6 +58,14 @@ body {
   gap: 8px;
 }
 
+.panel__form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 4px;
+  border-top: 1px solid var(--line);
+}
+
 .button {
   flex: 1;
   padding: 7px 10px;
@@ -130,4 +138,10 @@ body {
   margin: 0;
   min-height: 1.4em;
   color: var(--muted);
+}
+
+/* The compile problems, one per line. */
+.panel__note--warning {
+  color: var(--accent);
+  white-space: pre-line;
 }

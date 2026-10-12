@@ -9,6 +9,7 @@ import {
 } from "../shared/messages";
 import type { SessionState } from "../background/command-session";
 import type { RecordedEvent } from "../shared/recipe-types";
+import { createMakeRecipeForm, RECIPE_KEY, ROW_KEY } from "./make-recipe";
 
 interface RecorderResponse {
   ok: boolean;
@@ -57,8 +58,43 @@ const connectButton = element<HTMLButtonElement>("connect");
 const disconnectButton = element<HTMLButtonElement>("disconnect");
 const sessionStateEl = element<HTMLParagraphElement>("session-state");
 
-const RECIPE_KEY = "processlens:executor-recipe";
-const ROW_KEY = "processlens:executor-row";
+// The "Make recipe" form: after a Stop it compiles the worker's recording and
+// writes the recipe and its row where Run reads them. It is built once; the hub
+// URL is re-read on every submit, so the field below takes effect without a rebuild.
+const makeGoButton = element<HTMLButtonElement>("make-go");
+const makeRecipeDeps = {
+  root: document,
+  storage: sessionStorageAdapter(),
+  baseUrl: DEFAULT_HUB_URL,
+  onNotice: (message: string) => {
+    noteEl.textContent = message;
+  },
+};
+const makeRecipeForm = createMakeRecipeForm(makeRecipeDeps);
+
+/**
+ * chrome.storage.session holds the recipe and the row, the two keys the Run
+ * button reads. A build without that storage area still opens the popup — the
+ * form just cannot keep what it compiled.
+ */
+function sessionStorageAdapter(): {
+  get(keys: string[]): Promise<Record<string, unknown>>;
+  set(items: Record<string, unknown>): Promise<void>;
+} {
+  return {
+    get: async (keys) => {
+      const store = chrome.storage?.session;
+      return store ? ((await store.get(keys)) as Record<string, unknown>) : {};
+    },
+    set: async (items) => {
+      const store = chrome.storage?.session;
+      if (store) await store.set(items);
+    },
+  };
+}
+
+/** The recording as the worker last reported it, kept current from `record:appended`. */
+let recordedEvents: RecordedEvent[] = [];
 
 async function send(message: ToWorker): Promise<RecorderResponse> {
   const response = (await chrome.runtime.sendMessage(message)) as RecorderResponse | undefined;
@@ -79,6 +115,23 @@ function render(status: RecorderStatus): void {
 async function refresh(): Promise<void> {
   const response = await send({ type: "record:get" });
   render(response.status);
+  recordedEvents = response.events ?? [];
+  makeRecipeForm.refresh(recordedEvents);
+}
+
+/**
+ * Merge an event the worker reported into the list the form offers.
+ *
+ * A recording is still moving while the popup is open: the page an action navigated to can
+ * report its confirmation a moment after Stop, and the worker sends that as `record:appended`
+ * even though it replaces an event already in the list rather than adding one. Keeping the list
+ * current is what stops the form compiling a recording that is missing its observation.
+ */
+function mergeEvent(event: RecordedEvent): void {
+  const index = recordedEvents.findIndex((candidate) => candidate.seq === event.seq);
+  if (index >= 0) recordedEvents[index] = event;
+  else recordedEvents.push(event);
+  makeRecipeForm.refresh(recordedEvents);
 }
 
 function download(events: RecordedEvent[]): void {
@@ -97,11 +150,25 @@ startButton.addEventListener("click", () => {
 });
 
 stopButton.addEventListener("click", () => {
-  void send({ type: "record:stop" }).then((response) => render(response.status));
+  void send({ type: "record:stop" }).then((response) => {
+    render(response.status);
+    // The freshly stopped recording is what the form offers to compile.
+    recordedEvents = response.events ?? [];
+    makeRecipeForm.refresh(recordedEvents);
+  });
 });
 
 clearButton.addEventListener("click", () => {
-  void send({ type: "record:clear" }).then((response) => render(response.status));
+  void send({ type: "record:clear" }).then((response) => {
+    render(response.status);
+    recordedEvents = response.events ?? [];
+    makeRecipeForm.refresh(recordedEvents);
+  });
+});
+
+makeGoButton.addEventListener("click", () => {
+  makeRecipeDeps.baseUrl = hubEl.value.trim() || DEFAULT_HUB_URL;
+  void makeRecipeForm.submit();
 });
 
 wsEl.addEventListener("change", () => {
@@ -196,8 +263,10 @@ chrome.runtime.onMessage.addListener((message: unknown) => {
     status?: RecorderStatus | ExecutorStatus;
     state?: SessionState;
     detail?: string;
+    event?: RecordedEvent;
   };
   if (incoming?.type === "record:state" && incoming.status) render(incoming.status as RecorderStatus);
+  if (incoming?.type === "record:appended" && incoming.event) mergeEvent(incoming.event);
   if (incoming?.type === "executor:state" && incoming.status) {
     renderExecutor(incoming.status as ExecutorStatus);
   }
