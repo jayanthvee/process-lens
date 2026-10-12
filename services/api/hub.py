@@ -169,6 +169,10 @@ class Session:
     claimed: bool = False
     extension: Peer | None = None
     runner: Peer | None = None
+    # An attach in flight: its token and its claim count only once the first frames are on the
+    # wire, so a socket that dies in `accept` leaves the previous token and the slot as they were.
+    pending_resume_token: str | None = None
+    pending_claim: bool = False
 
 
 _sessions: dict[str, Session] = {}
@@ -180,6 +184,17 @@ def reset_sessions() -> None:
     global _sessions_lock
     _sessions.clear()
     _sessions_lock = asyncio.Lock()
+
+
+def _purge_expired(now: float) -> None:
+    """Forget every session whose lifetime has run out. The caller holds ``_sessions_lock``.
+
+    A session with a socket still attached is kept whatever its clock says: the lifetime it carries
+    is the one it had before that peer dialled in, and it is only renewed once the last one leaves.
+    """
+    for session_id, row in list(_sessions.items()):
+        if now >= row.expires_at and row.extension is None and row.runner is None:
+            del _sessions[session_id]
 
 
 # ---------------------------------------------------------------- the frames
@@ -297,6 +312,10 @@ async def _retire(session: Session, peer: Peer) -> None:
         session.extension = None
     if session.runner is peer:
         session.runner = None
+    # A claimed session lives for ten minutes after the last peer leaves, not ten minutes from the
+    # moment the popup connected, so a run that outlives its creation TTL is still resumable.
+    if session.claimed and session.extension is None and session.runner is None:
+        session.expires_at = time.time() + SESSION_TTL_SECONDS
     await _announce_gone(session, peer)
     current = asyncio.current_task()
     for task in (peer.reader, peer.writer):
@@ -322,10 +341,15 @@ async def _refuse(websocket: WebSocket, code: int) -> None:
     """Refuse a socket after reading nothing.
 
     Starlette wants an ``accept`` before a ``close``, so the socket is accepted and closed at
-    once: the caller sees the code and the hub never took a message from it.
+    once: the caller sees the code and the hub never took a message from it. The accept names the
+    offered protocol subprotocol, because a browser whose handshake negotiated no subprotocol
+    reports the close as a bare 1006 and the refusal is indistinguishable from a crash.
     """
+    offered = _offered_subprotocols(websocket)
     with contextlib.suppress(Exception):
-        await websocket.accept()
+        await websocket.accept(
+            subprotocol=PROTOCOL_SUBPROTOCOL if PROTOCOL_SUBPROTOCOL in offered else None
+        )
         await websocket.close(code=code)
 
 
@@ -347,15 +371,16 @@ def _match_token(session: Session, offered: str, now: float) -> str | None:
     """Which live token the offered value is: the session token while unclaimed, else the resume.
 
     Returns ``session_token``, ``resume_token``, or ``None`` when neither matches or the session
-    has expired. Both comparisons are constant time.
+    has expired. The token of an attach in flight counts as live, so the extension may dial with
+    the one the hub just handed it. All comparisons are constant time.
     """
     if now >= session.expires_at or not offered.isascii():
         return None
     if not session.claimed and secrets.compare_digest(offered, session.session_token):
         return SESSION_TOKEN_KIND
-    resume_token = session.resume_token
-    if resume_token is not None and secrets.compare_digest(offered, resume_token):
-        return RESUME_TOKEN_KIND
+    for live in (session.resume_token, session.pending_resume_token):
+        if live is not None and secrets.compare_digest(offered, live):
+            return RESUME_TOKEN_KIND
     return None
 
 
@@ -389,6 +414,7 @@ async def create_executor_session(
         expires_at=time.time() + SESSION_TTL_SECONDS,
     )
     async with _sessions_lock:
+        _purge_expired(time.time())
         _sessions[session.session_id] = session
     return {
         "session_id": session.session_id,
@@ -415,12 +441,13 @@ async def detach_executor_session(
     peer = session.extension
     if peer is not None:
         session.extension = None
-        await _close_peer(peer, DETACHED_CODE)
         # Tell the runner, exactly as `_retire` would when a socket drops on its own, and only once:
-        # the retire that follows this close must not send a second `peer_gone`. Without the
-        # announcement the runner keeps waiting for a reply that can never come, and the record is
+        # the retire that follows this close must not send a second `peer_gone`. It goes out before
+        # the close, so the runner learns at once instead of waiting on a close that may block;
+        # without it the runner keeps waiting for a reply that can never come, and the record is
         # parked as a timed-out step instead of the run pausing `executor_disconnected` (R6).
         await _announce_gone(session, peer)
+        await _close_peer(peer, DETACHED_CODE)
     return {"detached": True}
 
 
@@ -442,7 +469,10 @@ async def executor_socket(websocket: WebSocket, session: str | None = None) -> N
     # The token match and the slot reservation are one critical section, and the slot is reserved
     # before `accept` yields to the event loop. Two sockets that present the same token at the same
     # instant must not both pass, or the second attaches over the first and single use (R5) is gone.
+    # Nothing is committed here: the token and the claim take effect only once the first frames are
+    # on the wire, so a socket that dies in `accept` cannot cost the extension its session.
     async with _sessions_lock:
+        _purge_expired(time.time())
         row = _sessions.get(session or "")
         matched = None if row is None else _match_token(row, token or "", time.time())
         if matched is None:
@@ -450,20 +480,42 @@ async def executor_socket(websocket: WebSocket, session: str | None = None) -> N
         elif row.extension is not None:
             refusal = FORBIDDEN_CODE
         else:
-            if matched == SESSION_TOKEN_KIND:
-                row.claimed = True
-            row.resume_token = resume_token
             row.extension = peer
+            row.pending_resume_token = resume_token
+            row.pending_claim = matched == SESSION_TOKEN_KIND
     if refusal is not None:
         await _refuse(websocket, refusal)
         return
 
-    await websocket.accept(subprotocol=PROTOCOL_SUBPROTOCOL)
-    runner = row.runner
-    await _send_frame(peer, _frame("session", resume_token=resume_token))
-    await _send_frame(peer, _frame("peer_ready"))
-    if runner is not None:
-        await _send_frame(runner, _frame("peer_ready"))
+    attached = False
+    try:
+        await websocket.accept(subprotocol=PROTOCOL_SUBPROTOCOL)
+        runner = row.runner
+        await _send_frame(peer, _frame("session", resume_token=resume_token))
+        # S5: the pair is only ready when both sides are here, so neither side is told otherwise.
+        if runner is not None:
+            await _send_frame(peer, _frame("peer_ready"))
+            await _send_frame(runner, _frame("peer_ready"))
+        # R1: the first frames are on the wire, so this attach is real: publish its token and spend
+        # the session token if that is what opened the session.
+        async with _sessions_lock:
+            row.resume_token = row.pending_resume_token
+            row.pending_resume_token = None
+            if row.pending_claim:
+                row.claimed = True
+            row.pending_claim = False
+        attached = True
+    finally:
+        if not attached:
+            # R1: the attach never completed, so nothing about it may stick. The slot goes back and
+            # the token the extension already holds -- or, on a first attach, its session token --
+            # stays the one that opens this session, so the extension may dial again.
+            async with _sessions_lock:
+                if row.extension is peer:
+                    row.extension = None
+                    row.pending_resume_token = None
+                    row.pending_claim = False
+            await _close_peer(peer, UNAUTHORIZED_CODE)
     await _relay(row, peer)
 
 
@@ -485,7 +537,9 @@ async def runner_socket(websocket: WebSocket, session: str | None = None) -> Non
     refusal: int | None = None
     # The expiry re-check and the slot reservation are one critical section, and the slot is
     # reserved before `accept` yields: two runners that race on one session must not both attach.
+    # Nothing is committed here: a runner that dies in `accept` leaves the slot to the next one.
     async with _sessions_lock:
+        _purge_expired(time.time())
         row = _sessions.get(session or "")
         if row is None or time.time() >= row.expires_at:
             refusal = UNAUTHORIZED_CODE
@@ -497,13 +551,23 @@ async def runner_socket(websocket: WebSocket, session: str | None = None) -> Non
         await _refuse(websocket, refusal)
         return
 
-    await websocket.accept()
-    extension = row.extension
-    # S5: the runner waits on `peer_ready` before it claims a run, so it may not be told until the
-    # extension is attached, or it claims against a session no extension will ever serve.
-    if extension is not None:
-        await _send_frame(peer, _frame("peer_ready"))
-        await _send_frame(extension, _frame("peer_ready"))
+    attached = False
+    try:
+        await websocket.accept()
+        extension = row.extension
+        # S5: the runner waits on `peer_ready` before it claims a run, so it may not be told until
+        # the extension is attached, or it claims against a session no extension will ever serve.
+        if extension is not None:
+            await _send_frame(peer, _frame("peer_ready"))
+            await _send_frame(extension, _frame("peer_ready"))
+        attached = True
+    finally:
+        if not attached:
+            # R1: an attach that never completed may not hold the slot against the next runner.
+            async with _sessions_lock:
+                if row.runner is peer:
+                    row.runner = None
+            await _close_peer(peer, UNAUTHORIZED_CODE)
     await _relay(row, peer)
 
 

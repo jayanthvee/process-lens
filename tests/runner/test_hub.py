@@ -8,11 +8,13 @@ explicit local ``Host`` header, because the hub's own front door refuses anythin
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import threading
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import Any
 
 import pytest
@@ -116,6 +118,35 @@ def _pending_frames(session_id: str, role: str) -> int:
     row = hub._sessions[session_id]
     peer = row.extension if role == "extension" else row.runner
     return 0 if peer is None else peer.queue.qsize()
+
+
+def _wait_for(predicate: Callable[[], bool], timeout: float = 5.0) -> None:
+    """Wait for the hub's own event loop to reach a state, without stealing its thread."""
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        if time.monotonic() >= deadline:
+            raise AssertionError("the hub did not reach the expected state in time")
+        time.sleep(0.01)
+
+
+def _fail_the_first_frame(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make the hub's first frame send raise, as a socket that dies mid-handshake would."""
+    send = hub._send_frame
+    failed = False
+
+    async def flaky(peer: hub.Peer, frame: dict[str, Any]) -> None:
+        nonlocal failed
+        if not failed:
+            failed = True
+            raise RuntimeError("the first frame never reached the peer")
+        await send(peer, frame)
+
+    monkeypatch.setattr(hub, "_send_frame", flaky)
+
+
+def _queue_full(*_args: Any, **_kwargs: Any) -> None:
+    """A ``put_nowait`` for a queue that is already at its limit."""
+    raise asyncio.QueueFull
 
 
 def test_runner_channel_without_the_secret_is_refused_before_reading(
@@ -263,7 +294,6 @@ def test_a_resume_token_is_single_use(client: TestClient) -> None:
         headers=_extension_headers(),
     ) as extension:
         resume = json.loads(extension.receive_text())["resume_token"]
-        assert json.loads(extension.receive_text())["type"] == "peer_ready"
 
         with client.websocket_connect(_runner_url(session_id), headers=_runner_headers()) as runner:
             assert json.loads(runner.receive_text())["type"] == "peer_ready"
@@ -309,7 +339,6 @@ def test_close_detaches_the_session_and_the_extension_re_attaches(client: TestCl
         headers=_extension_headers(),
     ) as extension:
         resume = json.loads(extension.receive_text())["resume_token"]
-        assert json.loads(extension.receive_text())["type"] == "peer_ready"
 
         with client.websocket_connect(_runner_url(session_id), headers=_runner_headers()) as runner:
             assert json.loads(runner.receive_text())["type"] == "peer_ready"
@@ -385,7 +414,6 @@ def test_the_hub_relays_a_command_verbatim(client: TestClient) -> None:
         headers=_extension_headers(),
     ) as extension:
         assert json.loads(extension.receive_text())["type"] == "session"
-        assert json.loads(extension.receive_text())["type"] == "peer_ready"
 
         with client.websocket_connect(_runner_url(session_id), headers=_runner_headers()) as runner:
             assert json.loads(runner.receive_text())["type"] == "peer_ready"
@@ -407,7 +435,6 @@ def test_peer_gone_reaches_the_still_connected_side(client: TestClient) -> None:
         headers=_extension_headers(),
     ) as extension:
         assert json.loads(extension.receive_text())["type"] == "session"
-        assert json.loads(extension.receive_text())["type"] == "peer_ready"
 
         with client.websocket_connect(
             _runner_url(first["session_id"]), headers=_runner_headers()
@@ -425,7 +452,6 @@ def test_peer_gone_reaches_the_still_connected_side(client: TestClient) -> None:
         headers=_extension_headers(),
     ) as extension:
         assert json.loads(extension.receive_text())["type"] == "session"
-        assert json.loads(extension.receive_text())["type"] == "peer_ready"
 
         with client.websocket_connect(
             _runner_url(second["session_id"]), headers=_runner_headers()
@@ -454,7 +480,6 @@ def test_the_completed_session_returns_the_resume_token_exactly_once(client: Tes
         assert first["type"] == "session"
         resume = first["resume_token"]
         assert resume != session_token
-        assert json.loads(extension.receive_text())["type"] == "peer_ready"
         assert _pending_frames(session_id, "extension") == 0
 
         detached = client.post(
@@ -473,7 +498,6 @@ def test_the_completed_session_returns_the_resume_token_exactly_once(client: Tes
         resumed = json.loads(reattached.receive_text())
         assert resumed["type"] == "session"
         assert resumed["resume_token"] not in {session_token, resume}
-        assert json.loads(reattached.receive_text())["type"] == "peer_ready"
         assert _pending_frames(session_id, "extension") == 0
 
 
@@ -520,3 +544,341 @@ def test_two_concurrent_attaches_with_one_token_leave_exactly_one(client: TestCl
     assert len(refused) == 1
     assert refused[0] in (4401, 4403)
     assert hub._sessions[session_id].claimed is True
+
+
+def test_a_non_loopback_client_is_refused() -> None:
+    """S4: a peer that is not this machine's loopback reaches neither the API nor a socket."""
+    with TestClient(app, client=("203.0.113.10", 1)) as remote:
+        response = remote.post(
+            "/api/v1/executor/sessions",
+            json={"tab_url": "", "tab_title": ""},
+            headers={**HOST_HEADERS, "x-processlens-client": "extension"},
+        )
+        assert response.status_code == 403
+
+        session_id = str(uuid.uuid4())
+        with remote.websocket_connect(
+            _extension_url(session_id),
+            subprotocols=_extension_subprotocols("offered-token"),
+            headers=_extension_headers(),
+        ) as socket:
+            assert _close_code(socket) == 4401
+
+        with remote.websocket_connect(_runner_url(session_id), headers=_runner_headers()) as socket:
+            assert _close_code(socket) == 4401
+
+
+def test_the_close_endpoint_without_the_secret_is_refused(client: TestClient) -> None:
+    """The detach endpoint is bearer-only: without the header the socket is left where it is."""
+    created = _create_session(client)
+    session_id = created["session_id"]
+
+    with client.websocket_connect(
+        _extension_url(session_id),
+        subprotocols=_extension_subprotocols(created["session_token"]),
+        headers=_extension_headers(),
+    ) as extension:
+        assert json.loads(extension.receive_text())["type"] == "session"
+        response = client.post(
+            f"/api/v1/executor/sessions/{session_id}/close", headers=HOST_HEADERS
+        )
+        assert response.status_code == 403
+        assert hub._sessions[session_id].extension is not None
+
+
+def test_the_close_endpoint_with_a_wrong_secret_is_refused(client: TestClient) -> None:
+    """A bearer that is not the configured secret is not the runner, so nothing is detached."""
+    created = _create_session(client)
+    session_id = created["session_id"]
+    wrong = {**HOST_HEADERS, "authorization": f"Bearer {RUNNER_SECRET}-not"}
+
+    with client.websocket_connect(
+        _extension_url(session_id),
+        subprotocols=_extension_subprotocols(created["session_token"]),
+        headers=_extension_headers(),
+    ) as extension:
+        assert json.loads(extension.receive_text())["type"] == "session"
+        response = client.post(f"/api/v1/executor/sessions/{session_id}/close", headers=wrong)
+        assert response.status_code == 403
+        assert hub._sessions[session_id].extension is not None
+
+
+def test_an_unset_extension_id_refuses_the_extension_socket(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unset extension id is configuration, not a wildcard: no origin can be accepted."""
+    created = _create_session(client)
+    session_id = created["session_id"]
+    monkeypatch.setenv("PROCESSLENS_EXTENSION_ID", "")
+
+    with client.websocket_connect(
+        _extension_url(session_id),
+        subprotocols=_extension_subprotocols(created["session_token"]),
+        headers=_extension_headers(),
+    ) as socket:
+        assert _close_code(socket) == 4401
+    assert hub._sessions[session_id].extension is None
+
+
+def test_a_rebound_host_header_is_refused_on_the_runner_and_close(client: TestClient) -> None:
+    """S4: the name that resolves here reaches neither the runner socket nor the detach endpoint."""
+    created = _create_session(client)
+    session_id = created["session_id"]
+    rebinding = {"host": "attacker.example.com", "authorization": f"Bearer {RUNNER_SECRET}"}
+
+    with client.websocket_connect(_runner_url(session_id), headers=rebinding) as socket:
+        assert _close_code(socket) == 4401
+
+    response = client.post(f"/api/v1/executor/sessions/{session_id}/close", headers=rebinding)
+    assert response.status_code == 403
+    assert hub._sessions[session_id].runner is None
+
+
+def test_the_client_observes_the_protocol_error_code(client: TestClient) -> None:
+    """4400 reaches the client: a frame that is not this protocol costs the socket its channel."""
+    created = _create_session(client)
+    session_id = created["session_id"]
+
+    with client.websocket_connect(
+        _extension_url(session_id),
+        subprotocols=_extension_subprotocols(created["session_token"]),
+        headers=_extension_headers(),
+    ) as socket:
+        assert json.loads(socket.receive_text())["type"] == "session"
+        socket.send_text("this is not the protocol")
+        assert _close_code(socket) == 4400
+
+
+def test_the_client_observes_the_second_attach_refusal_code(client: TestClient) -> None:
+    """4403 reaches the client, and the refusal names the subprotocol the socket offered."""
+    created = _create_session(client)
+    session_id = created["session_id"]
+
+    with client.websocket_connect(
+        _extension_url(session_id),
+        subprotocols=_extension_subprotocols(created["session_token"]),
+        headers=_extension_headers(),
+    ) as extension:
+        resume = json.loads(extension.receive_text())["resume_token"]
+
+        with client.websocket_connect(
+            _extension_url(session_id),
+            subprotocols=_extension_subprotocols(resume),
+            headers=_extension_headers(),
+        ) as second:
+            assert _close_code(second) == 4403
+            assert second.accepted_subprotocol == PROTOCOL_SUBPROTOCOL
+
+        assert hub._sessions[session_id].extension is not None
+
+
+def test_the_client_observes_the_queue_overflow_code(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """4408 reaches the client: a peer whose queue is full is closed, not silently starved."""
+    created = _create_session(client)
+    session_id = created["session_id"]
+    command = '{"protocol": 1, "type": "step_command", "command_id": "overflow"}'
+
+    with client.websocket_connect(
+        _extension_url(session_id),
+        subprotocols=_extension_subprotocols(created["session_token"]),
+        headers=_extension_headers(),
+    ) as extension:
+        assert json.loads(extension.receive_text())["type"] == "session"
+
+        with client.websocket_connect(_runner_url(session_id), headers=_runner_headers()) as runner:
+            assert json.loads(runner.receive_text())["type"] == "peer_ready"
+            assert json.loads(extension.receive_text())["type"] == "peer_ready"
+
+            peer = hub._sessions[session_id].runner
+            assert peer is not None
+            monkeypatch.setattr(peer.queue, "put_nowait", _queue_full)
+
+            extension.send_text(command)
+            assert _close_code(runner) == 4408
+
+
+def test_an_expired_session_is_refused(client: TestClient) -> None:
+    """R2: the ten minutes the popup is given apply only while nobody has claimed the session."""
+    created = _create_session(client)
+    session_id = created["session_id"]
+    hub._sessions[session_id].expires_at = time.time() - 1
+
+    with client.websocket_connect(
+        _extension_url(session_id),
+        subprotocols=_extension_subprotocols(created["session_token"]),
+        headers=_extension_headers(),
+    ) as socket:
+        assert _close_code(socket) == 4401
+    assert session_id not in hub._sessions
+
+
+def test_an_expired_session_is_removed_by_the_purge(client: TestClient) -> None:
+    """R2: a dead session is swept out of the registry, so the hub keeps no graveyard of them."""
+    stale = _create_session(client)
+    hub._sessions[stale["session_id"]].expires_at = time.time() - 1
+
+    kept = _create_session(client)
+    assert stale["session_id"] not in hub._sessions
+    assert kept["session_id"] in hub._sessions
+
+
+def test_a_claimed_session_expires_only_after_the_last_peer_leaves(client: TestClient) -> None:
+    """R2: a claimed session's ten minutes start when the pair is gone, not at creation."""
+    created = _create_session(client)
+    session_id = created["session_id"]
+
+    with client.websocket_connect(
+        _extension_url(session_id),
+        subprotocols=_extension_subprotocols(created["session_token"]),
+        headers=_extension_headers(),
+    ) as extension:
+        assert json.loads(extension.receive_text())["type"] == "session"
+        row = hub._sessions[session_id]
+        assert row.claimed is True
+
+        with client.websocket_connect(_runner_url(session_id), headers=_runner_headers()) as runner:
+            assert json.loads(runner.receive_text())["type"] == "peer_ready"
+            assert json.loads(extension.receive_text())["type"] == "peer_ready"
+
+            # As if the run had outlived the ten minutes this session was created with.
+            stale = time.time() - 1
+            hub._sessions[session_id].expires_at = stale
+
+            extension.close()
+            assert json.loads(runner.receive_text())["type"] == "peer_gone"
+            # The runner is still attached, so the session is live and keeps its stale lifetime.
+            assert hub._sessions[session_id].expires_at == stale
+
+    _wait_for(lambda: hub._sessions[session_id].expires_at > time.time())
+
+
+def test_a_failed_attach_releases_the_slot(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R1: an attach that dies on its first frame leaves the slot free for the next attempt."""
+    created = _create_session(client)
+    session_id = created["session_id"]
+    _fail_the_first_frame(monkeypatch)
+
+    # The hub closes the socket and raises: the test only cares about what it left behind.
+    with (
+        contextlib.suppress(BaseException),
+        client.websocket_connect(
+            _extension_url(session_id),
+            subprotocols=_extension_subprotocols(created["session_token"]),
+            headers=_extension_headers(),
+        ),
+    ):
+        pass
+
+    row = hub._sessions[session_id]
+    assert row.extension is None
+    assert row.pending_resume_token is None
+    assert row.pending_claim is False
+    assert row.claimed is False
+
+    with client.websocket_connect(
+        _extension_url(session_id),
+        subprotocols=_extension_subprotocols(created["session_token"]),
+        headers=_extension_headers(),
+    ) as retried:
+        assert json.loads(retried.receive_text())["type"] == "session"
+
+
+def test_a_failed_runner_attach_releases_the_slot(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R1: the runner slot is released too, so a runner that dies in the handshake is not fatal."""
+    created = _create_session(client)
+    session_id = created["session_id"]
+
+    with client.websocket_connect(
+        _extension_url(session_id),
+        subprotocols=_extension_subprotocols(created["session_token"]),
+        headers=_extension_headers(),
+    ) as extension:
+        assert json.loads(extension.receive_text())["type"] == "session"
+        _fail_the_first_frame(monkeypatch)
+
+        with (
+            contextlib.suppress(BaseException),
+            client.websocket_connect(_runner_url(session_id), headers=_runner_headers()),
+        ):
+            pass
+        assert hub._sessions[session_id].runner is None
+
+        with client.websocket_connect(_runner_url(session_id), headers=_runner_headers()) as runner:
+            assert hub._sessions[session_id].runner is not None
+            assert json.loads(runner.receive_text())["type"] == "peer_ready"
+            assert json.loads(extension.receive_text())["type"] == "peer_ready"
+
+
+def test_a_failed_reattach_keeps_the_previous_resume_token_valid(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R1: the token the extension already holds stays valid until the new one is on the wire."""
+    created = _create_session(client)
+    session_id = created["session_id"]
+    with client.websocket_connect(
+        _extension_url(session_id),
+        subprotocols=_extension_subprotocols(created["session_token"]),
+        headers=_extension_headers(),
+    ) as extension:
+        resume = json.loads(extension.receive_text())["resume_token"]
+        detached = client.post(
+            f"/api/v1/executor/sessions/{session_id}/close",
+            headers=_detach_headers(),
+        )
+        assert detached.status_code == 200
+
+    _fail_the_first_frame(monkeypatch)
+    with (
+        contextlib.suppress(BaseException),
+        client.websocket_connect(
+            _extension_url(session_id),
+            subprotocols=_extension_subprotocols(resume),
+            headers=_extension_headers(),
+        ),
+    ):
+        pass
+
+    row = hub._sessions[session_id]
+    assert row.extension is None
+    assert row.pending_resume_token is None
+    assert row.resume_token == resume
+
+    with client.websocket_connect(
+        _extension_url(session_id),
+        subprotocols=_extension_subprotocols(resume),
+        headers=_extension_headers(),
+    ) as reattached:
+        assert json.loads(reattached.receive_text())["type"] == "session"
+
+
+def test_the_extension_is_told_peer_ready_only_with_a_runner(client: TestClient) -> None:
+    """S5: the extension hears nothing but its session frame while the runner is not there."""
+    created = _create_session(client)
+    session_id = created["session_id"]
+    early = '{"protocol": 1, "type": "step_command", "command_id": "early"}'
+
+    with client.websocket_connect(
+        _extension_url(session_id),
+        subprotocols=_extension_subprotocols(created["session_token"]),
+        headers=_extension_headers(),
+    ) as extension:
+        assert json.loads(extension.receive_text())["type"] == "session"
+        # Anything the hub wanted to say first would arrive before this answer to a command with no
+        # peer: the extension hears nothing else until the runner dials in.
+        extension.send_text(early)
+        assert json.loads(extension.receive_text()) == {
+            "protocol": 1,
+            "type": "hub_error",
+            "code": "peer_unavailable",
+            "command_id": "early",
+        }
+
+        with client.websocket_connect(_runner_url(session_id), headers=_runner_headers()) as runner:
+            assert json.loads(runner.receive_text())["type"] == "peer_ready"
+            assert json.loads(extension.receive_text())["type"] == "peer_ready"
