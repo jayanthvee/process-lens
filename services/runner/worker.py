@@ -131,6 +131,7 @@ class Worker:
         fallback_timeout_ms: int = 10_000,
         connect: Connect = default_connect,
         events: Callable[[], list[tuple[str, str]]] | None = None,
+        reconnect: Callable[[], bool] | None = None,
     ) -> None:
         self.dsn = dsn
         self.worker_id = worker_id
@@ -145,10 +146,21 @@ class Worker:
         self.connect = connect
         # PL-014 R6: the run-level event drain the executor collects into (None for the fake path).
         self.events = events
+        # F5's other half: a worker whose executor dropped re-attaches before it gives up, so a
+        # transient disconnect does not stop it for the rest of its life (ticket criterion).
+        self.reconnect = reconnect
 
     def run_once(self) -> bool:
         """Claim or take over one run and process it. Returns False when there is nothing to do."""
         from packages.ledger import claim_run, find_stale_run, get_run, recover_run, take_over_run
+
+        # F5: a disconnected executor cannot drive a run, so claiming one would strand it in the
+        # commit window. The worker first tries to re-attach; only when that fails does it stand
+        # down, and the ticket's reconnect criterion is what makes the retry meaningful.
+        if getattr(self.executor, "disconnected", False) and (
+            self.reconnect is None or not self.reconnect()
+        ):
+            return False
 
         with self.connect(self.dsn) as conn:
             with conn.transaction():
@@ -363,6 +375,21 @@ def main(argv: list[str] | None = None) -> int:
         executor.close()
         return 3
 
+    def reconnect() -> bool:
+        """F5: try to bring a dropped executor back before a claim is refused.
+
+        A disconnect is not necessarily permanent: the extension re-attaches to the same session
+        with its resume token, and the ticket's reconnect criterion expects the run to continue.
+        Close the dead socket first so a half-open one is never reused.
+        """
+        executor.close()
+        try:
+            executor.connect()
+            executor.wait_for_peer_or_raise(args.peer_timeout)
+        except ExecutorUnavailable:
+            return False
+        return True
+
     worker = Worker(
         dsn,
         worker_id=args.worker_id,
@@ -372,6 +399,7 @@ def main(argv: list[str] | None = None) -> int:
         heartbeat_timeout_seconds=args.heartbeat_timeout,
         heartbeat_interval=args.heartbeat_interval,
         events=executor.take_events,
+        reconnect=reconnect,
     )
     try:
         processed = _run_with_polling(

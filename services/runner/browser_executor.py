@@ -127,6 +127,18 @@ class BrowserExecutor:
                 self._socket.close()
             self._socket = None
 
+    def _detach(self, detail: str | None = None) -> None:
+        """Raise the detach flag and close the socket, so nothing more is sent on a dead wire.
+
+        F5: the flag is what the worker checks before it claims a run; closing the socket is what
+        makes the next ``_send_command`` refuse instead of writing to a connection the extension may
+        still be acting on. ``detail`` becomes a run-level event when the silence needs explaining.
+        """
+        self.disconnected = True
+        if detail is not None:
+            self._events.append(("detached", detail))
+        self.close()
+
     def __enter__(self) -> BrowserExecutor:
         self.connect()
         return self
@@ -224,6 +236,14 @@ class BrowserExecutor:
             return ConditionResult(passed=bool(message.get("passed")), status="ok")
         if kind == "result" and message.get("status") == "refused":
             return ConditionResult(passed=False, status="refused")
+        if kind in ("timeout", "closed", "peer_gone"):
+            # F5: a check nobody answered leaves the extension possibly still polling, so a command
+            # sent now would be refused ("another command is already executing") and one slow check
+            # would cascade into parked records. Raise the same detach flag a lost command does, and
+            # close the socket so nothing more is sent, so the worker stops claiming runs. No event
+            # is appended: any run-level event that arrived while the check ran belongs to the run,
+            # and must not be displaced by one about the silence.
+            self._detach()
         return ConditionResult(passed=False, status="lost")
 
     def probe_confirmation(
@@ -410,11 +430,7 @@ class BrowserExecutor:
         if kind in ("peer_gone", "closed"):
             return StepResult(status="lost", error="the extension is no longer connected")
         if kind == "timeout":
-            self._events.append(
-                ("detached", "the extension did not answer within the command budget")
-            )
-            self.disconnected = True
-            self._socket = None
+            self._detach("the extension did not answer within the command budget")
             return StepResult(
                 status="lost",
                 error="the extension did not answer within the command budget",

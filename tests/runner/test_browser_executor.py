@@ -13,7 +13,7 @@ from collections.abc import Callable
 from typing import Any
 
 from packages.ledger import RecordClaim, RunClaim
-from services.runner.browser_executor import BrowserExecutor
+from services.runner.browser_executor import BrowserExecutor, ExecutorUnavailable
 from services.runner.executor import StepCommand
 from services.runner.run_loop import RunLoop
 from services.runner.testing import FakeDestination, FakeExecutor, FakeReconciler, FrozenClock
@@ -373,6 +373,31 @@ def test_no_reply_within_budget_pauses_the_run() -> None:
     # sending the next command to an extension that may still be acting on this one.
     assert executor.disconnected is True
     assert [kind for kind, _detail in executor.take_events()] == ["detached"]
+
+
+def test_a_lost_command_closes_the_socket_not_just_drops_it() -> None:
+    """F5: a dropped socket can be reused; closing it makes the next send refuse."""
+    executor, socket = make_executor([])
+    result = executor.prepare(a_command())
+    assert result.status == "lost"
+    assert executor.disconnected is True
+    assert socket.closed is True, "the socket must be closed, not merely forgotten"
+
+
+def test_an_unanswered_check_raises_the_detach_flag_and_stops_sending() -> None:
+    """F5: a check with no reply inside budget must leave the executor as detached as `_lost`."""
+    executor, _socket = make_executor([])
+    result = executor.check_condition({"text_visible": "x"}, timeout_ms=500, step_id="search")
+    assert result.answered is False
+    assert result.status == "lost"
+    assert executor.disconnected is True, "an unanswered check is a lost executor, not a no"
+
+    try:
+        executor.prepare(a_command())
+    except ExecutorUnavailable:
+        pass
+    else:  # pragma: no cover - the point is that a detached executor refuses to send
+        raise AssertionError("a disconnected executor must not send another command")
 
 
 def test_connect_refuses_when_the_hub_will_not_have_us() -> None:

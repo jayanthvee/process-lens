@@ -12,6 +12,7 @@ from collections.abc import Callable
 from typing import Any
 
 import psycopg
+import pytest
 
 from packages.ledger import get_record
 from services.runner.testing import ScriptedRun
@@ -380,3 +381,118 @@ def test_the_parking_reconciler_never_returns_a_record_to_pending(
 
     diff = ParkingReconciler().search(record)
     assert outcome_of(diff) == "parked", "an unverifiable search never says `pending`"
+
+
+UNRENDERABLE_BRANCH: list[dict[str, Any]] = [
+    {
+        "id": "bad-branch",
+        "action": "branch",
+        "when": {"text_visible": "{{row.no_such_column}}"},
+        "then": [{"id": "skip", "action": "end_record", "outcome": "skipped", "reason": "matched"}],
+    },
+]
+
+UNRENDERABLE_GATE: list[dict[str, Any]] = [
+    {
+        "id": "gate",
+        "action": "approval_gate",
+        "reason": "a person must approve this commit",
+        "when": {"text_visible": "{{row.no_such_column}}"},
+    },
+]
+
+
+def test_a_branch_when_that_cannot_be_rendered_parks_the_record(
+    seed: Callable[..., Seed], make_worker: Callable[..., Worker], conn: psycopg.Connection
+) -> None:
+    """F4: a template error in a branch ``when`` parks the record; it must not crash the worker."""
+    base = seed(recipe(UNRENDERABLE_BRANCH))
+    base.add_input_record(email="a@x.com")
+    run_id = base.create_run()
+
+    worker = make_worker(ScriptedRun.build())
+    assert worker.run_once() is True, "a TemplateError must not escape the worker"
+
+    record = get_record(conn, base.record_ids(run_id)[0])
+    assert record is not None
+    assert record.state == "parked"
+    assert "no column" in (record.reason or "")
+    assert base.states(run_id) == {"row-0001": "parked"}, "neither branch ran; a person decides"
+
+
+def test_a_gate_when_that_cannot_be_rendered_parks_the_record(
+    seed: Callable[..., Seed], make_worker: Callable[..., Worker], conn: psycopg.Connection
+) -> None:
+    """F4: the same rule for a gate condition — park, never crash the worker."""
+    base = seed(recipe(UNRENDERABLE_GATE))
+    base.add_input_record(email="a@x.com")
+    run_id = base.create_run()
+
+    worker = make_worker(ScriptedRun.build())
+    assert worker.run_once() is True
+
+    record = get_record(conn, base.record_ids(run_id)[0])
+    assert record is not None
+    assert record.state == "parked"
+    assert base.run_status(run_id)[0] != "paused", "the record parks; the run is not paused"
+
+
+def test_a_none_value_source_raises_rather_than_comparing_against_empty() -> None:
+    """F3: a value source resolving to None must refuse, never compare against an empty string."""
+    from services.runner.run_loop import _render_condition
+    from services.runner.templates import TemplateError
+
+    condition = {
+        "value_equals": {
+            "selector": {"targets": [{"by": "testid", "value": "email"}]},
+            "value": {"kind": "constant", "value": None},
+        }
+    }
+    with pytest.raises(TemplateError):
+        _render_condition(condition, {}, {})
+
+
+def test_the_worker_does_not_claim_while_the_executor_is_disconnected(
+    seed: Callable[..., Seed], make_worker: Callable[..., Worker]
+) -> None:
+    """F5: a disconnected executor must not be handed a run it cannot drive."""
+    base = seed()
+    base.add_input_record(email="a@x.com")
+    run_id = base.create_run()
+
+    scripted = ScriptedRun.build()
+    scripted.executor.disconnected = True  # type: ignore[attr-defined]
+    worker = make_worker(scripted)
+    assert worker.run_once() is False, "a disconnected executor must not claim a run"
+    assert base.run_status(run_id)[0] == "queued", "the run is left for a connected worker"
+    assert base.states(run_id) == {"row-0001": "pending"}
+
+
+def test_the_worker_re_attaches_before_it_gives_up(
+    seed: Callable[..., Seed], make_worker: Callable[..., Worker]
+) -> None:
+    """F5 + the ticket's reconnect criterion: a dropped executor is re-attached, then the run runs.
+
+    The guard alone would stop the worker for the rest of its life, and the ticket's disconnect case
+    ("reconnecting and resuming continues the run") could never be met. The retry is the other half.
+    """
+    base = seed()
+    base.add_input_record(email="a@x.com")
+    run_id = base.create_run()
+
+    scripted = ScriptedRun.build()
+    scripted.executor.disconnected = True  # type: ignore[attr-defined]
+    attempts: list[int] = []
+
+    def reconnect() -> bool:
+        attempts.append(1)
+        # The second attempt finds the extension back, as it does once it re-attaches.
+        if len(attempts) == 1:
+            return False
+        scripted.executor.disconnected = False  # type: ignore[attr-defined]
+        return True
+
+    worker = make_worker(scripted, reconnect=reconnect)
+    assert worker.run_once() is False, "no claim while the executor is still gone"
+    assert worker.run_once() is True, "once it re-attaches the run is claimed and processed"
+    assert base.states(run_id) == {"row-0001": "verified"}

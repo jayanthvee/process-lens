@@ -304,6 +304,7 @@ def make_worker(database_url: str) -> Callable[..., Worker]:
         heartbeat_timeout_seconds: float = DEFAULT_HEARTBEAT_TIMEOUT_SECONDS,
         fallback_timeout_ms: int = 10_000,
         reconciler: object | None = None,
+        reconnect: Callable[[], bool] | None = None,
     ) -> Worker:
         return Worker(
             database_url,
@@ -316,6 +317,7 @@ def make_worker(database_url: str) -> Callable[..., Worker]:
             heartbeat_timeout_seconds=heartbeat_timeout_seconds,
             fallback_timeout_ms=fallback_timeout_ms,
             events=scripted.events,
+            reconnect=reconnect,
         )
 
     return factory

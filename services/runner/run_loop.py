@@ -413,13 +413,18 @@ class RunLoop:
             action = step.get("action")
 
             if action == "branch":
-                verdict = self._check(
-                    step.get("when", {}),
-                    step_id=step.get("id"),
-                    record_key=record.record_key,
-                    row=row,
-                    variables=variables,
-                )
+                # F4: `_check` renders the condition, and an unrenderable `when` must park the
+                # record rather than raise out of the loop and kill the worker.
+                try:
+                    verdict = self._check(
+                        step.get("when", {}),
+                        step_id=step.get("id"),
+                        record_key=record.record_key,
+                        row=row,
+                        variables=variables,
+                    )
+                except TemplateError as exc:
+                    return self._park_for_template_error(conn, record, box, exc)
                 # R6: a condition check is an executor call, so an event that arrived while it ran
                 # beats its verdict.
                 stopped = self._drain_events(conn, record, run, epoch, box)
@@ -437,13 +442,18 @@ class RunLoop:
             if action == "approval_gate":
                 when = step.get("when")
                 if when:
-                    verdict = self._check(
-                        when,
-                        step_id=step.get("id"),
-                        record_key=record.record_key,
-                        row=row,
-                        variables=variables,
-                    )
+                    # F4: same rule as a branch `when` — a gate condition that cannot be rendered
+                    # parks the record instead of crashing the worker.
+                    try:
+                        verdict = self._check(
+                            when,
+                            step_id=step.get("id"),
+                            record_key=record.record_key,
+                            row=row,
+                            variables=variables,
+                        )
+                    except TemplateError as exc:
+                        return self._park_for_template_error(conn, record, box, exc)
                     stopped = self._drain_events(conn, record, run, epoch, box)
                     if stopped is not None:
                         return stopped
@@ -1024,6 +1034,25 @@ class RunLoop:
             return "parked"
         return "paused"
 
+    def _park_for_template_error(
+        self,
+        conn: psycopg.Connection,
+        record: RecordClaim,
+        box: _Box,
+        exc: TemplateError,
+    ) -> str:
+        """F4: a ``when`` that cannot be rendered parks the record, never the worker.
+
+        A branch or gate condition reaches the executor through the same renderer a commit step
+        uses, so a missing column or variable there used to raise out of ``_run_steps`` and kill the
+        worker. Parking keeps the record for a person, exactly as ``_commit_step`` does.
+        """
+        if box.state in WORKING_STATES:
+            self._transition(conn, record, box.state, "parked", str(exc))
+            box.state = "parked"
+            return "parked"
+        return "paused"
+
     # -- primitives --------------------------------------------------------
 
     def _transition(
@@ -1349,7 +1378,11 @@ def _render_condition(
             spec["selector"] = _render_selector(spec["selector"], row, variables)
         if "value" in spec:
             resolved = _render_value_source(spec["value"], row, variables)
-            spec["value"] = "" if resolved is None else str(resolved)
+            if resolved is None:
+                # F3: no fail-open. A value source that resolved to nothing used to become "",
+                # which silently compared the field against an empty string; refuse instead.
+                raise TemplateError("the value_equals source resolved to nothing")
+            spec["value"] = str(resolved)
         rendered["value_equals"] = spec
     return rendered
 
