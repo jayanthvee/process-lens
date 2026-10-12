@@ -62,6 +62,7 @@ interface Harness {
   timers: Timer[];
   clock: { value: number };
   runStepCalls: unknown[];
+  restoredTabs: number[];
   storagePeek(): StoredSession | null;
   fireTimers(ms: number): number;
 }
@@ -69,8 +70,19 @@ interface Harness {
 interface HarnessOptions {
   runStep?: (
     step: unknown,
-    opts: { sentInput: () => void; allowedOrigins?: string[] },
+    opts: {
+      sentInput: () => void;
+      phase?: "prepare" | "dispatch";
+      allowedOrigins?: string[];
+      beforeInput: () => void;
+    },
   ) => Promise<StepReport>;
+  checkCondition?: (
+    condition: unknown,
+    timeoutMs: number,
+    aborted: () => boolean,
+  ) => Promise<{ ok: true; passed: boolean } | { ok: false; reason: string }>;
+  restoreBoundTab?: (tabId: number) => Promise<boolean>;
   now?: () => number;
   storageValue?: StoredSession | null;
 }
@@ -81,6 +93,7 @@ function makeHarness(options: HarnessOptions = {}): Harness {
   const timers: Timer[] = [];
   const clock = { value: 1_000 };
   const runStepCalls: unknown[] = [];
+  const restoredTabs: number[] = [];
   let stored: StoredSession | null = options.storageValue ?? null;
 
   const deps: SessionDeps = {
@@ -106,13 +119,22 @@ function makeHarness(options: HarnessOptions = {}): Harness {
       };
     },
     bindActiveTab: async () => 7,
+    restoreBoundTab: async (tabId: number) => {
+      restoredTabs.push(tabId);
+      if (options.restoreBoundTab) return options.restoreBoundTab(tabId);
+      return true;
+    },
     runStep: async (step, opts) => {
       runStepCalls.push(step);
       if (options.runStep) return options.runStep(step, opts);
+      opts.beforeInput();
       opts.sentInput();
       return { id: "step-1", action: "click", outcome: "done", rung: 0, by: "role" };
     },
-    checkCondition: async () => true,
+    checkCondition: async (condition, timeoutMs, aborted) => {
+      if (options.checkCondition) return options.checkCondition(condition, timeoutMs, aborted);
+      return { ok: true, passed: true };
+    },
     onState: (state) => states.push(state),
   };
 
@@ -124,6 +146,7 @@ function makeHarness(options: HarnessOptions = {}): Harness {
     timers,
     clock,
     runStepCalls,
+    restoredTabs,
     storagePeek: () => stored,
     fireTimers(ms) {
       let fired = 0;
@@ -366,6 +389,199 @@ describe("CommandSession", () => {
 
     pending.resolve({ id: "step-1", action: "click", outcome: "done" });
     await flush();
+  });
+
+  it("a check that could not be evaluated is refused, never answered false", async () => {
+    // B1: a failed duplicate search reaching the runner as a real "no" would take the `else`
+    // branch and create the lead again.
+    const harness = makeHarness({
+      checkCondition: async () => ({ ok: false, reason: "no tab is bound to this session" }),
+    });
+    const socket = await openSession(harness);
+
+    deliver(socket, {
+      protocol: 1,
+      type: "check",
+      command_id: "c-check",
+      step_ref: "s1",
+      run_id: "run-1",
+      run_record_id: "rec-1",
+      lease_epoch: 1,
+      expires_at: 10_000_000,
+      condition: { text_visible: "Lead created" },
+      timeout_ms: 500,
+    });
+    await flush();
+
+    const messages = socket.messages();
+    expect(messages.some((message) => message["type"] === "condition")).toBe(false);
+    const result = socket.lastResult();
+    expect(result?.["status"]).toBe("refused");
+    expect(String(result?.["error"])).toMatch(/no tab is bound/);
+  });
+
+  it("the expiry is re-checked immediately before the input, not only before the step", async () => {
+    // F1: the command is fresh when it is received and when the step starts, but the resolve,
+    // guards and scroll let it expire before the input would be sent.
+    let nowValue = 5_000;
+    const harness = makeHarness({
+      now: () => nowValue,
+      runStep: async (_step, opts) => {
+        nowValue = 500_000;
+        opts.beforeInput();
+        throw new Error("the input gate should have refused");
+      },
+    });
+    const socket = await openSession(harness);
+
+    deliver(socket, command({ command_id: "c1", type: "dispatch", expires_at: 100_000 }));
+    await flush();
+
+    const refused = socket.lastResult();
+    expect(refused?.["status"]).toBe("refused");
+    expect(String(refused?.["error"])).toMatch(/expired before any input/);
+  });
+
+  it("a socket close mid-dispatch aborts the command before its next input", async () => {
+    // B3: the runner has written the command off as `lost`; the abandoned dispatch must not still
+    // click, and a command arriving after the reconnect must not run concurrently on the same tab.
+    const inputs: string[] = [];
+    let gateway: (() => void) | null = null;
+    const harness = makeHarness({
+      runStep: async (_step, opts) => {
+        gateway = opts.beforeInput;
+        opts.beforeInput();
+        inputs.push("first");
+        // The socket drops now, while the step is still mid-action.
+        await flush();
+        opts.beforeInput();
+        inputs.push("second");
+        return { id: "step-1", action: "click", outcome: "done" };
+      },
+    });
+    const socket = await openSession(harness);
+
+    deliver(socket, command({ command_id: "c1" }));
+    await flush();
+    socket.emit("close");
+    expect(gateway).not.toBeNull();
+    await flush();
+
+    // The second input never happened: the gate threw once the command was withdrawn.
+    expect(inputs).toEqual(["first"]);
+  });
+
+  it("a new command is refused while an aborted one is still unwinding", async () => {
+    // B3: two commands must never run concurrently on the same tab.
+    const gate: { release: (() => void) | null } = { release: null };
+    const harness = makeHarness({
+      runStep: async (_step, opts) => {
+        opts.sentInput();
+        await new Promise<void>((done) => {
+          gate.release = done;
+        });
+        return { id: "step-1", action: "click", outcome: "done" };
+      },
+    });
+    const socket = await openSession(harness);
+
+    deliver(socket, command({ command_id: "c1" }));
+    await flush();
+    socket.emit("close");
+
+    // Reconnect while c1 is still unwinding, then send a new command.
+    expect(harness.fireTimers(500)).toBe(1);
+    const reconnected = harness.sockets[1];
+    reconnected?.emit("open");
+    await flush();
+    deliver(reconnected as FakeSocket, command({ command_id: "c2" }));
+    await flush();
+
+    const refused = reconnected?.lastResult();
+    expect(refused?.["command_id"]).toBe("c2");
+    expect(refused?.["status"]).toBe("refused");
+    expect(String(refused?.["error"])).toMatch(/unwinding/);
+
+    gate.release?.();
+    await flush();
+  });
+
+  it("an error after the first input is reported lost, not rejected", async () => {
+    // F2: an exception after input is not a provable rejection; the runner must reconcile.
+    const harness = makeHarness({
+      runStep: async (_step, opts) => {
+        opts.sentInput();
+        throw new Error("the read-back failed after the click");
+      },
+    });
+    const socket = await openSession(harness);
+
+    deliver(socket, command({ command_id: "c1" }));
+    await flush();
+
+    const result = socket.lastResult();
+    expect(result?.["status"]).toBe("lost");
+  });
+
+  it("a restore adopts the stored bound tab and reports it when the tab is gone", async () => {
+    // B2: after a restart the stored tab must be re-adopted, never the active one.
+    const stored: StoredSession = {
+      hubUrl: "http://127.0.0.1:8000",
+      sessionId: "sess-1",
+      resumeToken: "rt-1",
+      boundTabId: 42,
+    };
+    const harness = makeHarness({ storageValue: stored });
+    expect(await harness.session.restore()).toBe(true);
+    expect(harness.restoredTabs).toEqual([42]);
+
+    const gone = makeHarness({ storageValue: stored, restoreBoundTab: async () => false });
+    await gone.session.restore();
+    const socket = gone.sockets[0];
+    socket?.emit("open");
+    await flush();
+    const event = socket?.messages().find((message) => message["type"] === "event");
+    expect(event?.["kind"]).toBe("tab_closed");
+  });
+
+  it("restore is idempotent: a second call opens no second socket", async () => {
+    // F6: top level, onStartup and the popup all ask to restore.
+    const stored: StoredSession = {
+      hubUrl: "http://127.0.0.1:8000",
+      sessionId: "sess-1",
+      resumeToken: "rt-1",
+      boundTabId: 7,
+    };
+    const harness = makeHarness({ storageValue: stored });
+    await harness.session.restore();
+    await harness.session.restore();
+    await flush();
+    expect(harness.sockets).toHaveLength(1);
+  });
+
+  it("a malformed command with an id is refused, not dropped silently", async () => {
+    // F3: silence would leave the runner waiting for a reply that will never come.
+    const harness = makeHarness();
+    const socket = await openSession(harness);
+
+    deliver(socket, {
+      protocol: 1,
+      type: "dispatch",
+      command_id: "c-bad",
+      step_ref: "s1",
+      run_id: "run-1",
+      run_record_id: "rec-1",
+      lease_epoch: 1,
+      expires_at: "not-a-number",
+      step: { id: "step-1", action: "click" },
+      commit: false,
+      allowed_origins: [],
+    });
+    await flush();
+
+    const refused = socket.lastResult();
+    expect(refused?.["command_id"]).toBe("c-bad");
+    expect(refused?.["status"]).toBe("refused");
   });
 
   it("a stale epoch is recorded even when the command is refused for another reason", async () => {

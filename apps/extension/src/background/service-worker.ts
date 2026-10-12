@@ -395,7 +395,12 @@ async function releaseDebugger(): Promise<void> {
  */
 async function runCommandStep(
   step: unknown,
-  opts: { sentInput: () => void; phase: "prepare" | "dispatch"; allowedOrigins?: string[] },
+  opts: {
+    sentInput: () => void;
+    phase: "prepare" | "dispatch";
+    allowedOrigins?: string[];
+    beforeInput: () => void;
+  },
 ): Promise<StepReport> {
   const executorStep = step as ExecutorStep;
   const tabId = commandBoundTabId;
@@ -405,9 +410,9 @@ async function runCommandStep(
   try {
     const cdp = await ensureDebugger(tabId);
     attached = true;
-    // Command mode: the runner states the deadline for every step it sends, so a step's own
-    // waits never fall back to an extension default that could outlive the runner's wait (R4).
-    const deps = { cdp, commandMode: true };
+    // Command mode: the runner states the deadline for every step it sends, and the session's own
+    // probe polices each input at the last moment (R4, F1, B3).
+    const deps = { cdp, commandMode: true, beforeInput: opts.beforeInput };
 
     const guardContext = { cdp, step: executorStep, allowedOrigins: opts.allowedOrigins };
     // R6: each guard that has a run-level meaning carries its event on the error, so the session
@@ -478,14 +483,23 @@ async function runCommandStep(
   }
 }
 
-/** Evaluate one `check` command's condition against the bound tab. */
+/**
+ * Evaluate one `check` command's condition against the bound tab.
+ *
+ * B1: a check that could not be evaluated is a *refusal*, not a "no". Returning `false` for a
+ * missing tab, a throwing evaluate, or a malformed condition would reach the runner as a real
+ * answered "no" — a failed duplicate search would then take the `else` branch and create the
+ * lead a second time, and a failed fresh-confirmation probe would report "absent".
+ */
 async function checkCommandCondition(
   condition: unknown,
   timeoutMs: number,
   aborted: () => boolean,
-): Promise<boolean> {
+): Promise<{ ok: true; passed: boolean } | { ok: false; reason: string }> {
   const tabId = commandBoundTabId;
-  if (tabId === null || tabId < 0) return false;
+  if (tabId === null || tabId < 0) {
+    return { ok: false, reason: "no tab is bound to this session" };
+  }
   let attached = false;
   try {
     const cdp = await ensureDebugger(tabId);
@@ -502,9 +516,16 @@ async function checkCommandCondition(
         },
       },
     );
-    return outcome.ok;
-  } catch {
-    return false;
+    // A completed poll is the only thing that answers. A poll ended by the withdrawal is not an
+    // answer either, so the caller refuses rather than reporting a "no".
+    if (outcome.aborted === true) {
+      return { ok: false, reason: outcome.reason ?? "the command was withdrawn" };
+    }
+    return { ok: true, passed: outcome.ok };
+  } catch (error) {
+    // The attach failed, the evaluate threw, or the condition is one the executor does not
+    // understand: none of those is a page that said "no".
+    return { ok: false, reason: error instanceof Error ? error.message : String(error) };
   } finally {
     if (!attached) commandCdpToken = null;
   }
@@ -526,6 +547,18 @@ function getCommandSession(): CommandSession {
       const tabId = tabs[0]?.id ?? null;
       commandBoundTabId = tabId;
       return tabId;
+    },
+    // B2: after a worker restart, adopt the STORED bound tab — never the active one, which at
+    // restore time is whatever the person is looking at. A tab that no longer exists is reported
+    // so the session can announce `tab_closed`.
+    restoreBoundTab: async (tabId: number) => {
+      try {
+        await chrome.tabs.get(tabId);
+      } catch {
+        return false;
+      }
+      commandBoundTabId = tabId;
+      return true;
     },
     runStep: runCommandStep,
     checkCondition: checkCommandCondition,

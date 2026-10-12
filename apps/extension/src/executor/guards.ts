@@ -215,9 +215,11 @@ export function classifyAttachError(message: string): "policy_blocked" | null {
 /**
  * Re-check a command's expiry immediately before its first input event (R4). A
  * command is valid for the moment it was received AND for the moment its input
- * is sent; a slow prepare must not let a stale command type into a page.
+ * is sent; a slow prepare must not let a stale command type into a page. It is
+ * synchronous and cheap so it can sit on the input path itself, one call before
+ * every trusted input event (F1).
  */
-export async function recheckExpiry(expiresAt: number, now: () => number): Promise<GuardResult> {
+export function recheckExpiry(expiresAt: number, now: () => number): GuardResult {
   if (now() >= expiresAt) {
     return { ok: false, reason: "the command expired before any input was sent" };
   }

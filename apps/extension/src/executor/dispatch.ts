@@ -22,6 +22,38 @@ const KEY_CODES: Record<string, number> = {
 };
 
 /**
+ * The seam a command's owner uses to police its own input.
+ *
+ * Both hooks are optional so the attended run and the unit tests keep working
+ * unchanged. `beforeInput` is called immediately before EVERY trusted input CDP
+ * call, so a command that has been withdrawn, or that has since expired, is
+ * refused before it can touch the page (R4, B3) — a check made before the guards
+ * and the resolve would let a slow prepare type into a dead command.
+ * `onFirstInput` fires once, immediately before the first such call, so the
+ * caller can acknowledge the commit at the moment input actually reaches the
+ * page rather than after the whole action (F2).
+ */
+export interface InputHooks {
+  beforeInput?: () => void;
+  onFirstInput?: () => void;
+}
+
+/**
+ * Fold the hooks into one per-call probe: every call runs `beforeInput` (which
+ * may throw), and the first call also runs `onFirstInput`.
+ */
+function inputGate(hooks: InputHooks | undefined): () => void {
+  let announced = false;
+  return () => {
+    hooks?.beforeInput?.();
+    if (!announced) {
+      announced = true;
+      hooks?.onFirstInput?.();
+    }
+  };
+}
+
+/**
  * Scroll a marked element into view, re-measure it, and hit-test the box
  * center. Throws a `park` error when the box has no area or a click at its
  * center would not land on the target.
@@ -123,13 +155,15 @@ async function readFieldValue(
 }
 
 /** Press Backspace once, used to clear a selection before typing. */
-async function pressBackspace(cdp: CdpTransport): Promise<void> {
+async function pressBackspace(cdp: CdpTransport, beforeInput: () => void): Promise<void> {
+  beforeInput();
   await cdp.send("Input.dispatchKeyEvent", {
     type: "keyDown",
     key: "Backspace",
     windowsVirtualKeyCode: KEY_CODES["Backspace"],
     nativeVirtualKeyCode: KEY_CODES["Backspace"],
   });
+  beforeInput();
   await cdp.send("Input.dispatchKeyEvent", {
     type: "keyUp",
     key: "Backspace",
@@ -150,9 +184,10 @@ export async function dispatchFill(
   cdp: CdpTransport,
   token: string,
   value: string,
-  options: { clearFirst?: boolean; contextId?: number } = {},
+  options: { clearFirst?: boolean; contextId?: number; hooks?: InputHooks } = {},
 ): Promise<void> {
   const clearFirst = options.clearFirst !== false;
+  const gate = inputGate(options.hooks);
   const prepared = await prepareField(cdp, token, options.contextId, clearFirst);
   if (!prepared.ok) {
     if (prepared.reason === "password") {
@@ -168,7 +203,8 @@ export async function dispatchFill(
       "park",
     );
   }
-  if (clearFirst) await pressBackspace(cdp);
+  if (clearFirst) await pressBackspace(cdp, gate);
+  gate();
   await cdp.send("Input.insertText", { text: value });
 
   const actual = await readFieldValue(cdp, token, options.contextId);
@@ -192,6 +228,7 @@ export async function dispatchClick(
   cdp: CdpTransport,
   token: string,
   contextId?: number,
+  hooks?: InputHooks,
 ): Promise<MeasureResult> {
   const box = await measureTarget(cdp, token, contextId);
 
@@ -206,9 +243,13 @@ export async function dispatchClick(
     );
   }
 
+  const gate = inputGate(hooks);
   const base = { x: box.x, y: box.y, button: "left", clickCount: 1 };
+  gate();
   await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: box.x, y: box.y });
+  gate();
   await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", ...base });
+  gate();
   await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", ...base });
   return box;
 }
@@ -226,7 +267,12 @@ export async function dispatchSelect(
   value: string,
   optionMatch: "text" | "value" | "index" = "text",
   contextId?: number,
+  hooks?: InputHooks,
 ): Promise<{ matched: boolean; value: string | null; reason?: string; custom?: boolean }> {
+  // The native-select path writes through `Runtime.evaluate`, and that write IS this step's
+  // input, so the gate runs before it: a withdrawn or expired command must not change the field.
+  const gate = inputGate(hooks);
+  gate();
   const expression = `(() => {
     const el = ${markerExpression(token)};
     if (!el) return { matched: false, reason: "the select target is no longer in the document" };
@@ -277,80 +323,120 @@ export async function dispatchSelect(
 export const DEFAULT_NAVIGATE_TIMEOUT_MS = 8000;
 
 /**
- * Wait for a frame's document to load. `Page.frameNavigated` and
- * `Page.loadEventFired` both mean the document arrived, so either one settles
- * the wait; when the page reports a frame id, only that frame's event settles
- * it. A transport with no event feed (a test double, or a debugger that cannot
- * subscribe) resolves immediately rather than hanging.
+ * Watch a navigation's own document load, with the events buffered from before
+ * the navigation was even sent.
+ *
+ * Two races are closed here. The old wait subscribed only after `Page.navigate`
+ * replied, so a fast page's `Page.loadEventFired` could arrive with no listener
+ * registered and be dropped — the wait then burned its whole timeout on a page
+ * that had already loaded. And a late load event from the *previous* document
+ * could settle the wait, because the main frame's id never changes across a
+ * navigation. Buffering from before the send fixes the first; requiring the
+ * `Page.frameNavigated` whose `frame.loaderId` is the one the navigate reply
+ * returned, and a load event *after* it, fixes the second.
  */
-function waitForLoad(
-  cdp: CdpTransport,
-  frameId: string | undefined,
-  timeoutMs: number,
-): Promise<boolean> {
-  return new Promise((resolve) => {
-    if (typeof cdp.on !== "function") {
-      resolve(true);
-      return;
-    }
-    let settled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let offNav: (() => void) | undefined;
-    let offLoad: (() => void) | undefined;
-    const finish = (ok: boolean): void => {
-      if (settled) return;
-      settled = true;
-      if (timer !== undefined) clearTimeout(timer);
-      if (offNav) offNav();
-      if (offLoad) offLoad();
-      resolve(ok);
-    };
-    const frameMatches = (params: Record<string, unknown>): boolean => {
-      if (!frameId) return true;
-      const frame = params["frame"] as { id?: string } | undefined;
-      const id = frame?.id ?? (params["frameId"] as string | undefined);
-      return id === undefined || id === frameId;
-    };
-    timer = setTimeout(() => finish(false), timeoutMs);
-    offNav = cdp.on("Page.frameNavigated", (params) => {
-      if (frameMatches(params)) finish(true);
-    });
-    offLoad = cdp.on("Page.loadEventFired", (params) => {
-      if (frameMatches(params)) finish(true);
-    });
+interface LoadWatch {
+  /** Resolve once the document named by `loaderId` has navigated and then loaded. */
+  arm(loaderId: string): Promise<boolean>;
+  /** Stop watching. Idempotent, and safe after the watch has already settled. */
+  cancel(): void;
+}
+
+function startLoadWatcher(cdp: CdpTransport, timeoutMs: number): LoadWatch {
+  const on = cdp.on;
+  const events: Array<{ method: string; params: Record<string, unknown> }> = [];
+  let wanted: string | null = null;
+  let settled = false;
+  let resolve: (ok: boolean) => void = () => undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const done = new Promise<boolean>((accept) => {
+    resolve = accept;
   });
+  const covered = (): boolean => {
+    if (wanted === null) return false;
+    const navigated = events.findIndex(
+      (event) =>
+        event.method === "Page.frameNavigated" &&
+        (event.params["frame"] as { loaderId?: string } | undefined)?.loaderId === wanted,
+    );
+    if (navigated < 0) return false;
+    return events.some(
+      (event, index) => index > navigated && event.method === "Page.loadEventFired",
+    );
+  };
+  const finish = (ok: boolean): void => {
+    if (settled) return;
+    settled = true;
+    if (timer !== undefined) clearTimeout(timer);
+    offNav?.();
+    offLoad?.();
+    resolve(ok);
+  };
+  const record = (method: string, params: Record<string, unknown>): void => {
+    events.push({ method, params });
+    if (covered()) finish(true);
+  };
+  const offNav = on ? on.call(cdp, "Page.frameNavigated", (p) => record("Page.frameNavigated", p)) : undefined;
+  const offLoad = on ? on.call(cdp, "Page.loadEventFired", (p) => record("Page.loadEventFired", p)) : undefined;
+  return {
+    arm(loaderId: string): Promise<boolean> {
+      wanted = loaderId;
+      if (covered()) {
+        finish(true);
+        return done;
+      }
+      timer = setTimeout(() => finish(false), timeoutMs);
+      return done;
+    },
+    cancel(): void {
+      finish(false);
+    },
+  };
 }
 
 /**
  * Navigate the tab to a URL and wait for the document to arrive.
  *
  * `Page.navigate` reports a refusal in its result rather than rejecting, so the
- * result is inspected: a non-empty `errorText` fails the step. Once the browser
- * accepts the navigation the load event is awaited, with a timeout, so the next
- * step never runs against the document that was being replaced.
+ * result is inspected: a non-empty `errorText` fails the step. The load watch is
+ * armed from before the send, so the document's own load event cannot be missed,
+ * and the next step never runs against the document being replaced. A reply with
+ * no `loaderId` was a same-document navigation, and there is no load to await.
  */
 export async function dispatchNavigate(
   cdp: CdpTransport,
   url: string,
   timeoutMs: number = DEFAULT_NAVIGATE_TIMEOUT_MS,
+  hooks?: InputHooks,
 ): Promise<void> {
-  const result = (await cdp.send("Page.navigate", { url })) as
-    | { errorText?: string; frameId?: string }
-    | undefined;
-  const errorText = typeof result?.errorText === "string" ? result.errorText.trim() : "";
-  if (errorText !== "") {
-    throw new ExecutorError(
-      `the browser refused to navigate to ${url}: ${errorText}`,
-      undefined,
-      "park",
-    );
-  }
-  const loaded = await waitForLoad(cdp, result?.frameId, timeoutMs);
-  if (!loaded) {
-    throw new ExecutorError(
-      `the page did not finish loading ${url} within ${timeoutMs}ms`,
-      undefined,
-      "park",
-    );
+  // `Page.navigate` sends no `Input.*` event, but it is still the step's action: a withdrawn or
+  // expired command must not navigate the person's tab (B3). `onFirstInput` is not fired — nothing
+  // has been typed or clicked, and a navigate is never a commit step.
+  hooks?.beforeInput?.();
+  const watch = typeof cdp.on === "function" ? startLoadWatcher(cdp, timeoutMs) : null;
+  try {
+    const result = (await cdp.send("Page.navigate", { url })) as
+      | { errorText?: string; frameId?: string; loaderId?: string }
+      | undefined;
+    const errorText = typeof result?.errorText === "string" ? result.errorText.trim() : "";
+    if (errorText !== "") {
+      throw new ExecutorError(
+        `the browser refused to navigate to ${url}: ${errorText}`,
+        undefined,
+        "park",
+      );
+    }
+    const loaderId = typeof result?.loaderId === "string" ? result.loaderId : "";
+    if (loaderId === "" || !watch) return;
+    const loaded = await watch.arm(loaderId);
+    if (!loaded) {
+      throw new ExecutorError(
+        `the page did not finish loading ${url} within ${timeoutMs}ms`,
+        undefined,
+        "park",
+      );
+    }
+  } finally {
+    watch?.cancel();
   }
 }

@@ -213,6 +213,11 @@ export function parseIncoming(raw: unknown): { message: IncomingMessage } | { er
     );
     if (missing.length > 0) return { error: `command is missing ${missing.join(", ")}` };
     if (typeof record["lease_epoch"] !== "number") return { error: "command has no lease_epoch" };
+    // Fail-closed (F3): a command whose `expires_at` is not a number would compare as NaN and
+    // never look expired, so a stale command would be acted on. Refuse it instead.
+    if (typeof record["expires_at"] !== "number" || !Number.isFinite(record["expires_at"])) {
+      return { error: "command has a non-numeric expires_at" };
+    }
     return { message: record as unknown as CommandMessage };
   }
   if (type === "session") {

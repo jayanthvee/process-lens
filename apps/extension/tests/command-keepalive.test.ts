@@ -83,7 +83,8 @@ describe("the command session keepalive", () => {
       },
       bindActiveTab: async () => 7,
       runStep: async () => ({ id: "step-1", action: "click", outcome: "done" }),
-      checkCondition: async () => true,
+      checkCondition: async () => ({ ok: true, passed: true }),
+      restoreBoundTab: async () => true,
       onState: (state) => states.push(state),
     };
 

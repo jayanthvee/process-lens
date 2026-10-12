@@ -24,7 +24,7 @@ import {
 } from "../shared/command-protocol";
 import type { StepReport } from "../executor/types";
 import { ExecutorError } from "../executor/types";
-import { POLICY_BLOCKED_MESSAGE } from "../executor/guards";
+import { POLICY_BLOCKED_MESSAGE, recheckExpiry } from "../executor/guards";
 
 /** The socket surface the session needs; a plain object satisfies it. */
 export interface WebSocketLike {
@@ -64,9 +64,30 @@ export interface SessionDeps {
    */
   runStep: (
     step: unknown,
-    opts: { sentInput: () => void; phase: "prepare" | "dispatch"; allowedOrigins?: string[] },
+    opts: {
+      sentInput: () => void;
+      phase: "prepare" | "dispatch";
+      allowedOrigins?: string[];
+      /** Runs immediately before every trusted input; throws to refuse (F1, B3). */
+      beforeInput: () => void;
+    },
   ) => Promise<StepReport>;
-  checkCondition: (condition: unknown, timeoutMs: number, aborted: () => boolean) => Promise<boolean>;
+  /**
+   * Evaluate a `check` command's condition. A poll that completed answers with `ok: true`; a
+   * check that could not be evaluated at all \u2014 no bound tab, a CDP failure, a condition the
+   * executor does not understand, a withdrawn command \u2014 answers `ok: false`, which the session
+   * reports as a *refusal*, never as a real "no" (B1).
+   */
+  checkCondition: (
+    condition: unknown,
+    timeoutMs: number,
+    aborted: () => boolean,
+  ) => Promise<{ ok: true; passed: boolean } | { ok: false; reason: string }>;
+  /**
+   * Confirm a stored bound tab still exists, and adopt it as the session's bound tab (B2).
+   * Returns false when the tab is gone. Restore never binds the active tab.
+   */
+  restoreBoundTab: (tabId: number) => Promise<boolean>;
   onState: (state: SessionState) => void;
 }
 
@@ -113,6 +134,18 @@ export class CommandSession {
   private executing: string | null = null;
   private inFlight: CommandMessage | null = null;
   private unreported: CommandMessage[] = [];
+  /** Aborts the running command's input when the socket drops (B3). */
+  private currentAbort: AbortController | null = null;
+  /**
+   * The id of a command that was aborted on socket close and is still unwinding its input. A new
+   * command is refused while it is set, so two commands never run concurrently on the same tab
+   * (B3). Cleared in the aborted command's own `finally`, the moment its work actually settles.
+   */
+  private unwinding: string | null = null;
+  /** True while a restore is in flight, so a second call cannot open a second socket (F6). */
+  private restoring = false;
+  /** Set when restore found the stored tab gone; announced once the socket is up (B2). */
+  private announceTabClosed = false;
   /** The last peer_gone / hub_error the runner may want to act on. */
   private notice: string | null = null;
 
@@ -176,15 +209,31 @@ export class CommandSession {
   /**
    * Re-attach to a session that outlived a worker restart, using the resume
    * token the hub last issued. Returns whether a stored session was found.
+   *
+   * Idempotent (F6): top level, `onStartup` and the popup all ask to restore, and
+   * only the first call may open a socket. It also adopts the stored bound tab
+   * (B2) \u2014 without that, every command after a restart fails "no tab is bound"
+   * \u2014 and never binds the active tab, which at restore time is whatever the
+   * person is looking at, not the tab the run was bound to.
    */
   async restore(): Promise<boolean> {
-    const stored = await this.deps.storage.get();
-    if (!stored) return false;
-    this.stored = stored;
-    this.stopped = false;
-    this.reconnectAttempt = 0;
-    this.openSocket();
-    return true;
+    if (this.socket !== null || this.cancelReconnect !== null) return this.stored !== null;
+    if (this.restoring) return this.stored !== null;
+    this.restoring = true;
+    try {
+      const stored = await this.deps.storage.get();
+      if (!stored) return false;
+      this.stored = stored;
+      this.stopped = false;
+      this.reconnectAttempt = 0;
+      if (stored.boundTabId >= 0) {
+        this.announceTabClosed = !(await this.deps.restoreBoundTab(stored.boundTabId));
+      }
+      this.openSocket();
+      return true;
+    } finally {
+      this.restoring = false;
+    }
   }
 
   /** Close the socket, forget the session, and go idle. */
@@ -246,6 +295,11 @@ export class CommandSession {
     this.reconnectAttempt = 0;
     this.setState("ready");
     this.startKeepalive();
+    // B2: a restore that found the bound tab gone says so, once the socket can carry it.
+    if (this.announceTabClosed) {
+      this.announceTabClosed = false;
+      this.sendEvent("tab_closed", "the bound tab is gone");
+    }
     // A reconnect must first tell the runner what it lost, before it takes new work.
     this.reportUnreported();
   }
@@ -254,6 +308,13 @@ export class CommandSession {
     if (this.socket !== socket) return;
     this.socket = null;
     this.stopKeepalive();
+    // B3: a command in flight when the socket dropped may still be mid-input. Abort it, so a
+    // dispatch the runner has already written off as `lost` cannot still click, and mark it
+    // unwinding, so a command that arrives on the reconnected socket never runs concurrently on
+    // the same tab. The aborted command's `finally` clears the mark once its work settles.
+    this.currentAbort?.abort();
+    const stillRunning = this.inFlight;
+    if (stillRunning) this.unwinding = stillRunning.command_id;
     if (this.stopped) {
       this.setState("idle");
       return;
@@ -371,7 +432,19 @@ export class CommandSession {
       }
     }
     const parsed = parseIncoming(raw);
-    if ("error" in parsed) return;
+    if ("error" in parsed) {
+      // F3: a malformed command is refused, not dropped silently. When it still carries an id,
+      // the runner gets a refusal instead of waiting out a reply that will never come.
+      if (typeof raw === "object" && raw !== null) {
+        const record = raw as Record<string, unknown>;
+        const type = record["type"];
+        if ((type === "prepare" || type === "dispatch" || type === "check") && record["protocol"] === PROTOCOL) {
+          const commandId = typeof record["command_id"] === "string" ? record["command_id"] : "";
+          if (commandId) this.sendResult(commandId, "refused", null, {}, parsed.error);
+        }
+      }
+      return;
+    }
     const message = parsed.message;
     switch (message.type) {
       case "session":
@@ -453,6 +526,19 @@ export class CommandSession {
       refuse("another command is already executing");
       return;
     }
+    if (!this.canTake()) {
+      // B3: an aborted command may still be unwinding its input; a new one must wait rather than
+      // run concurrently on the same tab.
+      refuse("the previous command has not finished unwinding");
+      return;
+    }
+
+    // B3: an abort probe for THIS command. `onClose` aborts it, and every trusted input checks it
+    // immediately before it acts, so a command the runner has written off cannot still click.
+    const abort = new AbortController();
+    this.currentAbort = abort;
+    this.unwinding = null;
+    const withdrawn = (): boolean => abort.signal.aborted;
 
     this.executing = command.command_id;
     this.inFlight = command;
@@ -462,17 +548,29 @@ export class CommandSession {
     // second, contradictory result on the reconnected socket.
     const current = (): boolean => this.inFlight === command;
     let sent = false;
+    // Set when the input gate (F1, B3) refuses: that is a `refused`, distinct from a failure that
+    // never reached the gate (`not_dispatched`) and from an outcome after input (`lost`).
+    let gateRefusal: string | null = null;
     try {
       if (command.type === "check") {
-        const passed = await this.deps.checkCondition(command.condition, command.timeout_ms, () => this.stopped);
+        const answer = await this.deps.checkCondition(command.condition, command.timeout_ms, () =>
+          this.stopped || withdrawn(),
+        );
         if (current()) {
-          this.send({
-            protocol: PROTOCOL,
-            type: "condition",
-            command_id: command.command_id,
-            passed,
-            observed: {},
-          });
+          if (answer.ok) {
+            this.send({
+              protocol: PROTOCOL,
+              type: "condition",
+              command_id: command.command_id,
+              passed: answer.passed,
+              observed: {},
+            });
+          } else {
+            // B1: a check that could not be evaluated is a REFUSAL, never a real "no". Reporting
+            // it as `condition passed:false` would take the runner's duplicate-search `else` branch
+            // and create the lead a second time.
+            this.sendResult(command.command_id, "refused", null, {}, answer.reason);
+          }
         }
       } else {
         // R4: re-check the expiry immediately before the input event. A slow
@@ -495,6 +593,16 @@ export class CommandSession {
           // dispatch every commit twice.
           phase: command.type === "prepare" ? ("prepare" as const) : ("dispatch" as const),
           allowedOrigins: command.allowed_origins,
+          // F1: one probe, run immediately before EVERY trusted input event, so the expiry and the
+          // withdrawal are judged at the last moment rather than before the guards and the resolve.
+          beforeInput: () => {
+            try {
+              this.assertInputAllowed(command, withdrawn);
+            } catch (error) {
+              gateRefusal = error instanceof Error ? error.message : String(error);
+              throw error;
+            }
+          },
         };
         this.setState("executing");
         const report = await this.deps.runStep(command.step, stepOptions);
@@ -524,10 +632,21 @@ export class CommandSession {
       // A policy-blocked attach is a run-level event, not just a failed command.
       if (message === POLICY_BLOCKED_MESSAGE) this.sendEvent("policy_blocked", message);
       if (current()) {
-        this.sendResult(command.command_id, sent ? "rejected" : "not_dispatched", null, {}, message);
+        // F2: once any input event has reached the page the outcome is unknown, so the honest
+        // report is `lost` (the runner reconciles) — never `rejected`, which would assert a
+        // rejection the extension cannot prove. A gate refusal is `refused`; a failure that never
+        // reached the gate is a clean `not_dispatched`.
+        const status: CommandStatus = sent
+          ? "lost"
+          : gateRefusal !== null
+            ? "refused"
+            : "not_dispatched";
+        this.sendResult(command.command_id, status, null, {}, gateRefusal ?? message);
       }
     } finally {
       this.recentIds.add(command.command_id);
+      if (this.currentAbort === abort) this.currentAbort = null;
+      if (this.unwinding === command.command_id) this.unwinding = null;
       if (current()) {
         this.executing = null;
         this.inFlight = null;
@@ -535,6 +654,30 @@ export class CommandSession {
           this.setState(this.socket ? "ready" : "disconnected");
         }
       }
+    }
+  }
+
+  /** Whether a new command may be taken now (B3). */
+  private canTake(): boolean {
+    return this.unwinding === null;
+  }
+
+  /**
+   * The probe that runs immediately before every trusted input event (F1, B3). It refuses a
+   * command that has been withdrawn or has expired, judged at the last moment rather than before
+   * the guards and the resolve, so a slow prepare cannot type into a dead command.
+   */
+  private assertInputAllowed(command: CommandMessage, withdrawn: () => boolean): void {
+    if (withdrawn()) {
+      throw new ExecutorError(
+        "the command was withdrawn before any input was sent",
+        undefined,
+        "park",
+      );
+    }
+    const expiry = recheckExpiry(command.expires_at, this.deps.now);
+    if (!expiry.ok) {
+      throw new ExecutorError(expiry.reason, undefined, "park");
     }
   }
 }

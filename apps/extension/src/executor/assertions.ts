@@ -48,8 +48,16 @@ export function conditionExpression(condition: Condition, ctx: ConditionContext)
     `String(${JSON.stringify(value)}).replace(/\\s+/g, " ").trim()`;
 
   if ("text_visible" in record) {
+    const wanted = record["text_visible"];
+    if (typeof wanted !== "string" || wanted.trim() === "") {
+      // Fail-closed (F3): `text_visible: ""` would make `includes("")` true for every page, so an
+      // empty or non-string needle would verify a commit the destination never made.
+      throw new Error(
+        `text_visible needs a non-empty string, got ${JSON.stringify(wanted)}`,
+      );
+    }
     return `(() => { const text = document.body ? document.body.innerText || document.body.textContent || "" : ""; return text.replace(/\\s+/g, " ").trim().includes(${normal(
-      record["text_visible"],
+      wanted,
     )}); })()`;
   }
   if ("text_absent" in record) {
@@ -81,7 +89,22 @@ export function conditionExpression(condition: Condition, ctx: ConditionContext)
     // The runner resolves the value source before it sends a condition, so `value` is already a
     // literal; `ctx.valueEquals` stays the fallback for a caller that supplies the value itself.
     const declared = spec?.value;
-    const expected = typeof declared === "string" ? declared : (ctx.valueEquals ?? "");
+    // Fail-closed (F3): a non-string declared value would stringify into something nobody asked
+    // for, and comparing against it could pass. Only a string compares; a missing value is the
+    // caller's own literal, and if that is absent too the condition cannot be judged at all.
+    let expected: string;
+    if (declared === undefined) {
+      if (typeof ctx.valueEquals !== "string" || ctx.valueEquals === "") {
+        throw new Error("value_equals has no value to compare against");
+      }
+      expected = ctx.valueEquals;
+    } else if (typeof declared === "string") {
+      expected = declared;
+    } else {
+      throw new Error(
+        `value_equals needs a string value, got ${JSON.stringify(declared)}`,
+      );
+    }
     const insensitive = spec?.case_insensitive === true;
     const call = resolverCallExpression(ctx.resolverSource, {
       targets: spec?.selector?.targets ?? [],

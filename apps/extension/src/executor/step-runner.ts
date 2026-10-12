@@ -20,6 +20,7 @@ import {
   dispatchNavigate,
   dispatchSelect,
   measureTarget,
+  type InputHooks,
 } from "./dispatch";
 import { destructiveMatch } from "./guards";
 import { readFrameTree, selectFrame, type FrameContexts } from "./frames";
@@ -45,6 +46,12 @@ export interface StepRunDeps {
    * command-mode step (R4).
    */
   commandMode?: boolean;
+  /**
+   * The owner's policing of this step's own input. `beforeInput` runs immediately before every
+   * trusted input CDP call and may throw, so a withdrawn or expired command is refused at the
+   * last moment rather than before the guards and the resolve (F1, B3).
+   */
+  beforeInput?: () => void;
 }
 
 /** A step's target, resolved, hit-tested, and stamped with its marker. */
@@ -381,11 +388,19 @@ export async function performStep(
   preset?: ResolvedTarget,
 ): Promise<StepReport> {
   const contextId = await frameContextId(deps.cdp, step, deps.frames);
+  // `onInputDispatched` is the caller's acknowledgement that input reached the page. It fires at
+  // the FIRST input event, not after the whole action (F2): an error after the first keystroke or
+  // press means the destination may already have the change, which is a `lost` outcome the runner
+  // reconciles, never a clean `not_dispatched`.
+  const hooks: InputHooks = {
+    ...(deps.beforeInput ? { beforeInput: deps.beforeInput } : {}),
+    ...(onInputDispatched ? { onFirstInput: onInputDispatched } : {}),
+  };
 
   if (step.action === "navigate") {
     const url = step.url ?? "";
     assertAllowedOrigin(url, allowedOrigins);
-    await dispatchNavigate(deps.cdp, url, stepTimeoutMs(step, deps));
+    await dispatchNavigate(deps.cdp, url, stepTimeoutMs(step, deps), hooks);
     return { id: step.id, action: step.action, outcome: "done" };
   }
 
@@ -410,14 +425,23 @@ export async function performStep(
     await dispatchFill(deps.cdp, token, text, {
       clearFirst: step.clear_first,
       contextId,
+      hooks,
     });
-    onInputDispatched?.();
     return { id: step.id, action: step.action, outcome: "done", rung: result.rung, by: result.by };
   }
 
   if (step.action === "select") {
     const value = resolveValue(step.value, context);
     const wanted = value === undefined ? "" : String(value);
+    if (wanted === "") {
+      // Fail-closed: a select with no value would clear or leave the field, silently submitting a
+      // blank choice. A missing column must park the record, not guess (F3).
+      throw new ExecutorError(
+        `the select step ${step.id} has no value to choose; a missing input column parks the record rather than submitting a blank choice`,
+        step.id,
+        "park",
+      );
+    }
     const { result, token } = await resolveStep(deps.cdp, step, deps, contextId, undefined, preset);
     if (!result.ok) {
       throw new ExecutorError(
@@ -426,7 +450,14 @@ export async function performStep(
         "park",
       );
     }
-    const chosen = await dispatchSelect(deps.cdp, token, wanted, step.option_match ?? "text", contextId);
+    const chosen = await dispatchSelect(
+      deps.cdp,
+      token,
+      wanted,
+      step.option_match ?? "text",
+      contextId,
+      hooks,
+    );
     if (!chosen.matched && !chosen.custom) {
       throw new ExecutorError(
         `the select step ${step.id} could not choose ${JSON.stringify(wanted)}: ${chosen.reason ?? "no option matched"}`,
@@ -439,7 +470,7 @@ export async function performStep(
       // owns. The search is `role=option` only, scoped to that listbox: a
       // document-wide search, or a fuzzy text fallback, could click an option of
       // some other listbox on the page.
-      await dispatchClick(deps.cdp, token, contextId);
+      await dispatchClick(deps.cdp, token, contextId, hooks);
       const listbox = await resolveListboxDescriptor(deps.cdp, token, contextId);
       if (!listbox.ok) {
         throw new ExecutorError(
@@ -458,9 +489,8 @@ export async function performStep(
           "park",
         );
       }
-      await dispatchClick(deps.cdp, option.token, contextId);
+      await dispatchClick(deps.cdp, option.token, contextId, hooks);
     }
-    onInputDispatched?.();
     return { id: step.id, action: step.action, outcome: "done", rung: result.rung, by: result.by };
   }
 
@@ -487,7 +517,6 @@ export async function performStep(
       );
     }
   }
-  await dispatchClick(deps.cdp, token, contextId);
-  onInputDispatched?.();
+  await dispatchClick(deps.cdp, token, contextId, hooks);
   return { id: step.id, action: step.action, outcome: "done", rung: result.rung, by: result.by };
 }

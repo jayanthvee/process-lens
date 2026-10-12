@@ -79,12 +79,12 @@ function installSubframe(): () => void {
 }
 
 /** A transport whose CDP event feed the test drives by hand. */
-function eventTransport(): {
+function eventTransport(navigateReply: Record<string, unknown> = {}): {
   cdp: CdpTransport;
   calls: RecordedCall[];
   emit: (event: string, params: Record<string, unknown>) => void;
 } {
-  const base = fakeCdp();
+  const base = fakeCdp((method) => (method === "Page.navigate" ? navigateReply : undefined));
   const listeners = new Map<string, Array<(params: Record<string, unknown>) => void>>();
   const cdp: CdpTransport = {
     async send(method, params = {}) {
@@ -312,7 +312,7 @@ describe("navigate", () => {
   });
 
   it("a navigate waits for the load event", async () => {
-    const transport = eventTransport();
+    const transport = eventTransport({ loaderId: "L1" });
     let settled = false;
     const navigation = dispatchNavigate(transport.cdp, `${ORIGIN}/records/new`).then(() => {
       settled = true;
@@ -324,12 +324,13 @@ describe("navigate", () => {
     expect(settled).toBe(false);
     expect(transport.calls.filter((call) => call.method === "Page.navigate")).toHaveLength(1);
 
+    transport.emit("Page.frameNavigated", { frame: { id: "F1", loaderId: "L1" } });
     transport.emit("Page.loadEventFired", {});
     await navigation;
     expect(settled).toBe(true);
 
     // A navigation whose load event never arrives times out instead of hanging.
-    const silent = eventTransport();
+    const silent = eventTransport({ loaderId: "L9" });
     const error = await dispatchNavigate(silent.cdp, `${ORIGIN}/records/new`, 20).catch(
       (thrown) => thrown,
     );
@@ -341,7 +342,7 @@ describe("navigate", () => {
     // The runner states the deadline it will wait for on every command it sends, and the
     // extension must use that value: an extension default longer than the runner's wait is
     // what had a legitimate navigation written off early and paused the run (R4).
-    const silent = eventTransport();
+    const silent = eventTransport({ loaderId: "L1" });
     const step = {
       id: "open-lead",
       action: "navigate",
@@ -356,6 +357,56 @@ describe("navigate", () => {
 
     expect(error).toBeInstanceOf(ExecutorError);
     expect((error as ExecutorError).message).toContain("within 25ms");
+  });
+
+  it("a load event that arrives before the navigate reply still settles the wait", async () => {
+    // B6: the old wait subscribed only after `Page.navigate` replied, so a fast page's load event
+    // was dropped and the wait burned its whole timeout on a page that had already loaded.
+    const transport = eventTransport({ loaderId: "L2" });
+    let settled = false;
+    const navigation = dispatchNavigate(transport.cdp, `${ORIGIN}/records/new`).then(() => {
+      settled = true;
+    });
+
+    // The document navigated and loaded before the reply was even inspected.
+    transport.emit("Page.frameNavigated", { frame: { id: "F1", loaderId: "L2" } });
+    transport.emit("Page.loadEventFired", {});
+    await navigation;
+    expect(settled).toBe(true);
+  });
+
+  it("a stale load event from the previous document does not settle the wait", async () => {
+    // B6: the main frame's id is unchanged across a navigation, so only the loaderId the reply
+    // returned names the document this navigation is producing.
+    const transport = eventTransport({ loaderId: "L2" });
+    let settled = false;
+    const navigation = dispatchNavigate(transport.cdp, `${ORIGIN}/records/new`, 30).then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+
+    // A late load event for the OLD document (loaderId L1) must not count.
+    transport.emit("Page.frameNavigated", { frame: { id: "F1", loaderId: "L1" } });
+    transport.emit("Page.loadEventFired", {});
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(settled).toBe(false);
+
+    // The real document's own pair settles it.
+    transport.emit("Page.frameNavigated", { frame: { id: "F1", loaderId: "L2" } });
+    transport.emit("Page.loadEventFired", {});
+    await navigation;
+    expect(settled).toBe(true);
+  });
+
+  it("a same-document navigation resolves without waiting for a load", async () => {
+    // B6: no loaderId means no new document, so there is nothing to wait for.
+    const transport = eventTransport({ loaderId: "" });
+    await dispatchNavigate(transport.cdp, `${ORIGIN}/records#tab`);
+    expect(transport.calls.filter((call) => call.method === "Page.navigate")).toHaveLength(1);
   });
 
   it("a command-mode step with no timeout_ms is refused, not given an extension default", async () => {
@@ -429,6 +480,28 @@ describe("the destructive-control guard", () => {
 });
 
 describe("select and the fuzzy rung", () => {
+  it("a select with no value is refused rather than submitting a blank choice", async () => {
+    // F3: a missing input column must park the record, not clear or leave the field.
+    document.body.innerHTML =
+      "<select id='interest'><option value=''>Choose</option><option value='data'>Data</option></select>";
+    const { cdp, callsTo } = fakeCdp();
+    const step = {
+      id: "select-1",
+      action: "select",
+      targets: [{ by: "css", selector: "#interest" }],
+      value: { kind: "constant", value: "" },
+    } as unknown as ExecutorStep;
+
+    const error = await performStep(step, { row: {} }, undefined, { cdp }).catch(
+      (thrown: unknown) => thrown,
+    );
+
+    expect(error).toBeInstanceOf(ExecutorError);
+    expect((error as ExecutorError).disposition).toBe("park");
+    expect((error as ExecutorError).message).toMatch(/no value to choose/);
+    expect(callsTo("Runtime.evaluate")).toHaveLength(0);
+  });
+
   it("a combobox option is found only inside its listbox", async () => {
     document.body.innerHTML =
       "<div id='decoy' role='listbox'><div role='option'>Data course</div></div>" +
