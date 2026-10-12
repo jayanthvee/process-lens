@@ -283,7 +283,13 @@ def test_the_hub_selects_the_protocol_subprotocol_and_never_echoes_the_token(
 
 
 def test_a_resume_token_is_single_use(client: TestClient) -> None:
-    """R5: the resume token re-attaches once, and the socket that used it is the only one."""
+    """R5/C1: one socket per live token, and a superseded token never attaches again.
+
+    ``resume`` is the token the FIRST attach issued, so the re-attach that presents it makes it the
+    "used" token: it stays live until a later attach supersedes it (C1), and what refuses a second
+    socket with it is the slot the re-attached socket holds. The session token, which that attach
+    spent, is superseded altogether and is refused.
+    """
     created = _create_session(client)
     session_id = created["session_id"]
     session_token = created["session_token"]
@@ -318,7 +324,9 @@ def test_a_resume_token_is_single_use(client: TestClient) -> None:
                     subprotocols=_extension_subprotocols(resume),
                     headers=_extension_headers(),
                 ) as third:
-                    assert _close_code(third) == 4401
+                    assert _close_code(third) == 4403, (
+                        "a live token with the slot taken is refused as a second socket"
+                    )
 
                 with client.websocket_connect(
                     _extension_url(session_id),
@@ -899,6 +907,116 @@ def test_a_failed_reattach_keeps_the_previous_resume_token_valid(
     with client.websocket_connect(
         _extension_url(session_id),
         subprotocols=_extension_subprotocols(resume),
+        headers=_extension_headers(),
+    ) as reattached:
+        assert json.loads(reattached.receive_text())["type"] == "session"
+
+
+def test_the_token_the_extension_holds_survives_an_unread_session_frame(
+    client: TestClient,
+) -> None:
+    """C1: the frame carrying the new token may never arrive, so the old token stays valid.
+
+    ``_send_frame`` only queues the frame, so this attach commits and issues B before anything has
+    reached the extension: the extension is still holding A. Dropping the socket without reading B
+    must not cost it the session -- A is what it has, and refusing A would lock it out for good.
+    """
+    created = _create_session(client)
+    session_id = created["session_id"]
+
+    with client.websocket_connect(
+        _extension_url(session_id),
+        subprotocols=_extension_subprotocols(created["session_token"]),
+        headers=_extension_headers(),
+    ) as extension:
+        a = json.loads(extension.receive_text())["resume_token"]
+
+    _wait_for(lambda: hub._sessions[session_id].extension is None)
+
+    with client.websocket_connect(
+        _extension_url(session_id),
+        subprotocols=_extension_subprotocols(a),
+        headers=_extension_headers(),
+    ):
+        # The attach commits and issues B, but the extension never reads the frame it queued.
+        _wait_for(lambda: hub._sessions[session_id].resume_token not in (None, a))
+        b = hub._sessions[session_id].resume_token
+        assert isinstance(b, str)
+        assert hub._sessions[session_id].used_token == a, "A is the token this attach used"
+
+    _wait_for(lambda: hub._sessions[session_id].extension is None)
+
+    with client.websocket_connect(
+        _extension_url(session_id),
+        subprotocols=_extension_subprotocols(a),
+        headers=_extension_headers(),
+    ) as reattached:
+        frame = json.loads(reattached.receive_text())
+        assert frame["type"] == "session", "the token the extension holds must still attach"
+        assert frame["resume_token"] not in {a, b}
+
+
+def test_a_superseded_used_token_is_refused(client: TestClient) -> None:
+    """C1: exactly two resume tokens are live -- the one last used and the one last issued."""
+    created = _create_session(client)
+    session_id = created["session_id"]
+
+    with client.websocket_connect(
+        _extension_url(session_id),
+        subprotocols=_extension_subprotocols(created["session_token"]),
+        headers=_extension_headers(),
+    ) as extension:
+        a = json.loads(extension.receive_text())["resume_token"]
+
+    _wait_for(lambda: hub._sessions[session_id].extension is None)
+
+    with client.websocket_connect(
+        _extension_url(session_id),
+        subprotocols=_extension_subprotocols(a),
+        headers=_extension_headers(),
+    ) as extension:
+        b = json.loads(extension.receive_text())["resume_token"]
+
+    _wait_for(lambda: hub._sessions[session_id].extension is None)
+    assert hub._sessions[session_id].used_token == a
+
+    with client.websocket_connect(
+        _extension_url(session_id),
+        subprotocols=_extension_subprotocols(b),
+        headers=_extension_headers(),
+    ) as extension:
+        assert json.loads(extension.receive_text())["type"] == "session"
+        assert hub._sessions[session_id].used_token == b, "B is the token this attach used"
+
+        # Only B (used) and the token this attach issued are live now; A is two generations back.
+        with client.websocket_connect(
+            _extension_url(session_id),
+            subprotocols=_extension_subprotocols(a),
+            headers=_extension_headers(),
+        ) as superseded:
+            assert _close_code(superseded) == 4401
+
+
+def test_a_lost_first_session_frame_keeps_the_session_token_valid(client: TestClient) -> None:
+    """C1: on a first attach the spent session token is the "used" token, so it survives too."""
+    created = _create_session(client)
+    session_id = created["session_id"]
+    session_token = created["session_token"]
+
+    with client.websocket_connect(
+        _extension_url(session_id),
+        subprotocols=_extension_subprotocols(session_token),
+        headers=_extension_headers(),
+    ):
+        # The extension never reads its first frame: the socket drops with it unread.
+        _wait_for(lambda: hub._sessions[session_id].claimed is True)
+        assert hub._sessions[session_id].used_token == session_token
+
+    _wait_for(lambda: hub._sessions[session_id].extension is None)
+
+    with client.websocket_connect(
+        _extension_url(session_id),
+        subprotocols=_extension_subprotocols(session_token),
         headers=_extension_headers(),
     ) as reattached:
         assert json.loads(reattached.receive_text())["type"] == "session"

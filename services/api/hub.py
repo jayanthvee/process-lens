@@ -169,6 +169,13 @@ class Session:
     claimed: bool = False
     extension: Peer | None = None
     runner: Peer | None = None
+    # The token the last COMPLETED attach presented, beside the one that attach issued. The
+    # extension may not have read the frame carrying `resume_token` -- `_send_frame` only queues
+    # it -- so the token it already holds must stay valid until a later attach completes and
+    # supersedes it. At most two resume tokens are ever live: the last used and the last issued.
+    # On a first attach the spent session token plays the "used" token's part, so a lost first
+    # `session` frame does not lock the extension out either.
+    used_token: str | None = None
     # An attach in flight: its token and its claim count only once the first frames are on the
     # wire, so a socket that dies in `accept` leaves the previous token and the slot as they were.
     pending_resume_token: str | None = None
@@ -385,14 +392,20 @@ def _match_token(session: Session, offered: str, now: float) -> str | None:
     """Which live token the offered value is: the session token while unclaimed, else the resume.
 
     Returns ``session_token``, ``resume_token``, or ``None`` when neither matches or the session
-    has expired. The token of an attach in flight counts as live, so the extension may dial with
-    the one the hub just handed it. All comparisons are constant time.
+    has expired. Only the session token of an UNCLAIMED session answers ``session_token``; every
+    other live value answers ``resume_token``, because ``pending_claim`` must never be set by a
+    re-attach. Three resume values are live and no more: the one the last completed attach issued
+    (``resume_token``), the one that attach used (``used_token`` -- the extension may not have read
+    the frame that carried the new one) and, while an attach is in flight, the one it is being
+    offered (``pending_resume_token``), so the extension may dial with the token the hub just
+    handed it. A used token a later attach has superseded is not among them and is refused.
+    All comparisons are constant time.
     """
     if _is_expired(session, now) or not offered.isascii():
         return None
     if not session.claimed and secrets.compare_digest(offered, session.session_token):
         return SESSION_TOKEN_KIND
-    for live in (session.resume_token, session.pending_resume_token):
+    for live in (session.resume_token, session.used_token, session.pending_resume_token):
         if live is not None and secrets.compare_digest(offered, live):
             return RESUME_TOKEN_KIND
     return None
@@ -510,11 +523,16 @@ async def executor_socket(websocket: WebSocket, session: str | None = None) -> N
         if runner is not None:
             await _send_frame(peer, _frame("peer_ready"))
             await _send_frame(runner, _frame("peer_ready"))
-        # R1: the first frames are on the wire, so this attach is real: publish its token and spend
-        # the session token if that is what opened the session.
+        # R1: the first frames are on the wire, so this attach is real: publish its token, remember
+        # the token it used, and spend the session token if that is what opened the session.
         async with _sessions_lock:
             row.resume_token = row.pending_resume_token
             row.pending_resume_token = None
+            # C1: the offered token -- the one the extension actually holds -- stays valid beside
+            # the new one, because the frame that carries the new one may never arrive. The next
+            # completed attach supersedes it, so exactly two resume tokens are ever live and no
+            # history is kept.
+            row.used_token = token
             if row.pending_claim:
                 row.claimed = True
             row.pending_claim = False
