@@ -1,5 +1,5 @@
 // The message protocol between the popup, the content scripts, and the worker.
-import type { RecordedEvent } from "./recipe-types";
+import type { Condition, RecordedEvent } from "./recipe-types";
 import type { PendingEvent } from "./events";
 // Type-only, so the shared protocol does not depend on the worker at run time.
 import type { SessionState } from "../background/command-session";
@@ -49,6 +49,13 @@ export type ToWorker =
   | { type: "record:clear" }
   | { type: "record:get" }
   | { type: "record:set-ws"; wsUrl: string }
+  // The document is unloading right after an action it recorded and has not observed yet; the
+  // worker keeps that action as the target the arriving page reports against.
+  | { type: "record:leaving" }
+  // A freshly loaded page asking whether it owes an observation to the page before it.
+  | { type: "record:pending-observation" }
+  // What the arriving page showed, as the evidence for the action that navigated to it.
+  | { type: "record:observation"; stepId: string; observation: Condition }
   | { type: "executor:start"; recipe: unknown; row: Record<string, unknown> }
   | { type: "executor:pause" }
   | { type: "executor:resume" }
@@ -64,6 +71,19 @@ export type FromWorker =
   | { type: "record:appended"; event: RecordedEvent; status: RecorderStatus }
   | { type: "executor:state"; status: ExecutorStatus }
   | { type: "executor:session-state"; state: SessionState; detail?: string };
+
+/**
+ * What the worker answers for any recorder message.
+ *
+ * `observationTarget` is filled in for `record:pending-observation` and is null otherwise: the
+ * step id the loaded page should watch for, or null when nothing is owed across the navigation.
+ */
+export interface RecorderResponse {
+  ok: boolean;
+  status: RecorderStatus;
+  events: RecordedEvent[];
+  observationTarget?: string | null;
+}
 
 export function isToWorker(message: unknown): message is ToWorker {
   if (typeof message !== "object" || message === null) return false;

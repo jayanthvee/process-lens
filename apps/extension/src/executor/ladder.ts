@@ -289,7 +289,13 @@ export function resolveTargetInPage(query: ResolveQuery): ResolveResult {
     }
     const alt = norm(el.getAttribute("alt"));
     if (alt) return alt;
-    return norm(el.textContent) || norm(el.getAttribute("title"));
+    // The author's own `title` comes before the element's text, exactly as the recorder's
+    // `accessibleName` computes it: the text may be a glyph (the ✕ on a chip), and the two
+    // sides must agree or a recorded role rung can never match.
+    const title = norm(el.getAttribute("title"));
+    if (title) return title;
+    if (el.getAttribute("contenteditable") === "true") return "";
+    return norm(el.textContent);
   };
 
   // The fuzzy rung reads a *label*, never a value: an input's current text is

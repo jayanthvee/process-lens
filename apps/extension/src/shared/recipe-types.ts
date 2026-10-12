@@ -65,14 +65,18 @@ export interface SelectStep extends StepCommon {
 export type RecordedStep = ClickStep | FillStep | SelectStep;
 
 /**
- * The kinds the recorder captures: click, fill/input, change/select, submit, and
- * the post-action observation.
+ * The kinds the recorder captures: click, fill/input, change/select, submit, a
+ * top-level navigation nobody's click caused, and the post-action observation.
  *
  * `observation` is not an interaction: it is what the page showed after a click
  * or a submit, carried on its own event so the compiler can use it as the
  * assertion for the commit step it followed. It carries no step of its own.
+ *
+ * `navigate` is not an interaction either: it says the page moved — a typed URL,
+ * a bookmark, a back/forward, a reload — without anybody clicking. Its event has
+ * no step and carries the URL the tab landed on.
  */
-export type RecordedKind = "click" | "fill" | "select" | "submit" | "observation";
+export type RecordedKind = "click" | "fill" | "select" | "submit" | "navigate" | "observation";
 
 /**
  * One captured interaction, in order.
@@ -88,9 +92,13 @@ export interface RecordedEvent {
   url: string;
   step: RecordedStep | null;
   /**
-   * Present on an `observation` event: the condition the page was observed to
-   * satisfy after the action before it. Keys are the assertion predicates the
-   * recipe schema accepts (`text_visible`, `url_matches`, and the like).
+   * The condition the page was observed to satisfy after an action. Keys are the
+   * assertion predicates the recipe schema accepts (`text_visible`, `url_matches`,
+   * and the like).
+   *
+   * It appears on an `observation` event — evidence about the action before it — and on the
+   * action itself when the evidence came from the page that action navigated to, which only
+   * the service worker can attach across the navigation.
    */
   observation?: Condition;
 }

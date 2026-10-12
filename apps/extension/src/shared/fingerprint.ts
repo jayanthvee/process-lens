@@ -33,9 +33,14 @@ function cssEscape(value: string): string {
 export function isStableToken(token: string): boolean {
   if (!token || token.length > 40) return false;
   if (/^\d/.test(token)) return false;
+  // A colon belongs to a minted id, never to a human one: Gmail's `:1a2`, React's `:r1:`.
+  // A selector built from one would die on the next load, so it is not a rung.
+  if (token.includes(":")) return false;
   // A run of four or more digits, or a numeric suffix, reads as generated: row-0042, makeStyles-root-12.
   if (/\d{4,}/.test(token)) return false;
   if (/-\d+$/.test(token)) return false;
+  // A long hex run with no separator is a hash or a row id, not a name: a3f9c2b41d.
+  if (/^[0-9a-f]{8,}$/.test(token)) return false;
   // Framework prefixes with a long random suffix: sc-bdfBQB, css-1q2w3e.
   if (/^[a-z]{1,4}-[A-Za-z0-9]{6,}$/.test(token)) return false;
   // Letters and digits interleaved with no separator: a1b2c3d4e5.
@@ -83,7 +88,9 @@ const TAG_ROLES: Record<string, string> = {
   DIALOG: "dialog",
   FIELDSET: "group",
   OPTION: "option",
-  LABEL: "label",
+  // A LABEL is deliberately absent: `label` is a tag, not a role, and a click on one is
+  // recorded against the control it labels (see the recorder's resolveClickTarget), so the
+  // recorder never emits `role: "label"`. A label falls back to `generic`.
   H1: "heading",
   H2: "heading",
   H3: "heading",
@@ -92,12 +99,23 @@ const TAG_ROLES: Record<string, string> = {
   H6: "heading",
 };
 
+/**
+ * The role spellings a recorded rung may carry: the recipe schema's role pattern
+ * (``^[a-z][a-z0-9-]*$``). The resolver compares a rung's role literally, so a role
+ * that cannot be spelled that way is a rung that can never match — the recorder drops
+ * it and falls back to the element's tag.
+ */
+const ROLE_PATTERN = /^[a-z][a-z0-9-]*$/;
+
 /** The element's ARIA role: an explicit `role`, else the implicit role of its tag. */
 export function semanticRole(el: Element): string {
   const explicit = normalizeText(el.getAttribute("role"));
   if (explicit) {
     const first = explicit.split(" ")[0];
-    if (first) return first.toLowerCase();
+    if (first) {
+      const role = first.toLowerCase();
+      if (role !== "label" && ROLE_PATTERN.test(role)) return role;
+    }
   }
   const tag = el.tagName.toUpperCase();
   if (tag === "INPUT") {
@@ -167,10 +185,17 @@ export function accessibleName(el: Element): string {
   const alt = normalizeText(el.getAttribute("alt"));
   if (alt) return truncate(alt, 200);
 
-  const text = normalizeText(el.textContent);
-  if (text) return truncate(text, 200);
+  // The author's own `title` outranks the element's text. The text may be a glyph — the ✕
+  // on a recipient chip — and for a rich-text body it is the value the person just typed,
+  // which must never become part of a target. The resolver computes the name the same way
+  // (`accessibleNameOf` in `executor/ladder.ts`), so a recorded rung still matches at run time.
   const title = normalizeText(el.getAttribute("title"));
-  return title ? truncate(title, 200) : "";
+  if (title) return truncate(title, 200);
+
+  if (isRichText(el)) return "";
+
+  const text = normalizeText(el.textContent);
+  return text ? truncate(text, 200) : "";
 }
 
 function submittableValue(el: Element): string {
@@ -300,6 +325,16 @@ export function stableSelector(el: Element): string {
  * current selection is still reported.
  */
 export function fuzzyText(el: Element): string {
+  // A rich-text body's text is its value, not its label: the same reason a text field's
+  // `value` is never returned here.
+  if (isRichText(el)) {
+    return truncate(
+      normalizeText(el.getAttribute("placeholder")) ||
+        normalizeText(el.getAttribute("aria-label")) ||
+        normalizeText(el.getAttribute("title")),
+      200,
+    );
+  }
   const tag = el.tagName.toUpperCase();
   if (tag === "INPUT" || tag === "TEXTAREA") {
     const placeholder = normalizeText(el.getAttribute("placeholder"));
@@ -359,6 +394,38 @@ export function isPasswordField(el: Element): boolean {
   if (type === "password") return true;
   const autocomplete = (el.getAttribute("autocomplete") ?? "").toLowerCase();
   return autocomplete.includes("password");
+}
+
+/** True for an element the person types into directly, without a value property. */
+export function isRichText(el: Element): boolean {
+  const own = (el.getAttribute("contenteditable") ?? "").trim().toLowerCase();
+  if (own === "true" || own === "plaintext-only") return true;
+  return el.closest?.("[contenteditable='true'], [contenteditable='plaintext-only']") !== null;
+}
+
+function autocompleteOff(el: Element): boolean {
+  return (el.getAttribute("autocomplete") ?? "").trim().toLowerCase() === "off";
+}
+
+/**
+ * True for a value that must never be captured beyond the password rule itself.
+ *
+ * The password rule is the base case (an input the browser will not even fill for us).
+ * A rich-text body has no `type`, so it is judged by the context it sits in: a container
+ * that holds a password field, or a context the page marked `autocomplete="off"`, is a
+ * credential form, and a note typed inside one is as private as the fields next to it.
+ */
+export function isCredentialContext(el: Element): boolean {
+  if (isPasswordField(el)) return true;
+  let node: Element | null = el;
+  while (node) {
+    if (autocompleteOff(node)) return true;
+    if (node.matches?.("form, [role='form'], [role='dialog']")) {
+      return node.querySelector("input[type='password']") !== null;
+    }
+    node = node.parentElement;
+  }
+  return false;
 }
 
 /**
