@@ -120,3 +120,70 @@ T1 will write these up as PL-014b:
 1. Fix B1–B6 and F1–F7, each with the test named or implied above. No changes outside these items.
 2. Run the non-e2e gates. Then run the full e2e suite **once**. If it is not 11/11, run **only** the failing files once more, then stop.
 3. Write a "Review fixes" section in the report with the real output. Commit, push, and stop for T1.
+
+---
+
+## Re-review: approved
+
+Reviewed commit: cd94399 (branch `pl-014`) · Verdict: **approved for merge**, with the follow-ups below written up as
+PL-014b.
+
+```
+python -m pytest -q                       573 passed
+ruff check . / ruff format --check        clean / 154 files already formatted
+npm --prefix apps/extension run check     177 tests passed, build ok, validation passed
+e2e (T2, two budgeted runs)               full suite 10/11; the failing file then 3/3 on its own
+```
+
+**Every blocker is fixed, with a test.**
+- **B1.** A check that cannot be evaluated is `result refused`, never `condition false`. `evaluate` throws on a page
+  exception, so a throwing poll cannot reach the runner as "no".
+- **B2.** The stored bound tab is restored, and the active tab is never bound.
+- **B3.** A per-command `AbortController`. The input gate runs before every `Input.*` call, and a new command is
+  refused while an aborted one unwinds.
+- **B4.** The runner gets `peer_ready` only when both peers are attached.
+- **B5.** The token match and the slot reservation happen under the lock, before `accept`.
+- **B6.** The navigate waits for a `loaderId`-matched `frameNavigated`, then its load event.
+
+**F1 to F7 are fixed.**
+- F2 is conservative: `sent` (and the commit `ack`) flips at the first gated input, which for a click is the
+  `mouseMoved`. An error after that is `lost`, so the runner reconciles and parks. That is the safe direction.
+- F7: the e2e scratch is now under `.cache/e2e/`.
+
+**The worker reconnect T2 added is accepted.** Without it, a resumed run could never be claimed again, which
+breaks the ticket's own criterion. `connect()` clears the flag and `wait_for_peer_or_raise` gates the claim. This is
+the only change beyond the item list.
+
+**The one e2e failure is a test-timing bug, not a product bug.**
+- `test_reconnecting_and_resuming_continues_the_run` starts its worker with `max_seconds=180` before the
+  disconnect.
+- On a slow run, that budget expires before the resume, so the worker exits ("processed 1 run(s)") and the resumed
+  run stays `queued`.
+- The record itself parked correctly, with no duplicate.
+
+### Follow-ups (PL-014b, not blocking)
+
+Carried over from the first review:
+- the guards before a navigate;
+- `chrome.debugger.onDetach`;
+- event draining after the probe and over the whole batch;
+- the hub session lifetime;
+- visible-only challenge markers;
+- the hub tests;
+- the prepare-phase zero-input test.
+
+New from this re-review:
+1. **A hub slot is reserved before `accept`, and nothing releases it if `accept` or the first frames fail**
+   (`hub.py:461`, `:500`). The session is then refused with 4403 for good. Release the slot in a `finally`. Also
+   keep the previous resume token valid until the extension has used the new one, or a frame lost in flight locks
+   the extension out.
+2. **A transient evaluate error during a poll refuses the whole check.** For example, "Execution context was
+   destroyed" while the page navigates after Save. That fails safe (the record parks), but on a CRM that redirects
+   after saving, every save would park. Retry transient context errors within the poll window, and refuse only on
+   persistent errors.
+3. **The extension still sends itself `peer_ready` when no runner is attached** (`hub.py:464`). Make it match the
+   runner side.
+4. **Events from an aborted command are not gated by `current()`** (`command-session.ts`, the guard-error
+   `sendEvent`).
+5. **The e2e reconnect test** should start its worker with a budget covering the whole test, or start a fresh
+   worker after the resume.
