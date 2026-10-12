@@ -1,0 +1,126 @@
+/* No external fonts and no @import: this page is served from loopback and must not reach out. */
+:root {
+  color-scheme: light dark;
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  font-size: 15px;
+  line-height: 1.45;
+}
+
+body {
+  margin: 0;
+  padding: 1rem 1.25rem 3rem;
+  background: Canvas;
+  color: CanvasText;
+}
+
+.topbar {
+  display: flex;
+  align-items: baseline;
+  gap: 1rem;
+  border-bottom: 1px solid color-mix(in srgb, CanvasText 20%, transparent);
+  padding-bottom: 0.5rem;
+}
+
+.topbar h1 {
+  font-size: 1.1rem;
+  margin: 0;
+}
+
+h2 {
+  font-size: 1rem;
+  margin: 1.5rem 0 0.5rem;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+th,
+td {
+  border: 1px solid color-mix(in srgb, CanvasText 25%, transparent);
+  padding: 0.35rem 0.5rem;
+  text-align: left;
+  vertical-align: top;
+}
+
+th {
+  font-weight: 600;
+}
+
+.muted {
+  opacity: 0.7;
+}
+
+.action,
+.record-toggle {
+  margin-right: 0.35rem;
+}
+
+.action-error {
+  display: inline-block;
+  margin-left: 0.4rem;
+  padding: 0.1rem 0.35rem;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  color: #a30000;
+  font-size: 0.9em;
+}
+
+.operator-problem,
+.page-error {
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  padding: 0.5rem 0.6rem;
+}
+
+.operator-problem {
+  background: color-mix(in srgb, gold 25%, transparent);
+}
+
+.page-error {
+  background: color-mix(in srgb, red 15%, transparent);
+}
+
+.destination-check {
+  display: block;
+  margin-bottom: 0.4rem;
+}
+
+.destination-check-label {
+  margin-left: 0.35rem;
+}
+
+.counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  list-style: none;
+  padding: 0;
+  margin: 0.5rem 0;
+}
+
+.run-actions,
+.approval-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  margin: 0.5rem 0;
+}
+
+.approval {
+  border: 1px solid color-mix(in srgb, CanvasText 25%, transparent);
+  border-radius: 4px;
+  padding: 0.5rem 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.record-key-value {
+  margin-left: 0.5rem;
+  word-break: break-word;
+}
+
+.transitions-table {
+  margin-top: 0.25rem;
+}
