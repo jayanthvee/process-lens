@@ -18,8 +18,12 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
 from packages.ledger import (
+    IllegalTransition,
     StateConflict,
+    dismiss_record,
     get_run,
+    list_open_approvals,
+    list_runs,
     open_approval_for_run,
     reads,
     request_cancel,
@@ -34,6 +38,10 @@ from .db import connection
 router = APIRouter(prefix="/api/v1", tags=["runs"])
 
 _OPEN_STATUSES = frozenset({"queued", "running", "paused"})
+
+# The runs list is a page, not an export: fifty rows is what a person can take in, and the ledger
+# caps the query at the same number.
+RUN_LIST_LIMIT = 50
 
 
 class CreateRunRequest(BaseModel):
@@ -68,6 +76,18 @@ class OpenApproval(BaseModel):
     kind: str
     shown: dict[str, Any]
     created_at: datetime
+
+
+class RunListEntry(BaseModel):
+    """One row of the runs list: what the page shows for a run, newest first."""
+
+    id: uuid.UUID
+    status: str
+    pause_reason: str | None
+    created_at: datetime
+    recipe_name: str
+    recipe_version: int
+    counts: dict[str, int]
 
 
 class RunDetail(BaseModel):
@@ -120,6 +140,13 @@ class RequeueResponse(BaseModel):
     state: str
 
 
+class DismissRequest(BaseModel):
+    """A person dismisses a parked record. ``destination_checked_by`` records that they checked."""
+
+    reason: str | None = None
+    destination_checked_by: uuid.UUID | None = None
+
+
 def _fetch_run(conn: Any, run_id: uuid.UUID) -> Any:
     run = get_run(conn, run_id)
     if run is None:
@@ -151,6 +178,25 @@ def create_run_endpoint(payload: Annotated[CreateRunRequest, Body()]) -> CreateR
             ) from exc
         conn.commit()
     return CreateRunResponse(run_id=run_id, status="queued")
+
+
+@router.get("/runs", response_model=list[RunListEntry])
+def list_runs_endpoint() -> list[RunListEntry]:
+    """The most recent runs first, capped at 50, each with its recipe and its per-state counts."""
+    with connection() as conn:
+        rows = list_runs(conn, limit=RUN_LIST_LIMIT)
+    return [
+        RunListEntry(
+            id=row.id,
+            status=row.status,
+            pause_reason=row.pause_reason,
+            created_at=row.created_at,
+            recipe_name=row.recipe_name,
+            recipe_version=row.recipe_version,
+            counts=row.counts,
+        )
+        for row in rows
+    ]
 
 
 @router.get("/runs/{run_id}", response_model=RunDetail)
@@ -216,6 +262,25 @@ def list_records_endpoint(run_id: uuid.UUID) -> list[RecordDetail]:
             destination_ref=record.destination_ref,
         )
         for record in records
+    ]
+
+
+@router.get("/runs/{run_id}/approvals", response_model=list[OpenApproval])
+def list_approvals_endpoint(run_id: uuid.UUID) -> list[OpenApproval]:
+    """The run's approval requests that no one has decided yet, with what each one asks."""
+    with connection() as conn:
+        _fetch_run(conn, run_id)
+        requests = list_open_approvals(conn, run_id)
+    return [
+        OpenApproval(
+            id=row.id,
+            run_record_id=row.run_record_id,
+            step_id=row.step_id,
+            kind=row.kind,
+            shown=row.shown,
+            created_at=row.created_at,
+        )
+        for row in requests
     ]
 
 
@@ -293,6 +358,38 @@ def requeue_record_endpoint(
                 destination_checked_by=body.destination_checked_by,
             )
         except StateConflict as exc:
+            conn.rollback()
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        conn.commit()
+    return RequeueResponse(record_id=record_id, state=state)
+
+
+@router.post("/records/{record_id}/dismiss", response_model=RequeueResponse)
+def dismiss_record_endpoint(
+    record_id: uuid.UUID, payload: Annotated[DismissRequest, Body()] | None = None
+) -> RequeueResponse:
+    """Dismiss a parked record as ``skipped``.
+
+    A record that never reached a commit goes straight to ``skipped``. A commit-attempted record
+    needs ``destination_checked_by``, and the same update records the fresh destination check; the
+    database trigger (I26) is the authority, and its refusal is the 409 here.
+    """
+    body = payload or DismissRequest()
+    with connection() as conn:
+        if reads.run_of_record(conn, record_id) is None:
+            raise HTTPException(status_code=404, detail=f"record {record_id} does not exist")
+        try:
+            state = dismiss_record(
+                conn,
+                record_id,
+                reason=body.reason or "dismissed by a person",
+                destination_checked_by=body.destination_checked_by,
+            )
+        except (StateConflict, IllegalTransition) as exc:
+            # The trigger is the authority on a commit-attempted record, and it refuses with a
+            # guard exception (``IllegalTransition``) rather than a missing row; a record that is
+            # not parked at all raises ``StateConflict``. Both are a 409: the request is well-formed
+            # but the ledger will not make this move.
             conn.rollback()
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         conn.commit()
