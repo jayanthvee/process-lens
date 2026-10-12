@@ -8,16 +8,34 @@ import {
   EMPTY_STATUS,
   isToWorker,
   type ExecutorStatus,
+  type FromWorker,
   type RecorderStatus,
   type ToWorker,
 } from "../shared/messages";
 import type { PendingEvent } from "../shared/events";
-import type { RecordedEvent } from "../shared/recipe-types";
+import type { Condition, RecordedEvent } from "../shared/recipe-types";
 import { attachDebugger, chromeDebuggerTransport, detachDebugger, onDebuggerDetach } from "../executor/cdp";
 import { RunControl } from "../executor/control";
 import { runRecipe, validateRecipe } from "../executor/executor";
 import { FrameContexts } from "../executor/frames";
-import type { ExecutorRecipe } from "../executor/types";
+import { waitForCondition } from "../executor/assertions";
+import {
+  POLICY_BLOCKED_MESSAGE,
+  checkChallengeOrLogin,
+  checkDestructive,
+  checkOrigin,
+  classifyAttachError,
+} from "../executor/guards";
+import { resolverExpression } from "../executor/ladder";
+import { performStep, resolveStepTarget } from "../executor/step-runner";
+import { ExecutorError, type ExecutorRecipe, type ExecutorStep, type StepReport } from "../executor/types";
+import {
+  CommandSession,
+  type SessionDeps,
+  type SessionState,
+  type StoredSession,
+  type WebSocketLike,
+} from "./command-session";
 
 const STORAGE_KEY = "processlens:recorder";
 const SETTINGS_KEY = "processlens:settings";
@@ -284,6 +302,156 @@ function steerExecutor(command: "pause" | "resume" | "abort"): void {
   }
 }
 
+// --- the command session (PL-014) --------------------------------------------
+// The hub-driven session lives beside the attended run. It shares the debugger,
+// the guards, and the step-runner, but it owns its own socket, its own state
+// machine, and its own bound tab. A session refuses a command while one is
+// executing, and the runner sends one at a time.
+
+const COMMAND_SESSION_KEY = "processlens:command-session";
+
+let commandSession: CommandSession | null = null;
+let commandSessionState: SessionState = "idle";
+let commandSessionDetail: string | undefined;
+let commandBoundTabId: number | null = null;
+
+function broadcastCommandSession(): void {
+  const message: FromWorker = {
+    type: "executor:session-state",
+    state: commandSessionState,
+    ...(commandSessionDetail !== undefined ? { detail: commandSessionDetail } : {}),
+  };
+  void chrome.runtime.sendMessage(message).catch(() => undefined);
+}
+
+function commandStorage(): SessionDeps["storage"] {
+  return {
+    async get(): Promise<StoredSession | null> {
+      const store = chrome.storage?.session;
+      if (!store) return null;
+      const stored = (await store.get(COMMAND_SESSION_KEY)) as Record<string, unknown>;
+      return (stored[COMMAND_SESSION_KEY] as StoredSession | undefined) ?? null;
+    },
+    async set(value: StoredSession | null): Promise<void> {
+      const store = chrome.storage?.session;
+      if (!store) return;
+      if (value === null) await store.remove(COMMAND_SESSION_KEY);
+      else await store.set({ [COMMAND_SESSION_KEY]: value });
+    },
+  };
+}
+
+/**
+ * Perform one command's step: attach, guard, prepare, then dispatch. Every guard
+ * runs before any input and refuses fail-closed; a policy-blocked attach becomes
+ * the readable sentence instead of Chrome's raw error.
+ */
+async function runCommandStep(
+  step: unknown,
+  opts: { sentInput: () => void; allowedOrigins?: string[] },
+): Promise<StepReport> {
+  const executorStep = step as ExecutorStep;
+  const tabId = commandBoundTabId;
+  if (tabId === null || tabId < 0) throw new Error("no tab is bound to this session");
+
+  let attached = false;
+  try {
+    await attachDebugger(tabId);
+    attached = true;
+    const cdp = chromeDebuggerTransport(tabId);
+    await cdp.send("Runtime.enable");
+    await cdp.send("Page.enable");
+    const deps = { cdp };
+
+    const guardContext = { cdp, step: executorStep, allowedOrigins: opts.allowedOrigins };
+    const origin = await checkOrigin(guardContext);
+    if (!origin.ok) throw new ExecutorError(origin.reason, executorStep.id, "park");
+    const challenge = await checkChallengeOrLogin(guardContext);
+    if (!challenge.ok) throw new ExecutorError(challenge.reason, executorStep.id, "park");
+    const destructive = checkDestructive(guardContext);
+    if (!destructive.ok) throw new ExecutorError(destructive.reason, executorStep.id, "park");
+
+    const resolved = await resolveStepTarget(executorStep, deps);
+    if (!resolved.ok) {
+      throw new ExecutorError(
+        `the ${executorStep.action} target could not be resolved: ${resolved.error}`,
+        executorStep.id,
+        "park",
+      );
+    }
+    return await performStep(executorStep, { row: {} }, opts.allowedOrigins, deps, opts.sentInput);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (classifyAttachError(message) === "policy_blocked") throw new Error(POLICY_BLOCKED_MESSAGE);
+    throw error;
+  } finally {
+    if (attached) await detachDebugger(tabId);
+  }
+}
+
+/** Evaluate one `check` command's condition against the bound tab. */
+async function checkCommandCondition(
+  condition: unknown,
+  timeoutMs: number,
+  aborted: () => boolean,
+): Promise<boolean> {
+  const tabId = commandBoundTabId;
+  if (tabId === null || tabId < 0) return false;
+  let attached = false;
+  try {
+    await attachDebugger(tabId);
+    attached = true;
+    const cdp = chromeDebuggerTransport(tabId);
+    await cdp.send("Runtime.enable");
+    await cdp.send("Page.enable");
+    const outcome = await waitForCondition(
+      cdp,
+      condition as Condition,
+      { resolverSource: resolverExpression() },
+      {
+        timeoutMs,
+        sleep: async (ms: number): Promise<void> => {
+          if (aborted()) throw new Error("the command was withdrawn");
+          await new Promise<void>((done) => setTimeout(done, ms));
+        },
+      },
+    );
+    return outcome.ok;
+  } catch {
+    return false;
+  } finally {
+    if (attached) await detachDebugger(tabId);
+  }
+}
+
+function getCommandSession(): CommandSession {
+  if (commandSession) return commandSession;
+  const deps: SessionDeps = {
+    createSocket: (url: string, protocols: string[]): WebSocketLike =>
+      new WebSocket(url, protocols) as unknown as WebSocketLike,
+    storage: commandStorage(),
+    now: () => Date.now(),
+    setInterval: (fn: () => void, ms: number) => {
+      const id: ReturnType<typeof setInterval> = setInterval(fn, ms);
+      return () => clearInterval(id);
+    },
+    bindActiveTab: async () => {
+      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+      const tabId = tabs[0]?.id ?? null;
+      commandBoundTabId = tabId;
+      return tabId;
+    },
+    runStep: runCommandStep,
+    checkCondition: checkCommandCondition,
+    onState: (state: SessionState) => {
+      commandSessionState = state;
+      broadcastCommandSession();
+    },
+  };
+  commandSession = new CommandSession(deps);
+  return commandSession;
+}
+
 async function handleExecutor(message: ToWorker): Promise<unknown> {
   switch (message.type) {
     case "executor:start":
@@ -298,10 +466,27 @@ async function handleExecutor(message: ToWorker): Promise<unknown> {
     case "executor:abort":
       steerExecutor("abort");
       break;
+    case "executor:connect":
+      await getCommandSession().connect(message.hubUrl);
+      break;
+    case "executor:disconnect":
+      await getCommandSession().disconnect();
+      break;
+    case "executor:session":
+      // A popup opening is a chance to re-attach a session that outlived a
+      // worker restart, using the resume token in storage.
+      if (commandSessionState === "idle" || commandSessionState === "disconnected") {
+        await getCommandSession().restore();
+      }
+      break;
     default:
       break;
   }
-  return { ok: true, status: { ...executorStatus } };
+  return {
+    ok: true,
+    status: { ...executorStatus },
+    session: { state: commandSessionState, detail: commandSessionDetail },
+  };
 }
 
 async function handle(message: ToWorker): Promise<RecorderStatus> {
@@ -361,6 +546,9 @@ chrome.runtime.onInstalled.addListener(() => {
 
 chrome.runtime.onStartup.addListener(() => {
   void load().then(updateBadge);
+  // Re-attach a session that outlived the previous worker, using its resume token.
+  void getCommandSession().restore();
 });
 
 void load().then(updateBadge);
+void getCommandSession().restore();

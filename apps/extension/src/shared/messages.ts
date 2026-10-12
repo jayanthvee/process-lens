@@ -1,6 +1,8 @@
 // The message protocol between the popup, the content scripts, and the worker.
 import type { RecordedEvent } from "./recipe-types";
 import type { PendingEvent } from "./events";
+// Type-only, so the shared protocol does not depend on the worker at run time.
+import type { SessionState } from "../background/command-session";
 
 export type RecordingState = "idle" | "recording";
 
@@ -51,13 +53,17 @@ export type ToWorker =
   | { type: "executor:pause" }
   | { type: "executor:resume" }
   | { type: "executor:abort" }
+  | { type: "executor:connect"; hubUrl: string }
+  | { type: "executor:disconnect" }
+  | { type: "executor:session" }
   | { type: "executor:get" };
 
 /** Sent from the service worker to content scripts and the popup. */
 export type FromWorker =
   | { type: "record:state"; status: RecorderStatus }
   | { type: "record:appended"; event: RecordedEvent; status: RecorderStatus }
-  | { type: "executor:state"; status: ExecutorStatus };
+  | { type: "executor:state"; status: ExecutorStatus }
+  | { type: "executor:session-state"; state: SessionState; detail?: string };
 
 export function isToWorker(message: unknown): message is ToWorker {
   if (typeof message !== "object" || message === null) return false;

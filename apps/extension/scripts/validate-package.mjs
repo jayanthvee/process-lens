@@ -36,7 +36,7 @@ require_(manifest.manifest_version === 3, "manifest_version must be 3");
 require_(typeof manifest.name === "string" && manifest.name.length > 0, "name is required");
 require_(typeof manifest.version === "string" && manifest.version.length > 0, "version is required");
 
-const REQUIRED_PERMISSIONS = ["activeTab", "storage", "debugger", "webNavigation"];
+const REQUIRED_PERMISSIONS = ["activeTab", "storage", "debugger"];
 const permissions = manifest.permissions ?? [];
 for (const permission of REQUIRED_PERMISSIONS) {
   require_(permissions.includes(permission), `permission missing: ${permission}`);

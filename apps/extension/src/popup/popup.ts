@@ -7,6 +7,7 @@ import {
   type RecorderStatus,
   type ToWorker,
 } from "../shared/messages";
+import type { SessionState } from "../background/command-session";
 import type { RecordedEvent } from "../shared/recipe-types";
 
 interface RecorderResponse {
@@ -14,6 +15,14 @@ interface RecorderResponse {
   status: RecorderStatus;
   events: RecordedEvent[];
 }
+
+/** Where the hub session is, as the worker reports it. */
+interface SessionInfo {
+  state: SessionState;
+  detail?: string;
+}
+
+const DEFAULT_HUB_URL = "http://127.0.0.1:8000";
 
 function element<T extends HTMLElement>(id: string): T {
   const found = document.getElementById(id);
@@ -40,6 +49,13 @@ const runPauseButton = element<HTMLButtonElement>("run-pause");
 const runResumeButton = element<HTMLButtonElement>("run-resume");
 const runAbortButton = element<HTMLButtonElement>("run-abort");
 const runStateEl = element<HTMLParagraphElement>("run-state");
+
+// The hub session controls: a hub URL, connect and disconnect, and the state the
+// worker reports. The session itself lives in the service worker.
+const hubEl = element<HTMLInputElement>("hub");
+const connectButton = element<HTMLButtonElement>("connect");
+const disconnectButton = element<HTMLButtonElement>("disconnect");
+const sessionStateEl = element<HTMLParagraphElement>("session-state");
 
 const RECIPE_KEY = "processlens:executor-recipe";
 const ROW_KEY = "processlens:executor-row";
@@ -110,12 +126,39 @@ function renderExecutor(status: ExecutorStatus): void {
   runAbortButton.disabled = !busy;
 }
 
-async function sendExecutor(message: ToWorker): Promise<{ ok?: boolean; error?: string; status?: ExecutorStatus }> {
+async function sendExecutor(
+  message: ToWorker,
+): Promise<{ ok?: boolean; error?: string; status?: ExecutorStatus; session?: SessionInfo }> {
   const response = (await chrome.runtime.sendMessage(message)) as
-    | { ok?: boolean; error?: string; status?: ExecutorStatus }
+    | { ok?: boolean; error?: string; status?: ExecutorStatus; session?: SessionInfo }
     | undefined;
   return response ?? {};
 }
+
+function renderSession(session: SessionInfo | undefined): void {
+  const state = session?.state ?? "idle";
+  sessionStateEl.textContent = session?.detail ? `${state} — ${session.detail}` : state;
+  sessionStateEl.dataset["state"] = state;
+  connectButton.disabled = state !== "idle" && state !== "disconnected";
+  disconnectButton.disabled = state === "idle";
+}
+
+async function refreshSession(): Promise<void> {
+  const response = await sendExecutor({ type: "executor:session" });
+  renderSession(response.session);
+}
+
+connectButton.addEventListener("click", () => {
+  const hubUrl = hubEl.value.trim() || DEFAULT_HUB_URL;
+  void sendExecutor({ type: "executor:connect", hubUrl }).then((response) => {
+    renderSession(response.session);
+    if (response.error) noteEl.textContent = response.error;
+  });
+});
+
+disconnectButton.addEventListener("click", () => {
+  void sendExecutor({ type: "executor:disconnect" }).then((response) => renderSession(response.session));
+});
 
 async function startExecutor(): Promise<void> {
   const store = chrome.storage?.session;
@@ -148,12 +191,22 @@ runAbortButton.addEventListener("click", () => {
 });
 
 chrome.runtime.onMessage.addListener((message: unknown) => {
-  const incoming = message as { type?: string; status?: RecorderStatus | ExecutorStatus };
+  const incoming = message as {
+    type?: string;
+    status?: RecorderStatus | ExecutorStatus;
+    state?: SessionState;
+    detail?: string;
+  };
   if (incoming?.type === "record:state" && incoming.status) render(incoming.status as RecorderStatus);
   if (incoming?.type === "executor:state" && incoming.status) {
     renderExecutor(incoming.status as ExecutorStatus);
   }
+  if (incoming?.type === "executor:session-state" && incoming.state) {
+    renderSession({ state: incoming.state, detail: incoming.detail });
+  }
 });
 
 renderExecutor({ ...EMPTY_EXECUTOR_STATUS });
+renderSession({ state: "idle" });
 void refresh();
+void refreshSession();
