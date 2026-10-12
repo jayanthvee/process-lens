@@ -405,7 +405,9 @@ async function runCommandStep(
   try {
     const cdp = await ensureDebugger(tabId);
     attached = true;
-    const deps = { cdp };
+    // Command mode: the runner states the deadline for every step it sends, so a step's own
+    // waits never fall back to an extension default that could outlive the runner's wait (R4).
+    const deps = { cdp, commandMode: true };
 
     const guardContext = { cdp, step: executorStep, allowedOrigins: opts.allowedOrigins };
     // R6: each guard that has a run-level meaning carries its event on the error, so the session

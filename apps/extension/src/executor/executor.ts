@@ -37,6 +37,7 @@ export {
   frameContextId,
   resetTokens,
   resolveValue,
+  stepTimeoutMs,
   type ResolveFailure,
   type ResolvedTarget,
   type StepRunDeps,

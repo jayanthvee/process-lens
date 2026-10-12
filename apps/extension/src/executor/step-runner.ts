@@ -13,7 +13,14 @@
 import type { ValueSource } from "../shared/recipe-types";
 import type { ConditionContext } from "./assertions";
 import type { CdpTransport } from "./cdp";
-import { dispatchClick, dispatchFill, dispatchNavigate, dispatchSelect, measureTarget } from "./dispatch";
+import {
+  DEFAULT_NAVIGATE_TIMEOUT_MS,
+  dispatchClick,
+  dispatchFill,
+  dispatchNavigate,
+  dispatchSelect,
+  measureTarget,
+} from "./dispatch";
 import { destructiveMatch } from "./guards";
 import { readFrameTree, selectFrame, type FrameContexts } from "./frames";
 import {
@@ -32,6 +39,12 @@ export interface StepRunDeps {
   resolverSource?: string;
   /** Execution contexts, for steps that name a frame. */
   frames?: FrameContexts;
+  /**
+   * True when the step arrived over the PL-014 command wire. The runner then always names the
+   * deadline it will wait for, so the extension never falls back to a default of its own for a
+   * command-mode step (R4).
+   */
+  commandMode?: boolean;
 }
 
 /** A step's target, resolved, hit-tested, and stamped with its marker. */
@@ -328,6 +341,27 @@ function nameOf(result: ResolveResult): string {
 }
 
 /**
+ * The timeout a step's own waiting runs under, in milliseconds.
+ *
+ * A command-mode step always carries one: the runner writes `timeout_ms` onto the wire for every
+ * command it sends, and the wire deadline it will wait for is that value plus its ack slack. A
+ * command-mode step without one is refused rather than given the extension's own default, because
+ * a default longer than the runner's wait is exactly how a legitimate 8s navigation was written
+ * off at 5s and paused the run (R4).
+ */
+export function stepTimeoutMs(step: ExecutorStep, deps: StepRunDeps): number {
+  if (typeof step.timeout_ms === "number") return step.timeout_ms;
+  if (deps.commandMode === true) {
+    throw new ExecutorError(
+      `the step ${step.id} reached the command session with no timeout_ms; the runner must name the deadline it waits for`,
+      step.id,
+      "park",
+    );
+  }
+  return DEFAULT_NAVIGATE_TIMEOUT_MS;
+}
+
+/**
  * Perform one step's action: navigate, fill, select, or click. It does NOT
  * verify `assert_after` ------ the caller does that, because in command mode a
  * separate `check` command carries the post-condition.
@@ -351,7 +385,7 @@ export async function performStep(
   if (step.action === "navigate") {
     const url = step.url ?? "";
     assertAllowedOrigin(url, allowedOrigins);
-    await dispatchNavigate(deps.cdp, url);
+    await dispatchNavigate(deps.cdp, url, stepTimeoutMs(step, deps));
     return { id: step.id, action: step.action, outcome: "done" };
   }
 

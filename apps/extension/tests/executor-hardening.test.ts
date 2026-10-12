@@ -336,6 +336,45 @@ describe("navigate", () => {
     expect(error).toBeInstanceOf(ExecutorError);
     expect((error as ExecutorError).message).toMatch(/did not finish loading/);
   });
+
+  it("a command-mode navigate waits for the timeout on the wire", async () => {
+    // The runner states the deadline it will wait for on every command it sends, and the
+    // extension must use that value: an extension default longer than the runner's wait is
+    // what had a legitimate navigation written off early and paused the run (R4).
+    const silent = eventTransport();
+    const step = {
+      id: "open-lead",
+      action: "navigate",
+      url: `${ORIGIN}/records/new`,
+      timeout_ms: 25,
+    } as ExecutorStep;
+
+    const error = await performStep(step, { row: {} }, [ORIGIN], {
+      cdp: silent.cdp,
+      commandMode: true,
+    }).catch((thrown: unknown) => thrown);
+
+    expect(error).toBeInstanceOf(ExecutorError);
+    expect((error as ExecutorError).message).toContain("within 25ms");
+  });
+
+  it("a command-mode step with no timeout_ms is refused, not given an extension default", async () => {
+    const silent = eventTransport();
+    const step = {
+      id: "open-lead",
+      action: "navigate",
+      url: `${ORIGIN}/records/new`,
+    } as ExecutorStep;
+
+    const error = await performStep(step, { row: {} }, [ORIGIN], {
+      cdp: silent.cdp,
+      commandMode: true,
+    }).catch((thrown: unknown) => thrown);
+
+    expect(error).toBeInstanceOf(ExecutorError);
+    expect((error as ExecutorError).disposition).toBe("park");
+    expect((error as ExecutorError).message).toContain("no timeout_ms");
+  });
 });
 
 describe("the destructive-control guard", () => {
