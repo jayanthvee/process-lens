@@ -10,6 +10,13 @@ three rows `verified`; the fixture shows each saved record with exactly the reci
 named, never the removed one; the notes text is the row's text; and the compiled recipe contains a
 `navigate` step for the Back.
 
+**Status (T1's Rulings round): this test is red.** The recording compiles, and the batch runs, but
+the ✕ step (`click-3`, recorded by its own name per PL-016 requirement 8) fails to resolve at
+replay, so every row parks. Per the ticket — "if a step cannot be recorded or replayed, the test
+must fail with the reason, and the report must say which PL-016 item it traces to" — it is left red
+and documented in `internal/agent/reports/PL-016b.md` ("Review fixes"). The failure names the step
+below.
+
 If a step cannot be recorded or replayed, the test fails with the reason, and the report names the
 PL-016 item it traces to. Nothing here is papered over.
 """
@@ -28,24 +35,26 @@ DEMO_NOTE = "Called on Monday"
 def messy_rows() -> list[dict[str, str]]:
     """Three rows: a kept recipient per row, the same one removed, and the row's note.
 
-    The demolition records adding two recipients and removing the second, so the column the
-    recording bound the first entry to carries the kept address and the second carries the one the
-    cross removes.
+    The column names are the ones the popup derives from the recorded field names after this
+    round's slug fix: "Add recipient" becomes ``add_recipient`` (and ``add_recipient_2`` for the
+    second entry), and "Notes" becomes ``notes``. The demolition adds two recipients and removes
+    the second, so the first column carries the kept address and the second the one the cross
+    removes.
     """
     return [
         {
-            "add-recipient": "dana@example.test",
-            "add-recipient-2": DEMO_REMOVED,
+            "add_recipient": "dana@example.test",
+            "add_recipient_2": DEMO_REMOVED,
             "notes": "Note one",
         },
         {
-            "add-recipient": "erin@example.test",
-            "add-recipient-2": DEMO_REMOVED,
+            "add_recipient": "erin@example.test",
+            "add_recipient_2": DEMO_REMOVED,
             "notes": "Note two",
         },
         {
-            "add-recipient": "frank@example.test",
-            "add-recipient-2": DEMO_REMOVED,
+            "add_recipient": "frank@example.test",
+            "add_recipient_2": DEMO_REMOVED,
             "notes": "Note three",
         },
     ]
@@ -110,17 +119,30 @@ def test_record_compile_run_on_messy_crm(messy_harness) -> None:
     )
 
     run_id = messy_harness.make_run(messy_rows(), recipe=recipe)
-    records = messy_harness.run_and_approve(run_id)
+    records = messy_harness.settle_run(run_id)
 
     detail = "; ".join(
         f"{record.get('record_key')}={record['state']}:{record.get('reason')}" for record in records
     )
+    if not all(record["state"] == "verified" for record in records):
+        # On failure, name the step that parked: the ledger's step_events carry the step id and the
+        # resolver's own words, which the record's state/reason alone do not.
+        import psycopg
+
+        with psycopg.connect(messy_harness.dsn) as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT se.step_id, se.outcome, se.locator_rung, se.error FROM step_events se"
+                " JOIN run_records rr ON rr.id = se.run_record_id"
+                " WHERE rr.run_id = %s AND se.outcome <> 'ok' ORDER BY se.id",
+                (run_id,),
+            )
+            print("NON-OK STEP EVENTS:", cur.fetchall())
     assert len(records) == 3, detail
     assert all(record["state"] == "verified" for record in records), detail
 
     state = messy_harness.messy_state()
     for row in messy_rows():
-        kept = row["add-recipient"]
+        kept = row["add_recipient"]
         assert state["recipients"].get(kept, 0) == 1, f"{kept!r} not saved once ({detail})"
         assert state["recipients"].get(DEMO_REMOVED, 0) == 0, (
             f"the removed recipient {DEMO_REMOVED!r} was saved ({detail})"

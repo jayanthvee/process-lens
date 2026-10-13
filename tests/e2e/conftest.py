@@ -661,22 +661,28 @@ class Harness:
         self._operator = operator
         return operator
 
-    def run_and_approve(
-        self, run_id: str, *, timeout: float = 180.0, max_seconds: float = 200
+    def settle_run(
+        self, run_id: str, *, timeout: float = 240.0, max_seconds: float = 260
     ) -> list[dict[str, Any]]:
-        """Start one worker, approve any commit gate a compiled recipe asks for, and settle.
+        """Start a worker, approve commit gates, resume a canary pause, and settle the run.
 
-        A recipe the compiler produced carries ``approval_policy: {commit: first_record}``, so the
-        first commit of the run is previewed: the run pauses, an approval request opens, and the run
-        only continues once a person approves it. This drives exactly that loop, as the operator
-        page would, until every record is out and the run is no longer running.
+        Two designed pauses are driven here, exactly as the operator page would:
+
+        * a compiled recipe carries ``approval_policy: {commit: first_record}``, so the first commit
+          is previewed and the run pauses on an open approval request;
+        * the ledger makes the **first record to reach a commit** the run's canary, and a canary
+          that parks pauses the run ``canary_failed``. The ledger claims ready records in an order
+          that is not row order (the rows share one ``created_at`` and tie-break on a random uuid),
+          so which record is the canary is not knowable in advance; resuming is how the designed
+          pause is cleared.
+
+        It returns once every record is out and the run is no longer running.
         """
         self.start_worker(max_seconds=max_seconds)
         exit_states = {"verified", "skipped", "parked", "failed", "cancelled"}
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            approvals = self.api_get(f"/api/v1/runs/{run_id}/approvals")
-            for request in approvals:
+            for request in self.api_get(f"/api/v1/runs/{run_id}/approvals"):
                 self.api_post(
                     "/api/v1/approvals",
                     {
@@ -690,6 +696,9 @@ class Harness:
             settled = all(record["state"] in exit_states for record in records)
             if settled and (detail["status"] in {"completed", "paused"} or self.workers_exited()):
                 return records
+            # A canary that parked is clearable by resuming; any other pause is not.
+            if detail["status"] == "paused" and detail.get("pause_reason") == "canary_failed":
+                self.api_post(f"/api/v1/runs/{run_id}/resume", None)
             time.sleep(0.4)
         raise AssertionError("the run never settled: " + self.describe(run_id))
 
