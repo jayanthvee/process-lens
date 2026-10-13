@@ -517,6 +517,7 @@ export async function performStep(
       );
     }
   }
-  await dispatchClick(deps.cdp, token, contextId, hooks);
+  // The step's own deadline bounds how long the target may take to stop moving (PL-017b).
+  await dispatchClick(deps.cdp, token, contextId, hooks, stepTimeoutMs(step, deps));
   return { id: step.id, action: step.action, outcome: "done", rung: result.rung, by: result.by };
 }
