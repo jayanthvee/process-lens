@@ -10,18 +10,20 @@ three rows `verified`; the fixture shows each saved record with exactly the reci
 named, never the removed one; the notes text is the row's text; and the compiled recipe contains a
 `navigate` step for the Back.
 
-**Status (T1's Rulings round): this test is red.** The recording compiles, and the batch runs, but
-the ✕ step (`click-3`, recorded by its own name per PL-016 requirement 8) fails to resolve at
-replay, so every row parks. Per the ticket — "if a step cannot be recorded or replayed, the test
-must fail with the reason, and the report must say which PL-016 item it traces to" — it is left red
-and documented in `internal/agent/reports/PL-016b.md` ("Review fixes"). The failure names the step
-below.
-
-If a step cannot be recorded or replayed, the test fails with the reason, and the report names the
-PL-016 item it traces to. Nothing here is papered over.
+**The replay gap PL-017 fixed.** The recording was always correct — it carries the two Add clicks
+and the ✕ remove — but on replay the Add clicks added no chip, so the ✕ steps had no recipient to
+remove and parked. The cause was the fixture: its autocomplete listbox sat in normal document flow,
+so opening it reflowed the page and pushed the Add button down; the executor measures a click target
+and then dispatches the mouse events at that measured box, so a listbox that opens in between moved
+the button out from under the click. A real autocomplete listbox is an overlay. The fixture now
+renders it as one (`position: absolute`, beside the input it belongs to), so opening it moves
+nothing, and the Add button is never in its path.
 """
 
 from __future__ import annotations
+
+import json
+import os
 
 import pytest
 
@@ -89,17 +91,13 @@ def record_messy(harness) -> None:
     harness.stop_recording()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "PL-017: the recorded chip-remove click (click-3) does not resolve on replay; "
-        "strict, so this fails loudly once the replay gap is fixed"
-    ),
-)
 def test_record_compile_run_on_messy_crm(messy_harness) -> None:
     messy_harness.messy_reset()
     messy_harness.page.goto(messy_harness.crm_url + "/")
     record_messy(messy_harness)
+    # The demonstration saved its own record; clear it so the run's three saves are the only ones
+    # the state assertions below see.
+    messy_harness.messy_reset()
 
     events = messy_harness.recording_events()
     assert events, "the recorder captured nothing"
@@ -117,6 +115,8 @@ def test_record_compile_run_on_messy_crm(messy_harness) -> None:
         f"result={outcome['result']!r} warnings={outcome['warnings']!r} events={events}"
     )
     recipe = outcome["recipe"]
+    if os.environ.get("PROCESSLENS_E2E_DUMP_RECIPE") == "1":
+        print("COMPILED RECIPE:", json.dumps(recipe, indent=2, sort_keys=True))
 
     # The compiled recipe must carry the Back as a navigate step (PL-016 C1).
     navigate_steps = [step for step in recipe["steps"] if step.get("action") == "navigate"]

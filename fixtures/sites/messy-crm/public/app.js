@@ -133,6 +133,7 @@
 
     list.appendChild(chip);
     syncRecipients();
+    saveDraft();
     return chip;
   }
 
@@ -141,6 +142,7 @@
       chip.parentNode.removeChild(chip);
     }
     syncRecipients();
+    saveDraft();
   }
 
   function chipAddresses() {
@@ -162,6 +164,67 @@
     if (input) {
       input.value = chipAddresses().join(",");
     }
+  }
+
+  /* The composer draft.
+   *
+   * A real CRM keeps a half-filled composer when the person leaves the page and
+   * comes back -- the browser's back/forward cache, or a saved draft. A plain
+   * fixture reload would silently drop the chips and the notes, so the round trip
+   * through the second page would save an empty composer. The draft is kept in
+   * sessionStorage (one tab, this origin) and restored on load, and it is cleared
+   * once the form is submitted, exactly as a draft is discarded after sending. */
+  var DRAFT_KEY = "messy-crm:compose-draft";
+
+  function notesText() {
+    var box = byTestId("notes-box");
+    return box ? String(box.innerText || box.textContent || "") : "";
+  }
+
+  function readDraft() {
+    try {
+      var raw = window.sessionStorage.getItem(DRAFT_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch (err) {
+      return null;
+    }
+  }
+
+  function saveDraft() {
+    try {
+      window.sessionStorage.setItem(
+        DRAFT_KEY,
+        JSON.stringify({ recipients: chipAddresses(), notes: notesText() })
+      );
+    } catch (err) {
+      /* A browser that refuses storage still works; it just keeps no draft. */
+    }
+  }
+
+  function clearDraft() {
+    try {
+      window.sessionStorage.removeItem(DRAFT_KEY);
+    } catch (err) {
+      /* Nothing to clear. */
+    }
+  }
+
+  function restoreDraft() {
+    var draft = readDraft();
+    if (!draft) {
+      return;
+    }
+    if (Object.prototype.toString.call(draft.recipients) === "[object Array]") {
+      draft.recipients.forEach(function (address) {
+        addChip(address);
+      });
+    }
+    var box = byTestId("notes-box");
+    if (box && typeof draft.notes === "string" && draft.notes) {
+      box.textContent = draft.notes;
+    }
+    syncRecipients();
+    syncNotes();
   }
 
   function syncNotes() {
@@ -256,8 +319,14 @@
     if (!box) {
       return;
     }
-    box.addEventListener("input", syncNotes);
-    box.addEventListener("blur", syncNotes);
+    box.addEventListener("input", function () {
+      syncNotes();
+      saveDraft();
+    });
+    box.addEventListener("blur", function () {
+      syncNotes();
+      saveDraft();
+    });
     syncNotes();
   }
 
@@ -272,6 +341,9 @@
     form.addEventListener("submit", function () {
       syncRecipients();
       syncNotes();
+      /* The save is on its way, so the draft is done; a refusal re-renders the
+         page with what was posted, so nothing typed is lost either way. */
+      clearDraft();
       form.setAttribute("aria-busy", "true");
     });
   }
@@ -296,6 +368,7 @@
     initNotes();
     initSaveForm();
     initStatus();
+    restoreDraft();
   }
 
   if (document.readyState === "loading") {
