@@ -590,20 +590,38 @@ class Harness:
         return None
 
     def compile_via_popup(
-        self, name: str, *, record_key: str | None = None, timeout: float = 25.0
+        self,
+        name: str,
+        *,
+        record_key: str | None = None,
+        park_fields: list[str] | None = None,
+        timeout: float = 25.0,
     ) -> dict[str, Any]:
         """Drive the popup's own Make recipe form, then read back what it compiled and stored.
 
         This is the form a person uses: set the hub, name the workflow, choose the record key,
-        press Make recipe. The form posts the recording to ``/api/v1/recipes/compile`` with the
-        record key and commit step it chose, and stores the result under its two session keys.
-        The returned dict carries the recipe and row (or ``None`` each when the route rejected the
-        recording) and the form's own words for the outcome.
+        tick the fields to park on, press Make recipe. The form posts the recording to
+        ``/api/v1/recipes/compile`` with the record key, the built-in rules and commit step it
+        chose, and stores the result under its two session keys. The returned dict carries the
+        recipe and row (or ``None`` each when the route rejected the recording) and the form's own
+        words for the outcome.
         """
         self.popup.evaluate("(v) => { document.getElementById('hub').value = v; }", self.api_base)
         self.popup.fill("#make-name", name)
         if record_key is not None:
             self.popup.select_option("#make-key", value=record_key)
+        if park_fields is not None:
+            # Tick exactly these input columns' "park if empty" boxes, and untick the rest, so the
+            # recipe carries a precheck rule for each. This is the person marking fields required.
+            self.popup.evaluate(
+                "(wanted) => { const boxes = document.querySelectorAll("
+                "'#make-park-fields input[type=\"checkbox\"]');"
+                " for (const box of boxes) { const column = box.getAttribute('data-column') || '';"
+                " const on = wanted.includes(column);"
+                " if (box.checked !== on) { box.checked = on;"
+                " box.dispatchEvent(new Event('change', { bubbles: true })); } } }",
+                park_fields,
+            )
         # Clear the two session keys first: they are shared across tests, and a rejected compile
         # stores nothing, so reading them back would otherwise hand back a previous test's recipe.
         self.popup.evaluate(
@@ -664,17 +682,15 @@ class Harness:
     def settle_run(
         self, run_id: str, *, timeout: float = 240.0, max_seconds: float = 260
     ) -> list[dict[str, Any]]:
-        """Start a worker, approve commit gates, resume a canary pause, and settle the run.
+        """Start a worker, approve commit gates, and settle the run.
 
-        Two designed pauses are driven here, exactly as the operator page would:
+        One designed pause is driven here, exactly as the operator page would: a compiled recipe
+        carries ``approval_policy: {commit: first_record}``, so the first commit is previewed and
+        the run pauses on an open approval request.
 
-        * a compiled recipe carries ``approval_policy: {commit: first_record}``, so the first commit
-          is previewed and the run pauses on an open approval request;
-        * the ledger makes the **first record to reach a commit** the run's canary, and a canary
-          that parks pauses the run ``canary_failed``. The ledger claims ready records in an order
-          that is not row order (the rows share one ``created_at`` and tie-break on a random uuid),
-          so which record is the canary is not knowable in advance; resuming is how the designed
-          pause is cleared.
+        The canary no longer needs a resume (PL-017 requirement 2): the claim query claims by the
+        input row, so the first record to reach a commit is row 0, which each golden test orders as
+        a record that verifies.
 
         It returns once every record is out and the run is no longer running.
         """
@@ -696,9 +712,6 @@ class Harness:
             settled = all(record["state"] in exit_states for record in records)
             if settled and (detail["status"] in {"completed", "paused"} or self.workers_exited()):
                 return records
-            # A canary that parked is clearable by resuming; any other pause is not.
-            if detail["status"] == "paused" and detail.get("pause_reason") == "canary_failed":
-                self.api_post(f"/api/v1/runs/{run_id}/resume", None)
             time.sleep(0.4)
         raise AssertionError("the run never settled: " + self.describe(run_id))
 
