@@ -9,6 +9,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import {
   createMakeRecipeForm,
   defaultCommitStepId,
+  defaultRecordKeyColumn,
   makeRecipeRequest,
   recordedValues,
   type FormStorage,
@@ -220,9 +221,22 @@ describe("recorded values", () => {
     ];
 
     expect(recordedValues(events)).toEqual([
-      { stepId: "fill-1", column: "contact-name", value: "Ravi", label: "Contact Name" },
-      { stepId: "fill-3", column: "contact-name-2", value: "Meera", label: "Contact Name" },
+      { stepId: "fill-1", column: "contact_name", value: "Ravi", label: "Contact Name" },
+      { stepId: "fill-3", column: "contact_name_2", value: "Meera", label: "Contact Name" },
     ]);
+  });
+
+  it("makes every column match the recipe field-name pattern", () => {
+    const events = [
+      fillEvent(1, "fill-1", "Add recipient", "one@example.test"),
+      fillEvent(2, "fill-2", "2nd email", "two@example.test"),
+      fillEvent(3, "fill-3", "Email", "three@example.test"),
+      fillEvent(4, "fill-4", "Email", "four@example.test"),
+    ];
+
+    const columns = recordedValues(events).map((value) => value.column);
+    expect(columns).toEqual(["add_recipient", "f_2nd_email", "email", "email_2"]);
+    for (const column of columns) expect(column).toMatch(/^[a-z][a-z0-9_]{0,63}$/);
   });
 
   it("names a field from the label rung, the testid rung, or the step itself", () => {
@@ -295,7 +309,7 @@ describe("recorded values", () => {
       { stepId: "select-1", column: "interest", value: "Data course", label: "interest" },
       { stepId: "fill-2", column: "notes", value: "Called on Monday", label: "Notes" },
       // No name anywhere: the step's own id, slugged, is the last resort.
-      { stepId: "fill-3", column: "fill-3", value: "No name rung at all", label: "fill-3" },
+      { stepId: "fill-3", column: "fill_3", value: "No name rung at all", label: "fill_3" },
     ]);
   });
 
@@ -311,6 +325,62 @@ describe("recorded values", () => {
     });
 
     expect(request.commit_step_ids).toEqual([]);
+  });
+});
+
+describe("the default record key", () => {
+  it("defaults to a field whose column or label mentions email", () => {
+    const events = [
+      fillEvent(1, "fill-1", "Interest", "Data course"),
+      fillEvent(2, "fill-2", "Email", "ravi@example.test"),
+    ];
+
+    expect(defaultRecordKeyColumn(events)).toBe("email");
+
+    const { fetchImpl } = fakeFetch({});
+    const form = mount(fetchImpl);
+    form.refresh(events);
+    expect(control<HTMLSelectElement>("make-key").value).toBe("email");
+    expect(control<HTMLButtonElement>("make-go").disabled).toBe(false);
+  });
+
+  it("falls back to a value that looks like an email when no field is named email", () => {
+    const events = [
+      fillEvent(1, "fill-1", "Contact", "ravi@example.test"),
+      fillEvent(2, "fill-2", "Interest", "Data course"),
+    ];
+
+    expect(defaultRecordKeyColumn(events)).toBe("contact");
+
+    const { fetchImpl } = fakeFetch({});
+    const form = mount(fetchImpl);
+    form.refresh(events);
+    expect(control<HTMLSelectElement>("make-key").value).toBe("contact");
+  });
+
+  it("has no default key and will not submit until one is chosen", async () => {
+    const events = [
+      fillEvent(1, "fill-1", "Interest", "Data course"),
+      fillEvent(2, "fill-2", "Notes", "Called on Monday"),
+    ];
+    const { fetchImpl, calls } = fakeFetch({ recipe: { id: "lead" }, warnings: [] });
+    const form = mount(fetchImpl);
+
+    form.refresh(events);
+
+    expect(defaultRecordKeyColumn(events)).toBeNull();
+    const key = control<HTMLSelectElement>("make-key");
+    const go = control<HTMLButtonElement>("make-go");
+    expect(key.value).toBe("");
+    expect(go.disabled).toBe(true);
+
+    await form.submit();
+    expect(calls).toHaveLength(0);
+    expect(control("make-result").textContent).toContain("record key");
+
+    key.value = "interest";
+    key.dispatchEvent(new Event("change"));
+    expect(go.disabled).toBe(false);
   });
 });
 

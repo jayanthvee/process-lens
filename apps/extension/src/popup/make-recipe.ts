@@ -61,20 +61,30 @@ function humanName(step: RecordedStep): string | null {
   return name && name.length > 0 ? name : null;
 }
 
-/** Lowercase ASCII, runs of anything else collapsed to `-`, then trimmed. */
+/**
+ * A recipe field name: lowercased, runs of anything outside [a-z0-9] collapsed to
+ * `_`, trimmed of leading/trailing `_`, prefixed `f_` when it would not start with a
+ * letter, and cut to the schema's 64-character limit. An entirely empty name stays
+ * empty so `allocate`'s "value" fallback still applies.
+ */
 function slug(text: string): string {
-  return text
+  const ascii = text
     .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  if (ascii.length === 0) return "";
+  const prefixed = /^[a-z]/.test(ascii) ? ascii : `f_${ascii}`;
+  return prefixed.slice(0, 64);
 }
 
-/** Hands out `name`, then `name-2`, `name-3` as columns repeat. */
+/** Hands out `name`, then `name_2`, `name_3` as columns repeat, within 64 chars. */
 function allocate(base: string, taken: Map<string, number>): string {
   const first = base.length > 0 ? base : "value";
   const seen = taken.get(first) ?? 0;
   taken.set(first, seen + 1);
-  return seen === 0 ? first : `${first}-${seen + 1}`;
+  if (seen === 0) return first;
+  const suffix = `_${seen + 1}`;
+  return `${first.slice(0, 64 - suffix.length)}${suffix}`;
 }
 
 /**
@@ -116,6 +126,25 @@ export function recordedWarnings(events: RecordedEvent[]): string[] {
     warnings.push(`step ${event.step?.id ?? event.kind}: ${warning}`);
   }
   return warnings;
+}
+
+/** Something that looks enough like an email address to identify a record. */
+const EMAIL_VALUE = /^[^@\s]+@[^@\s]+$/;
+
+/**
+ * The column the record-key select should offer first: an email-named field when
+ * there is one, else a value that looks like an email, else nothing. The recorder's
+ * buffering can put a non-identifying field first, so it is never the default.
+ */
+export function defaultRecordKeyColumn(events: RecordedEvent[]): string | null {
+  const values = recordedValues(events);
+  for (const value of values) {
+    if (/email/i.test(value.column) || /email/i.test(value.label)) return value.column;
+  }
+  for (const value of values) {
+    if (EMAIL_VALUE.test(value.value)) return value.column;
+  }
+  return null;
 }
 
 /**
@@ -329,6 +358,14 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
     deps.onNotice?.(message);
   }
 
+  /** The button follows the recording, the busy flag, and whether a key is chosen. */
+  function syncGo(): void {
+    goEl.disabled = events.length === 0 || busy || keyEl.value.length === 0;
+  }
+
+  // A key the person picks enables the button without waiting for the next refresh.
+  keyEl.addEventListener("change", syncGo);
+
   function showProblems(problems: string[]): void {
     const sentences = problems.length > 0 ? problems : ["The hub rejected the recording."];
     const count = sentences.length === 1 ? "1 problem" : `${sentences.length} problems`;
@@ -344,7 +381,7 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
     // A name the person typed survives a refresh; an empty box gets a default.
     if (nameEl.value.trim().length === 0) nameEl.value = defaultName(events);
     keyEl.replaceChildren(...values.map((value) => option(value.column, value.label)));
-    keyEl.value = values[0]?.column ?? "";
+    keyEl.value = defaultRecordKeyColumn(events) ?? "";
     keyEl.disabled = values.length === 0;
 
     const choices = commitChoices(events);
@@ -357,7 +394,7 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
     const rows = recordedOrigins(events).map((origin) => originRow(origin));
     originsEl.replaceChildren(...(legend ? [legend] : []), ...rows);
 
-    goEl.disabled = events.length === 0 || busy;
+    syncGo();
     warningsEl.textContent = recordedWarnings(events).join("\n");
     if (events.length === 0) notice(NO_EVENTS);
     else resultEl.textContent = "";
@@ -380,6 +417,10 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
     const name = nameEl.value.trim();
     if (name.length === 0) {
       showProblems(["Give the workflow a name before making the recipe."]);
+      return;
+    }
+    if (keyEl.value.length === 0) {
+      notice("Choose a record key column before making the recipe.");
       return;
     }
 
@@ -415,7 +456,7 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
       showProblems([`The hub could not be reached: ${describe(error)}.`]);
     } finally {
       busy = false;
-      goEl.disabled = events.length === 0;
+      syncGo();
     }
   }
 
