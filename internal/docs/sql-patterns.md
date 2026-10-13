@@ -32,12 +32,18 @@ RETURNING *;
 
 `attempts` is incremented by the database trigger, never by application code.
 
+The order is the input row's `row_index`, not `created_at`: a batch's records are inserted
+together, so `created_at` ties and the random uuid tie-break makes the claim order -- and the
+canary, the first record to reach a commit -- non-deterministic. `row_index` is the person's row
+order, so `row 0` is claimed first and the canary is knowable in advance.
+
 ```sql
 WITH next AS (
-  SELECT id FROM run_records
-  WHERE run_id = $1 AND state = 'pending' AND attempts < max_attempts
-  ORDER BY created_at, id
-  FOR UPDATE SKIP LOCKED
+  SELECT rr.id FROM run_records rr
+  JOIN input_records ir ON ir.id = rr.input_record_id
+  WHERE rr.run_id = $1 AND rr.state = 'pending' AND rr.attempts < rr.max_attempts
+  ORDER BY ir.row_index, rr.id
+  FOR UPDATE OF rr SKIP LOCKED
   LIMIT 1
 )
 UPDATE run_records r
