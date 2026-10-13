@@ -263,6 +263,31 @@ def test_create_refuses_a_missing_column(connected: TestClient, world: World) ->
     assert any("no column" in problem for problem in response.json()["detail"]["problems"])
 
 
+def test_create_refuses_two_rows_that_render_the_same_record_key(
+    connected: TestClient, world: World, conn: psycopg.Connection
+) -> None:
+    base = world
+    base.add_input("a@example.com")
+    base.add_input("a@example.com")
+
+    response = connected.post(
+        "/api/v1/runs",
+        json={
+            "workflow_id": str(world.workflow_id),
+            "recipe_version_id": str(world.recipe_version_id),
+            "input_batch_id": str(world.batch_id),
+            "mode": "batch",
+        },
+    )
+
+    assert response.status_code == 422
+    problems = response.json()["detail"]["problems"]
+    assert any("duplicate record_key" in problem for problem in problems)
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM runs WHERE workflow_id = %s", (world.workflow_id,))
+        assert cur.fetchone()[0] == 0, "a refused creation writes no run"
+
+
 def _store_recipe(world: World, document: dict[str, Any]) -> uuid.UUID:
     with world.conn.cursor() as cur:
         cur.execute(

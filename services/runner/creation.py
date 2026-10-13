@@ -2,8 +2,9 @@
 
 Creation is fail-closed. It refuses a run when the recipe does not match the schema, when a step
 action is outside the supported set, when an ``end_record`` outcome is impossible on its path,
-when the recipe version, the input batch and the workflow do not all belong together, or when
-any row's key cannot be rendered. Every problem is listed; nothing is written when there is one.
+when the recipe version, the input batch and the workflow do not all belong together, when any
+row's key cannot be rendered, or when two ready rows render the same ``record_key``. Every problem
+is listed; nothing is written when there is one.
 """
 
 from __future__ import annotations
@@ -39,7 +40,7 @@ _SELECT_BATCH = """
 SELECT id, tenant_id, workflow_id FROM input_batches WHERE id = %(id)s
 """
 _SELECT_READY_ROWS = """
-SELECT id, raw, clean FROM input_records
+SELECT id, row_index, raw, clean FROM input_records
 WHERE batch_id = %(batch)s AND status = 'ready'
 ORDER BY row_index
 """
@@ -136,11 +137,11 @@ def _check_consistency(
 
 def _render_keys(
     meta: Mapping[str, Any], rows: list[dict[str, Any]]
-) -> tuple[list[tuple[Any, str, str]], list[str]]:
+) -> tuple[list[tuple[Any, int, str, str]], list[str]]:
     """Render ``record_key`` and ``idempotency_key`` for every row; collect every failure."""
     record_key_template = str(meta.get("record_key", ""))
     idempotency_template = str(meta.get("idempotency_key", ""))
-    rendered: list[tuple[Any, str, str]] = []
+    rendered: list[tuple[Any, int, str, str]] = []
     problems: list[str] = []
 
     for row in rows:
@@ -154,9 +155,27 @@ def _render_keys(
         if not record_key or not idempotency_key:
             problems.append(f"input record {row['id']}: a rendered key is empty")
             continue
-        rendered.append((row["id"], record_key, idempotency_key))
+        rendered.append((row["id"], row["row_index"], record_key, idempotency_key))
 
     return rendered, problems
+
+
+def _duplicate_key_problems(rendered: list[tuple[Any, int, str, str]]) -> list[str]:
+    """One problem per ``record_key`` more than one row rendered, naming the key and its rows.
+
+    ``run_records`` is unique on ``(run_id, record_key)``, so inserting these rows would make the
+    insert raise ``UniqueViolation`` instead of naming the rows. The check runs before the insert,
+    so no run is created.
+    """
+    rows_by_key: dict[str, list[int]] = {}
+    for _input_record_id, row_index, record_key, _idempotency_key in rendered:
+        rows_by_key.setdefault(record_key, []).append(row_index)
+
+    return [
+        f"duplicate record_key {record_key!r} on rows {', '.join(str(row) for row in indices)}"
+        for record_key, indices in rows_by_key.items()
+        if len(indices) > 1
+    ]
 
 
 def create_run(
@@ -212,6 +231,10 @@ def create_run(
     if key_problems:
         raise CreationError(key_problems)
 
+    duplicate_problems = _duplicate_key_problems(rendered)
+    if duplicate_problems:
+        raise CreationError(duplicate_problems)
+
     approval_policy = meta.get("approval_policy") or {"commit": "first_record"}
     tenant_id = workflow["tenant_id"]
 
@@ -226,7 +249,7 @@ def create_run(
             destination_key=workflow["destination_key"],
             approval_policy=approval_policy,
         )
-        for input_record_id, record_key, idempotency_key in rendered:
+        for input_record_id, _row_index, record_key, idempotency_key in rendered:
             ledger_create.insert_run_record(
                 conn,
                 tenant_id=tenant_id,

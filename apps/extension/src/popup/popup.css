@@ -134,6 +134,24 @@ body {
   font: inherit;
 }
 
+/* The derived origins, one ticked checkbox per origin. */
+.field--origins {
+  margin: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.field--origins legend {
+  padding: 0 4px;
+}
+
+.field__choice {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .panel__note {
   margin: 0;
   min-height: 1.4em;

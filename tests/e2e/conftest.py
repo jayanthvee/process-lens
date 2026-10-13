@@ -62,6 +62,15 @@ os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(PLAYWRIGHT_BROWSERS_PATH)
 
 E2E_ENABLED = os.environ.get("PROCESSLENS_E2E") == "1"
 
+# Requirement 4 (visible mode for demos). Both default off, so the suite and CI are unchanged:
+# a headed run is opt-in, and ``PROCESSLENS_E2E_SLOWMO_MS`` (default 0) slows every Playwright
+# action so a person can follow the recording.
+E2E_HEADED = os.environ.get("PROCESSLENS_E2E_HEADED") == "1"
+try:
+    E2E_SLOWMO_MS = max(0, int(os.environ.get("PROCESSLENS_E2E_SLOWMO_MS") or "0"))
+except ValueError:
+    E2E_SLOWMO_MS = 0
+
 # Without the flag, collect nothing: no Playwright import, no browser, stays fast and green.
 if not E2E_ENABLED:
     collect_ignore_glob = ["test_*.py"]
@@ -69,6 +78,9 @@ if not E2E_ENABLED:
 FIXTURE_DIR = REPO_ROOT / "fixtures" / "sites" / "lead-crm"
 FIXTURE_SERVER = FIXTURE_DIR / "server.py"
 RECIPE_FILE = FIXTURE_DIR / "recipe.json"
+# PL-016b requirement 2: the messy fixture has its own server, started the same way.
+MESSY_DIR = REPO_ROOT / "fixtures" / "sites" / "messy-crm"
+MESSY_SERVER = MESSY_DIR / "server.py"
 EXTENSION_DIR = REPO_ROOT / "apps" / "extension"
 EXTENSION_DIST = EXTENSION_DIR / "dist"
 
@@ -207,6 +219,7 @@ class Harness:
     popup: Any  # the extension popup page
     workers: list[subprocess.Popen] = field(default_factory=list)
     worker_logs: list[Path] = field(default_factory=list)
+    messy_url: str | None = None
 
     # -- HTTP ------------------------------------------------------------
     def api_get(self, path: str) -> Any:
@@ -219,6 +232,19 @@ class Harness:
 
     def fixture_get(self, path: str) -> Any:
         return _http_json(f"{self.crm_url}{path}")
+
+    def messy_get(self, path: str) -> Any:
+        """A request to the messy fixture (PL-016b); fails clearly when it was not started."""
+        if not self.messy_url:
+            raise AssertionError("the messy fixture is not part of this harness")
+        return _http_json(f"{self.messy_url}{path}")
+
+    def messy_state(self) -> dict[str, Any]:
+        """The messy fixture's own truth: saved records, recipient counts and notes."""
+        return self.messy_get("/__test__/state")
+
+    def messy_reset(self) -> None:
+        _http_json(f"{self.messy_url}/__test__/reset", method="POST", payload=None)
 
     def fixture_state(self) -> dict[str, Any]:
         """The fixture's own truth: how many leads exist per email, plus its counters."""
@@ -522,6 +548,160 @@ class Harness:
             headers={"Authorization": f"Bearer {RUNNER_SECRET}"},
         )
 
+    # -- recording (PL-016b) ---------------------------------------------
+    def start_recording(self, *, timeout: float = 15.0) -> None:
+        """Press Start in the popup, as a person would, and wait for the worker to say so."""
+        self.popup.click("#clear")
+        self.popup.click("#start")
+        self.popup.wait_for_function(
+            "() => document.getElementById('state')?.dataset.state === 'recording'",
+            timeout=timeout * 1000,
+        )
+
+    def stop_recording(self, *, timeout: float = 15.0) -> None:
+        self.popup.click("#stop")
+        self.popup.wait_for_function(
+            "() => document.getElementById('state')?.dataset.state === 'idle'",
+            timeout=timeout * 1000,
+        )
+
+    def recording_events(self) -> list[dict[str, Any]]:
+        """The recording the worker holds, read back through its own message channel."""
+        return list(
+            self.popup.evaluate(
+                "async () => { const r = await chrome.runtime.sendMessage({type: 'record:get'});"
+                " return r?.events ?? []; }"
+            )
+        )
+
+    def wait_for_observation(self, *, timeout: float = 8.0) -> dict[str, Any] | None:
+        """Wait until the recording carries an observation, and return the event it sits on.
+
+        A full-page save reports its confirmation from the page it landed on, and the worker only
+        attaches that report while the recording is still on. The test therefore waits here, before
+        Stop, so the commit step compiles with its ``assert_after`` rather than without one.
+        """
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            for event in self.recording_events():
+                if event.get("observation"):
+                    return event
+            time.sleep(0.2)
+        return None
+
+    def compile_via_popup(
+        self, name: str, *, record_key: str | None = None, timeout: float = 25.0
+    ) -> dict[str, Any]:
+        """Drive the popup's own Make recipe form, then read back what it compiled and stored.
+
+        This is the form a person uses: set the hub, name the workflow, choose the record key,
+        press Make recipe. The form posts the recording to ``/api/v1/recipes/compile`` with the
+        record key and commit step it chose, and stores the result under its two session keys.
+        The returned dict carries the recipe and row (or ``None`` each when the route rejected the
+        recording) and the form's own words for the outcome.
+        """
+        self.popup.evaluate("(v) => { document.getElementById('hub').value = v; }", self.api_base)
+        self.popup.fill("#make-name", name)
+        if record_key is not None:
+            self.popup.select_option("#make-key", value=record_key)
+        # Clear the two session keys first: they are shared across tests, and a rejected compile
+        # stores nothing, so reading them back would otherwise hand back a previous test's recipe.
+        self.popup.evaluate(
+            "async () => { await chrome.storage.session.remove("
+            "['processlens:executor-recipe', 'processlens:executor-row']); }"
+        )
+        self.popup.click("#make-go")
+        self.popup.wait_for_function(
+            "() => { const t = document.getElementById('make-result')?.textContent || '';"
+            " return t.includes('is ready') || t.includes('Could not'); }",
+            timeout=timeout * 1000,
+        )
+        result = self.popup.evaluate(
+            "() => document.getElementById('make-result')?.textContent || ''"
+        )
+        warnings = self.popup.evaluate(
+            "() => document.getElementById('make-warnings')?.textContent || ''"
+        )
+        stored = self.popup.evaluate(
+            "async () => { const s = await chrome.storage.session.get("
+            "['processlens:executor-recipe', 'processlens:executor-row']);"
+            " return { recipe: s['processlens:executor-recipe'] ?? null,"
+            " row: s['processlens:executor-row'] ?? null }; }"
+        )
+        # The form's own words decide: only a success is a compiled recipe.
+        compiled = "is ready" in str(result)
+        return {
+            "recipe": stored.get("recipe") if compiled else None,
+            "row": stored.get("row") if compiled else None,
+            "result": result,
+            "warnings": warnings,
+        }
+
+    def operator_id(self) -> str:
+        """A real operator user id, created once in the scratch database.
+
+        ``approvals.decided_by`` is a foreign key to ``users``, so a decision needs a genuine user
+        row; the API deliberately never invents one (``/api/v1/operator`` reads it from config).
+        The harness creates one user under a scratch tenant and reuses it.
+        """
+        cached = getattr(self, "_operator", None)
+        if cached is not None:
+            return str(cached)
+        import psycopg
+
+        with psycopg.connect(self.dsn, autocommit=True) as conn, conn.cursor() as cur:
+            cur.execute("INSERT INTO tenants (name) VALUES ('e2e operator') RETURNING id")
+            tenant = cur.fetchone()[0]
+            cur.execute(
+                "INSERT INTO users (tenant_id, email, name) "
+                "VALUES (%s, 'operator@e2e.test', 'E2E Operator') RETURNING id",
+                (tenant,),
+            )
+            operator = str(cur.fetchone()[0])
+        self._operator = operator
+        return operator
+
+    def settle_run(
+        self, run_id: str, *, timeout: float = 240.0, max_seconds: float = 260
+    ) -> list[dict[str, Any]]:
+        """Start a worker, approve commit gates, resume a canary pause, and settle the run.
+
+        Two designed pauses are driven here, exactly as the operator page would:
+
+        * a compiled recipe carries ``approval_policy: {commit: first_record}``, so the first commit
+          is previewed and the run pauses on an open approval request;
+        * the ledger makes the **first record to reach a commit** the run's canary, and a canary
+          that parks pauses the run ``canary_failed``. The ledger claims ready records in an order
+          that is not row order (the rows share one ``created_at`` and tie-break on a random uuid),
+          so which record is the canary is not knowable in advance; resuming is how the designed
+          pause is cleared.
+
+        It returns once every record is out and the run is no longer running.
+        """
+        self.start_worker(max_seconds=max_seconds)
+        exit_states = {"verified", "skipped", "parked", "failed", "cancelled"}
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            for request in self.api_get(f"/api/v1/runs/{run_id}/approvals"):
+                self.api_post(
+                    "/api/v1/approvals",
+                    {
+                        "request_id": request["id"],
+                        "decision": "approved",
+                        "decided_by": self.operator_id(),
+                    },
+                )
+            detail = self.api_get(f"/api/v1/runs/{run_id}")
+            records = self.api_get(f"/api/v1/runs/{run_id}/records")
+            settled = all(record["state"] in exit_states for record in records)
+            if settled and (detail["status"] in {"completed", "paused"} or self.workers_exited()):
+                return records
+            # A canary that parked is clearable by resuming; any other pause is not.
+            if detail["status"] == "paused" and detail.get("pause_reason") == "canary_failed":
+                self.api_post(f"/api/v1/runs/{run_id}/resume", None)
+            time.sleep(0.4)
+        raise AssertionError("the run never settled: " + self.describe(run_id))
+
 
 def _rewrite_origin(document: dict[str, Any], crm_port: int) -> dict[str, Any]:
     """Replace the recipe's placeholder origin (port 0) with the fixture's real port."""
@@ -688,13 +868,16 @@ def context(_playwright: Any, built_extension: Path) -> Iterator[Any]:
 
 def _launch_with_install(playwright: Any, profile: str, args: list[str]) -> Any:
     """Launch the persistent context, installing the bundled Chromium once if it is missing."""
+    # Requirement 4: the same two knobs for a first launch and a post-install retry.
+    launch = {
+        "user_data_dir": profile,
+        "channel": "chromium",
+        "headless": not E2E_HEADED,
+        "slow_mo": E2E_SLOWMO_MS,
+        "args": args,
+    }
     try:
-        return playwright.chromium.launch_persistent_context(
-            user_data_dir=profile,
-            channel="chromium",
-            headless=True,
-            args=args,
-        )
+        return playwright.chromium.launch_persistent_context(**launch)
     except Exception as exc:  # noqa: BLE001 - the message decides whether to install
         message = str(exc)
         if "Executable doesn't exist" not in message and "playwright install" not in message:
@@ -710,12 +893,7 @@ def _launch_with_install(playwright: Any, profile: str, args: list[str]) -> Any:
                 "playwright could not install its bundled chromium: "
                 f"{install.stderr.strip() or install.stdout.strip()}"
             ) from exc
-        return playwright.chromium.launch_persistent_context(
-            user_data_dir=profile,
-            channel="chromium",
-            headless=True,
-            args=args,
-        )
+        return playwright.chromium.launch_persistent_context(**launch)
 
 
 @pytest.fixture(scope="session")
@@ -775,8 +953,8 @@ def api_server(database_url: str, extension_id: str) -> Iterator[dict[str, Any]]
         ],
         cwd=str(REPO_ROOT),
         env=env,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=(_scratch_dir("api-logs") / f"uvicorn-{port}.log").open("w", encoding="utf-8"),
+        stderr=subprocess.STDOUT,
     )
     base = f"http://127.0.0.1:{port}"
     try:
@@ -894,6 +1072,94 @@ def harness(
         yield ready
     finally:
         ready.stop_workers()
+
+
+@pytest.fixture(scope="session")
+def messy_site() -> Iterator[dict[str, Any]]:
+    """The messy-crm fixture, started as a subprocess and read from its handshake line."""
+    process = subprocess.Popen(
+        [sys.executable, str(MESSY_SERVER), "--port", "0"],
+        cwd=str(MESSY_DIR),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        bufsize=1,
+    )
+    try:
+        assert process.stdout is not None
+        line = _read_line(process.stdout, timeout=30.0)
+        yield json.loads(line)
+    finally:
+        process.terminate()
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+
+
+@pytest.fixture(scope="session")
+def messy_harness(
+    context: Any,
+    extension_id: str,
+    api_server: dict[str, Any],
+    messy_site: dict[str, Any],
+    database_url: str,
+    harness: Harness,
+) -> Iterator[Harness]:
+    """A Harness whose extension is bound to the messy fixture (PL-016b requirement 2).
+
+    The extension binds the tab that is active at Connect, and the command session holds one tab,
+    so the messy tab must be brought forward and the session re-established against it. The popup
+    and its two session keys are shared with the lead-crm harness; only the bound tab differs.
+    """
+    page = context.new_page()
+    page.goto(messy_site["crm_url"] + "/")
+    # A popup of its own: the lead-crm harness's popup and its session id must be left untouched,
+    # or a later lead test drives the popup against the messy session.
+    popup = context.new_page()
+    popup.goto(f"chrome-extension://{extension_id}/popup/popup.html")
+    popup.evaluate("v => { document.getElementById('hub').value = v; }", api_server["base"])
+    page.bring_to_front()
+    popup.evaluate("document.getElementById('connect').click()")
+    popup.wait_for_function(
+        "() => document.getElementById('session-state')?.dataset.state === 'ready'",
+        timeout=30_000,
+    )
+    stored = popup.evaluate(
+        "async () => (await chrome.storage.session.get('processlens:command-session'))"
+        "['processlens:command-session'] ?? null"
+    )
+    assert stored and stored.get("sessionId"), "the extension did not store a session id"
+
+    ready = Harness(
+        api_base=api_server["base"],
+        crm_url=messy_site["crm_url"],
+        partner_url=messy_site["crm_url"],
+        crm_port=int(messy_site["crm_port"]),
+        dsn=database_url,
+        session_id=str(stored["sessionId"]),
+        extension_id=extension_id,
+        page=page,
+        popup=popup,
+        messy_url=messy_site["crm_url"],
+    )
+    try:
+        yield ready
+    finally:
+        ready.stop_workers()
+        # The command session is one per extension; hand it back to the lead-crm tab so the shared
+        # session is left as the lead-crm harness expects it, whatever order the tests ran in.
+        with contextlib.suppress(Exception):
+            harness.page.bring_to_front()
+            harness.popup.evaluate(
+                "v => { document.getElementById('hub').value = v; }", api_server["base"]
+            )
+            harness.popup.evaluate("document.getElementById('connect').click()")
+            harness.popup.wait_for_function(
+                "() => ['ready', 'connecting'].includes("
+                "document.getElementById('session-state')?.dataset.state)",
+                timeout=15_000,
+            )
 
 
 @pytest.fixture(autouse=True)

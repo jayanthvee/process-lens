@@ -61,20 +61,30 @@ function humanName(step: RecordedStep): string | null {
   return name && name.length > 0 ? name : null;
 }
 
-/** Lowercase ASCII, runs of anything else collapsed to `-`, then trimmed. */
+/**
+ * A recipe field name: lowercased, runs of anything outside [a-z0-9] collapsed to
+ * `_`, trimmed of leading/trailing `_`, prefixed `f_` when it would not start with a
+ * letter, and cut to the schema's 64-character limit. An entirely empty name stays
+ * empty so `allocate`'s "value" fallback still applies.
+ */
 function slug(text: string): string {
-  return text
+  const ascii = text
     .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  if (ascii.length === 0) return "";
+  const prefixed = /^[a-z]/.test(ascii) ? ascii : `f_${ascii}`;
+  return prefixed.slice(0, 64);
 }
 
-/** Hands out `name`, then `name-2`, `name-3` as columns repeat. */
+/** Hands out `name`, then `name_2`, `name_3` as columns repeat, within 64 chars. */
 function allocate(base: string, taken: Map<string, number>): string {
   const first = base.length > 0 ? base : "value";
   const seen = taken.get(first) ?? 0;
   taken.set(first, seen + 1);
-  return seen === 0 ? first : `${first}-${seen + 1}`;
+  if (seen === 0) return first;
+  const suffix = `_${seen + 1}`;
+  return `${first.slice(0, 64 - suffix.length)}${suffix}`;
 }
 
 /**
@@ -118,6 +128,25 @@ export function recordedWarnings(events: RecordedEvent[]): string[] {
   return warnings;
 }
 
+/** Something that looks enough like an email address to identify a record. */
+const EMAIL_VALUE = /^[^@\s]+@[^@\s]+$/;
+
+/**
+ * The column the record-key select should offer first: an email-named field when
+ * there is one, else a value that looks like an email, else nothing. The recorder's
+ * buffering can put a non-identifying field first, so it is never the default.
+ */
+export function defaultRecordKeyColumn(events: RecordedEvent[]): string | null {
+  const values = recordedValues(events);
+  for (const value of values) {
+    if (/email/i.test(value.column) || /email/i.test(value.label)) return value.column;
+  }
+  for (const value of values) {
+    if (EMAIL_VALUE.test(value.value)) return value.column;
+  }
+  return null;
+}
+
 /**
  * The step the form should preselect as the commit: the last recorded click.
  *
@@ -146,7 +175,7 @@ export function commitChoices(events: RecordedEvent[]): { id: string; label: str
 }
 
 /** The distinct origins the recording visited, in recording order. */
-function recordedOrigins(events: RecordedEvent[]): string[] {
+export function recordedOrigins(events: RecordedEvent[]): string[] {
   const origins: string[] = [];
   for (const event of events) {
     try {
@@ -161,7 +190,12 @@ function recordedOrigins(events: RecordedEvent[]): string[] {
 
 export function makeRecipeRequest(
   events: RecordedEvent[],
-  choice: { name: string; recordKeyColumn: string; commitStepId: string | null },
+  choice: {
+    name: string;
+    recordKeyColumn: string;
+    commitStepId: string | null;
+    allowedOrigins?: string[];
+  },
 ): CompileRequestBody {
   const sampleRow: Record<string, string> = {};
   for (const value of recordedValues(events)) sampleRow[value.column] = value.value;
@@ -174,7 +208,9 @@ export function makeRecipeRequest(
     when_to_use: choice.name,
     sample_row: sampleRow,
     record_key_column: choice.recordKeyColumn,
-    allowed_origins: recordedOrigins(events),
+    // The form pins the origins the person ticked; a direct caller that names none
+    // gets the recording's own origins, exactly as before this field existed.
+    allowed_origins: choice.allowedOrigins ?? recordedOrigins(events),
     commit_step_ids: choice.commitStepId ? [choice.commitStepId] : [],
   };
 }
@@ -269,6 +305,20 @@ function option(value: string, text: string): HTMLOptionElement {
   return el;
 }
 
+/** One origin's row: a checkbox, ticked, next to the origin it names. */
+function originRow(origin: string): HTMLLabelElement {
+  const row = document.createElement("label");
+  row.className = "field__choice";
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  box.value = origin;
+  box.checked = true;
+  const text = document.createElement("span");
+  text.textContent = origin;
+  row.append(box, text);
+  return row;
+}
+
 /** A name to offer before the person types one of their own. */
 function defaultName(events: RecordedEvent[]): string {
   try {
@@ -285,7 +335,7 @@ function describe(error: unknown): string {
 
 /**
  * The "Make recipe" form over the ids in popup.html: `make-name`, `make-key`,
- * `make-commit`, `make-go`, `make-result` and `make-warnings`.
+ * `make-commit`, `make-origins`, `make-go`, `make-result` and `make-warnings`.
  *
  * `refresh` mirrors a recording into the controls and `submit` posts it; the
  * caller wires the button, so it can point `baseUrl` at the hub field first.
@@ -295,6 +345,7 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
   const nameEl = control<HTMLInputElement>(scope, "make-name");
   const keyEl = control<HTMLSelectElement>(scope, "make-key");
   const commitEl = control<HTMLSelectElement>(scope, "make-commit");
+  const originsEl = control<HTMLFieldSetElement>(scope, "make-origins");
   const goEl = control<HTMLButtonElement>(scope, "make-go");
   const resultEl = control<HTMLParagraphElement>(scope, "make-result");
   const warningsEl = control<HTMLParagraphElement>(scope, "make-warnings");
@@ -306,6 +357,14 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
     resultEl.textContent = message;
     deps.onNotice?.(message);
   }
+
+  /** The button follows the recording, the busy flag, and whether a key is chosen. */
+  function syncGo(): void {
+    goEl.disabled = events.length === 0 || busy || keyEl.value.length === 0;
+  }
+
+  // A key the person picks enables the button without waiting for the next refresh.
+  keyEl.addEventListener("change", syncGo);
 
   function showProblems(problems: string[]): void {
     const sentences = problems.length > 0 ? problems : ["The hub rejected the recording."];
@@ -322,7 +381,7 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
     // A name the person typed survives a refresh; an empty box gets a default.
     if (nameEl.value.trim().length === 0) nameEl.value = defaultName(events);
     keyEl.replaceChildren(...values.map((value) => option(value.column, value.label)));
-    keyEl.value = values[0]?.column ?? "";
+    keyEl.value = defaultRecordKeyColumn(events) ?? "";
     keyEl.disabled = values.length === 0;
 
     const choices = commitChoices(events);
@@ -330,10 +389,23 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
     commitEl.value = defaultCommitStepId(events) ?? "";
     commitEl.disabled = choices.length === 0;
 
-    goEl.disabled = events.length === 0 || busy;
+    // Every origin starts ticked; the legend stays put when the recording has none.
+    const legend = originsEl.querySelector("legend");
+    const rows = recordedOrigins(events).map((origin) => originRow(origin));
+    originsEl.replaceChildren(...(legend ? [legend] : []), ...rows);
+
+    syncGo();
     warningsEl.textContent = recordedWarnings(events).join("\n");
     if (events.length === 0) notice(NO_EVENTS);
     else resultEl.textContent = "";
+  }
+
+  /** The origins still ticked, in the order the form rendered them. */
+  function checkedOrigins(): string[] {
+    const boxes = originsEl.querySelectorAll<HTMLInputElement>('input[type="checkbox"]');
+    return Array.from(boxes)
+      .filter((box) => box.checked)
+      .map((box) => box.value);
   }
 
   async function submit(): Promise<void> {
@@ -347,11 +419,18 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
       showProblems(["Give the workflow a name before making the recipe."]);
       return;
     }
+    if (keyEl.value.length === 0) {
+      notice("Choose a record key column before making the recipe.");
+      return;
+    }
 
     const request = makeRecipeRequest(events, {
       name,
       recordKeyColumn: keyEl.value,
       commitStepId: commitEl.value.length > 0 ? commitEl.value : null,
+      // Unticking an origin the recording visited pins the shorter list, and the
+      // route answers 422 naming that origin.
+      allowedOrigins: checkedOrigins(),
     });
 
     busy = true;
@@ -377,7 +456,7 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
       showProblems([`The hub could not be reached: ${describe(error)}.`]);
     } finally {
       busy = false;
-      goEl.disabled = events.length === 0;
+      syncGo();
     }
   }
 

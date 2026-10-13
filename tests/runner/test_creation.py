@@ -123,6 +123,23 @@ def test_rendering_failure_lists_every_failing_row(seed: Callable[..., Seed]) ->
     assert len(caught.value.problems) == 2, "one problem per failing row"
 
 
+def test_refuses_two_rows_that_render_the_same_record_key(
+    seed: Callable[..., Seed], conn: psycopg.Connection
+) -> None:
+    base = seed()
+    base.add_input_record(email="a@x.com")
+    base.add_input_record(email="b@x.com")
+    base.add_input_record(email="a@x.com")
+
+    with pytest.raises(CreationError) as caught:
+        _create(base, recipe(record_key="{{row.email}}"))
+
+    assert caught.value.problems == ["duplicate record_key 'a@x.com' on rows 1, 3"]
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM runs WHERE workflow_id = %s", (base.workflow_id,))
+        assert cur.fetchone()[0] == 0, "no run is created when a record_key repeats"
+
+
 def test_refuses_an_end_record_failed(seed: Callable[..., Seed]) -> None:
     steps = [
         {"id": "open", "action": "navigate", "url": f"{ORIGIN}/x"},

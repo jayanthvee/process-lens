@@ -51,26 +51,24 @@ unpacked extension from the command line, which is why the harness does not use 
 | `test_off_origin_and_destructive.py` | `test_an_off_origin_page_parks_the_record` | an off-origin page parks the record |
 | | `test_a_destructive_control_parks_the_record` | a destructive control parks the record |
 | `test_keepalive.py` | `test_the_run_survives_a_thirty_five_second_idle_wait` | the run survives an idle wait of over thirty seconds |
+| `test_record_compile_run.py` | `test_record_compile_run_on_lead_crm` | the recorder → compile route → runner chain on the tidy fixture: a demonstration is recorded through the popup, compiled through the Make recipe form, stored, and run as a five-row batch |
+| `test_record_compile_run_messy.py` | `test_record_compile_run_on_messy_crm` | the same chain on the messy fixture: recipients added and one removed, rich-text notes, a Back, and a full-page save |
 
 Every assertion reads the fixture's test API (`GET /__test__/state`) or the ledger's own endpoints
 (`/api/v1/runs/{id}`, `/api/v1/runs/{id}/records`); none reads a screenshot.
 
-## Known blocker against a green run (2026-10-12)
+## Watching a run: visible mode (PL-016b requirement 4)
 
-The harness itself stands the whole stack up - the fixture site, a scratch Postgres, Playwright's
-bundled Chromium with `apps/extension/dist` loaded, the real extension id, the API and hub under
-uvicorn, the popup's **Connect** reaching `ready`, and a runner worker that claims a run and drives
-it. Against the current revision every command is nonetheless refused by the extension with
-`the command expired before it was received`, so the batch parks every record.
+Two environment variables, both off by default, so the suite and CI are unchanged:
 
-The cause is outside this harness, in `services/runner/browser_executor.py`: line 94 defaults
-`self._now` to `time.monotonic()`, and line 262 mints
-`expires_at = int((self._now() + ttl) * 1000)` - monotonic seconds times 1000, not epoch
-milliseconds as the protocol requires. The extension compares that against `Date.now()`
-(`command-session.ts`: `now: () => Date.now()`), where `expires_at` is ~10^7 against ~1.8 x 10^12,
-so every command looks stale. Fixing it is a one-word change in the runner
-(`time.time()` for the wire expiry, or a separate wall clock for `expires_at`), and it is owned by
-the runner change, not by `tests/e2e`.
+- `PROCESSLENS_E2E_HEADED=1` launches Chromium with a visible window instead of headless.
+- `PROCESSLENS_E2E_SLOWMO_MS=<n>` slows every Playwright action by `n` milliseconds (default `0`),
+  so a person can follow the recording and the run.
+
+```
+$env:PROCESSLENS_E2E="1"; $env:PROCESSLENS_E2E_HEADED="1"; $env:PROCESSLENS_E2E_SLOWMO_MS="250";
+.\\.venv\\Scripts\\python.exe -m pytest tests\\e2e -q -m e2e
+```
 
 ## The fixture rows
 
