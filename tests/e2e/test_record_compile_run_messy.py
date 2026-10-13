@@ -91,13 +91,24 @@ def record_messy(harness) -> None:
     harness.stop_recording()
 
 
-def test_record_compile_run_on_messy_crm(messy_harness) -> None:
+def record_compile_run(messy_harness) -> tuple[list[dict], str]:
+    """Record, compile and replay the three-row batch with the in-flow listbox switched on.
+
+    PL-017b: ``listbox_in_flow`` restores the listbox that sits in normal flow, so opening the
+    suggestions reflows the page and pushes Add down. The replay must still click Add at its
+    settled position, which is what the executor's stability guard is for. Returns the run's
+    records and a one-line description of them.
+    """
     messy_harness.messy_reset()
     messy_harness.page.goto(messy_harness.crm_url + "/")
     record_messy(messy_harness)
     # The demonstration saved its own record; clear it so the run's three saves are the only ones
-    # the state assertions below see.
+    # the state assertions below see. The reset also clears the switches, so the in-flow listbox is
+    # switched on only now, before the run: its first step navigates to ``/``, which re-renders the
+    # page with the switch.
     messy_harness.messy_reset()
+    messy_harness.set_switches(listbox_in_flow=True)
+    assert messy_harness.messy_state()["switches"]["listbox_in_flow"] is True
 
     events = messy_harness.recording_events()
     assert events, "the recorder captured nothing"
@@ -146,6 +157,11 @@ def test_record_compile_run_on_messy_crm(messy_harness) -> None:
             print("NON-OK STEP EVENTS:", cur.fetchall())
     assert len(records) == 3, detail
     assert all(record["state"] == "verified" for record in records), detail
+    return records, detail
+
+
+def test_record_compile_run_on_messy_crm(messy_harness) -> None:
+    _records, detail = record_compile_run(messy_harness)
 
     state = messy_harness.messy_state()
     for row in messy_rows():
@@ -154,4 +170,37 @@ def test_record_compile_run_on_messy_crm(messy_harness) -> None:
         assert state["recipients"].get(DEMO_REMOVED, 0) == 0, (
             f"the removed recipient {DEMO_REMOVED!r} was saved ({detail})"
         )
+    assert state["notes"] == [row["notes"] for row in messy_rows()], state["notes"]
+
+
+def test_the_in_flow_listbox_adds_only_the_rows_recipients(messy_harness) -> None:
+    """PL-017b requirement 4: on the reflowing page nothing is added for a stranger, nothing twice.
+
+    A press that landed on whatever had moved under the pointer could add a suggestion the row never
+    named, or save a record twice. With ``listbox_in_flow`` on, the three rows must save exactly the
+    three kept recipients, each once, the removed one never, and exactly three records.
+    """
+    _records, detail = record_compile_run(messy_harness)
+
+    state = messy_harness.messy_state()
+    assert state["switches"]["listbox_in_flow"] is True, state["switches"]
+    kept = [row["add_recipient"] for row in messy_rows()]
+    for address in kept:
+        assert state["recipients"].get(address, 0) == 1, (
+            f"{address!r} not saved exactly once: {state['recipients']} ({detail})"
+        )
+    assert state["recipients"].get(DEMO_REMOVED, 0) == 0, (
+        f"the removed recipient {DEMO_REMOVED!r} was saved ({detail})"
+    )
+    # The fixture pre-renders one static chip on every compose page, so it is in every saved record;
+    # strip it out and nothing but the rows' kept recipients may remain. A press that landed on a
+    # suggestion the row never named would leave an address outside {static chip} ∪ kept here.
+    static_chip = state["static_chip"]
+    assert state["recipients"].get(static_chip, 0) == 3, (
+        f"the static chip must ride along in each of the three records: {state['recipients']}"
+    )
+    assert set(state["recipients"]) - {static_chip} == set(kept), (
+        f"a recipient other than the rows' was stored: {state['recipients']} ({detail})"
+    )
+    assert state["saves"] == 3, f"expected exactly three saved records: {state['saves']} ({detail})"
     assert state["notes"] == [row["notes"] for row in messy_rows()], state["notes"]
