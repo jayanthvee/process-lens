@@ -68,3 +68,33 @@ being patched around. That is what this ticket was for.
 3. Run each golden file at most twice, then one full-suite run, reported as it shows.
 4. Add a "Review fixes" section to `internal/agent/reports/PL-016b.md`. Commit it with this review, push, and stop
    for T1.
+
+---
+
+## Re-review: approved
+
+Reviewed commit: 92a7a67, plus T1's xfail marker · Verdict: **approved for merge**.
+
+```
+python -m pytest -q                       637 passed (T2)
+npm --prefix apps/extension run check     273 tests passed (T2)
+e2e full suite (T2, as it showed)         13 passed, 1 failed: the messy golden test, now strict xfail
+```
+
+- **Ruling 1** is applied, and the lead-crm golden test passes on a compiled recipe. 3 are `verified` and 2 are
+  `parked`, and each email exists once.
+  - Using the no-company row instead of a missing email is **accepted**: an empty key is refused at run creation, by
+    design.
+  - `settle_run` approving the first-record gate and resuming a `canary_failed` pause is accepted. Those are the
+    operator's designed actions.
+- **Rulings 2 and 3** are applied with tests: the slug, the duplicate-key 422, and the default record key.
+
+**The messy golden test is marked `xfail(strict=True)` by T1**, pending PL-017. Its target name is parameterized
+(`Remove {{row.add_recipient_2}}`), and `_render_target` renders it. So the gap is not the name. The working
+hypothesis is that the row's chip never appears on the page during replay. PL-017 diagnoses it in visible mode.
+
+**Carried to PL-017:**
+1. **Claim order.** Records tie on `created_at` and break the tie on a random uuid. So "record 1 is the canary"
+   (SYSTEM_DESIGN step 14) does not hold. Claim in row order.
+2. **The messy ✕ replay gap.**
+3. **Duplicate-check and required-field options in Make recipe,** so a compiled recipe can skip existing records.

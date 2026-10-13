@@ -89,6 +89,13 @@ def record_messy(harness) -> None:
     harness.stop_recording()
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "PL-017: the recorded chip-remove click (click-3) does not resolve on replay; "
+        "strict, so this fails loudly once the replay gap is fixed"
+    ),
+)
 def test_record_compile_run_on_messy_crm(messy_harness) -> None:
     messy_harness.messy_reset()
     messy_harness.page.goto(messy_harness.crm_url + "/")
