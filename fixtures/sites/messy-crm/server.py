@@ -81,6 +81,7 @@ DEFAULT_SWITCHES: dict[str, object] = {
     "stale_status": False,
     "reject_recipients": False,
     "suggest_empty": False,
+    "listbox_in_flow": False,
 }
 
 MAX_BODY = 1 << 20  # 1 MiB is plenty for this fixture and keeps the read bounded.

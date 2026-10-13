@@ -243,6 +243,14 @@
       return;
     }
 
+    if (switches.listbox_in_flow && add.parentNode) {
+      /* PL-017b: the listbox goes back into normal flow, ahead of the Add
+         button, so opening it pushes Add down. Applied at load, before any
+         typing. Off by default; the overlay is untouched when it is off. */
+      list.classList.add("in-flow");
+      add.parentNode.insertBefore(list, add);
+    }
+
     combo.addEventListener("input", function () {
       window.clearTimeout(suggestTimer);
       suggestTimer = window.setTimeout(function () {

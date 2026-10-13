@@ -626,6 +626,33 @@ def main() -> int:
         )
 
         reset(crm)
+        off_page = raw(crm, "/")["body"]
+        set_switches(crm, listbox_in_flow=True)
+        in_flow_page = raw(crm, "/")["body"]
+        in_flow_app_js = raw(crm, "/app.js")["body"]
+        in_flow_styles = raw(crm, "/styles.css")["body"]
+        check(
+            "listbox_in_flow is off by default and reaches the page when it is turned on",
+            server.DEFAULT_SWITCHES["listbox_in_flow"] is False
+            and '"listbox_in_flow": false' in off_page
+            and '"listbox_in_flow": true' in in_flow_page
+            and state(crm)["switches"]["listbox_in_flow"] is True,
+        )
+        check(
+            "app.js reads listbox_in_flow and moves the listbox ahead of Add, in flow",
+            "switches.listbox_in_flow" in in_flow_app_js
+            and 'classList.add("in-flow")' in in_flow_app_js
+            and "insertBefore(list, add)" in in_flow_app_js,
+        )
+        check(
+            "styles.css carries the in-flow listbox rule, and the overlay default stays",
+            re.search(r"\.suggestions\.in-flow\s*\{[^}]*position:\s*static", in_flow_styles)
+            is not None
+            and re.search(r"\.suggestions\s*\{[^}]*position:\s*absolute", in_flow_styles)
+            is not None,
+        )
+
+        reset(crm)
         set_switches(crm, reject_recipients=True)
         rejected = save(crm, recipients=f"{ALICE}", notes="", page="compose")
         check(
