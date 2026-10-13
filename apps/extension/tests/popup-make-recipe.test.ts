@@ -11,7 +11,9 @@ import {
   defaultCommitStepId,
   defaultRecordKeyColumn,
   makeRecipeRequest,
+  parkFieldDefaults,
   recordedValues,
+  searchDetected,
   type FormStorage,
   type MakeRecipeForm,
 } from "../src/popup/make-recipe";
@@ -89,6 +91,35 @@ function leadRecording(): RecordedEvent[] {
     clickEvent(1, "click-1", "New lead"),
     fillEvent(2, "fill-1", "Email", "ravi@example.test"),
     clickEvent(3, "click-2", "Save"),
+  ];
+}
+
+/** Search for the key, then create: the shape PL-017 requirement 6 records. */
+function searchRecording(): RecordedEvent[] {
+  return [
+    fillEvent(1, "fill-1", "Email", "ravi@example.test"),
+    clickEvent(2, "click-1", "Search"),
+    clickEvent(3, "click-2", "New lead"),
+    fillEvent(4, "fill-2", "Notes", "Called on Monday"),
+    clickEvent(5, "click-3", "Save"),
+  ];
+}
+
+/** No search: the key is filled without a click that runs it. */
+function noSearchRecording(): RecordedEvent[] {
+  return [
+    clickEvent(1, "click-1", "New lead"),
+    fillEvent(2, "fill-1", "Email", "ravi@example.test"),
+  ];
+}
+
+/** Email (key, optional), Company (required), Notes (optional), then Save. */
+function requiredRecording(): RecordedEvent[] {
+  return [
+    fillEvent(1, "fill-1", "Email", "ravi@example.test"),
+    { ...fillEvent(2, "fill-2", "Company", "Acme"), required: true },
+    fillEvent(3, "fill-3", "Notes", "hello"),
+    clickEvent(4, "click-1", "Save"),
   ];
 }
 
@@ -221,8 +252,20 @@ describe("recorded values", () => {
     ];
 
     expect(recordedValues(events)).toEqual([
-      { stepId: "fill-1", column: "contact_name", value: "Ravi", label: "Contact Name" },
-      { stepId: "fill-3", column: "contact_name_2", value: "Meera", label: "Contact Name" },
+      {
+        stepId: "fill-1",
+        column: "contact_name",
+        value: "Ravi",
+        label: "Contact Name",
+        required: false,
+      },
+      {
+        stepId: "fill-3",
+        column: "contact_name_2",
+        value: "Meera",
+        label: "Contact Name",
+        required: false,
+      },
     ]);
   });
 
@@ -305,11 +348,11 @@ describe("recorded values", () => {
     ];
 
     expect(recordedValues(events)).toEqual([
-      { stepId: "fill-1", column: "email", value: "ravi@example.test", label: "Email" },
-      { stepId: "select-1", column: "interest", value: "Data course", label: "interest" },
-      { stepId: "fill-2", column: "notes", value: "Called on Monday", label: "Notes" },
+      { stepId: "fill-1", column: "email", value: "ravi@example.test", label: "Email", required: false },
+      { stepId: "select-1", column: "interest", value: "Data course", label: "interest", required: false },
+      { stepId: "fill-2", column: "notes", value: "Called on Monday", label: "Notes", required: false },
       // No name anywhere: the step's own id, slugged, is the last resort.
-      { stepId: "fill-3", column: "fill_3", value: "No name rung at all", label: "fill_3" },
+      { stepId: "fill-3", column: "fill_3", value: "No name rung at all", label: "fill_3", required: false },
     ]);
   });
 
@@ -449,4 +492,157 @@ describe("allowed origins", () => {
     expect(control("make-warnings").textContent).toContain(problem);
     expect(storage.writes).toHaveLength(0);
   });
+});
+
+describe("the duplicate check (PL-017 requirement 4)", () => {
+  it("pre-ticks the checkbox and sends duplicate_check true when a search is detected", async () => {
+    const { fetchImpl, calls } = fakeFetch({ recipe: { id: "new-lead" }, warnings: [] });
+    const form = mount(fetchImpl);
+
+    form.refresh(searchRecording());
+
+    const box = control<HTMLInputElement>("make-duplicate");
+    expect(box.checked).toBe(true);
+    expect(box.disabled).toBe(false);
+    expect(control("make-duplicate-hint").textContent).toBe("");
+
+    await form.submit();
+
+    const body = JSON.parse(String(calls[0]!.init?.body)) as Record<string, unknown>;
+    expect(body["duplicate_check"]).toBe(true);
+  });
+
+  it("sends duplicate_check false when the box is unticked", async () => {
+    const { fetchImpl, calls } = fakeFetch({ recipe: { id: "new-lead" }, warnings: [] });
+    const form = mount(fetchImpl);
+
+    form.refresh(searchRecording());
+    control<HTMLInputElement>("make-duplicate").checked = false;
+
+    await form.submit();
+
+    const body = JSON.parse(String(calls[0]!.init?.body)) as Record<string, unknown>;
+    expect(body["duplicate_check"]).toBe(false);
+  });
+
+  it("disables the box, shows the hint, and sends false when no search was recorded", async () => {
+    const { fetchImpl, calls } = fakeFetch({ recipe: { id: "new-lead" }, warnings: [] });
+    const form = mount(fetchImpl);
+
+    form.refresh(noSearchRecording());
+
+    const box = control<HTMLInputElement>("make-duplicate");
+    expect(box.disabled).toBe(true);
+    expect(box.checked).toBe(false);
+    expect(control("make-duplicate-hint").textContent).toBe(
+      "Record a search for the key first to turn on the duplicate check",
+    );
+
+    await form.submit();
+
+    const body = JSON.parse(String(calls[0]!.init?.body)) as Record<string, unknown>;
+    expect(body["duplicate_check"]).toBe(false);
+  });
+});
+
+describe("the park fields (PL-017 requirement 5)", () => {
+  function parkBoxes(): HTMLInputElement[] {
+    return Array.from(
+      control<HTMLFieldSetElement>("make-park-fields").querySelectorAll<HTMLInputElement>(
+        'input[type="checkbox"]',
+      ),
+    );
+  }
+
+  it("pre-ticks required fields and the record key, and sends exactly those", async () => {
+    const { fetchImpl, calls } = fakeFetch({ recipe: { id: "new-lead" }, warnings: [] });
+    const form = mount(fetchImpl);
+
+    form.refresh(requiredRecording());
+
+    const byColumn = new Map(parkBoxes().map((box) => [box.dataset.column, box]));
+    expect(byColumn.get("company")!.checked).toBe(true);
+    expect(byColumn.get("email")!.checked).toBe(true);
+    expect(byColumn.get("notes")!.checked).toBe(false);
+
+    await form.submit();
+
+    const body = JSON.parse(String(calls[0]!.init?.body)) as Record<string, unknown>;
+    expect((body["park_fields"] as string[]).slice().sort()).toEqual(["company", "email"]);
+  });
+
+  it("sends the columns the person ticks", async () => {
+    const { fetchImpl, calls } = fakeFetch({ recipe: { id: "new-lead" }, warnings: [] });
+    const form = mount(fetchImpl);
+
+    form.refresh(requiredRecording());
+    // Untick the key but keep the required field; the body follows the boxes, not the defaults.
+    const keys = parkBoxes().filter((box) => box.dataset.column === "email");
+    for (const box of keys) box.checked = false;
+
+    await form.submit();
+
+    const body = JSON.parse(String(calls[0]!.init?.body)) as Record<string, unknown>;
+    expect(body["park_fields"]).toEqual(["company"]);
+  });
+
+  it("re-ticks the park row when the record key changes", () => {
+    const { fetchImpl } = fakeFetch({});
+    const form = mount(fetchImpl);
+
+    form.refresh(requiredRecording());
+    const byColumn = () => new Map(parkBoxes().map((box) => [box.dataset.column, box]));
+    expect(byColumn().get("email")!.checked).toBe(true);
+
+    const key = control<HTMLSelectElement>("make-key");
+    key.value = "notes";
+    key.dispatchEvent(new Event("change"));
+
+    expect(byColumn().get("notes")!.checked).toBe(true);
+    expect(byColumn().get("email")!.checked).toBe(false);
+  });
+});
+
+describe("parkFieldDefaults and searchDetected", () => {
+  it("names the required columns and the record key to pre-tick", () => {
+    expect(parkFieldDefaults(requiredRecording(), "email")).toEqual(["company", "email"]);
+    expect(parkFieldDefaults(requiredRecording(), "")).toEqual(["company"]);
+    expect(parkFieldDefaults(leadRecording(), "email")).toEqual(["email"]);
+  });
+
+  it("detects a search only when the key's value is followed by a click", () => {
+    expect(searchDetected(searchRecording(), "email")).toBe(true);
+    expect(searchDetected(noSearchRecording(), "email")).toBe(false);
+    expect(searchDetected(searchRecording(), "")).toBe(false);
+  });
+
+  it("does not treat a fill followed by a non-search click as a search", () => {
+    const wizard: RecordedEvent[] = [
+      fillEvent(1, "fill-1", "Email", "ravi@example.test"),
+      clickEvent(2, "click-1", "Next"),
+      clickEvent(3, "click-2", "Save"),
+    ];
+    expect(searchDetected(wizard, "email")).toBe(false);
+  });
+});
+
+it("makeRecipeRequest carries duplicate_check and park_fields", () => {
+  const request = makeRecipeRequest(requiredRecording(), {
+    name: "New lead",
+    recordKeyColumn: "email",
+    commitStepId: "click-1",
+    duplicateCheck: true,
+    parkFields: ["company", "email"],
+  });
+
+  expect(request.duplicate_check).toBe(true);
+  expect(request.park_fields).toEqual(["company", "email"]);
+
+  const defaults = makeRecipeRequest(requiredRecording(), {
+    name: "New lead",
+    recordKeyColumn: "email",
+    commitStepId: null,
+  });
+  expect(defaults.duplicate_check).toBe(true);
+  expect(defaults.park_fields).toEqual([]);
 });

@@ -82,13 +82,40 @@ a.button-link {
 .notes-section,
 .saved-record { display: block; max-width: 640px; }
 
-/* The autocomplete listbox. It is hidden until the input has a query and the
-   fixture has answered, and every option is thrown away on the next
-   keystroke -- with a fresh id, which is the mess. */
+/* The recipient field and its Add button share one line, and the suggestion
+   listbox is an overlay anchored under them. This is the shape a real
+   autocomplete has: opening the suggestions moves nothing on the form, so a
+   click aimed at Add still lands on Add while the listbox is open. When the
+   listbox sat in normal flow it reflowed the page and pushed Add out from
+   under the pointer. */
+.combo { position: relative; }
+
+.combo input[data-testid="recipient-input"] {
+  display: inline-block;
+  width: 220px;
+  vertical-align: top;
+}
+
+.combo button {
+  display: inline-block;
+  width: auto;
+  min-width: 90px;
+  vertical-align: top;
+  margin: 0 0 12px 8px;
+}
+
+/* The autocomplete listbox. It is an overlay: absolutely positioned, so it
+   never changes the layout or the position of any other control. It is hidden
+   until the input has a query and the fixture has answered, and every option
+   is thrown away on the next keystroke -- with a fresh id, which is the mess. */
 .suggestions {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 10;
   display: block;
   width: 320px;
-  margin: -8px 0 12px;
+  margin: 2px 0 0;
   padding: 2px 0;
   background: #ffffff;
   border: 1px solid #8d9299;

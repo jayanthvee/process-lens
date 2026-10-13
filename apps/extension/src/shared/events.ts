@@ -32,6 +32,8 @@ export interface EventInput {
   observation?: Condition | undefined;
   /** The recorder's own caveat about the step this event carries, if any. */
   warning?: string | undefined;
+  /** Whether the control this event acted on is required. Present only when true. */
+  required?: boolean | undefined;
 }
 
 export function makeEvent(input: EventInput): PendingEvent {
@@ -43,6 +45,7 @@ export function makeEvent(input: EventInput): PendingEvent {
   };
   if (input.observation) event.observation = input.observation;
   if (input.warning) event.warning = input.warning;
+  if (input.required) event.required = input.required;
   if (input.step && input.frame && input.frame.length > 0) {
     input.step.frame = input.frame;
   }

@@ -107,4 +107,10 @@ export interface RecordedEvent {
    * unknown step properties, so a warning there would make the compiled recipe invalid.
    */
   warning?: string;
+  /**
+   * Whether the control this event acted on is required (`required` or
+   * `aria-required="true"`). Like `warning`, it is a recorder note about the
+   * event and lives on the envelope, never on the step.
+   */
+  required?: boolean;
 }

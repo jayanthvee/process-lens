@@ -19,12 +19,16 @@ from .lease import require_lease
 from .models import RecordClaim, _row
 
 # sql-patterns.md § Claim the next record in a run. attempts is raised by the database trigger.
+# The order is the input row's row_index, not created_at: a batch's records are inserted together,
+# so created_at ties to the microsecond and the random uuid breaks the tie, which made the canary
+# -- the first record to reach a commit -- non-deterministic. row_index is the person's row order.
 _CLAIM_RECORD = """
 WITH next AS (
-  SELECT id FROM run_records
-  WHERE run_id = %(run)s AND state = 'pending' AND attempts < max_attempts
-  ORDER BY created_at, id
-  FOR UPDATE SKIP LOCKED
+  SELECT rr.id FROM run_records rr
+  JOIN input_records ir ON ir.id = rr.input_record_id
+  WHERE rr.run_id = %(run)s AND rr.state = 'pending' AND rr.attempts < rr.max_attempts
+  ORDER BY ir.row_index, rr.id
+  FOR UPDATE OF rr SKIP LOCKED
   LIMIT 1
 )
 UPDATE run_records r
@@ -93,6 +97,10 @@ def claim_record(
     conn: psycopg.Connection, run_id: uuid.UUID, worker_id: str, epoch: int
 ) -> RecordClaim | None:
     """Claim the oldest pending record of a run that still has attempts left.
+
+    The order is the input row's ``row_index`` (PL-017): a batch's records are created together,
+    so ``created_at`` ties and the random uuid tie-break made the claim order -- and therefore
+    the canary -- non-deterministic. ``row_index`` is the person's row order.
 
     Fenced (Requirement 1): a worker whose lease has been taken over claims nothing and sees the
     typed :class:`StaleLease`, rather than claiming a record it cannot act on or mistaking a
