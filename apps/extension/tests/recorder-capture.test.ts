@@ -195,3 +195,33 @@ describe("a rich-text body (requirement 10)", () => {
     expect(recorded.events).toHaveLength(0);
   });
 });
+
+describe("a required field (requirement 5)", () => {
+  it("notes required on the event envelope, never on the step", () => {
+    document.body.innerHTML =
+      "<label for='email'>Email</label><input id='email' required>" +
+      "<label for='alias'>Alias</label><input id='alias' aria-required='true'>" +
+      "<label for='note'>Note</label><input id='note'>";
+    const recorded = harness();
+
+    for (const [id, value] of [
+      ["email", "ravi@example.test"],
+      ["alias", "ravi"],
+      ["note", "hello"],
+    ] as const) {
+      const field = document.getElementById(id) as HTMLInputElement;
+      field.value = value;
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+      field.dispatchEvent(new Event("focusout", { bubbles: true }));
+    }
+
+    expect(recorded.events.map((event) => event.kind)).toEqual(["fill", "fill", "fill"]);
+    expect(recorded.events[0]!.required).toBe(true); // native required
+    expect(recorded.events[1]!.required).toBe(true); // aria-required
+    expect(recorded.events[2]!.required).toBeUndefined(); // optional
+    for (const event of recorded.events) {
+      expect(event.step).not.toBeNull();
+      expect((event.step as unknown as Record<string, unknown>).required).toBeUndefined();
+    }
+  });
+});

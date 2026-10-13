@@ -142,6 +142,15 @@ function valueOf(el: Element): string {
   return typeof value === "string" ? value : "";
 }
 
+/**
+ * Whether a control is marked required: the native `required` attribute, or the
+ * ARIA spelling a custom control uses. It is a note about the event, not the step.
+ */
+function isRequiredField(el: Element): boolean {
+  if ((el as HTMLInputElement).required === true) return true;
+  return el.getAttribute("aria-required") === "true";
+}
+
 /** What the person typed: a control's value, or the text of a rich-text body. */
 function typedValueOf(el: Element): string {
   if (isRichText(el)) return normalizeText(el.textContent);
@@ -273,7 +282,11 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): () => void 
   }
 
   /** The event that carries a step, with its warning attached when it has one. */
-  function stepEvent(kind: PendingEvent["kind"], step: RecordedStep | null): PendingEvent {
+  function stepEvent(
+    kind: PendingEvent["kind"],
+    step: RecordedStep | null,
+    required = false,
+  ): PendingEvent {
     const warning = stepWarning(step);
     return makeEvent({
       kind,
@@ -282,11 +295,12 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): () => void 
       frame,
       at: stamp(),
       ...(warning ? { warning } : {}),
+      ...(required ? { required: true } : {}),
     });
   }
 
-  function emitStep(kind: PendingEvent["kind"], step: RecordedStep): void {
-    hooks.send(stepEvent(kind, step));
+  function emitStep(kind: PendingEvent["kind"], step: RecordedStep, required = false): void {
+    hooks.send(stepEvent(kind, step, required));
   }
 
   const observationWindowMs = hooks.observationWindowMs ?? DEFAULT_OBSERVATION_WINDOW_MS;
@@ -558,7 +572,7 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): () => void 
     // Remember what this element's value was recorded as, so the `change` that follows the very
     // same typing is not recorded a second time as the same action (see the combobox branch).
     recordedTyping.set(el, value);
-    emitStep("fill", fillStep(el, value));
+    emitStep("fill", fillStep(el, value), isRequiredField(el));
   }
 
   function onClick(event: Event): void {
@@ -622,7 +636,7 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): () => void 
     if (tag === "SELECT") {
       // One change, one event: drop any buffered value so no focusout can flush a second one.
       pending.delete(el);
-      emitStep("select", selectStep(el, selectedOptionText(el)));
+      emitStep("select", selectStep(el, selectedOptionText(el)), isRequiredField(el));
       return;
     }
     if (tag === "INPUT") {

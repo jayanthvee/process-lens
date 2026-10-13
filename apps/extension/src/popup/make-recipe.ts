@@ -11,6 +11,9 @@ export const ROW_KEY = "processlens:executor-row";
 
 const COMPILE_PATH = "/api/v1/recipes/compile";
 const NO_EVENTS = "No events recorded — stop a recording first.";
+/** Shown under the duplicate checkbox when the recording holds no search for the key. */
+export const NO_SEARCH_HINT =
+  "Record a search for the key first to turn on the duplicate check";
 
 /** One recorded constant value, ready to become a row column. */
 export interface RecordedValue {
@@ -18,6 +21,7 @@ export interface RecordedValue {
   column: string;
   value: string;
   label: string;
+  required: boolean;
 }
 
 /** The body `POST /api/v1/recipes/compile` accepts. */
@@ -29,6 +33,10 @@ export interface CompileRequestBody {
   record_key_column: string;
   allowed_origins: string[];
   commit_step_ids: string[];
+  /** PL-017: propose the duplicate-search branch. */
+  duplicate_check: boolean;
+  /** PL-017: columns whose emptiness parks the record before any step runs. */
+  park_fields: string[];
 }
 
 /** What the compile route answered: a recipe, or the problems it found. */
@@ -108,7 +116,13 @@ export function recordedValues(events: RecordedEvent[]): RecordedValue[] {
 
     const name = humanName(step);
     const column = allocate(slug(name ?? String(step.id ?? "")), takenColumns);
-    values.push({ stepId: String(step.id ?? ""), column, value, label: name ?? column });
+    values.push({
+      stepId: String(step.id ?? ""),
+      column,
+      value,
+      label: name ?? column,
+      required: event.required === true,
+    });
   }
   return values;
 }
@@ -130,6 +144,64 @@ export function recordedWarnings(events: RecordedEvent[]): string[] {
 
 /** Something that looks enough like an email address to identify a record. */
 const EMAIL_VALUE = /^[^@\s]+@[^@\s]+$/;
+
+/**
+ * Whether a recorded step's own target says "search": a searchbox role, or a name/value/text/within
+ * that mentions search. Mirrors the compiler's check so the form and the compiler agree on what a
+ * search is (a wizard's fill -> Next is not one).
+ */
+function looksLikeSearch(step: RecordedStep | null): boolean {
+  if (!step) return false;
+  for (const target of step.targets ?? []) {
+    if (target.by === "role" && target.role.toLowerCase() === "searchbox") return true;
+    if (target.within && target.within.toLowerCase().includes("search")) return true;
+    for (const text of [
+      "name" in target ? target.name : "",
+      "value" in target ? target.value : "",
+      "text" in target ? target.text : "",
+    ]) {
+      if (text.toLowerCase().includes("search")) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Whether the recording searches for the record key: a `fill` whose constant value equals
+ * the record key column's sample value, immediately followed by a click that runs it -- a search
+ * control, recognised by `looksLikeSearch` (mirrors the compiler's detection). Returns false when
+ * no key column is chosen.
+ */
+export function searchDetected(events: RecordedEvent[], recordKeyColumn: string): boolean {
+  const column = recordKeyColumn.trim();
+  if (column.length === 0) return false;
+  const sample = recordedValues(events).find((value) => value.column === column);
+  if (!sample) return false;
+  for (let index = 0; index < events.length - 1; index += 1) {
+    const step = events[index]?.step ?? null;
+    if (!step || step.action !== "fill") continue;
+    if (constantValue(step) !== sample.value) continue;
+    const next = events[index + 1]?.step ?? null;
+    if (next && next.action === "click" && (looksLikeSearch(step) || looksLikeSearch(next))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * The park-field columns to pre-tick: every column whose recorded value is required, plus the
+ * record key column when one is chosen. Order follows the columns; the key is appended last.
+ */
+export function parkFieldDefaults(events: RecordedEvent[], recordKeyColumn: string): string[] {
+  const defaults: string[] = [];
+  for (const value of recordedValues(events)) {
+    if (value.required && !defaults.includes(value.column)) defaults.push(value.column);
+  }
+  const key = recordKeyColumn.trim();
+  if (key.length > 0 && !defaults.includes(key)) defaults.push(key);
+  return defaults;
+}
 
 /**
  * The column the record-key select should offer first: an email-named field when
@@ -195,6 +267,8 @@ export function makeRecipeRequest(
     recordKeyColumn: string;
     commitStepId: string | null;
     allowedOrigins?: string[];
+    duplicateCheck?: boolean;
+    parkFields?: string[];
   },
 ): CompileRequestBody {
   const sampleRow: Record<string, string> = {};
@@ -212,6 +286,10 @@ export function makeRecipeRequest(
     // gets the recording's own origins, exactly as before this field existed.
     allowed_origins: choice.allowedOrigins ?? recordedOrigins(events),
     commit_step_ids: choice.commitStepId ? [choice.commitStepId] : [],
+    // The route defaults these the same way, so a caller that names neither stays
+    // on the compiler's built-in defaults.
+    duplicate_check: choice.duplicateCheck ?? true,
+    park_fields: choice.parkFields ?? [],
   };
 }
 
@@ -319,6 +397,20 @@ function originRow(origin: string): HTMLLabelElement {
   return row;
 }
 
+/** One input column's park row: a checkbox carrying its column, ticked when empty should park. */
+function parkRow(value: RecordedValue, checked: boolean): HTMLLabelElement {
+  const row = document.createElement("label");
+  row.className = "field__choice";
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  box.checked = checked;
+  box.dataset.column = value.column;
+  const text = document.createElement("span");
+  text.textContent = `Park the record if this is empty: ${value.label}`;
+  row.append(box, text);
+  return row;
+}
+
 /** A name to offer before the person types one of their own. */
 function defaultName(events: RecordedEvent[]): string {
   try {
@@ -335,7 +427,8 @@ function describe(error: unknown): string {
 
 /**
  * The "Make recipe" form over the ids in popup.html: `make-name`, `make-key`,
- * `make-commit`, `make-origins`, `make-go`, `make-result` and `make-warnings`.
+ * `make-commit`, `make-duplicate`, `make-duplicate-hint`, `make-origins`,
+ * `make-park-fields`, `make-go`, `make-result` and `make-warnings`.
  *
  * `refresh` mirrors a recording into the controls and `submit` posts it; the
  * caller wires the button, so it can point `baseUrl` at the hub field first.
@@ -345,7 +438,10 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
   const nameEl = control<HTMLInputElement>(scope, "make-name");
   const keyEl = control<HTMLSelectElement>(scope, "make-key");
   const commitEl = control<HTMLSelectElement>(scope, "make-commit");
+  const duplicateEl = control<HTMLInputElement>(scope, "make-duplicate");
+  const duplicateHintEl = control<HTMLParagraphElement>(scope, "make-duplicate-hint");
   const originsEl = control<HTMLFieldSetElement>(scope, "make-origins");
+  const parkEl = control<HTMLFieldSetElement>(scope, "make-park-fields");
   const goEl = control<HTMLButtonElement>(scope, "make-go");
   const resultEl = control<HTMLParagraphElement>(scope, "make-result");
   const warningsEl = control<HTMLParagraphElement>(scope, "make-warnings");
@@ -363,8 +459,36 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
     goEl.disabled = events.length === 0 || busy || keyEl.value.length === 0;
   }
 
-  // A key the person picks enables the button without waiting for the next refresh.
-  keyEl.addEventListener("change", syncGo);
+  /**
+   * The duplicate check follows the chosen key: it is offered only when the recording holds a
+   * search for that key's value, and says so when the person has not recorded one.
+   */
+  function syncDuplicate(): void {
+    const detected = searchDetected(events, keyEl.value);
+    duplicateEl.disabled = !detected;
+    duplicateEl.checked = detected;
+    duplicateHintEl.textContent = detected ? "" : NO_SEARCH_HINT;
+  }
+
+  /**
+   * One park checkbox per input column, pre-ticked for a required field or the record key. The
+   * record key's row is not fixed at refresh time: the person chooses the key in the select, so
+   * the key's own tick follows the select (a new key is ticked, the old one is not).
+   */
+  function renderParkFields(): void {
+    const columns = recordedValues(events);
+    const defaults = parkFieldDefaults(events, keyEl.value);
+    const parkLegend = parkEl.querySelector("legend");
+    const parkRows = columns.map((value) => parkRow(value, defaults.includes(value.column)));
+    parkEl.replaceChildren(...(parkLegend ? [parkLegend] : []), ...parkRows);
+  }
+
+  // A key the person picks re-evaluates the park ticks, the duplicate check and the button.
+  keyEl.addEventListener("change", () => {
+    syncGo();
+    syncDuplicate();
+    renderParkFields();
+  });
 
   function showProblems(problems: string[]): void {
     const sentences = problems.length > 0 ? problems : ["The hub rejected the recording."];
@@ -394,7 +518,11 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
     const rows = recordedOrigins(events).map((origin) => originRow(origin));
     originsEl.replaceChildren(...(legend ? [legend] : []), ...rows);
 
+    // One park checkbox per input column, pre-ticked for a required field or the key.
+    renderParkFields();
+
     syncGo();
+    syncDuplicate();
     warningsEl.textContent = recordedWarnings(events).join("\n");
     if (events.length === 0) notice(NO_EVENTS);
     else resultEl.textContent = "";
@@ -406,6 +534,15 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
     return Array.from(boxes)
       .filter((box) => box.checked)
       .map((box) => box.value);
+  }
+
+  /** The input columns still ticked to park, in the order the form rendered them. */
+  function checkedParkFields(): string[] {
+    const boxes = parkEl.querySelectorAll<HTMLInputElement>('input[type="checkbox"]');
+    return Array.from(boxes)
+      .filter((box) => box.checked)
+      .map((box) => box.dataset.column ?? "")
+      .filter((column) => column.length > 0);
   }
 
   async function submit(): Promise<void> {
@@ -431,6 +568,8 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
       // Unticking an origin the recording visited pins the shorter list, and the
       // route answers 422 naming that origin.
       allowedOrigins: checkedOrigins(),
+      duplicateCheck: duplicateEl.checked,
+      parkFields: checkedParkFields(),
     });
 
     busy = true;

@@ -67,8 +67,16 @@
           <span class="field__label">Commit step</span>
           <select id="make-commit" class="field__input"></select>
         </label>
+        <label class="field__choice" for="make-duplicate">
+          <input id="make-duplicate" type="checkbox" />
+          <span class="field__label">Skip a record if the search finds it</span>
+        </label>
+        <p class="panel__note" id="make-duplicate-hint" role="status"></p>
         <fieldset id="make-origins" class="field field--origins">
           <legend class="field__label">Allowed origins</legend>
+        </fieldset>
+        <fieldset id="make-park-fields" class="field field--origins">
+          <legend class="field__label">Park fields</legend>
         </fieldset>
         <button id="make-go" type="button" class="button button--primary" disabled>
           Make recipe

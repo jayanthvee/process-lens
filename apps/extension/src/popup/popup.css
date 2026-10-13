@@ -152,6 +152,11 @@ body {
   gap: 6px;
 }
 
+/* The park-field choices stack under their legend, one row per input column. */
+#make-park-fields .field__choice + .field__choice {
+  margin-top: 4px;
+}
+
 .panel__note {
   margin: 0;
   min-height: 1.4em;
