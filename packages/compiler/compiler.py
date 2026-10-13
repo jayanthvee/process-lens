@@ -56,6 +56,11 @@ class CompileOptions:
     start_url: str | None = None
     include_navigate: bool = True
     assertion_timeout_ms: int = DEFAULT_ASSERTION_TIMEOUT_MS
+    # PL-017 built-in rules. ``duplicate_check`` proposes the duplicate-search branch (on by
+    # default); ``park_fields`` are the columns the person marked required, which become precheck
+    # rules that park a record before the browser is touched.
+    duplicate_check: bool = True
+    park_fields: list[str] | None = None
 
 
 @dataclass
@@ -188,8 +193,15 @@ def _resolve_meta(
         )
 
     input_schema: dict[str, Any] = {"fields": fields}
+    # PL-017: a column the person marked required parks the record before any step runs. The rule
+    # is the schema's precheck shape, so the runner parks with "missing <field>" without a model.
+    rules: list[dict[str, Any]] = []
+    for column in options.park_fields or []:
+        rules.append({"when": {"missing": column}, "then": "park", "reason": f"missing {column}"})
     if options.input_rules:
-        input_schema["rules"] = options.input_rules
+        rules.extend(options.input_rules)
+    if rules:
+        input_schema["rules"] = rules
 
     return {
         "name": options.name,
@@ -257,7 +269,13 @@ def _render_candidate(candidate: Candidate) -> dict[str, Any]:
     return step
 
 
-def _render_steps(candidates: list[Candidate], options: CompileOptions) -> list[dict[str, Any]]:
+def _render_steps(
+    candidates: list[Candidate],
+    options: CompileOptions,
+    *,
+    duplicate_branch_after: int | None = None,
+    duplicate_branch: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     bodies: list[dict[str, Any]] = []
 
     # A recording that already opens with a navigation carries its own first navigate step, so the
@@ -270,7 +288,11 @@ def _render_steps(candidates: list[Candidate], options: CompileOptions) -> list[
                 {"action": "navigate", "name": f"Open {path_pattern(start) or start}", "url": start}
             )
 
-    bodies.extend(_render_candidate(candidate) for candidate in candidates)
+    for index, candidate in enumerate(candidates):
+        bodies.append(_render_candidate(candidate))
+        # PL-017: the duplicate check goes straight after the click that ran the search.
+        if duplicate_branch is not None and index == duplicate_branch_after:
+            bodies.append(duplicate_branch)
 
     counters: Counter[str] = Counter()
     steps: list[dict[str, Any]] = []
@@ -278,6 +300,82 @@ def _render_steps(candidates: list[Candidate], options: CompileOptions) -> list[
         counters[body["action"]] += 1
         steps.append({"id": f"{body['action']}-{counters[body['action']]}", **body})
     return steps
+
+
+def _looks_like_a_search(fill: Candidate, click: Candidate) -> bool:
+    """Whether a fill-then-click pair reads as a search, not any other fill-then-click.
+
+    A wizard's ``fill email -> Next`` is a fill immediately followed by a click too, and mistaking
+    it for a search would turn on the duplicate branch and silently skip records. The one durable
+    signal a recording carries is the control's own name: a search box or a search button says
+    "search". Erring the other way is safe -- a search that is not recognised simply gets no branch
+    -- so a pair with no such signal is not a search.
+    """
+    for candidate in (fill, click):
+        for rung in candidate.targets or []:
+            if str(rung.get("role", "")).lower() == "searchbox":
+                return True
+            within = rung.get("within")
+            if isinstance(within, str) and "search" in within.lower():
+                return True
+            for key in ("name", "value", "text"):
+                text = rung.get(key)
+                if isinstance(text, str) and "search" in text.lower():
+                    return True
+    return False
+
+
+def detect_record_key_search(candidates: list[Candidate], options: CompileOptions) -> int | None:
+    """The index of the click that runs a search for the record key, or None.
+
+    A search for the record key is a ``fill`` whose recorded value is the record key column's
+    sample value, immediately followed by the click that runs it -- a search control, which
+    :func:`_looks_like_a_search` recognises -- with the create's own commit still to come. The
+    "looks like a search" check and the later commit are what separate a search from a create that
+    merely fills the key, or from a wizard's ``fill -> Next``. No search means no branch; the
+    compiler never invents one.
+    """
+    column = options.record_key_column
+    if not column:
+        return None
+    sample = str(options.sample_row.get(column, "")).strip()
+    if not sample:
+        return None
+    for index, candidate in enumerate(candidates):
+        if candidate.action != "fill":
+            continue
+        value = candidate.value
+        if not (isinstance(value, dict) and value.get("kind") == "constant"):
+            continue
+        if str(value.get("value", "")).strip() != sample:
+            continue
+        if index + 1 >= len(candidates) or candidates[index + 1].action != "click":
+            continue
+        click = candidates[index + 1]
+        if not _looks_like_a_search(candidate, click):
+            continue
+        # A create still commits after the search; the search itself is not the create.
+        if not any(later.commit for later in candidates[index + 2 :]):
+            continue
+        return index + 1
+    return None
+
+
+def _duplicate_branch(record_key: str) -> dict[str, Any]:
+    """A branch that ends a record ``skipped`` when the search already shows its key."""
+    return {
+        "action": "branch",
+        "name": "Skip a record if the search finds it",
+        "when": {"text_visible": record_key},
+        "then": [
+            {
+                "id": "end-record-1",
+                "action": "end_record",
+                "outcome": "skipped",
+                "reason": "duplicate",
+            }
+        ],
+    }
 
 
 def _resolve_commit_assertion(
@@ -329,6 +427,21 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
         warnings.extend(param_warnings)
         parameterized.append(updated)
 
+    meta = _resolve_meta(parameterized, recording_urls, options, warnings)
+
+    # PL-017: a search for the record key is a fill followed by the click that runs it. The search
+    # button submits its own form, so the recorder collapses it into a commit; it changes nothing in
+    # the destination, so it is demoted before any assertion is required of it, and the branch that
+    # reads its result goes straight after it.
+    search_click = (
+        detect_record_key_search(candidates, options) if options.duplicate_check else None
+    )
+    if search_click is not None:
+        parameterized[search_click].commit = False
+        warnings.append(
+            "the search step is not a commit step; it reads the destination, it does not change it"
+        )
+
     without_assertion: list[str] = []
     for candidate in parameterized:
         if not candidate.commit:
@@ -364,12 +477,17 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
             problems=without_assertion,
         )
 
-    meta = _resolve_meta(parameterized, recording_urls, options, warnings)
     _check_navigate_origins(parameterized, meta["allowed_origins"])
+    duplicate_branch = _duplicate_branch(meta["record_key"]) if search_click is not None else None
     recipe: dict[str, Any] = {
         "format_version": 1,
         "meta": meta,
-        "steps": _render_steps(parameterized, options),
+        "steps": _render_steps(
+            parameterized,
+            options,
+            duplicate_branch_after=search_click,
+            duplicate_branch=duplicate_branch,
+        ),
     }
 
     assert_valid_recipe(recipe)

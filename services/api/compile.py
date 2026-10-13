@@ -42,6 +42,10 @@ class CompileRequest(BaseModel):
     record_key_column: str | None = None
     allowed_origins: list[str] | None = None
     commit_step_ids: list[str] = []
+    # PL-017 built-in rules. ``duplicate_check`` is on by default; ``park_fields`` are the columns
+    # the person marked required in the Make recipe form.
+    duplicate_check: bool = True
+    park_fields: list[str] = []
 
 
 class CompileResponse(BaseModel):
@@ -66,6 +70,8 @@ def compile_recipe(request: CompileRequest) -> CompileResponse:
         record_key_column=request.record_key_column,
         allowed_origins=request.allowed_origins,
         commit_step_ids=request.commit_step_ids,
+        duplicate_check=request.duplicate_check,
+        park_fields=request.park_fields,
     )
     try:
         result = compile_recording(request.recording, options)
