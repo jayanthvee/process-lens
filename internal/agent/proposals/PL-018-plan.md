@@ -1,6 +1,7 @@
 # PL-018 plan: a recorder that captures what changed, not just the events it hears
 
-Status: **Step 0, for T1 review.** No implementation commit exists on this branch beyond the ticket.
+Status: **Approved by T1** (review at `2c032c8`): the §10 rulings are applied and the two required
+changes, R1 and R2, are folded in as §13. Implementation starts at §9 commit 2.
 Author: T2 · Reviewer: T1 · Branch `pl-018` · Depends on: PL-017b (merged, `main` = `2649e62`)
 Ticket: `internal/agent/tickets/PL-018.md` (committed here as `557da22`).
 
@@ -13,10 +14,8 @@ flags the decision in §10 for T1 to overrule.
 
 The ticket's Step 0 asks seven questions. §§1–7 answer them in order. §8 lists the requirements that
 are not among the seven questions (the step-id reset, weak observations, the D-019 renumbering) so that
-nothing is missed. §8 lists the requirements that are not among the seven questions, §9 is the commit
-order, §10 is what is open for T1, §11 records what the design review changed, and §12 is the ground
-truth this plan was written from.
-plan was written from.
+nothing is missed. §9 is the commit order, §10 records T1's rulings, §11 records what the design review
+changed, §12 is the ground truth this plan was written from, and §13 folds T1's review (R1, R2).
 
 Two constraints shape everything below and are worth stating once:
 
@@ -158,7 +157,7 @@ the diff is `current − baseline`:
 | a field that became **empty** | nothing — a clearing is not a fill, and an empty fill is refused by the executor (step-runner.ts) and dropped by the compiler (compiler.py) |
 | a select/combobox whose value differs without typing | `select` (option text, `option_match: "text"`) |
 | a chip added to a chip list | the per-chip `fill` of §4 (value = the chip's value, `clear_first: false`) |
-| a chip removed from a chip list | the click on its remove control; with no remove control present, **no step** and a warning (§4.4) |
+| a chip removed from a chip list | the click on its remove control when that control was clicked; otherwise the removal is marked `unrecordable` and the compile refuses (§4.4, R2) |
 | an element that appeared or vanished and is not a chip | nothing (a mere appearance is not an action) |
 
 A field that is *typed into* is still a `fill`, exactly as today; the snapshot is what catches the ones
@@ -345,7 +344,7 @@ same click-on-form fallback it is today, with a warning.
 A `press(Enter)` that is **not** followed by a submit within the same action window (an autocomplete
 accept, a search box) is untouched and stays a step of its own.
 
-### 3.7 The run-creation gate — **a runner change, and an open question for T1 (Q3)**
+### 3.7 The run-creation gate — approved: `"press"` joins `EXECUTOR_ACTIONS`
 
 `services/runner/creation.py:26` defines
 `EXECUTOR_ACTIONS = frozenset({"navigate", "fill", "select", "click", "wait_for", "assert"})`, and
@@ -357,15 +356,40 @@ and nor could any real workflow.
 The ticket's Out of scope says "Runner and protocol changes, except what the `press` executor half
 needs. If more seems needed, stop and ask T1." The candidate change is one word in one frozenset (no
 protocol change, no new step kind in the ledger), and it is arguably part of "the press executor half".
-It is **not** taken unilaterally: this is open question 3 for T1. Options:
+It was raised as open question 3, and **T1 approved it (§10 ruling 3)**: `"press"` is added to
+`EXECUTOR_ACTIONS`, and the run-creation test's expected vocabulary is updated with it. It is the
+**only** runner touch — no protocol change, no new ledger step kind — and because `press` is never
+commit-capable (`commit` is absent from its schema by construction), the runner's commit path and the
+`commit → assert_after` rule are untouched.
 
-- **(a)** add `"press"` to `EXECUTOR_ACTIONS` and update the run-creation test's expected vocabulary
-  (recommended — without it the ticket's own requirement 2 cannot be exercised end to end);
-- **(b)** leave the runner untouched, in which case `press` steps compile but no run can be created with
-  one, and the corpus golden must avoid them — which would make requirement 6's keyboard-autofill golden
-  impossible.
+### 3.8 A key press is never the committing step (R1, from T1's review)
 
-**(a) is the plan's default assumption**, because (b) contradicts the ticket's own pass condition.
+§3.6 covers the Enter-then-submit form, whose collapse produces a commit-capable click. But a
+Ctrl+Enter (or Cmd+Enter) that a composer sends with **fires no submit event at all**, so there is
+nothing to collapse and the press would stay the recording's last step — not commit-capable, so the
+send would replay with no write-ahead: a crash right after it re-queues the record, and the message is
+sent twice.
+
+The compiler therefore **refuses the recording** — after §3.6's fold has run — when
+
+- the last actionable event is a `press` with key `Enter`, `Control+Enter`, or `Meta+Enter`, or
+- the step the caller marks as the commit (`commit_step_ids`) is a press step.
+
+The problem it raises is one sentence, shown by Make recipe like every other compile problem, and
+nothing is stored:
+
+> "The save or send was done with a key. Re-record it by clicking the button (for example Send)."
+
+A press that is *not* the last action (an autocomplete accept, a search Enter the §3.6 fold turned into
+a submit click) is unaffected, and the collapse is checked to still compile to one commit click.
+
+A press that is *not* the last action (an autocomplete accept, a search Enter the §3.6 fold turned into
+a submit click) is unaffected, and the collapse is checked to still compile to one commit click.
+
+**Tests for R1:** a compiler test where the recording ends `press(Control+Enter)` → the compile fails
+with the key-commit problem; a compiler test where `commit_step_ids` names a press → the same refusal;
+the §3.6 collapse test showing Enter→submit still compiles to one commit click; and the corpus selftest
+checking the Ctrl+Enter-sent Gmail compose is refused at compile time, not replayed.
 
 **Tests:** schema (a press step validates; a press with `commit: true` is rejected; a press without
 `key` is rejected) in `packages/recipe/tests/test_recipe_schema.py`; recorder vitest (`keydown` → press
@@ -472,24 +496,37 @@ value) must never fall through to "typed and moved on" — if the suggestion can
 value is submitted. The safer default is asymmetric on purpose: a fill **with** the witness parks when its
 suggestion is missing; a fill **without** the witness is an ordinary fill.
 
-**How the accept is performed.** The plan chooses a **click on the matched option**, through
-`dispatchClick` — the PL-017b guarded path — rather than a synthesized `Enter`. Reasons: (a) it is
-deterministic, whereas Enter depends on the widget's highlight state; (b) it reuses the one code path the
-executor already proved safe; (c) the ticket does not prescribe the mechanism ("accept the suggestion"),
-and a click is an accept. The corpus's Gmail-style widget accepts *both* keyboard (for recording) and a
-suggestion click (for replay), so this is a property of the fixture, not an assumption about Gmail. A
-widget that only accepts a key is reported as a limitation (§7).
+**How the accept is performed (T1's ruling, §10 ruling 2).** The matched option is **clicked through
+`dispatchClick`** — the PL-017b guarded path, with its stability wait, hit test and landing check —
+because it is deterministic and reuses the one code path the executor already proved safe. When the
+widget offers no pointer-reachable option, `Enter` is allowed **only** when the widget's
+`aria-activedescendant` — or, when that attribute is absent, its selected option — is the **single**
+option whose text contains the row value. In every other case the fill **parks**, and `Enter` is never
+pressed blind. The corpus's Gmail-style widget accepts keyboard (for recording) and a suggestion click
+(for replay), so the golden exercises the click path end to end.
 
 This behaviour is **opt-in per field**: an ordinary text field with no listbox is filled exactly as
 today. That is what keeps the lead-crm and messy-crm goldens unchanged, and both are re-run in the final
 suite to prove it.
 
-### 4.4 Chips removed
+### 4.4 Chips removed (R2: a refusal, not a warning)
 
-A removed chip is recorded as the click on its remove control (the ✕ the recorder already resolves by its
-own accessible name). When a chip vanishes and no such control exists in the container, the recorder
-records **nothing** and emits a warning naming the container, because guessing a list replacement is
-exactly the kind of inference this ticket exists to remove. The corpus selftest proves the warning fires.
+A removed chip whose own remove control was clicked is recorded as that click — the ✕ the recorder
+already resolves by its own accessible name — and replays through the guarded click path, exactly as it
+was recorded.
+
+A chip removal the recording cannot replay is **not** left to a warning. The recorder records no step
+for the removal, but **marks the recording**: at the checkpoint that sees a chip vanish without its own
+remove control having been clicked since the previous checkpoint, it emits an `unrecordable` envelope
+event (`reason: "chip-removal"`). The **compile then refuses**, with exactly:
+
+> "A recipient was removed in a way that can't be replayed (no remove button). Re-record it using the ✕,
+> or don't remove recipients during the recording."
+
+A warning in a list is easy to miss; a replay that keeps a recipient the person removed sends to a wrong
+address, so the recording does not compile at all. The corpus selftest proves the refusal (it compiles
+the chip-removal-without-a-control recording and asserts the problem), and a compiler pytest covers the
+`unrecordable` refusal on its own.
 
 ---
 
@@ -507,14 +544,17 @@ A new fixture set `fixtures/sites/widget-corpus/`, built on the messy-crm anatom
 | `react-autocomplete.html` | autocomplete accepted by **clicking** the option | fill folded to the chip's value | containment match + click on the option |
 | `shadow-form.html` | a form inside an **open shadow root** | fill/select on the shadow fields | same, through the shadow root |
 | `iframe-form.html` | a form inside a **same-origin iframe** | fill on the framed field, with the frame path | same, with `frame` + `contextId` |
+| `chip-removal.html` | chips removable **only** by a control that is not the chip's own named ✕ (the removal the recording cannot replay), plus a `Ctrl+Enter` compose whose send fires no submit | nothing for the removal (an `unrecordable` event instead); the `press(Control+Enter)` as the last action | **neither compiles**: the removal refuses with R2's problem and the key-send refuses with R1's, so the page is a compile-time corpus case, not a replay target |
 
 Per widget the plan commits to exactly one persisted value that the fixture's `/__test__/state` can
 prove, so the corpus e2e's claim ("records and replays one value correctly") is checkable without
 screenshots.
 
 `selftest.py` checks: the handshake; every route; the DOM shape each page promises (the chip ARIA, the
-editors' event behaviour, the shadow/iframe nesting); the state API; the switches; and the 1000-field
-performance page of §1.6. It prints `SELFTEST PASSED (N checks)` and exits 0/1, like messy-crm's.
+editors' event behaviour, the shadow/iframe nesting); the state API; the switches; the 1000-field
+performance page of §1.6; and the two compile-time refusals (R2's chip removal, R1's key send) as
+exercised through the compile route's own function. It prints `SELFTEST PASSED (N checks)` and exits
+0/1, like messy-crm's.
 
 ---
 
@@ -550,12 +590,14 @@ page per surface and the selftest asserts each message, so the wording is tested
    keys list is closed.
 5. **Closed shadow roots are only detectable on the event path.** Mitigation: the message is emitted for
    the *click* that could not be described; the plan does not claim to detect them globally.
-6. **Corpus e2e runtime.** Six widgets × (record + compile + run) is the longest thing in the suite.
-   Mitigation: one test per widget inside the corpus file, the budget in §7.3, and a report that shows
-   the real duration.
-7. **The D-019 renumbering collides with the decision log's own rule** (§8.3, open question 1).
-8. **A `press` step cannot reach a run at all without a one-word runner change** (§3.7). Called out
-   explicitly rather than taken silently, per the ticket's stop-and-ask rule.
+6. **Corpus e2e runtime.** Six replay widgets × (record + compile + run) is the longest thing in the
+   suite (the seventh corpus page is compile-time only). Mitigation: one test per widget inside the
+   corpus file, the budget in §7.3, and a report that shows the real duration.
+7. **The D-019 renumbering collides with the decision log's own rule** (§8.3). Resolved as T1 ruled:
+   a superseding D-020 entry, D-019 untouched.
+8. **A `press` step cannot reach a run at all without a one-word runner change** (§3.7). T1 approved
+   the addition (§10 ruling 3); the risk that remains is the vocabulary drifting from the schema, which
+   the run-creation test's updated expected list guards.
 9. **A chip list and a combobox popup are structurally identical** (§1.2.1). The design review caught
    that the first draft would have read an autocomplete's suggestion list as a chip list and emitted a
    phantom step per suggestion; the exclusions in §1.2.1 are the fix, and the corpus's Gmail widget is
@@ -578,7 +620,9 @@ page per surface and the selftest asserts each message, so the wording is tested
 | req 5 weak observations | `packages/compiler/tests/test_pl018.py` — "Loading…", "Saving…", a `role=progressbar` and `aria-busy` text are not proposed | pytest |
 | req 6 corpus | `fixtures/sites/widget-corpus/selftest.py`; `tests/e2e/test_gmail_compose_golden.py` | script + e2e |
 | req 7 corpus e2e | `tests/e2e/test_widget_corpus.py` — one case per widget, each asserting its stored value; the report carries the "N of M" table | e2e |
-| req 8 renumber | the DECISIONS.md text check (whichever form T1 picks) | review |
+| req 8 renumber | the DECISIONS.md text check: D-020 exists, names the new layer order, and says it supersedes D-019's numbering | review |
+| R1 key-commit refusal | `packages/compiler/tests/test_pl018.py` — a recording ending `press(Control+Enter)` is refused; a press named in `commit_step_ids` is refused; the §3.6 Enter→submit collapse still compiles to one commit click | pytest |
+| R2 chip-removal refusal | `packages/compiler/tests/test_pl018.py` — an `unrecordable` chip-removal event refuses the compile with its problem; the corpus selftest's removal-without-a-control case gives the refusal | pytest + script |
 
 Each requirement also gets a revert-proof (revert, run, restore, record) in the report, as PL-017b did.
 
@@ -621,23 +665,19 @@ A step that loses its only evidence stays a non-commit step (a click with no ass
 unobserved click does today; a *commit* step without evidence still fails the schema, which is the
 existing fail-closed behaviour.
 
-### 8.3 D-019 renumbering (req 8) — **open question 1**
+### 8.3 D-019 renumbering (req 8) — ruled: a superseding **D-020** entry
 
 The ticket says "update the D-019 row so the layers read *AI suggestions and summary (PL-019),
 verification (PL-020), self-healing (PL-021)*". The current row (DECISIONS.md:26) reads
 "AI suggestions (PL-018) … (PL-019) … (PL-020)". So the change is a **renumbering of ticket references**,
 not a change of substance.
 
-But `internal/docs/DECISIONS.md:3-4` says: *"Protected file. Changes follow: proposal → T1 review →
-owner approval → new entry here. Entries are never edited after acceptance; a later entry supersedes an
-earlier one."*
-
-**Recommended (default):** leave D-019 untouched and add **D-020** recording the recording-first
-ordering and restating the layer list with the new numbers, marked as superseding D-019's numbering.
-This respects the file's own rule and produces the text the ticket asks for, in the place the file
-provides for it. **If T1 prefers the literal edit of D-019**, it is a one-cell change and will be done
-instead. This is the only place the plan knowingly proposes something other than the ticket's literal
-words.
+`internal/docs/DECISIONS.md:3-4` says: *"Protected file. Changes follow: proposal → T1 review → owner
+approval → new entry here. Entries are never edited after acceptance; a later entry supersedes an earlier
+one."* T1 ruled (§10 ruling 1): accepted entries are never edited, so D-019 is **left untouched** and a
+new **D-020** entry is added. D-020 records the recording-first ordering, restates the layer list with
+the new numbers — **AI suggestions and summary (PL-019), verification (PL-020), self-healing (PL-021)**
+— and says in its own words that it supersedes that part of D-019.
 
 ---
 
@@ -648,7 +688,7 @@ words.
    (including the baseline, the chip-list exclusions and the pointerdown checkpoint).
 3. `feat(recipe): add the press action to the schema and the types` — §3.2, with schema tests.
 4. `feat(extension): record and replay key presses` — §3.3–§3.5 (recorder, executor, compiler +
-   `normalize`), with vitests; the run-creation vocabulary only if T1 approves §3.7.
+   `normalize`) and §3.7 (the approved `EXECUTOR_ACTIONS` addition), with vitests.
 5. `feat(compiler): fold an autocompleted prefix into the chip's value` — §4.1–§4.2, with pytest and
    the popup `recordedValues` change, envelope `supersedes`/`chip`/`autocomplete`.
 6. `feat(executor): complete an autocomplete fill by containment` — §4.3, with vitests.
@@ -656,38 +696,41 @@ words.
 8. `feat(compiler): drop weak observations as assertions` — §8.2.
 9. `feat(fixtures): add the widget corpus and its selftest` — §5.
 10. `test(e2e): the Gmail-style golden and the corpus replay` — §5, §7.3.
-11. `docs(decisions): record the recording-first layer order` (whichever form T1 picks), then
+11. `docs(decisions): record the recording-first layer order` (D-020, §8.3), then
     `docs(report): record the PL-018 work, the coverage table and the real e2e output`.
 
 Each commit is independently verifiable; the tree is green after each.
 
 ---
 
-## 10. Open questions for T1
+## 10. T1's rulings (all seven questions answered)
 
-1. **D-019's form** (§8.3): superseding entry D-020 (recommended) or the literal one-cell edit?
-2. **The accept mechanism on replay** (§4.3): click the matched option through the guarded click path
-   (recommended), or synthesize `Enter`? The corpus supports both; the choice is which the *executor*
-   performs when a real page offers a key-only widget.
-3. **The run-creation vocabulary** (§3.7): may `EXECUTOR_ACTIONS` in `services/runner/creation.py` gain
-   `"press"`? Without it a `press` step (and therefore requirement 2, and the keyboard-autofill golden)
-   cannot be run at all. This is the one runner touch the plan asks for, and the ticket says to stop and
-   ask.
-4. **Chip removal without a remove control** (§4.4): warn and record nothing (recommended), or infer a
-   list-replacement fill?
-5. **Snapshot element cap** (§1.6): 1500 with a warning — a different number if T1 prefers.
-6. **The corpus's iframe page**: same-origin iframe only (the ticket says so); the cross-origin case is a
-   *warning* page, not a replay target. Confirm.
-7. **The fold's witness requirement** (§4.1.2): the plan folds only when the recorder witnessed an
-   autocomplete (`autocomplete: true`). A recording from an older build carries no witness, so it would
-   not fold; that is the fail-safe direction (the steps stand as recorded). Confirm.
+T1 reviewed the plan at `2c032c8` and **approved it with two required changes** (R1, R2 — folded in as
+§3.8 and §4.4, and listed in §13). The rulings:
+
+1. **D-019's form** (§8.3): **a superseding D-020 entry.** Accepted entries are never edited; D-020
+   restates the layer numbering, the AI summary (PL-019), verification (PL-020) and self-healing
+   (PL-021), and says it supersedes that part of D-019.
+2. **The accept mechanism on replay** (§4.3): **click the matched option through the guarded click
+   path.** If the widget offers no clickable option, `Enter` is allowed **only** when the widget's
+   `aria-activedescendant` (or its selected option) is the single option whose text contains the row
+   value. Otherwise, **park** — never press `Enter` blind.
+3. **The run-creation vocabulary** (§3.7): **approved.** `"press"` is added to `EXECUTOR_ACTIONS` in
+   `services/runner/creation.py`, and that is the only runner touch. `press` is never commit-capable, so
+   the runner's commit path is unchanged.
+4. **Chip removal without a remove control** (§4.4): **rejected as proposed.** Not a warning — a compile
+   **refusal** (R2).
+5. **Snapshot element cap** (§1.6): **1500, with a warning** — accepted.
+6. **Same-origin iframes only** (§5), with a warning page for cross-origin: **confirmed.**
+7. **The fold needs the recorder's witness** (§4.1.2): **confirmed** — older recordings without the
+   witness do not fold; that is the fail-safe direction.
 
 ---
 
 ## 11. Changes from the design review
 
 One reviewer pass (Sonnet 5.5, thinking high) read the plan against the code and returned **FAIL** with
-seven blocking findings. Each was checked against the tree and the plan is revised as follows.
+eight blocking findings. Each was checked against the tree and the plan is revised as follows.
 
 | # | finding | disposition |
 |---|---|---|
@@ -695,7 +738,7 @@ seven blocking findings. Each was checked against the tree and the plan is revis
 | 2 | The suggestion popup would be read as a chip list (a phantom step per suggestion) | **Fixed**: §1.2.1 — combobox-controlled listboxes and expand-only popups are excluded, and the tautological child clause is gone |
 | 3 | The compiler cannot see the fold: no envelope carried the relationship | **Fixed**: §4.1.1 — the `chip`, `autocomplete` and `supersedes` envelope fields, with the conformance test extended |
 | 4 | The sample row and record key are built in the **popup**, not the route | **Fixed**: §4.2 — `recordedValues` is taught the same rule, with tests on both sides |
-| 5 | A `press` recipe cannot run: `ACTIONABLE_KINDS`, and `creation.py`'s `SUPPORTED_ACTIONS` | **Fixed + escalated**: §3.5 (normalize/compiler) and §3.7 (the runner question for T1, open question 3) |
+| 5 | A `press` recipe cannot run: `ACTIONABLE_KINDS`, and `creation.py`'s `SUPPORTED_ACTIONS` | **Fixed + escalated**: §3.5 (normalize/compiler) and §3.7 (the runner question T1 then approved, §10 ruling 3) |
 | 6 | The checkpoint hooked `click`, not the earlier pointer event | **Fixed**: §2.2 — `pointerdown`/`mousedown` capture, one checkpoint per gesture |
 | 7 | The fold's precondition and replay's opt-in disagreed | **Fixed**: §4.1.2 and §4.3 now share one predicate and one witness, and a witnessed fill with no listbox parks |
 | 8 | A press(Enter) plus the form's submit would commit twice on replay | **Fixed**: §3.6 — the press folds into the submit it caused |
@@ -735,7 +778,38 @@ each one would have shipped a silent defect.
    derives it from the raw events; the compile route only forwards `sample_row`
    (services/api/compile.py:41,69) — so the fold must be taught in both places (§4.2).
 9. **The run-creation gate refuses `press` today**: `EXECUTOR_ACTIONS` (services/runner/creation.py:26)
-   and the check at :76 that raises `"unsupported step action"` (§3.7, open question 3).
-8. **Warnings reach the person** through the event envelope (`recordedWarnings`, make-recipe.ts:135-142)
-   and through the compile route's `warnings` list, both rendered in the Make recipe form's
-   `#make-warnings`.
+   and the check at :76 that raises `"unsupported step action"`; T1 approved the one-word addition
+   (§3.7, §10 ruling 3).
+10. **Warnings reach the person** through the event envelope (`recordedWarnings`, make-recipe.ts:135-142)
+    and through the compile route's `warnings` list, both rendered in the Make recipe form's
+    `#make-warnings`.
+
+---
+
+## 13. Changes from T1 review (`internal/agent/reports/PL-018-plan-review.md`)
+
+T1 reviewed the plan at `00d09f1` and **approved it with two required changes**; both are folded in
+above, and implementation starts from them.
+
+**R1 — A key press must never be the step that commits.** A `press` is not commit-capable, so a
+Ctrl+Enter/Cmd+Enter send that fires no `submit` would replay with no write-ahead and could double-send
+after a crash. Folded in as **§3.8**: the compiler refuses the recording when the last actionable event
+is `press(Enter|Control+Enter|Meta+Enter)`, or when the caller marks a press as the commit, with the
+problem *"The save or send was done with a key. Re-record it by clicking the button (for example
+Send)."* §3.6's Enter→submit collapse still compiles to one commit click, and is tested to do so.
+Tests: two compiler refusals (last-press, commit-ids) and the collapse; the corpus selftest's
+Ctrl+Enter case is refused at compile time, not replayed.
+
+**R2 — A chip removal that can't be replayed must block the recipe, not warn.** Recording nothing for a
+removed chip means a replay keeps a recipient the person removed — a wrong recipient. Folded in as
+**§4.4**: a chip that vanishes with no remove control clicked since the previous checkpoint produces an
+`unrecordable` envelope event, and the compile **refuses** with *"A recipient was removed in a way that
+can't be replayed (no remove button). Re-record it using the ✕, or don't remove recipients during the
+recording."* Test: the corpus selftest's chip-removal-without-a-control case gives a compile refusal, not
+a recipe, plus a compiler pytest for the `unrecordable` refusal.
+
+T1's other rulings (§10) are applied: D-020 (§8.3), click-through-the-guard with a single-match
+`aria-activedescendant` exception (§4.3), the approved `EXECUTOR_ACTIONS` `press` addition (§3.7), the
+1500-element cap (§1.6), same-origin iframes only (§5, §6), and the witness requirement for the fold
+(§4.1.2). The design review ran on Sonnet 5.5; implementation reviewers use the model the T2 prompt
+names (deepseek-flash, thinking high, `max_steps` 30).
