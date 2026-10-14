@@ -34,11 +34,17 @@ ADDRESS_COLUMN_HINTS = ("to", "email", "recipient")
 
 
 def golden_rows() -> list[dict[str, str]]:
-    """Three rows: a distinct address and a distinct body each."""
+    """Three rows: a distinct address and a distinct body each.
+
+    Every row's address must be one the widget's directory offers: a chip only forms when a
+    suggestion is accepted (the accept is a guarded click, and a widget that offers no match
+    parks by design), so a stranger address — the third row's original "frank@example.test" —
+    could never replay.
+    """
     return [
         {"to": "dana@example.test", "message_body": "Row one body"},
         {"to": "erin@example.test", "message_body": "Row two body"},
-        {"to": "frank@example.test", "message_body": "Row three body"},
+        {"to": "alice@example.test", "message_body": "Row three body"},
     ]
 
 
