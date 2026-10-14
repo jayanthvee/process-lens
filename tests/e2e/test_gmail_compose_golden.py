@@ -71,7 +71,7 @@ def record_demo(harness) -> None:
     page.click('[data-testid="compose"]')
     page.click('[data-testid="to"]')
     page.keyboard.type(DEMO_PREFIX)
-    page.wait_for_selector('[data-testid="suggestions"] [role="option"]', timeout=5_000)
+    page.wait_for_selector('#to-suggestions [role="option"]', timeout=5_000)
     # Accept the suggestion with the keyboard: the case the old recorder turned into "ma".
     page.keyboard.press("Enter")
 

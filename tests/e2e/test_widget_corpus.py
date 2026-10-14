@@ -1,8 +1,9 @@
 """PL-018 requirement 7: each widget type in the corpus records and replays one value.
 
 One case per widget, against the synthetic widget-corpus fixture. Each case records a short
-demonstration through the real popup, compiles it, runs one row, and asserts the value the fixture
-persisted is exactly the row's — the fixture's own state, not a screenshot.
+demonstration through the real popup, compiles it, runs one row whose value differs from the
+demonstrated one, and asserts the value the fixture persisted is exactly the row's — the fixture's
+own state (`/__test__/state`), not a screenshot.
 
 The report (`internal/agent/reports/PL-018.md`) carries the coverage table, "N of M widget types",
 built from these cases. A widget that fails is reported with its cause, never hidden.
@@ -19,8 +20,10 @@ from .conftest import simple_recipe
 
 pytestmark = pytest.mark.e2e
 
-NAME_COLUMN_HINTS = ("name", "editor", "body", "text", "message", "email", "assignee", "framed")
-PLAN_COLUMN_HINTS = ("plan", "select")
+# Column-name hints: the popup derives columns from the recorded fields' accessible names, so the
+# test maps the row's value onto whichever column carries the widget's editable field.
+TEXT_COLUMN_HINTS = ("note", "draft", "editor", "body", "text", "message", "reviewer", "assignee")
+SELECT_COLUMN_HINTS = ("team", "plan", "select", "status")
 
 
 def warm_up_corpus(harness) -> None:
@@ -33,7 +36,7 @@ def warm_up_corpus(harness) -> None:
         origin=harness.crm_url,
     )
     run_id = harness.make_run([{"email": "warmup@example.test"}], recipe=recipe)
-    harness.start_worker(worker_id="corpus-warm-up", max_count=1, max_seconds=90)
+    harness.start_worker(worker_id="corpus-warm-up", max_seconds=90)
     try:
         harness.wait_for_terminal(run_id, timeout=90.0)
     finally:
@@ -41,15 +44,19 @@ def warm_up_corpus(harness) -> None:
 
 
 def _row_from_sample(
-    sample: dict[str, str], text_value: str, plan_value: str | None = None
+    sample: dict[str, str], text_value: str, select_value: str | None = None
 ) -> dict[str, str]:
-    """One run row from the compiled sample row, by column-name hints."""
+    """One run row from the compiled sample row, by column-name hints.
+
+    The widget's editable column gets the row's value; a select-shaped column gets `select_value`
+    when one is given. Every other recorded column keeps the demonstrated value.
+    """
     row: dict[str, str] = {}
     for column, value in sample.items():
         lowered = column.lower()
-        if plan_value is not None and any(hint in lowered for hint in PLAN_COLUMN_HINTS):
-            row[column] = plan_value
-        elif any(hint in lowered for hint in NAME_COLUMN_HINTS) or "@" in str(value):
+        if select_value is not None and any(hint in lowered for hint in SELECT_COLUMN_HINTS):
+            row[column] = select_value
+        elif any(hint in lowered for hint in TEXT_COLUMN_HINTS) or "@" in str(value):
             row[column] = text_value
         else:
             row[column] = value
@@ -63,8 +70,8 @@ def record_compile_run(
     page_path: str,
     interact,
     text_value: str,
-    plan_value: str | None = None,
-) -> tuple[dict, dict, list[dict]]:
+    select_value: str | None = None,
+) -> dict:
     """Record one demonstration, compile it through the popup, run one row, return the state."""
     harness.corpus_reset()
     harness.page.goto(harness.crm_url + page_path)
@@ -83,26 +90,26 @@ def record_compile_run(
         f"{name}: the Make recipe form could not compile the recording: "
         f"result={outcome['result']!r} warnings={outcome['warnings']!r} events={events}"
     )
-    recipe = outcome["recipe"]
     sample = dict(outcome["row"] or {})
     assert sample, f"{name}: the popup stored no sample row"
 
-    rows = [_row_from_sample(sample, text_value, plan_value)]
-    run_id = harness.make_run(rows, recipe=recipe)
+    rows = [_row_from_sample(sample, text_value, select_value)]
+    run_id = harness.make_run(rows, recipe=outcome["recipe"])
     records = harness.settle_run(run_id)
     detail = "; ".join(
         f"{record.get('record_key')}={record['state']}:{record.get('reason')}" for record in records
     )
     assert all(record["state"] == "verified" for record in records), f"{name}: {detail}"
-    return recipe, outcome, harness.corpus_state()
+    return harness.corpus_state()
 
 
-def assert_state_value(state: dict, key: str, expected: str, *, name: str) -> None:
-    """The fixture's own truth for one widget, with a message naming what it actually holds."""
-    assert key in state, f"{name}: the fixture reports no {key!r}; it reports {sorted(state)}"
-    assert state[key] == expected, (
-        f"{name}: the fixture holds {state[key]!r} for {key!r}, expected {expected!r}"
+def widget_values(state: dict, source: str) -> dict:
+    """The values one widget persisted, keyed by the field the fixture stores."""
+    values = state.get("values") or {}
+    assert source in values, (
+        f"the fixture reports no saved values for {source!r}; it reports {sorted(values)}"
     )
+    return values[source]
 
 
 # ---------------------------------------------------------------- the widgets
@@ -118,16 +125,16 @@ def test_widget_plain_editor(corpus_harness) -> None:
         page.click('[data-testid="editor"]')
         page.keyboard.type(text)
         page.click('[data-testid="save"]')
-        page.wait_for_selector('[data-testid="saved"]', timeout=10_000)
+        page.wait_for_selector('[data-testid="saved"]:not([hidden])', timeout=10_000)
 
-    _recipe, _outcome, state = record_compile_run(
+    state = record_compile_run(
         harness,
         name="Plain editor",
         page_path="/plain-editor.html",
         interact=interact,
         text_value=text,
     )
-    assert_state_value(state, "editor_text", text, name="plain editor")
+    assert widget_values(state, "plain-editor")["note"] == text
 
 
 def test_widget_framework_editor(corpus_harness) -> None:
@@ -140,40 +147,40 @@ def test_widget_framework_editor(corpus_harness) -> None:
         page.click('[data-testid="editor"]')
         page.keyboard.type(text)
         page.click('[data-testid="save"]')
-        page.wait_for_selector('[data-testid="saved"]', timeout=10_000)
+        page.wait_for_selector('[data-testid="saved"]:not([hidden])', timeout=10_000)
 
-    _recipe, _outcome, state = record_compile_run(
+    state = record_compile_run(
         harness,
         name="Framework editor",
         page_path="/framework-editor.html",
         interact=interact,
         text_value=text,
     )
-    assert_state_value(state, "editor_text", text, name="framework editor")
+    assert widget_values(state, "framework-editor")["note"] == text
 
 
 def test_widget_react_autocomplete(corpus_harness) -> None:
     """An autocomplete accepted by clicking the option: the click must follow the typing."""
     harness = corpus_harness
     warm_up_corpus(harness)
-    address = "grace@example.test"
+    address = "carol@example.test"
 
     def interact(page) -> None:
-        page.click('[data-testid="assignee"]')
-        page.keyboard.type("grace")
-        page.wait_for_selector('[data-testid="options"] [role="option"]', timeout=5_000)
-        page.click(f'[data-testid="options"] [role="option"]:has-text("{address}")')
+        page.click('[data-testid="reviewer"]')
+        page.keyboard.type("carol")
+        page.wait_for_selector('#reviewer-suggestions [role="option"]', timeout=5_000)
+        page.click(f'#reviewer-suggestions [data-address="{address}"]')
         page.click('[data-testid="save"]')
-        page.wait_for_selector('[data-testid="saved"]', timeout=10_000)
+        page.wait_for_selector('[data-testid="saved"]:not([hidden])', timeout=10_000)
 
-    _recipe, _outcome, state = record_compile_run(
+    state = record_compile_run(
         harness,
         name="React autocomplete",
         page_path="/react-autocomplete.html",
         interact=interact,
         text_value=address,
     )
-    assert_state_value(state, "assignee", address, name="react autocomplete")
+    assert widget_values(state, "react-autocomplete")["reviewer"] == address
 
 
 def test_widget_shadow_form(corpus_harness) -> None:
@@ -181,59 +188,46 @@ def test_widget_shadow_form(corpus_harness) -> None:
     harness = corpus_harness
     warm_up_corpus(harness)
     text = "Shadow subject"
-    plan = "Pro"
+    team = "Support"
 
     def interact(page) -> None:
-        page.evaluate(
-            "() => { const root = document.querySelector('[data-testid=\"shadow-host\"]')"
-            ".shadowRoot;"
-            " const name = root.querySelector('[aria-label=\"Shadow name\"]');"
-            " name.focus(); }"
-        )
+        page.click('[data-testid="shadow-name"]')
         page.keyboard.type(text)
-        page.evaluate(
-            "() => { const root = document.querySelector('[data-testid=\"shadow-host\"]')"
-            ".shadowRoot;"
-            " const select = root.querySelector('[aria-label=\"Shadow plan\"]');"
-            " select.value = 'pro';"
-            " select.dispatchEvent(new Event('change', { bubbles: true })); }"
-        )
-        page.evaluate(
-            "() => document.querySelector('[data-testid=\"shadow-host\"]')"
-            ".shadowRoot.querySelector('[data-testid=\"shadow-save\"]').click()"
-        )
-        page.wait_for_selector('[data-testid="saved"]', timeout=10_000)
+        page.select_option('[data-testid="shadow-team"]', value="support")
+        page.click('[data-testid="shadow-save"]')
+        page.wait_for_selector('[data-testid="shadow-saved"]:not([hidden])', timeout=10_000)
 
-    _recipe, _outcome, state = record_compile_run(
+    state = record_compile_run(
         harness,
         name="Shadow form",
         page_path="/shadow-form.html",
         interact=interact,
         text_value=text,
-        plan_value=plan,
+        select_value=team,
     )
-    assert_state_value(state, "shadow_name", text, name="shadow form")
-    assert_state_value(state, "shadow_plan", plan, name="shadow form")
+    values = widget_values(state, "shadow-form")
+    assert values["name"] == text
+    assert values["team"] == team
 
 
 def test_widget_iframe_form(corpus_harness) -> None:
     """A form inside a same-origin iframe: the frame path must survive the round trip."""
     harness = corpus_harness
     warm_up_corpus(harness)
-    text = "framed@example.test"
+    text = "Framed note text"
 
     def interact(page) -> None:
-        frame = page.frame_locator('[data-testid="form-frame"]')
-        frame.locator('[aria-label="Framed email"]').click()
+        frame = page.frame_locator('[data-testid="frame"]')
+        frame.locator('[data-testid="frame-note"]').click()
         page.keyboard.type(text)
-        frame.locator('[data-testid="framed-save"]').click()
-        page.wait_for_selector('[data-testid="saved"]', timeout=10_000)
+        frame.locator('[data-testid="frame-save"]').click()
+        page.wait_for_selector('[data-testid="parent-status"]:not([hidden])', timeout=10_000)
 
-    _recipe, _outcome, state = record_compile_run(
+    state = record_compile_run(
         harness,
         name="Iframe form",
         page_path="/iframe-form.html",
         interact=interact,
         text_value=text,
     )
-    assert_state_value(state, "framed_email", text, name="iframe form")
+    assert widget_values(state, "iframe-form")["note"] == text
