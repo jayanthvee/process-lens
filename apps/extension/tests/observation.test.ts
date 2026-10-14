@@ -164,6 +164,24 @@ describe("post-action observation", () => {
     expect(recorded.events[1]!.observation).toEqual({ text_visible: "Saved" });
   });
 
+  it("reports a status revealed inside an open shadow root", async () => {
+    // The corpus's shadow form: the Save reveals `<div role="status" hidden>Saved</div>`
+    // inside an open shadow root, where neither a document-level query nor a
+    // document-level MutationObserver can see it.
+    document.body.innerHTML = "<button id='save'>Save</button><div id='host'></div>";
+    const root = document.getElementById("host")!.attachShadow({ mode: "open" });
+    root.innerHTML = "<div role='status' id='status' hidden>Saved</div>";
+    const recorded = harness();
+    document.getElementById("save")!.dispatchEvent(new Event("click", { bubbles: true }));
+
+    (root.getElementById("status") as HTMLElement).hidden = false;
+    await flushMutations();
+    await vi.advanceTimersByTimeAsync(1500);
+
+    expect(recorded.events.map((event) => event.kind)).toEqual(["click", "observation"]);
+    expect(recorded.events[1]!.observation).toEqual({ text_visible: "Saved" });
+  });
+
   it("does not observe while recording is off", async () => {
     document.body.innerHTML = "<button id='save'>Save</button><div id='host'></div>";
     const recorded = harness();

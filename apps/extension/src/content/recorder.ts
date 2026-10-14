@@ -206,6 +206,24 @@ function isShown(node: Element): boolean {
   return true;
 }
 
+/**
+ * Every element matching `selector` under `root`, descending through open shadow roots.
+ *
+ * A confirmation inside an open shadow root is invisible to a document-level query (and a
+ * document-level MutationObserver never sees its mutations either), so a scan that stops at
+ * the document boundary cannot witness the reveal — the corpus's shadow form reveals its
+ * `role=status` inside one. Hosts are found by their `shadowRoot`, exactly as the snapshot
+ * walk does.
+ */
+function deepQueryAll(root: ParentNode, selector: string): Element[] {
+  const found: Element[] = Array.from(root.querySelectorAll(selector));
+  for (const el of Array.from(root.querySelectorAll("*"))) {
+    const shadow = (el as Element & { shadowRoot?: ShadowRoot | null }).shadowRoot ?? null;
+    if (shadow) found.push(...deepQueryAll(shadow, selector));
+  }
+  return found;
+}
+
 function inputType(el: Element): string {
   return (el.getAttribute("type") ?? "text").toLowerCase();
 }
@@ -704,7 +722,7 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
    * before is weaker evidence, but still evidence — and it has no busy state of its own.
    */
   function confirmationIn(observation: ObservationWindow): { text: string; node: Element | null } {
-    for (const node of Array.from(doc.querySelectorAll(CONFIRMATION_SELECTOR))) {
+    for (const node of deepQueryAll(doc, CONFIRMATION_SELECTOR)) {
       if (observation.preexisting.has(node)) continue;
       const text = trimmedText(node);
       if (text) return { text, node };
@@ -728,7 +746,7 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
 
   /** The first confirmation text on this page right now, if any. */
   function presentConfirmationText(): string {
-    for (const node of Array.from(doc.querySelectorAll(CONFIRMATION_SELECTOR))) {
+    for (const node of deepQueryAll(doc, CONFIRMATION_SELECTOR)) {
       const text = trimmedText(node);
       if (text) return text;
     }
@@ -809,7 +827,7 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
       // pre-rendered status element the page keeps in its markup — hidden, or empty — is not
       // showing anything yet, so its reveal (or its first text) is the evidence this window wants.
       preexisting: new Set(
-        Array.from(doc.querySelectorAll(CONFIRMATION_SELECTOR)).filter(
+        deepQueryAll(doc, CONFIRMATION_SELECTOR).filter(
           (node) => trimmedText(node) !== "" && isShown(node),
         ),
       ),
