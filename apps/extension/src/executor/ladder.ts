@@ -173,6 +173,216 @@ export function measureTargetInPage(query: MeasureQuery): MeasureResult {
   return { ok: true, x, y, width, height, hit: "", topFrame };
 }
 
+/** The query handed to the page-side settle: the marked element's token and the time it may take. */
+export interface SettleQuery {
+  token: string;
+  /** How long, in milliseconds, the box may take to stop moving and the point to clear. */
+  deadline_ms: number;
+}
+
+/**
+ * Wait for a marked element to stop moving. Runs in the page and returns a Promise, so it is
+ * evaluated with `awaitPromise`.
+ *
+ * The element is scrolled into view once. Its box is then measured on two consecutive animation
+ * frames — a `requestAnimationFrame` pair — and the box is STABLE when x, y, width and height each
+ * differ by 1 px or less across the pair; the settled box is the second frame's. Nothing else is
+ * judged here — the point is hit-tested separately, immediately before the press (see
+ * `hitTestTargetInPage`). A box that never settles until `deadline_ms` is "kept moving". Nothing
+ * here sends input.
+ */
+export function settleTargetInPage(query: SettleQuery): Promise<MeasureResult> {
+  const MARKER = "data-pl-target";
+  const topFrame = (() => {
+    try {
+      return window.top === window.self;
+    } catch {
+      return false;
+    }
+  })();
+  const failure = (reason: string): MeasureResult => ({
+    ok: false,
+    x: 0,
+    y: 0,
+    width: 0,
+    height: 0,
+    hit: "",
+    topFrame,
+    reason,
+  });
+
+  let found: Element | null = null;
+  try {
+    const escaped = String(query.token).replace(/["\\]/g, "\\$&");
+    found = document.querySelector(`[${MARKER}="${escaped}"]`);
+  } catch {
+    return Promise.resolve(failure("the marker token is not a valid selector"));
+  }
+  if (!found) return Promise.resolve(failure("the marked element is no longer in the document"));
+  const target: Element = found;
+
+  if (typeof target.scrollIntoView === "function") {
+    try {
+      target.scrollIntoView({ block: "center", inline: "center" });
+    } catch {
+      // A page can refuse scrolling; the box below is still measured.
+    }
+  }
+
+  const clock = (): number =>
+    typeof performance !== "undefined" && typeof performance.now === "function"
+      ? performance.now()
+      : Date.now();
+  const budget = Number(query.deadline_ms);
+  const limit = Number.isFinite(budget) && budget > 0 ? budget : 0;
+  const started = clock();
+
+  const measure = (): { left: number; top: number; width: number; height: number } => {
+    const rect = target.getBoundingClientRect();
+    return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
+  };
+  // One animation frame. `requestAnimationFrame` is the real path; a timer stands in only where the
+  // page has none. A frame that never comes (a hidden tab pauses them) resolves `false` when the
+  // deadline passes, so the wait cannot hang and a missing frame is never read as a still box.
+  const nextFrame = (): Promise<boolean> =>
+    new Promise<boolean>((resolve) => {
+      if (typeof requestAnimationFrame !== "function") {
+        setTimeout(() => resolve(true), 0);
+        return;
+      }
+      const remaining = Math.max(50, limit - (clock() - started));
+      const guard = setTimeout(() => resolve(false), remaining);
+      requestAnimationFrame(() => {
+        clearTimeout(guard);
+        resolve(true);
+      });
+    });
+
+  const first = measure();
+  if (!(first.width > 0) || !(first.height > 0)) {
+    return Promise.resolve(
+      failure(`the element has no clickable area (${first.width}x${first.height})`),
+    );
+  }
+
+  // One box, measured on the NEXT animation frame. A frame that never comes (a hidden tab pauses
+  // them) resolves `null`, so the wait cannot hang and a missing frame is never read as a still box.
+  const measureAtFrame = (): Promise<{ left: number; top: number; width: number; height: number } | null> =>
+    nextFrame().then((framed) => (framed && target.isConnected ? measure() : null));
+
+  const within = (
+    a: { left: number; top: number; width: number; height: number },
+    b: { left: number; top: number; width: number; height: number },
+  ): boolean =>
+    Math.abs(a.left - b.left) <= 1 &&
+    Math.abs(a.top - b.top) <= 1 &&
+    Math.abs(a.width - b.width) <= 1 &&
+    Math.abs(a.height - b.height) <= 1;
+
+  // A PAIR of consecutive animation frames is the unit of comparison: the box on frame A versus the
+  // box on frame B. When the pair holds still, the target has settled.
+  const attempt = (): Promise<MeasureResult> =>
+    measureAtFrame().then((frameA): MeasureResult | Promise<MeasureResult> => {
+      if (!frameA) {
+        return failure("the target kept moving: no animation frame arrived to measure it");
+      }
+      if (!(frameA.width > 0) || !(frameA.height > 0)) {
+        return failure(`the element has no clickable area (${frameA.width}x${frameA.height})`);
+      }
+      return measureAtFrame().then((frameB): MeasureResult | Promise<MeasureResult> => {
+        if (!frameB) {
+          return failure("the target kept moving: no animation frame arrived to measure it");
+        }
+        if (within(frameA, frameB)) {
+          if (!(frameB.width > 0) || !(frameB.height > 0)) {
+            return failure(`the element has no clickable area (${frameB.width}x${frameB.height})`);
+          }
+          return {
+            ok: true,
+            x: frameB.left + frameB.width / 2,
+            y: frameB.top + frameB.height / 2,
+            width: frameB.width,
+            height: frameB.height,
+            hit: "",
+            topFrame,
+          };
+        }
+        if (clock() - started >= limit) {
+          return failure(
+            "the target kept moving: its box did not hold still across two animation frames",
+          );
+        }
+        return attempt();
+      });
+    });
+
+  return attempt();
+}
+
+/**
+ * Hit-test the point a click would land on: re-measure the marked element's box and check that
+ * `elementFromPoint` at its center returns the element itself or a descendant (never an ancestor).
+ * Runs in the page, synchronously, so it can sit immediately before the press.
+ *
+ * This is separate from the stability wait because a page can reflow *after* the box last held
+ * still — an in-flow autocomplete that opens a moment later pushes the target down and puts itself
+ * under the old point. Re-measuring here, at the last instant, is what catches that.
+ */
+export function hitTestTargetInPage(query: MeasureQuery): MeasureResult {
+  const MARKER = "data-pl-target";
+  const topFrame = (() => {
+    try {
+      return window.top === window.self;
+    } catch {
+      return false;
+    }
+  })();
+  const reject = (reason: string): MeasureResult => ({
+    ok: false,
+    x: 0,
+    y: 0,
+    width: 0,
+    height: 0,
+    hit: "",
+    topFrame,
+    reason,
+  });
+
+  let element: Element | null = null;
+  try {
+    const escaped = String(query.token).replace(/["\\]/g, "\\$&");
+    element = document.querySelector(`[${MARKER}="${escaped}"]`);
+  } catch {
+    return reject("the marker token is not a valid selector");
+  }
+  if (!element) return reject("the marked element is no longer in the document");
+
+  const rect = element.getBoundingClientRect();
+  const width = rect.width;
+  const height = rect.height;
+  if (!(width > 0) || !(height > 0)) {
+    return reject(`the element has no clickable area (${width}x${height})`);
+  }
+  const x = rect.left + width / 2;
+  const y = rect.top + height / 2;
+  const fromPoint =
+    typeof document.elementFromPoint === "function" ? document.elementFromPoint : null;
+  if (!fromPoint) {
+    // jsdom has no elementFromPoint; in a browser it is present, so the check is real wherever a
+    // click can actually be dispatched.
+    return { ok: true, x, y, width, height, hit: "", topFrame };
+  }
+  const hit = fromPoint.call(document, x, y);
+  if (hit && (hit === element || element.contains(hit))) {
+    return { ok: true, x, y, width, height, hit: hit.tagName.toLowerCase(), topFrame };
+  }
+  return reject(
+    hit
+      ? `the target is covered by another element (the box center is covered by <${hit.tagName.toLowerCase()}>)`
+      : "the target is covered by another element (the hit test found no element at the box center)",
+  );
+}
+
 /**
  * Find the element a target ladder describes. Runs in the page.
  *
@@ -532,6 +742,16 @@ export function resolverExpression(): string {
 /** The measurement function as an injectable expression. */
 export function measureExpression(): string {
   return `(${measureTargetInPage.toString()})`;
+}
+
+/** The settle function as an injectable expression. */
+export function settleExpression(): string {
+  return `(${settleTargetInPage.toString()})`;
+}
+
+/** The hit-test function as an injectable expression. */
+export function hitTestExpression(): string {
+  return `(${hitTestTargetInPage.toString()})`;
 }
 
 /** An ES-module-safe name for the resolver, used in tests. */

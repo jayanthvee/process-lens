@@ -122,6 +122,15 @@ a.button-link {
   border-radius: 4px;
 }
 
+/* The PL-017b `listbox_in_flow` switch: the listbox back in normal flow, ahead of the
+   Add button (app.js moves it there). Opening it pushes Add down, which is the reflow
+   the executor's stability guard has to survive. Off by default. */
+.suggestions.in-flow {
+  position: static;
+  width: auto;
+  margin: 6px 0 6px 0;
+}
+
 .suggestions [role="option"] {
   display: block;
   width: 100%;

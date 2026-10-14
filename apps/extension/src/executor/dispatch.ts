@@ -7,7 +7,7 @@
 // by a wait for the document to load. The element is always addressed by the
 // marker the resolver stamped on it.
 import type { CdpTransport } from "./cdp";
-import { measureExpression, type MeasureResult } from "./ladder";
+import { hitTestExpression, measureExpression, settleExpression, type MeasureResult } from "./ladder";
 import { evaluate, markerExpression } from "./page";
 import { ExecutorError } from "./types";
 
@@ -219,39 +219,246 @@ export async function dispatchFill(
   }
 }
 
+/** How long a click may wait for its target to hold still when the caller names no deadline. */
+export const DEFAULT_CLICK_SETTLE_MS = 2000;
+
+/** The floor for the landing listener's window, so the settle wait never spends it. */
+export const DEFAULT_LANDING_WINDOW_MS = 2000;
+
 /**
- * Click an element at its measured box center with a real mouse press and
- * release. The element is scrolled into view and re-measured first, and the
- * box center is hit-tested, so the click cannot land on something else.
+ * Wait for a marked element to stop moving, in the page, before any input. Throws a `park` error —
+ * sending nothing — when it never settles.
+ */
+async function settleTarget(
+  cdp: CdpTransport,
+  token: string,
+  deadlineMs: number,
+  contextId?: number,
+): Promise<MeasureResult> {
+  const expression = `(${settleExpression()})({ token: ${JSON.stringify(token)}, deadline_ms: ${JSON.stringify(
+    deadlineMs,
+  )} })`;
+  const result = (await evaluate(
+    cdp,
+    expression,
+    contextId !== undefined ? { contextId } : {},
+  )) as MeasureResult | undefined;
+  if (!result || result.ok !== true) {
+    throw new ExecutorError(
+      result?.reason ?? "the target could not be settled",
+      undefined,
+      "park",
+    );
+  }
+  return result;
+}
+
+/**
+ * Re-measure the marked element's box and hit-test its center, in the page. Returns a miss (never
+ * throws) so the caller can re-measure within the step's deadline.
+ */
+async function hitTestTarget(
+  cdp: CdpTransport,
+  token: string,
+  contextId?: number,
+): Promise<MeasureResult> {
+  const expression = `(${hitTestExpression()})({ token: ${JSON.stringify(token)} })`;
+  const result = (await evaluate(
+    cdp,
+    expression,
+    contextId !== undefined ? { contextId } : {},
+  )) as MeasureResult | undefined;
+  return result ?? { ok: false, x: 0, y: 0, width: 0, height: 0, hit: "", topFrame: false };
+}
+
+/** The window property the one-shot landing listener records its verdict on. */
+const LANDING_KEY = "__plClickLanding";
+
+/**
+ * Install the one-shot capture-phase `mousedown` listener. It records whether the press landed on
+ * the marked element (or inside it) and removes itself after one event; a timer removes it too and
+ * leaves the result `null`. Returns nothing.
+ */
+function landingInstallExpression(token: string, deadlineMs: number): string {
+  return `(() => {
+    const el = ${markerExpression(token)};
+    const previous = window.${LANDING_KEY};
+    if (previous && typeof previous.cleanup === "function") previous.cleanup();
+    const state = { token: ${JSON.stringify(token)}, result: null, cleanup: null };
+    const onDown = (event) => {
+      state.result = el && (event.target === el || el.contains(event.target)) ? "target" : "other";
+      state.cleanup();
+    };
+    const timer = setTimeout(() => state.cleanup(), ${JSON.stringify(Math.max(0, deadlineMs))});
+    state.cleanup = () => {
+      document.removeEventListener("mousedown", onDown, true);
+      clearTimeout(timer);
+    };
+    window.${LANDING_KEY} = state;
+    document.addEventListener("mousedown", onDown, true);
+  })()`;
+}
+
+/** Read the landing verdict: "target", "other", or null when nothing was seen. */
+async function readLanding(
+  cdp: CdpTransport,
+  scope: { contextId?: number },
+): Promise<string | null> {
+  try {
+    const value = await evaluate(
+      cdp,
+      `(() => { const s = window.${LANDING_KEY}; return s && typeof s.result === "string" ? s.result : null; })()`,
+      scope,
+    );
+    return typeof value === "string" ? value : null;
+  } catch {
+    // A click that navigated destroys the context the listener lived in: that is "no result".
+    return null;
+  }
+}
+
+/** Remove the landing listener and its timer. Idempotent, and quiet when the document is gone. */
+async function removeLanding(cdp: CdpTransport, scope: { contextId?: number }): Promise<void> {
+  try {
+    await evaluate(
+      cdp,
+      `(() => { const s = window.${LANDING_KEY}; if (s && typeof s.cleanup === "function") s.cleanup(); delete window.${LANDING_KEY}; })()`,
+      scope,
+    );
+  } catch {
+    // The document may have been replaced by the click; there is nothing left to clean.
+  }
+}
+
+/** Whether a `Page.frameNavigated` arrived while the press was being sent. */
+function watchNavigation(cdp: CdpTransport): {
+  navigated(): boolean;
+  whenNavigated(ms: number): Promise<boolean>;
+  stop(): void;
+} {
+  let seen = false;
+  let waiters: Array<(value: boolean) => void> = [];
+  const off = cdp.on?.call(cdp, "Page.frameNavigated", () => {
+    seen = true;
+    const pending = waiters;
+    waiters = [];
+    for (const resolve of pending) resolve(true);
+  });
+  return {
+    navigated: () => seen,
+    // A null landing means the document is gone; the frameNavigated event that explains it can
+    // arrive a moment after the read, so wait for it (bounded by the step deadline) instead of
+    // racing it. It is a wait, not a retry: nothing is clicked again.
+    whenNavigated(ms: number): Promise<boolean> {
+      if (seen) return Promise.resolve(true);
+      return new Promise<boolean>((resolve) => {
+        const timer = setTimeout(() => resolve(false), Math.max(0, ms));
+        waiters.push((value) => {
+          clearTimeout(timer);
+          resolve(value);
+        });
+      });
+    },
+    stop: () => off?.(),
+  };
+}
+
+/**
+ * Click an element with a real mouse press and release, so that the element the guards approved is
+ * the element acted on.
+ *
+ * Before the first `Input.*` event the target is scrolled into view and measured on two consecutive
+ * animation frames until it holds still (R1); then its box is re-measured and the box center is
+ * hit-tested immediately before the press (R2), re-measuring within `deadlineMs` when the point has
+ * been covered since — a page that opens an in-flow autocomplete after the box last held still
+ * pushes the target down and puts the listbox under the old point. A target that keeps moving or
+ * stays covered until the deadline parks with NO input sent. A one-shot capture `mousedown` listener
+ * is installed before the press and read after the release (R3): a press that landed on something
+ * else throws a `park` error. That error is thrown AFTER the first input, so the command session
+ * reports it `lost` (F2), never `rejected` — this function has no notion of a commit step and needs
+ * none. When the page navigated and took its listener with it, the result is missing; that counts as
+ * landed only when a `Page.frameNavigated` arrived after the press.
  */
 export async function dispatchClick(
   cdp: CdpTransport,
   token: string,
   contextId?: number,
   hooks?: InputHooks,
+  deadlineMs: number = DEFAULT_CLICK_SETTLE_MS,
 ): Promise<MeasureResult> {
-  const box = await measureTarget(cdp, token, contextId);
+  const scope = contextId !== undefined ? { contextId } : {};
+  const gate = inputGate(hooks);
+  const started = Date.now();
+  const remaining = (): number => deadlineMs - (Date.now() - started);
 
-  // The click is dispatched at the top document's coordinates. An element inside
-  // a subframe cannot be clicked from here without landing on whatever the top
-  // document shows at those coordinates, so the step is parked instead.
-  if (box.topFrame !== true) {
-    throw new ExecutorError(
-      "refusing to click: the target is inside a frame, so a click at its coordinates would land on the top document instead",
-      undefined,
-      "park",
-    );
+  // R1 then R2, in a loop: wait for the box to hold still, re-measure the box and hit-test the
+  // point right before the press, and if the point is covered, wait again and re-measure. Reaching
+  // here past the deadline parks — and no `Input.*` was sent before the loop breaks, so the session
+  // reports a covered target `not_dispatched`, not `lost`.
+  let box: MeasureResult;
+  for (;;) {
+    box = await settleTarget(cdp, token, Math.max(1, remaining()), contextId);
+    // The click is dispatched at the top document's coordinates. An element inside a subframe
+    // cannot be clicked from here without landing on whatever the top document shows at those
+    // coordinates, so the step is parked instead.
+    if (box.topFrame !== true) {
+      throw new ExecutorError(
+        "refusing to click: the target is inside a frame, so a click at its coordinates would land on the top document instead",
+        undefined,
+        "park",
+      );
+    }
+    const hit = await hitTestTarget(cdp, token, contextId);
+    if (hit.ok) {
+      box = { ...box, x: hit.x, y: hit.y };
+      break;
+    }
+    if (remaining() <= 0) {
+      throw new ExecutorError(
+        hit.reason ?? "the target is covered by another element",
+        undefined,
+        "park",
+      );
+    }
   }
 
-  const gate = inputGate(hooks);
+  // Install the landing listener now — after the settle/hit-test loop, immediately before the input
+  // it must observe, so its window is not spent waiting for the box. It is one page evaluate and
+  // sends no input. A generous window covers mouseMoved/mousePressed/mouseReleased and the read
+  // back; a click that navigates destroys the document and the listener with it.
+  const landingWindowMs = Math.max(deadlineMs, DEFAULT_LANDING_WINDOW_MS);
+  await evaluate(cdp, landingInstallExpression(token, landingWindowMs), scope);
+
   const base = { x: box.x, y: box.y, button: "left", clickCount: 1 };
-  gate();
-  await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: box.x, y: box.y });
-  gate();
-  await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", ...base });
-  gate();
-  await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", ...base });
-  return box;
+  const navigation = typeof cdp.on === "function" ? watchNavigation(cdp) : null;
+  let landed: string | null;
+  let navigatedByClick = false;
+  try {
+    gate();
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: box.x, y: box.y });
+    gate();
+    await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", ...base });
+    gate();
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", ...base });
+    landed = await readLanding(cdp, scope);
+    // Only a MISSING result needs the navigation check: when the press landed somewhere the
+    // listener could see, its verdict stands whatever else happens.
+    if (landed === null && navigation) {
+      navigatedByClick = await navigation.whenNavigated(Math.max(0, remaining()));
+    }
+  } finally {
+    navigation?.stop();
+  }
+  // On the happy path the listener removed itself the moment the press landed, so there is nothing
+  // to clean up and no extra round trip.
+  if (landed === "target") return box;
+  // A click that navigated takes its document, and the listener with it: no result is expected
+  // then, and the navigation this very click caused is what stands in for it.
+  if (landed === null && navigatedByClick) return box;
+  // Otherwise the listener may still be armed: remove it before throwing, so it cannot outlive the
+  // step.
+  await removeLanding(cdp, scope);
+  throw new ExecutorError("the click landed on a different element", undefined, "park");
 }
 
 /**

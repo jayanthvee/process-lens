@@ -23,7 +23,7 @@ from collections import Counter
 
 import pytest
 
-from .conftest import EXISTING_EMAIL, NEW_EMAILS
+from .conftest import EXISTING_EMAIL, NEW_EMAILS, measure_click_overhead
 
 pytestmark = pytest.mark.e2e
 
@@ -74,6 +74,16 @@ def record_search_then_new_lead(harness) -> None:
     page.wait_for_selector("text=Lead created", timeout=10_000)
     assert harness.wait_for_observation(), "the save's confirmation was never recorded"
     harness.stop_recording()
+
+
+def count_click_steps(steps: object) -> int:
+    """Click steps in a compiled recipe, including those nested in branches."""
+    if isinstance(steps, list):
+        return sum(count_click_steps(item) for item in steps)
+    if isinstance(steps, dict):
+        own = 1 if steps.get("action") == "click" else 0
+        return own + sum(count_click_steps(value) for value in steps.values())
+    return 0
 
 
 def describe(records: list[dict]) -> str:
@@ -138,3 +148,12 @@ def test_record_compile_run_on_lead_crm(harness) -> None:
     for email in (*NEW_EMAILS, EXISTING_EMAIL):
         assert leads.get(email, 0) == 1, f"{email!r} exists {leads.get(email, 0)} times ({detail})"
     assert leads.get(NO_COMPANY_EMAIL, 0) == 0, f"the parked row must not save ({detail})"
+
+    # PL-017b requirement 5: the added per-click page-side work, measured on the bound tab, last so
+    # the golden assertions above report first. The click count is the compiled recipe's click steps
+    # times the records that ran the full chain.
+    verified = sum(1 for record in records if record["state"] == "verified")
+    clicks = max(1, count_click_steps(recipe["steps"]) * verified)
+    measurement = measure_click_overhead(harness, clicks)
+    print("CLICK OVERHEAD:", json.dumps(measurement))
+    assert measurement["median_ms"] < 250, measurement

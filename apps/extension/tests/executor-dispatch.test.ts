@@ -127,7 +127,11 @@ describe("click", () => {
     restoreLayout = installLayout({ width: 0, height: 0 });
     const { cdp, callsTo } = fakeCdp();
 
-    await expect(dispatchClick(cdp, "c1")).rejects.toThrow(/no clickable area/);
+    // A short settle deadline: the box never becomes clickable, and the wait must not run to its
+    // full default before parking.
+    await expect(dispatchClick(cdp, "c1", undefined, undefined, 40)).rejects.toThrow(
+      /no clickable area/,
+    );
     expect(callsTo("Input.dispatchMouseEvent")).toHaveLength(0);
   });
 
@@ -136,7 +140,9 @@ describe("click", () => {
     restoreLayout = installLayout({ hit: "none" });
     const { cdp, callsTo } = fakeCdp();
 
-    await expect(dispatchClick(cdp, "c1")).rejects.toThrow(/hit test found no element/);
+    await expect(dispatchClick(cdp, "c1", undefined, undefined, 40)).rejects.toThrow(
+      /hit test found no element/,
+    );
     expect(callsTo("Input.dispatchMouseEvent")).toHaveLength(0);
   });
 
@@ -145,7 +151,7 @@ describe("click", () => {
     restoreLayout = installLayout({ hit: "other" });
     const { cdp, callsTo } = fakeCdp();
 
-    await expect(dispatchClick(cdp, "c1")).rejects.toThrow(/covered by/);
+    await expect(dispatchClick(cdp, "c1", undefined, undefined, 40)).rejects.toThrow(/covered by/);
     expect(callsTo("Input.dispatchMouseEvent")).toHaveLength(0);
   });
 

@@ -716,6 +716,57 @@ class Harness:
         raise AssertionError("the run never settled: " + self.describe(run_id))
 
 
+_CLICK_OVERHEAD_JS = """
+async (samples) => {
+  const raf = () => new Promise((resolve) => requestAnimationFrame(() => resolve()));
+  const target =
+    Array.from(document.querySelectorAll('button, a, input, select')).find((node) => {
+      const box = node.getBoundingClientRect();
+      return box.width > 0 && box.height > 0;
+    }) || document.body;
+  const out = [];
+  for (let i = 0; i < samples; i += 1) {
+    const started = performance.now();
+    target.getBoundingClientRect();
+    await raf();
+    await raf();
+    const settled = target.getBoundingClientRect();
+    document.elementFromPoint(settled.left + settled.width / 2, settled.top + settled.height / 2);
+    out.push(performance.now() - started);
+  }
+  return out;
+}
+"""
+
+
+def measure_click_overhead(harness: Harness, samples: int) -> dict[str, Any]:
+    """Measure the page-side work PL-017b adds to one click, on the bound tab.
+
+    Per sample it runs what the executor's guard adds on a still page: a box measurement, two
+    consecutive animation frames, a second measurement and one ``elementFromPoint`` at the box
+    center, timed with ``performance.now()``. Returns ``{"median_ms", "samples_ms", "count"}``.
+
+    The tab may still be finishing the run's last navigation when this is called, so it waits for
+    the document to settle first: an evaluate that lands mid-navigation is told the execution
+    context was destroyed, which is a timing fact about the measurement, not about the guard.
+    """
+    count = max(1, int(samples))
+    # The run leaves the bound tab on the page of its last step, and that page may still be
+    # navigating (a full-page save). Navigate to the fixture's stable index first: evaluating during
+    # a navigation is told the execution context was destroyed, which is a timing fact about the
+    # measurement, not about the guard.
+    harness.settle_page()
+    timings = [float(value) for value in harness.page.evaluate(_CLICK_OVERHEAD_JS, count)]
+    ordered = sorted(timings)
+    middle = len(ordered) // 2
+    median = ordered[middle] if len(ordered) % 2 else (ordered[middle - 1] + ordered[middle]) / 2
+    return {
+        "median_ms": round(median, 3),
+        "samples_ms": [round(value, 3) for value in timings],
+        "count": count,
+    }
+
+
 def _rewrite_origin(document: dict[str, Any], crm_port: int) -> dict[str, Any]:
     """Replace the recipe's placeholder origin (port 0) with the fixture's real port."""
     text = json.dumps(document).replace(PLACEHOLDER_ORIGIN, f"http://127.0.0.1:{crm_port}")
