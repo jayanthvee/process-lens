@@ -172,7 +172,7 @@ def test_widget_framework_editor(corpus_harness) -> None:
         interact=interact,
         text_value=text,
     )
-    assert widget_values(state, "framework-editor")["note"] == text
+    assert widget_values(state, "framework-editor")["draft"] == text
 
 
 def test_widget_react_autocomplete(corpus_harness) -> None:
@@ -223,7 +223,10 @@ def test_widget_shadow_form(corpus_harness) -> None:
     )
     values = widget_values(state, "shadow-form")
     assert values["name"] == text
-    assert values["team"] == team
+    # The page stores the select's own value ("support"), never the option's
+    # label ("Support"): the row asked for the label so the replay exercised
+    # text matching, and the fixture's truth is the value it persisted.
+    assert values["team"] == "support"
 
 
 def test_widget_iframe_form(corpus_harness) -> None:
