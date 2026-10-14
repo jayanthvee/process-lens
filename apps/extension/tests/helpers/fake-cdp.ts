@@ -94,6 +94,10 @@ function dispatchMouse(
     new MouseEvent(type, {
       bubbles: true,
       cancelable: true,
+      // A real mouse event over a shadow control is dispatched at the inner target and retargets
+      // as it crosses the boundary; composed models that, so the document-level landing listener
+      // sees it (and its `composedPath` names the inner element).
+      composed: true,
       button: 0,
       clientX: x,
       clientY: y,

@@ -196,6 +196,41 @@ def test_a_chip_fill_with_nothing_to_consume_stays_one_fill(options: CompileOpti
     assert not any("folded the fill superseded" in warning for warning in result.warnings)
 
 
+def test_an_option_click_is_folded_into_the_chip_too(options: CompileOptions) -> None:
+    """The ticket's "by click, key or paste": the option click is the accept, not a step.
+
+    Left unfolded, the replay would accept the suggestion twice: once through the executor's
+    containment completion and once through the recorded click, whose option no longer exists.
+    """
+    option_targets = [
+        {"by": "role", "role": "option", "name": "Mary An <ma@example.test>"},
+        {"by": "css", "selector": "#suggestions > span"},
+    ]
+    recording = [
+        action_event(1, "fill", "fill", EMAIL_TARGETS, value="ma", step_id="fill-1"),
+        action_event(2, "click", "click", option_targets, name="Click Mary An", step_id="click-2"),
+        chip_event(3, "ma@example.test", supersedes="fill-1"),
+    ]
+    result = compile_recording(recording, options)
+    assert actions(result.recipe) == ["navigate", "fill"]
+    fills = [step for step in result.recipe["steps"] if step["action"] == "fill"]
+    assert fills[0]["value"] == {"kind": "constant", "value": "ma@example.test"}
+    assert any("folded the fill superseded" in warning for warning in result.warnings)
+
+
+def test_an_ordinary_click_between_the_prefix_and_the_chip_is_not_folded(
+    options: CompileOptions,
+) -> None:
+    """Only a click that names a suggestion option is the accept; anything else stands."""
+    recording = [
+        action_event(1, "fill", "fill", EMAIL_TARGETS, value="ma", step_id="fill-1"),
+        action_event(2, "click", "click", SAVE_TARGETS, name="Click Save", step_id="click-2"),
+        chip_event(3, "ma@example.test", supersedes="fill-1"),
+    ]
+    result = compile_recording(recording, options)
+    assert actions(result.recipe) == ["navigate", "click", "fill"]
+
+
 # --- weak observations (§8.2) ---------------------------------------------
 
 

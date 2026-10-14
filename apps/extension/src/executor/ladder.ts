@@ -187,10 +187,28 @@ export function measureTargetInPage(query: MeasureQuery): MeasureResult {
   if (fromPoint) {
     const hit = fromPoint.call(document, x, y);
     if (!hit) return reject("the hit test found no element at the box center");
-    // Only the target itself, or a descendant of it, is a hit. An ANCESTOR is
-    // not: a click at the box center would land on the wrapper that contains the
-    // target, not on the target.
-    if (hit !== element && !element.contains(hit)) {
+    // Only the target itself, a descendant of it, or the host of the shadow tree it lives in is
+    // a hit. An ANCESTOR is not: a click at the box center would land on the wrapper that
+    // contains the target. A shadow target reports its host here, because the point lookup
+    // retargets across the shadow boundary — that is the target's own tree, not something
+    // covering it. The chain is walked with `parentElement`/`parentNode` (a shadow root needs no
+    // `getRootNode`), so the same code runs in a browser and in a jsdom test.
+    const hostChain: Element[] = [];
+    let node: Element | null = element;
+    while (node) {
+      const parent: Element | null = node.parentElement;
+      if (parent) {
+        node = parent;
+        continue;
+      }
+      const rootNode: Node | null = node.parentNode;
+      const hostEl: Element | null =
+        rootNode && (rootNode as ShadowRoot).host ? (rootNode as ShadowRoot).host : null;
+      if (!hostEl) break;
+      hostChain.push(hostEl);
+      node = hostEl;
+    }
+    if (hit !== element && !element.contains(hit) && !hostChain.includes(hit)) {
       return reject(`the box center is covered by <${hit.tagName.toLowerCase()}>`);
     }
     return { ok: true, x, y, width, height, hit: hit.tagName.toLowerCase(), topFrame };
@@ -448,7 +466,26 @@ export function hitTestTargetInPage(query: MeasureQuery): MeasureResult {
     return { ok: true, x, y, width, height, hit: "", topFrame };
   }
   const hit = fromPoint.call(document, x, y);
-  if (hit && (hit === element || element.contains(hit))) {
+  // A shadow target reports its host here, because the point lookup retargets across the shadow
+  // boundary. Walking the host chain (through `parentElement`/`parentNode`; a shadow root needs
+  // no `getRootNode`) accepts that host as the target's own tree, while an ordinary wrapper that
+  // merely contains the target is still refused.
+  const hostChain: Element[] = [];
+  let node: Element | null = element;
+  while (node) {
+    const parent: Element | null = node.parentElement;
+    if (parent) {
+      node = parent;
+      continue;
+    }
+    const rootNode: Node | null = node.parentNode;
+    const hostEl: Element | null =
+      rootNode && (rootNode as ShadowRoot).host ? (rootNode as ShadowRoot).host : null;
+    if (!hostEl) break;
+    hostChain.push(hostEl);
+    node = hostEl;
+  }
+  if (hit && (hit === element || element.contains(hit) || hostChain.includes(hit))) {
     return { ok: true, x, y, width, height, hit: hit.tagName.toLowerCase(), topFrame };
   }
   return reject(

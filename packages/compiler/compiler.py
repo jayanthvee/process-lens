@@ -356,7 +356,15 @@ def _fold_chip_fills(candidates: list[Candidate]) -> tuple[list[Candidate], list
         for position in range(prefix + 1, index):
             accept = candidates[position]
             same_field = target_signature(accept.targets) == target_signature(candidate.targets)
-            if accept.action == "press" or (accept.action == "select" and same_field):
+            # The accept the fold consumes: a key press, a select of the same field, or the click
+            # on the suggestion itself (the ticket's "by click, key or paste"). A click on the
+            # option is the same action as the chip that followed it, and leaving it in would make
+            # the replay accept a suggestion twice.
+            if (
+                accept.action == "press"
+                or (accept.action == "select" and same_field)
+                or (accept.action == "click" and _is_option_click(accept))
+            ):
                 dropped.add(position)
         warnings.append(
             f"folded the fill superseded by the chip fill at event {candidate.seq} into the chip"
@@ -365,6 +373,11 @@ def _fold_chip_fills(candidates: list[Candidate]) -> tuple[list[Candidate], list
     if not dropped:
         return list(candidates), warnings
     return [item for position, item in enumerate(candidates) if position not in dropped], warnings
+
+
+def _is_option_click(candidate: Candidate) -> bool:
+    """Whether a click's ladder names a suggestion option (the accept, not an ordinary click)."""
+    return any(str(rung.get("role", "")).lower() == "option" for rung in candidate.targets or [])
 
 
 def _refuse_what_cannot_replay(events: list[Event], candidates: list[Candidate]) -> None:

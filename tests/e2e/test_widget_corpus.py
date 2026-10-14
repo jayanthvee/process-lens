@@ -63,6 +63,21 @@ def _row_from_sample(
     return row
 
 
+def choose_record_key(harness) -> None:
+    """Pick the form's first record-key column when it defaulted to none.
+
+    The popup disables Make recipe until a key is chosen, and it only auto-chooses one when a
+    recorded value looks like an email. These widgets persist free text, so the person would pick
+    the first column; the test does the same.
+    """
+    harness.popup.evaluate(
+        "() => { const sel = document.getElementById('make-key');"
+        " if (sel && !sel.value && sel.options.length > 0) {"
+        " sel.value = sel.options[0].value;"
+        " sel.dispatchEvent(new Event('change', { bubbles: true })); } }"
+    )
+
+
 def record_compile_run(
     harness,
     *,
@@ -85,6 +100,7 @@ def record_compile_run(
         print(f"{name} EVENTS:", json.dumps(events, indent=2, sort_keys=True))
 
     harness.corpus_reset()
+    choose_record_key(harness)
     outcome = harness.compile_via_popup(name)
     assert outcome["recipe"] is not None, (
         f"{name}: the Make recipe form could not compile the recording: "
@@ -221,7 +237,8 @@ def test_widget_iframe_form(corpus_harness) -> None:
         frame.locator('[data-testid="frame-note"]').click()
         page.keyboard.type(text)
         frame.locator('[data-testid="frame-save"]').click()
-        page.wait_for_selector('[data-testid="parent-status"]:not([hidden])', timeout=10_000)
+        # The framed Save answers in its own document; the parent's status is a manual button.
+        frame.locator('[data-testid="frame-saved"]:not([hidden])').wait_for(timeout=10_000)
 
     state = record_compile_run(
         harness,

@@ -175,6 +175,37 @@ function elementFrom(target: EventTarget | null): Element | null {
   return target as Element;
 }
 
+/**
+ * The element an event really happened on.
+ *
+ * An event raised inside an open shadow root is retargeted at the document: `event.target` is the
+ * host, and a listener that trusted it would attribute the person's typing (and their click) to
+ * the host. The composed path's first node is the inner element, which is also the element the
+ * snapshot reads, so both halves of the recorder agree on what changed.
+ */
+function realTarget(event: Event): EventTarget | null {
+  const path = typeof event.composedPath === "function" ? event.composedPath() : null;
+  return path && path.length > 0 ? (path[0] ?? null) : event.target;
+}
+
+/**
+ * Whether a node is on display: nothing on its ancestor chain hides it.
+ *
+ * Deliberately DOM-only (the `hidden` attribute, `display:none`, `visibility:hidden`), so it is
+ * decided without layout — the same answer in a browser and in a jsdom test — and so a
+ * pre-rendered status element the page keeps hidden is never mistaken for a stale confirmation.
+ */
+function isShown(node: Element): boolean {
+  for (let el: Element | null = node; el; el = el.parentElement) {
+    if (el.hasAttribute("hidden")) return false;
+    const style = (el as HTMLElement).style;
+    if (style) {
+      if (style.display === "none" || style.visibility === "hidden") return false;
+    }
+  }
+  return true;
+}
+
 function inputType(el: Element): string {
   return (el.getAttribute("type") ?? "text").toLowerCase();
 }
@@ -609,7 +640,7 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
   function onKeyDown(event: KeyboardEvent): void {
     if (!active()) return;
     if (event.altKey) return;
-    const el = deepActiveElement(doc) ?? elementFrom(event.target);
+    const el = deepActiveElement(doc) ?? elementFrom(realTarget(event));
     if (!el) return;
     const key = pressKeyOf(event, el);
     if (!key) return;
@@ -773,9 +804,13 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
       // action. A pre-rendered container that is empty until the action fills it (a toast
       // element the page keeps in its markup, hidden or not) is new evidence the moment its
       // text arrives, so only the nodes that already carried text are skipped.
+      // A confirmation node the action must not be credited with is one that was already *showing*
+      // text when the window opened: a stale "Saved" left behind by an earlier action. A
+      // pre-rendered status element the page keeps in its markup — hidden, or empty — is not
+      // showing anything yet, so its reveal (or its first text) is the evidence this window wants.
       preexisting: new Set(
         Array.from(doc.querySelectorAll(CONFIRMATION_SELECTOR)).filter(
-          (node) => trimmedText(node) !== "",
+          (node) => trimmedText(node) !== "" && isShown(node),
         ),
       ),
       headings: Array.from(doc.querySelectorAll(HEADING_SELECTOR)).map((el) =>
@@ -939,7 +974,7 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
     // first. A pointer gesture already checkpointed at its pointerdown and does not run again here:
     // one gesture, one checkpoint, one set of steps.
     if (Date.now() - lastGestureCheckpoint > GESTURE_CHECKPOINT_WINDOW_MS) checkpoint();
-    const start = elementFrom(event.target);
+    const start = elementFrom(realTarget(event));
     if (!start) return;
     const { element: el, viaLabel } = resolveClickTarget(start);
     if (isPasswordField(el) || isPasswordField(start)) return;
@@ -981,7 +1016,7 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
 
   function onInput(event: Event): void {
     if (!active()) return;
-    const el = elementFrom(event.target);
+    const el = elementFrom(realTarget(event));
     if (!el) return;
     if (isPasswordField(el) || (isRichText(el) && isCredentialContext(el))) {
       pending.delete(el);
@@ -1003,7 +1038,7 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
 
   function onChange(event: Event): void {
     if (!active()) return;
-    const el = elementFrom(event.target);
+    const el = elementFrom(realTarget(event));
     if (!el) return;
     if (isPasswordField(el) || (isRichText(el) && isCredentialContext(el))) {
       pending.delete(el);
@@ -1061,13 +1096,13 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
 
   function onFocusOut(event: Event): void {
     if (!active()) return;
-    const el = elementFrom(event.target);
+    const el = elementFrom(realTarget(event));
     if (el && pending.has(el)) flushFill(el);
   }
 
   function onSubmit(event: Event): void {
     if (!active()) return;
-    const form = elementFrom(event.target);
+    const form = elementFrom(realTarget(event));
     if (!form || form.tagName.toUpperCase() !== "FORM") return;
 
     // Whatever the page changed before it submitted is emitted before the submit itself.

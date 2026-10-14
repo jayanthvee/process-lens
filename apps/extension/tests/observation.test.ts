@@ -147,6 +147,23 @@ describe("post-action observation", () => {
     expect(recorded.events[1]!.observation).toEqual({ text_visible: "Sent — Undo" });
   });
 
+  it("reports a hidden pre-rendered status whose text was already there and is now revealed", async () => {
+    // The corpus widgets' shape: `<div role="status" hidden>Saved</div>` in the markup, revealed
+    // by the save. Hidden text is not showing yet, so its reveal is the evidence.
+    document.body.innerHTML =
+      "<button id='save'>Save</button>" +
+      "<div role='status' id='status' hidden>Saved</div>";
+    const recorded = harness();
+    document.getElementById("save")!.dispatchEvent(new Event("click", { bubbles: true }));
+
+    document.getElementById("status")!.hidden = false;
+    await flushMutations();
+    await vi.advanceTimersByTimeAsync(1500);
+
+    expect(recorded.events.map((event) => event.kind)).toEqual(["click", "observation"]);
+    expect(recorded.events[1]!.observation).toEqual({ text_visible: "Saved" });
+  });
+
   it("does not observe while recording is off", async () => {
     document.body.innerHTML = "<button id='save'>Save</button><div id='host'></div>";
     const recorded = harness();

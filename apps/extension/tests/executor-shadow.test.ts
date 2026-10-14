@@ -6,8 +6,10 @@
 // lookup that finds them again. These tests mount real shadow trees in jsdom and call the same
 // resolver the executor serializes into a page.
 import { beforeEach, describe, expect, it } from "vitest";
+import { dispatchClick } from "../src/executor/dispatch";
 import {
   TARGET_MARKER,
+  hitTestExpression,
   resolveTargetInPage,
   resolverExpression,
   type ResolveQuery,
@@ -15,6 +17,7 @@ import {
 } from "../src/executor/ladder";
 import { markerExpression, resolverCallExpression } from "../src/executor/page";
 import { fakeCdp } from "./helpers/fake-cdp";
+import { installLayout } from "./helpers/layout";
 
 function query(targets: ResolveRung[], within: string | null = null, token = "t1"): ResolveQuery {
   return { targets, within, token };
@@ -214,5 +217,61 @@ describe("the marker lookup inside an open shadow root", () => {
 
     expect(markedIn(root, "one")).toBeNull();
     expect(markedIn(root, "two")?.id).toBe("shadow-save");
+  });
+});
+
+describe("clicking a control inside an open shadow root", () => {
+  it("accepts the host a point lookup reports at the target's box center", async () => {
+    // In a browser, `elementFromPoint` retargets: a point over a shadow control answers with its
+    // host. The hit test must read that as the target's own tree, not as something covering it.
+    const root = mountShadowForm();
+    resolveTargetInPage(query([{ by: "css", selector: "#shadow-save" }], null, "click-token"));
+    const host = document.getElementById("lead-form") as HTMLElement;
+    const restoreLayout = installLayout({ hitAt: () => host });
+    try {
+      const { cdp } = fakeCdp();
+      const outcome = (await cdp.send("Runtime.evaluate", {
+        expression: `(${hitTestExpression()})({ token: "click-token" })`,
+        returnByValue: true,
+        awaitPromise: true,
+      })) as { result?: { value?: { ok?: boolean; hit?: string } } };
+      const direct = (await new Function(
+        `return (${hitTestExpression()})({ token: "click-token" })`,
+      )()) as {
+        ok?: boolean;
+        hit?: string;
+      };
+
+      expect(direct.ok).toBe(true);
+      expect(direct.hit).toBe("div");
+      expect(outcome.result?.value).toMatchObject({ ok: true });
+    } finally {
+      restoreLayout();
+    }
+    expect(root.getElementById("shadow-save")).toBeTruthy();
+  });
+
+  it("presses a shadow control and lands on it, never parking", async () => {
+    // The realistic jsdom model: the point lookup answers with the element the press is dispatched
+    // at (the inner control, as a real browser dispatches at the inner target and retargets
+    // outward), so the landing listener sees it on the composed path.
+    const root = mountShadowForm();
+    resolveTargetInPage(query([{ by: "css", selector: "#shadow-save" }], null, "click-token"));
+    const restoreLayout = installLayout();
+    try {
+      const { cdp, callsTo } = fakeCdp();
+
+      await dispatchClick(cdp, "click-token", undefined, undefined, 400);
+
+      const mouse = callsTo("Input.dispatchMouseEvent");
+      expect(mouse.map((call) => call.params.type)).toEqual([
+        "mouseMoved",
+        "mousePressed",
+        "mouseReleased",
+      ]);
+    } finally {
+      restoreLayout();
+    }
+    expect(root.getElementById("shadow-save")).toBeTruthy();
   });
 });

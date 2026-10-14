@@ -154,6 +154,33 @@ describe("the baseline and the diff", () => {
     ]);
   });
 
+  it("attributes typing inside an open shadow root to the inner field, not its host", () => {
+    document.body.innerHTML = "<div id='host'></div><button id='go'>Go</button>";
+    const host = document.getElementById("host")!;
+    const root = host.attachShadow({ mode: "open" });
+    root.innerHTML = "<label for='s'>Name</label><input id='s' aria-label='Name'>";
+    declareVisible();
+    const recorded = harness();
+    recorded.checkpoint();
+
+    // A key event inside a shadow root is retargeted to the host at the document; the recorder
+    // must read the composed path's first node or it credits the host with the person's typing.
+    const field = root.getElementById("s") as HTMLInputElement;
+    field.value = "from shadow";
+    field.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+    click("go");
+
+    const fills = recorded.events.filter((event) => event.kind === "fill");
+    expect(fills).toHaveLength(1);
+    expect(fills[0]!.warning).toBeUndefined();
+    expect(fills[0]!.step).toMatchObject({
+      targets: expect.arrayContaining([{ by: "css", selector: "#s" }]),
+      value: { kind: "constant", value: "from shadow" },
+    });
+    // And the focus click on the host is not recorded as a step of its own.
+    expect(recorded.events.filter((event) => event.kind === "click")).toHaveLength(1);
+  });
+
   it("never reads a password field's value, even when the page fills it", () => {
     document.body.innerHTML =
       "<input id='user' aria-label='User'>" +

@@ -363,7 +363,14 @@ function landingInstallExpression(token: string, deadlineMs: number): string {
     if (previous && typeof previous.cleanup === "function") previous.cleanup();
     const state = { token: ${JSON.stringify(token)}, result: null, cleanup: null };
     const onDown = (event) => {
-      state.result = el && (event.target === el || el.contains(event.target)) ? "target" : "other";
+      // A press inside an open shadow root is retargeted to the host here, so the target's own
+      // tree is consulted through the composed path as well: the press landed on the target if
+      // the target is anywhere on that path, host or no host.
+      const path = typeof event.composedPath === "function" ? event.composedPath() : [];
+      state.result =
+        el && (event.target === el || el.contains(event.target) || path.includes(el))
+          ? "target"
+          : "other";
       state.cleanup();
     };
     const timer = setTimeout(() => state.cleanup(), ${JSON.stringify(Math.max(0, deadlineMs))});
