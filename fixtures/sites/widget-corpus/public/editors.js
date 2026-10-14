@@ -6,9 +6,12 @@
 //     This is the baseline that must not regress.
 //   * "framework": the page owns the text. A keydown handler writes
 //     `textContent` directly and a timer re-renders it, so the visible text is
-//     script's and NO input event is ever dispatched. A recorder that only
-//     listens for `input` sees nothing at all here; the snapshot is the only
-//     source.
+//     script's and the page itself never dispatches an input event. A recorder
+//     that only listens for `input` sees nothing at all here; the snapshot is
+//     the only source. A listener still accepts the BROWSER's own insertions
+//     (`Input.insertText`, a paste, an IME — all fire `input` without a
+//     keydown), so a replayed draft reaches the store, exactly like the
+//     compose body editor.
 (function () {
   "use strict";
 
@@ -46,6 +49,15 @@
         return;
       }
       editor.textContent = model;
+      store(model);
+    });
+    // A real browser's `Input.insertText` (and a paste, and an IME) changes the
+    // editor WITHOUT a keydown: the browser inserts the text and fires `input`.
+    // The framework listens for `input` too and syncs its own model from the
+    // DOM, so a replay's draft reaches the store. The keydown path above still
+    // dispatches nothing and still writes `textContent` itself.
+    editor.addEventListener("input", function () {
+      model = editor.textContent || "";
       store(model);
     });
     // A framework re-renders from its own state: the page writes the visible

@@ -484,6 +484,10 @@ def main() -> int:
             and 'data-mode="framework"' in pages["framework-editor.html"],
         )
         check(
+            "editors.js syncs the framework editor's model from a replayed input event",
+            'model = editor.textContent || "";' in editors_js,
+        )
+        check(
             "editors.js re-renders the framework editor from the page's own state on a timer",
             "window.setInterval(function () {" in editors_js
             and "editor.textContent = model;" in editors_js,
