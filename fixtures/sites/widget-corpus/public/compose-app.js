@@ -174,6 +174,16 @@
     bodyInput.value = bodyText;
   });
 
+  // A real browser's `Input.insertText` (and a paste, and an IME) changes the
+  // editor WITHOUT a keydown: the browser inserts the text and fires `input`.
+  // The page therefore listens for `input` too and syncs its own model from the
+  // DOM, so a replay's body reaches the store. The keydown path above still
+  // dispatches nothing and still writes `textContent` itself.
+  messageBody.addEventListener("input", function () {
+    bodyText = messageBody.textContent || "";
+    bodyInput.value = bodyText;
+  });
+
   // -- Compose, Send and the toast --------------------------------------
   composeButton.addEventListener("click", function () {
     pane.hidden = false;

@@ -438,8 +438,12 @@ def main() -> int:
             and "bodyInput.value = bodyText;" in compose_js,
         )
         check(
-            "compose-app.js puts no input listener on the body editor, and dispatches nothing",
-            'messageBody.addEventListener("input"' not in compose_js
+            (
+                "compose-app.js syncs the body editor from an input event (a replay's insertText) "
+                "and dispatches nothing itself"
+            ),
+            'messageBody.addEventListener("input"' in compose_js
+            and "bodyText = messageBody.textContent ||" in compose_js
             and "dispatchEvent" not in compose_js,
         )
         check(
