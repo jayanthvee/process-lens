@@ -34,6 +34,11 @@ from .model import ACTIONABLE_KINDS, Event
 # compiler can turn it into a navigate step; it is not noise, so it earns no warning.
 NAVIGATE_EVENT_KIND = "navigate"
 
+# The recorder's own mark that something happened it could not describe as a step (a chip removed
+# without a remove control). It carries no step, and the compiler refuses the recording when it is
+# present, so it is kept here rather than dropped as noise.
+UNRECORDABLE_EVENT_KIND = "unrecordable"
+
 
 def as_event_list(recording: Any) -> list[Any]:
     """Accept a plain list of events, or an object carrying them under ``events``."""
@@ -117,6 +122,12 @@ def parse_events(recording: Any) -> tuple[list[Event], list[str]]:
             events.append(Event(seq=seq, kind=kind, url=_coerce_text(raw.get("url")), step=None))
             continue
 
+        if kind == UNRECORDABLE_EVENT_KIND:
+            # Not an action and not noise: a fact the recorder witnessed and could not replay. Kept
+            # with its url and no step so the compiler can refuse the recording rather than drop it.
+            events.append(Event(seq=seq, kind=kind, url=_coerce_text(raw.get("url")), step=None))
+            continue
+
         observation = raw.get("observation")
         if observation is not None and not isinstance(observation, Mapping):
             warnings.append(f"event {index} has a malformed observation; ignored")
@@ -153,6 +164,11 @@ def parse_events(recording: Any) -> tuple[list[Event], list[str]]:
                 url=_coerce_text(raw.get("url")),
                 step=dict(step) if step is not None else None,
                 observation=dict(observation) if observation is not None else None,
+                chip=raw.get("chip") is True,
+                autocomplete=raw.get("autocomplete") is True,
+                supersedes=(
+                    raw.get("supersedes") if isinstance(raw.get("supersedes"), str) else None
+                ),
             )
         )
 

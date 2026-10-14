@@ -15,6 +15,11 @@ the action. ``normalize`` folds the second form onto the action, so by the time
 the assertion is inferred both look the same. The predicates an observation may
 carry are listed in :data:`OBSERVATION_KEYS` below.
 
+A weak observation -- a loading spinner's own text, or text read from a node that
+was busy when it was read (PL-018, §8.2) -- is not evidence at all: it is refused
+here, so the step stays an ordinary step or the compile refuses a commit it
+cannot verify.
+
 If neither is available the compiler refuses to mark the step as a commit rather
 than inventing an assertion. An unverifiable commit is worse than a compiled
 recipe that tells the builder to re-record.
@@ -22,6 +27,7 @@ recipe that tells the builder to re-record.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -44,11 +50,44 @@ DEFAULT_ASSERTION_TIMEOUT_MS = 8000
 OBSERVATION_EVENT_KIND = "observation"
 
 
+# PL-018 (§8.2): an observation that only says "something is happening" is not evidence that the
+# destination accepted the change. A spinner's own text would otherwise verify every commit.
+WEAK_TEXT_PATTERN = re.compile(
+    r"^(loading|saving|sending|working|please wait|one moment)\b", re.IGNORECASE
+)
+# Text that is only an ellipsis (or dots, or whitespace) says nothing either.
+ELLIPSIS_ONLY_PATTERN = re.compile(r"^[\s.\u2026]+$")
+
+
+def _is_weak_text(text: Any) -> bool:
+    """Whether a piece of visible text only reports that work is in progress."""
+    stripped = text.strip() if isinstance(text, str) else ""
+    if not stripped or ELLIPSIS_ONLY_PATTERN.match(stripped):
+        return True
+    return WEAK_TEXT_PATTERN.match(stripped) is not None
+
+
+def _is_weak_observation(observation: dict[str, Any]) -> bool:
+    """Whether the recording's evidence is a spinner rather than a confirmation."""
+    if observation.get("busy") is True:
+        return True
+    if "text_visible" not in observation:
+        return False
+    return _is_weak_text(observation.get("text_visible"))
+
+
 def condition_from_observation(
     observation: dict[str, Any] | None, timeout_ms: int = DEFAULT_ASSERTION_TIMEOUT_MS
 ) -> dict[str, Any] | None:
-    """Build an assertion from what the recording observed, if it observed anything."""
+    """Build an assertion from what the recording observed, if it observed anything.
+
+    A weak observation -- a loading spinner's own text, or text read while the page was busy --
+    yields nothing: it is not evidence that the destination accepted the change, and a commit
+    built on it would be verified the moment the spinner appeared.
+    """
     if not observation:
+        return None
+    if _is_weak_observation(observation):
         return None
     for key in OBSERVATION_KEYS:
         if key in observation:
