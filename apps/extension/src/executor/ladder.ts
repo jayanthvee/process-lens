@@ -126,10 +126,35 @@ export function measureTargetInPage(query: MeasureQuery): MeasureResult {
     reason,
   });
 
+  // The marked element can live inside an OPEN shadow root, which `document.querySelector` cannot
+  // see past. The light tree is searched first — the same element a plain document query finds, and
+  // an invalid token still throws there — then each host's open shadow root, in document order. A
+  // closed root is invisible (`el.shadowRoot` is null), so nothing inside it is found.
+  const deepMarker = (selector: string): Element | null => {
+    const light = document.querySelector(selector);
+    if (light) return light;
+    const roots: ShadowRoot[] = [];
+    const collect = (root: Document | ShadowRoot): void => {
+      for (const el of Array.from(root.querySelectorAll("*"))) {
+        const shadow = el.shadowRoot;
+        if (shadow) {
+          roots.push(shadow);
+          collect(shadow);
+        }
+      }
+    };
+    collect(document);
+    for (const shadow of roots) {
+      const found = shadow.querySelector(selector);
+      if (found) return found;
+    }
+    return null;
+  };
+
   let element: Element | null = null;
   try {
     const escaped = String(query.token).replace(/["\\]/g, "\\$&");
-    element = document.querySelector(`[${MARKER}="${escaped}"]`);
+    element = deepMarker(`[${MARKER}="${escaped}"]`);
   } catch {
     return reject("the marker token is not a valid selector");
   }
@@ -211,10 +236,35 @@ export function settleTargetInPage(query: SettleQuery): Promise<MeasureResult> {
     reason,
   });
 
+  // The marked element can live inside an OPEN shadow root, which `document.querySelector` cannot
+  // see past. The light tree is searched first — the same element a plain document query finds, and
+  // an invalid token still throws there — then each host's open shadow root, in document order. A
+  // closed root is invisible (`el.shadowRoot` is null), so nothing inside it is found.
+  const deepMarker = (selector: string): Element | null => {
+    const light = document.querySelector(selector);
+    if (light) return light;
+    const roots: ShadowRoot[] = [];
+    const collect = (root: Document | ShadowRoot): void => {
+      for (const el of Array.from(root.querySelectorAll("*"))) {
+        const shadow = el.shadowRoot;
+        if (shadow) {
+          roots.push(shadow);
+          collect(shadow);
+        }
+      }
+    };
+    collect(document);
+    for (const shadow of roots) {
+      const found = shadow.querySelector(selector);
+      if (found) return found;
+    }
+    return null;
+  };
+
   let found: Element | null = null;
   try {
     const escaped = String(query.token).replace(/["\\]/g, "\\$&");
-    found = document.querySelector(`[${MARKER}="${escaped}"]`);
+    found = deepMarker(`[${MARKER}="${escaped}"]`);
   } catch {
     return Promise.resolve(failure("the marker token is not a valid selector"));
   }
@@ -348,10 +398,35 @@ export function hitTestTargetInPage(query: MeasureQuery): MeasureResult {
     reason,
   });
 
+  // The marked element can live inside an OPEN shadow root, which `document.querySelector` cannot
+  // see past. The light tree is searched first — the same element a plain document query finds, and
+  // an invalid token still throws there — then each host's open shadow root, in document order. A
+  // closed root is invisible (`el.shadowRoot` is null), so nothing inside it is found.
+  const deepMarker = (selector: string): Element | null => {
+    const light = document.querySelector(selector);
+    if (light) return light;
+    const roots: ShadowRoot[] = [];
+    const collect = (root: Document | ShadowRoot): void => {
+      for (const el of Array.from(root.querySelectorAll("*"))) {
+        const shadow = el.shadowRoot;
+        if (shadow) {
+          roots.push(shadow);
+          collect(shadow);
+        }
+      }
+    };
+    collect(document);
+    for (const shadow of roots) {
+      const found = shadow.querySelector(selector);
+      if (found) return found;
+    }
+    return null;
+  };
+
   let element: Element | null = null;
   try {
     const escaped = String(query.token).replace(/["\\]/g, "\\$&");
-    element = document.querySelector(`[${MARKER}="${escaped}"]`);
+    element = deepMarker(`[${MARKER}="${escaped}"]`);
   } catch {
     return reject("the marker token is not a valid selector");
   }
@@ -400,6 +475,59 @@ export function resolveTargetInPage(query: ResolveQuery): ResolveResult {
   const lower = (value: unknown): string => norm(value).toLowerCase();
 
   const doc = document;
+
+  // A shadow root is a separate tree: `querySelector`, `querySelectorAll` and `getElementById` stop
+  // at the boundary, so a control inside `attachShadow({ mode: "open" })` is unreachable by a plain
+  // document query. These helpers walk into every OPEN shadow root, in document order — a shadow
+  // tree is visited where its host appears — so a light-DOM-only page yields exactly the same
+  // elements in exactly the same order as before. A CLOSED root is not visible to page script
+  // (`el.shadowRoot` is null), so nothing inside one is ever returned.
+  const deepElements = (root: Document | ShadowRoot | Element): Element[] => {
+    const out: Element[] = [];
+    const walk = (node: Document | ShadowRoot | Element): void => {
+      for (const el of Array.from(node.querySelectorAll("*"))) {
+        out.push(el);
+        const shadow = el.shadowRoot;
+        if (shadow) walk(shadow);
+      }
+    };
+    walk(root);
+    return out;
+  };
+
+  /** The matches of `selector` under `root`, open shadow roots included, in the same order. */
+  const deepQuery = (root: Document | ShadowRoot | Element, selector: string): Element[] =>
+    deepElements(root).filter((el) => el.matches(selector));
+
+  /** The first match of `selector` under `root`, open shadow roots included. */
+  const deepFirst = (root: Document | ShadowRoot | Element, selector: string): Element | null =>
+    deepQuery(root, selector)[0] ?? null;
+
+  /** The first element with this id under `root`, open shadow roots included. */
+  const deepFirstId = (root: Document | ShadowRoot | Element, id: string): Element | null =>
+    deepElements(root).find((el) => el.id === id) ?? null;
+
+  /**
+   * The trees an element can be labelled from: its own root — an open shadow root, when it lives in
+   * one — and then the document. A light-DOM element's own root IS the document, so a page without
+   * shadow roots resolves through exactly the query it always did.
+   */
+  const trees = (el: Element): Array<Document | ShadowRoot | Element> => {
+    const own = (el.getRootNode ? el.getRootNode() : doc) as Document | ShadowRoot | Element;
+    return !own || own === doc ? [doc] : [own, doc];
+  };
+
+  /** The first hit of `finder` across the trees an element can be labelled from. */
+  const findIn = (
+    el: Element,
+    finder: (root: Document | ShadowRoot | Element) => Element | null,
+  ): Element | null => {
+    for (const root of trees(el)) {
+      const found = finder(root);
+      if (found) return found;
+    }
+    return null;
+  };
 
   const roleOf = (el: Element): string => {
     const explicit = lower(el.getAttribute("role"));
@@ -460,7 +588,9 @@ export function resolveTargetInPage(query: ResolveQuery): ResolveResult {
     const id = el.getAttribute("id");
     if (id) {
       const escaped = id.replace(/["\\]/g, "\\$&");
-      const forLabel = doc.querySelector(`label[for="${escaped}"]`);
+      // The label can sit in the same open shadow root as the control it names, which a document
+      // query cannot see past; the control's own root is searched before the document.
+      const forLabel = findIn(el, (root) => deepFirst(root, `label[for="${escaped}"]`));
       const text = norm(forLabel?.textContent);
       if (text) return text;
     }
@@ -473,7 +603,7 @@ export function resolveTargetInPage(query: ResolveQuery): ResolveResult {
       const text = norm(
         labelledby
           .split(" ")
-          .map((id) => doc.getElementById(id)?.textContent ?? "")
+          .map((id) => norm(findIn(el, (root) => deepFirstId(root, id))?.textContent))
           .join(" "),
       );
       if (text) return text;
@@ -543,8 +673,7 @@ export function resolveTargetInPage(query: ResolveQuery): ResolveResult {
   const inScope = (el: Element, scope: Element | null): boolean =>
     scope === null || scope.contains(el);
 
-  const elements = (scope: Element | null): Element[] =>
-    Array.from((scope ?? doc).querySelectorAll("*"));
+  const elements = (scope: Element | null): Element[] => deepElements(scope ?? doc);
 
   /**
    * Resolve a "kind:Name" container descriptor to exactly one *visible*
@@ -587,7 +716,9 @@ export function resolveTargetInPage(query: ResolveQuery): ResolveResult {
   };
 
   const stamp = (el: Element, token: string): void => {
-    for (const marked of Array.from(doc.querySelectorAll(`[${MARKER}]`))) {
+    // Stale markers are cleared wherever they are, an open shadow root included: a marker left
+    // behind inside one would otherwise be found by a deep lookup before the new target.
+    for (const marked of deepQuery(doc, `[${MARKER}]`)) {
       marked.removeAttribute(MARKER);
     }
     el.setAttribute(MARKER, token);
@@ -654,28 +785,28 @@ export function resolveTargetInPage(query: ResolveQuery): ResolveResult {
       );
     } else if (by === "testid") {
       const value = norm(target.value);
-      candidates = Array.from(
-        (scope ?? doc).querySelectorAll("[data-testid], [data-test]"),
-      ).filter((el) => {
+      candidates = deepQuery(scope ?? doc, "[data-testid], [data-test]").filter((el) => {
         const id = norm(el.getAttribute("data-testid") ?? el.getAttribute("data-test"));
         return id === value;
       });
     } else if (by === "label") {
       const text = lower(target.text);
       const found: Element[] = [];
-      for (const label of Array.from((scope ?? doc).querySelectorAll("label"))) {
+      for (const label of deepQuery(scope ?? doc, "label")) {
         if (lower(norm(label.textContent)) !== text) continue;
         const id = label.getAttribute("for");
         const control = id
-          ? doc.getElementById(id)
-          : (label.querySelector("input, select, textarea") as Element | null);
+          ? findIn(label, (root) => deepFirstId(root, id))
+          : deepFirst(label, "input, select, textarea");
         if (control) found.push(control);
       }
       candidates = found;
     } else if (by === "css") {
       const selector = norm(target.selector);
       try {
-        candidates = Array.from((scope ?? doc).querySelectorAll(selector));
+        // Collected deep, so a selector naming an element inside an open shadow root — where a
+        // document-level query stops — still resolves to it.
+        candidates = deepQuery(scope ?? doc, selector);
       } catch {
         attempts.push({ rung: rungNumber, by, matches: 0, reason: `invalid selector ${selector}` });
         continue;

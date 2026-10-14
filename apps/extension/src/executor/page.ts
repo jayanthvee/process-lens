@@ -45,9 +45,36 @@ export function escapeToken(token: string): string {
   return token.replace(/["\\]/g, "\\$&");
 }
 
-/** An expression that yields the element the resolver stamped with `token`. */
+/**
+ * An expression that yields the element the resolver stamped with `token`.
+ *
+ * The marked element can live inside an OPEN shadow root — the corpus's `shadow-form.html` widget
+ * mounts its form that way — and a plain `document.querySelector` cannot see past a shadow
+ * boundary. The light tree is searched first (the element a plain document query finds, and an
+ * invalid token still throws there), then each host's open shadow root, in document order. A CLOSED
+ * root is invisible to page script, so nothing inside one is ever returned.
+ */
 export function markerExpression(token: string): string {
-  return `document.querySelector('[${TARGET_MARKER}="${escapeToken(token)}"]')`;
+  return `(() => {
+  const selector = '[${TARGET_MARKER}="${escapeToken(token)}"]';
+  const light = document.querySelector(selector);
+  if (light) return light;
+  const roots = [];
+  const collect = (root) => {
+    for (const el of Array.from(root.querySelectorAll("*"))) {
+      if (el.shadowRoot) {
+        roots.push(el.shadowRoot);
+        collect(el.shadowRoot);
+      }
+    }
+  };
+  collect(document);
+  for (const shadow of roots) {
+    const found = shadow.querySelector(selector);
+    if (found) return found;
+  }
+  return null;
+})()`;
 }
 
 /**
