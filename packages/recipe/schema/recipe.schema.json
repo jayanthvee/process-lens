@@ -607,7 +607,11 @@
         "within": { "$ref": "#/$defs/template" },
         "frame": { "$ref": "#/$defs/frame" },
         "value": { "$ref": "#/$defs/value_source" },
-        "clear_first": { "type": "boolean", "default": true }
+        "clear_first": { "type": "boolean", "default": true },
+        "autocomplete": {
+          "type": "boolean",
+          "description": "PL-018: the recorder witnessed this field offer suggestions, so a replay types the value and accepts the single suggestion that contains it. Absent on an ordinary fill, which is typed and left alone."
+        }
       }
     },
 

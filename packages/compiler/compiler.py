@@ -284,6 +284,10 @@ def _render_candidate(candidate: Candidate) -> dict[str, Any]:
             step["option_match"] = "text"
         else:
             step["clear_first"] = True
+            # A fill the recorder witnessed as an autocomplete accept carries the witness onto the
+            # step, so the executor knows to complete it by containment rather than move on (§4.3).
+            if candidate.autocomplete:
+                step["autocomplete"] = True
     if candidate.commit:
         step["commit"] = True
         step["assert_after"] = candidate.assert_after

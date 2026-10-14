@@ -768,7 +768,16 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
     const observation: ObservationWindow = {
       startUrl: url(),
       observedUrl: null,
-      preexisting: new Set(Array.from(doc.querySelectorAll(CONFIRMATION_SELECTOR))),
+      // A confirmation node the action must not be credited with is one that was already
+      // *saying* something when the window opened — a stale "Saved" left from an earlier
+      // action. A pre-rendered container that is empty until the action fills it (a toast
+      // element the page keeps in its markup, hidden or not) is new evidence the moment its
+      // text arrives, so only the nodes that already carried text are skipped.
+      preexisting: new Set(
+        Array.from(doc.querySelectorAll(CONFIRMATION_SELECTOR)).filter(
+          (node) => trimmedText(node) !== "",
+        ),
+      ),
       headings: Array.from(doc.querySelectorAll(HEADING_SELECTOR)).map((el) =>
         normalizeText(el.textContent),
       ),

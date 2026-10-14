@@ -239,6 +239,45 @@ describe("the action a navigation is owed evidence for (requirement 3)", () => {
 });
 
 describe("step ids restart for a new recording (PL-018, requirement 4)", () => {
+  it("translates an envelope reference to the stored step id (PL-018, the supersedes fold)", () => {
+    const session = new RecorderSession();
+    // The page mints `fill-2` from its own global counter; the session stores that fill as `fill-1`.
+    const prefix = session.append({
+      at: "2026-10-12T00:00:00.000Z",
+      kind: "fill",
+      url: "https://mail.example.test/inbox",
+      step: {
+        id: "fill-2",
+        action: "fill",
+        name: "Fill To",
+        targets: [{ by: "role", role: "combobox", name: "To" }],
+        value: { kind: "constant", value: "dana" },
+      },
+    });
+    expect(prefix.step?.id).toBe("fill-1");
+
+    const chip = session.append({
+      at: "2026-10-12T00:00:00.000Z",
+      kind: "fill",
+      url: "https://mail.example.test/inbox",
+      step: {
+        id: "fill-4",
+        action: "fill",
+        name: "Fill To",
+        targets: [{ by: "role", role: "combobox", name: "To" }],
+        value: { kind: "constant", value: "dana@example.test" },
+      },
+      chip: true,
+      autocomplete: true,
+      supersedes: "fill-2",
+    });
+
+    // The reference must name the id the stored fill actually carries, or the compiler's fold
+    // cannot find the prefix and the accept stays a press of its own.
+    expect(chip.supersedes).toBe("fill-1");
+    expect(session.events[0]!.step?.id).toBe(chip.supersedes);
+  });
+
   it("restarts the ids when a recording starts and when the recording is cleared", () => {
     // A new recording: the previous demonstration's numbers mean nothing to it.
     expect(shouldResetStepIds({ state: "recording", count: 0 }, { state: "idle", count: 0 })).toBe(

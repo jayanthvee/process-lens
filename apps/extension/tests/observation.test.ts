@@ -127,6 +127,26 @@ describe("post-action observation", () => {
     expect(recorded.events.map((event) => event.kind)).toEqual(["click"]);
   });
 
+  it("reports a pre-rendered toast that was empty until the action filled it", async () => {
+    // The Gmail-style case (PL-018): the page keeps its toast element in the markup and only
+    // writes the text after the action. An empty container is not stale evidence — its text
+    // arriving is what the window must report.
+    document.body.innerHTML =
+      "<button id='save'>Save</button>" +
+      "<div class='toast' role='status' id='toast' hidden></div>";
+    const recorded = harness();
+    document.getElementById("save")!.dispatchEvent(new Event("click", { bubbles: true }));
+
+    const toast = document.getElementById("toast")!;
+    toast.textContent = "Sent — Undo";
+    toast.hidden = false;
+    await flushMutations();
+    await vi.advanceTimersByTimeAsync(1500);
+
+    expect(recorded.events.map((event) => event.kind)).toEqual(["click", "observation"]);
+    expect(recorded.events[1]!.observation).toEqual({ text_visible: "Sent — Undo" });
+  });
+
   it("does not observe while recording is off", async () => {
     document.body.innerHTML = "<button id='save'>Save</button><div id='host'></div>";
     const recorded = harness();
