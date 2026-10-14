@@ -242,6 +242,62 @@ def test_a_step_without_a_timeout_reaches_the_extension_with_the_fallback() -> N
     )
 
 
+def test_a_witnessed_autocomplete_fill_reaches_the_extension_with_its_witness() -> None:
+    """PL-018: a fill the recorder witnessed must cross the wire with `autocomplete`.
+
+    The executor's containment completion is gated on ``step.autocomplete === true`` and the
+    compiler renders the witness onto the step, but the wire used to drop it: the fill replayed
+    as an ordinary fill, the recipient was typed and never accepted, and every message was stored
+    with ``to: []`` while the commit's own assertion (the toast) still passed — a golden run came
+    back all-``verified`` with no recipient at all.
+    """
+    destination = FakeDestination()
+    loop = RunLoop(
+        worker_id="w1",
+        executor=FakeExecutor(destination),
+        reconciler=FakeReconciler(destination),
+        clock=FrozenClock(),
+        fallback_timeout_ms=10_000,
+    )
+    command = loop._command(
+        a_record(),
+        a_run(),
+        1,
+        {"id": "to", "action": "fill", "autocomplete": True},
+        {},
+        {},
+        commit=False,
+    )
+    assert command.step["autocomplete"] is True, "the witness must cross the wire"
+
+
+def test_a_press_step_reaches_the_extension_with_its_key() -> None:
+    """PL-018: a press that survived the fold must cross the wire with the key it presses.
+
+    The executor refuses an unknown key before sending anything, so a press that arrived without
+    its ``key`` would park every record that carried one. ``press`` is in ``EXECUTOR_ACTIONS`` for
+    exactly this step shape; the key is the field the action is.
+    """
+    destination = FakeDestination()
+    loop = RunLoop(
+        worker_id="w1",
+        executor=FakeExecutor(destination),
+        reconciler=FakeReconciler(destination),
+        clock=FrozenClock(),
+        fallback_timeout_ms=10_000,
+    )
+    command = loop._command(
+        a_record(),
+        a_run(),
+        1,
+        {"id": "accept", "action": "press", "key": "Enter"},
+        {},
+        {},
+        commit=False,
+    )
+    assert command.step["key"] == "Enter", "the key must cross the wire"
+
+
 def test_a_check_expires_with_its_own_polling_budget() -> None:
     executor, socket = make_executor([], now=lambda: 0.0, ack_budget_seconds=5.0)
     executor.check_condition({"text_visible": "Lead created"}, timeout_ms=8000, step_id="save")

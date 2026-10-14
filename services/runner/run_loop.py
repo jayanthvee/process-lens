@@ -1174,7 +1174,21 @@ class RunLoop:
         commit: bool,
     ) -> StepCommand:
         rendered: dict[str, Any] = {"id": step["id"], "action": step["action"]}
-        for key in ("targets", "within", "frame", "clear_first", "option_match"):
+        # The step fields that travel verbatim. `autocomplete` and `key` are PL-018's, and both
+        # were missing here: the executor gates the containment completion on the witness (without
+        # it a recorded autocomplete replays half-written), and a press that survived the fold
+        # parks on an unknown key when its key is dropped. Neither failure is visible to a commit's
+        # own assertion — a golden run stored every message with `to: []` while every record read
+        # `verified`.
+        for key in (
+            "targets",
+            "within",
+            "frame",
+            "clear_first",
+            "option_match",
+            "autocomplete",
+            "key",
+        ):
             if key in step:
                 rendered[key] = step[key]
         # The runner always states on the wire the deadline it will wait for (`_result_budget`
