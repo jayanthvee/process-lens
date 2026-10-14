@@ -34,6 +34,14 @@ export interface EventInput {
   warning?: string | undefined;
   /** Whether the control this event acted on is required. Present only when true. */
   required?: boolean | undefined;
+  /** True on the `fill` a chip-add produced: the value is a chip's value, not typed text. */
+  chip?: boolean | undefined;
+  /** True on a fill whose field the recorder witnessed offering suggestions. */
+  autocomplete?: boolean | undefined;
+  /** The id of the fill this event's chip-add fill supersedes. */
+  supersedes?: string | undefined;
+  /** Why an event carries no step: the machine-readable reason for an unrecordable change. */
+  reason?: string | undefined;
 }
 
 export function makeEvent(input: EventInput): PendingEvent {
@@ -46,6 +54,12 @@ export function makeEvent(input: EventInput): PendingEvent {
   if (input.observation) event.observation = input.observation;
   if (input.warning) event.warning = input.warning;
   if (input.required) event.required = input.required;
+  // The PL-018 envelope carriers. A boolean is copied whenever it was supplied: `autocomplete:
+  // false` says the recorder looked and saw no listbox, which is not the same as saying nothing.
+  if (input.chip !== undefined) event.chip = input.chip;
+  if (input.autocomplete !== undefined) event.autocomplete = input.autocomplete;
+  if (input.supersedes !== undefined) event.supersedes = input.supersedes;
+  if (input.reason !== undefined) event.reason = input.reason;
   if (input.step && input.frame && input.frame.length > 0) {
     input.step.frame = input.frame;
   }
