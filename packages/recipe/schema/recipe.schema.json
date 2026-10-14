@@ -551,6 +551,7 @@
             { "$ref": "#/$defs/step_fill" },
             { "$ref": "#/$defs/step_select" },
             { "$ref": "#/$defs/step_click" },
+            { "$ref": "#/$defs/step_press" },
             { "$ref": "#/$defs/step_upload_file" },
             { "$ref": "#/$defs/step_read_value" },
             { "$ref": "#/$defs/step_wait_for" },
@@ -661,6 +662,30 @@
           "type": "boolean",
           "default": false,
           "description": "The step explicitly allows a destructive control. Never set this on a step the compiler produced from a recording."
+        }
+      }
+    },
+
+    "step_press": {
+      "title": "press",
+      "description": "Send one key to the focused element. Not commit-capable: a key press alone changes no destination record.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "action", "targets", "key"],
+      "properties": {
+        "id": { "$ref": "#/$defs/step_id" },
+        "name": { "$ref": "#/$defs/step_name" },
+        "description": { "$ref": "#/$defs/step_description" },
+        "labels": { "$ref": "#/$defs/labels" },
+        "timeout_ms": { "$ref": "#/$defs/timeout_ms" },
+        "on_failure": { "$ref": "#/$defs/on_failure" },
+        "action": { "const": "press" },
+        "targets": { "$ref": "#/$defs/targets" },
+        "within": { "$ref": "#/$defs/template" },
+        "frame": { "$ref": "#/$defs/frame" },
+        "key": {
+          "enum": ["Enter", "Tab", "Escape", "Backspace", "Delete", "Control+Enter", "Meta+Enter"],
+          "description": "Which key to send. The list is closed: a key that only types characters is a fill, not a press."
         }
       }
     },
