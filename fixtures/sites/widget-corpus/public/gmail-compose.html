@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Gmail compose</title>
+<link rel="stylesheet" href="styles.css">
+<!--SWITCHES-->
+</head>
+<body data-page="gmail-compose">
+<h1>Gmail compose</h1>
+<p><a href="index.html" data-testid="back-to-index">All widgets</a></p>
+<p class="hint">
+  Type in To, accept the suggestion with Enter, Tab or a click, type in the body
+  (the page writes that text itself), then Send.
+</p>
+<button type="button" data-testid="compose">Compose</button>
+<div class="compose-pane" data-testid="compose-pane" hidden>
+  <label class="field-label" for="to-field">To</label>
+  <input id="to-field" data-testid="to" type="text" role="combobox" aria-autocomplete="list"
+         aria-controls="to-suggestions" aria-label="To" aria-expanded="false" autocomplete="off">
+  <div id="to-suggestions" role="listbox" aria-label="Suggestions" hidden></div>
+  <div role="listbox" aria-label="Selected recipients" data-testid="recipient-chips"
+       class="chips"></div>
+  <input type="hidden" name="to" value="">
+  <span class="field-label" id="body-label">Message body</span>
+  <div contenteditable="true" role="textbox" aria-multiline="true" aria-label="Message body"
+       aria-labelledby="body-label" data-testid="body-editor"></div>
+  <input type="hidden" name="body" value="">
+  <button type="button" data-testid="send">Send</button>
+  <div class="toast" role="status" data-testid="undo-toast" hidden></div>
+</div>
+<script src="app.js"></script>
+<script src="compose-app.js"></script>
+</body>
+</html>

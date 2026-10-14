@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Framework editor</title>
+<link rel="stylesheet" href="styles.css">
+<!--SWITCHES-->
+</head>
+<body data-page="framework-editor" data-mode="framework" data-source="framework-editor"
+      data-field="draft">
+<h1>Framework editor</h1>
+<p><a href="index.html" data-testid="back-to-index">All widgets</a></p>
+<p class="hint">
+  The page owns this editor's text: a keydown handler writes
+  <code>textContent</code> directly and a timer re-renders it, so no
+  <code>input</code> event is ever fired.
+</p>
+<span class="field-label" id="draft-label">Draft</span>
+<div class="editor" contenteditable="true" role="textbox" aria-multiline="true" aria-label="Draft"
+     aria-labelledby="draft-label" data-testid="editor"></div>
+<input type="hidden" name="note" value="">
+<button type="button" data-testid="save">Save</button>
+<div role="status" data-testid="saved" hidden>Saved</div>
+<script src="app.js"></script>
+<script src="editors.js"></script>
+</body>
+</html>

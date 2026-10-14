@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>React autocomplete</title>
+<link rel="stylesheet" href="styles.css">
+<!--SWITCHES-->
+</head>
+<body data-page="react-autocomplete" data-source="react-autocomplete" data-field="reviewer">
+<h1>React autocomplete</h1>
+<p><a href="index.html" data-testid="back-to-index">All widgets</a></p>
+<p class="hint">
+  This one accepts a suggestion only when the option is clicked. Enter and Tab
+  do nothing, so a key-accepted recording of it is a recording of a page that
+  does not exist.
+</p>
+<label class="field-label" for="reviewer-field">Reviewer</label>
+<input id="reviewer-field" data-testid="reviewer" type="text" role="combobox"
+       aria-autocomplete="list" aria-controls="reviewer-suggestions" aria-label="Reviewer"
+       aria-expanded="false" autocomplete="off">
+<div id="reviewer-suggestions" role="listbox" aria-label="Suggestions" hidden></div>
+<div role="listbox" aria-label="Selected reviewers" data-testid="reviewer-chips"
+     class="chips"></div>
+<input type="hidden" name="reviewer" value="">
+<button type="button" data-testid="save">Save</button>
+<div role="status" data-testid="saved" hidden>Saved</div>
+<script src="app.js"></script>
+<script src="autocomplete.js"></script>
+</body>
+</html>

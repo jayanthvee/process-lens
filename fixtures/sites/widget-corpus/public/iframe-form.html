@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Iframe form</title>
+<link rel="stylesheet" href="styles.css">
+<!--SWITCHES-->
+</head>
+<body data-page="iframe-form" data-source="iframe-form">
+<h1>Iframe form</h1>
+<p><a href="index.html" data-testid="back-to-index">All widgets</a></p>
+<p class="hint">
+  A same-origin frame served by this same fixture. The framed Save goes through
+  the parent page's store helper, so one store proves the record either way.
+</p>
+<iframe class="frame" data-testid="frame" title="Framed form" src="/iframe-child.html"></iframe>
+<div role="status" data-testid="parent-status" hidden>Framed save received</div>
+<p><button type="button" data-testid="parent-refresh">Show the framed form</button></p>
+<script src="app.js"></script>
+<script>
+  document.querySelector('[data-testid="parent-refresh"]').addEventListener("click", function () {
+    window.Widgets.reveal(document.querySelector('[data-testid="parent-status"]'));
+  });
+</script>
+</body>
+</html>
