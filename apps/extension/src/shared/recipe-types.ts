@@ -50,6 +50,12 @@ export interface FillStep extends StepCommon {
   frame?: FrameStep[];
   value: ValueSource;
   clear_first?: boolean;
+  /**
+   * PL-018: the recorder witnessed this field offer suggestions, so a replay types the value and
+   * accepts the single suggestion that contains it. Absent on an ordinary fill, which is typed and
+   * left alone.
+   */
+  autocomplete?: boolean;
 }
 
 export interface SelectStep extends StepCommon {

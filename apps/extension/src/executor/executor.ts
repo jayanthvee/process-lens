@@ -44,7 +44,7 @@ export {
 } from "./step-runner";
 
 /** The actions the attended executor performs itself. */
-const EXECUTED_ACTIONS = new Set(["navigate", "fill", "select", "click"]);
+const EXECUTED_ACTIONS = new Set(["navigate", "fill", "select", "click", "press"]);
 
 export interface RunDeps {
   cdp: CdpTransport;
@@ -86,12 +86,18 @@ export function validateRecipe(recipe: ExecutorRecipe | undefined | null): strin
     const action = step?.action;
     if (typeof action !== "string" || !EXECUTED_ACTIONS.has(action)) {
       problems.push(
-        `step ${step?.id ?? "?"} has action ${JSON.stringify(action)}, which the attended executor does not perform; it performs navigate, fill, select, and click only`,
+        `step ${step?.id ?? "?"} has action ${JSON.stringify(action)}, which the attended executor does not perform; it performs navigate, fill, select, click, and press only`,
       );
       continue;
     }
-    if ((action === "click" || action === "fill" || action === "select") && !(step.targets ?? []).length) {
+    if (
+      (action === "click" || action === "fill" || action === "select" || action === "press") &&
+      !(step.targets ?? []).length
+    ) {
       problems.push(`step ${step.id} has action ${action} but no target ladder`);
+    }
+    if (action === "press" && typeof step.key !== "string") {
+      problems.push(`step ${step.id} is a press with no key`);
     }
     if (action === "navigate" && !step.url) {
       problems.push(`step ${step.id} is a navigate with no url`);

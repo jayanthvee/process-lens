@@ -7,7 +7,7 @@ import type { Condition, FrameStep, LocatorRung, ValueSource } from "../shared/r
 import type { EventKind } from "../shared/command-protocol";
 
 /** The actions the attended executor performs itself. */
-export type ExecutedAction = "navigate" | "fill" | "select" | "click";
+export type ExecutedAction = "navigate" | "fill" | "select" | "click" | "press";
 
 /** One recipe step, narrowed to the fields the executor reads. */
 export interface ExecutorStep {
@@ -24,6 +24,10 @@ export interface ExecutorStep {
   value?: ValueSource;
   clear_first?: boolean;
   option_match?: "text" | "value" | "index";
+  /** PL-018: the key a `press` step sends, e.g. `Enter` or `Control+Enter`. */
+  key?: string;
+  /** PL-018: the recorder witnessed this field offer suggestions; complete the fill by containment. */
+  autocomplete?: boolean;
   /** Only a step that says so may click a control whose name looks destructive. */
   allow_destructive_control?: boolean;
   url?: string;

@@ -19,7 +19,38 @@ const KEY_CODES: Record<string, number> = {
   Backspace: 8,
   Delete: 46,
   Enter: 13,
+  Tab: 9,
+  Escape: 27,
 };
+
+/**
+ * The keys a `press` step may send, each with what its CDP key event carries: the DOM `key` and
+ * `code`, the virtual key code (from `KEY_CODES`), and — for the chorded forms — the `modifiers`
+ * bitmask. `text` is what the keydown of a key that types a character carries in a real browser:
+ * an Enter keydown arrives with `"\r"`, a Tab with `"\t"`, and a widget that listens for Enter
+ * usually reads it, so a pair without it is ignored. The keys that only type characters are not
+ * here: they are typing, and a fill already carries the resulting value.
+ */
+interface PressKeySpec {
+  key: string;
+  code: string;
+  vk: number;
+  modifiers?: number;
+  text?: string;
+}
+
+const PRESS_KEYS: Record<string, PressKeySpec> = {
+  Enter: { key: "Enter", code: "Enter", vk: 13, text: "\r" },
+  Tab: { key: "Tab", code: "Tab", vk: 9, text: "\t" },
+  Escape: { key: "Escape", code: "Escape", vk: 27 },
+  Backspace: { key: "Backspace", code: "Backspace", vk: 8 },
+  Delete: { key: "Delete", code: "Delete", vk: 46 },
+  "Control+Enter": { key: "Enter", code: "Enter", vk: 13, modifiers: 2, text: "\r" },
+  "Meta+Enter": { key: "Enter", code: "Enter", vk: 13, modifiers: 4, text: "\r" },
+};
+
+/** The keys a `press` step may name, in the schema's order. */
+export const PRESS_KEY_NAMES: string[] = Object.keys(PRESS_KEYS);
 
 /**
  * The seam a command's owner uses to police its own input.
@@ -170,6 +201,52 @@ async function pressBackspace(cdp: CdpTransport, beforeInput: () => void): Promi
     windowsVirtualKeyCode: KEY_CODES["Backspace"],
     nativeVirtualKeyCode: KEY_CODES["Backspace"],
   });
+}
+
+/**
+ * Press one key on the element the resolver stamped.
+ *
+ * A real key event pair — `keyDown` then `keyUp`, never a `char` — is what a widget's own handler
+ * sees, and the pair is what makes it act: accept a suggestion, move focus with intent, dismiss a
+ * listbox. `token` names the element the key is destined for; CDP delivers a key event to whatever
+ * the page has focused, which a fill or the widget itself put there, so it is not part of the
+ * event. Both events go through the gate immediately before their own send, so a withdrawn or
+ * expired command presses no key at all (PL-017b). A key the executor cannot name correctly is
+ * refused before anything is sent, rather than pressed with a guessed code.
+ */
+export async function dispatchPress(
+  cdp: CdpTransport,
+  token: string,
+  key: string,
+  contextId?: number,
+  hooks?: InputHooks,
+): Promise<void> {
+  const spec = PRESS_KEYS[key];
+  if (!spec) {
+    throw new ExecutorError(
+      `the key ${JSON.stringify(key)} is not one the executor can press; it presses ${PRESS_KEY_NAMES.join(
+        ", ",
+      )}`,
+      undefined,
+      "park",
+    );
+  }
+  const gate = inputGate(hooks);
+  const base: Record<string, unknown> = {
+    key: spec.key,
+    code: spec.code,
+    windowsVirtualKeyCode: spec.vk,
+    nativeVirtualKeyCode: spec.vk,
+  };
+  if (spec.modifiers !== undefined) base["modifiers"] = spec.modifiers;
+  gate();
+  await cdp.send("Input.dispatchKeyEvent", {
+    type: "keyDown",
+    ...base,
+    ...(spec.text !== undefined ? { text: spec.text } : {}),
+  });
+  gate();
+  await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", ...base });
 }
 
 /**
