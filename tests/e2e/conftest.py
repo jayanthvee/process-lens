@@ -81,6 +81,9 @@ RECIPE_FILE = FIXTURE_DIR / "recipe.json"
 # PL-016b requirement 2: the messy fixture has its own server, started the same way.
 MESSY_DIR = REPO_ROOT / "fixtures" / "sites" / "messy-crm"
 MESSY_SERVER = MESSY_DIR / "server.py"
+# PL-018 requirement 6/7: the widget corpus is a third site, with the same handshake shape.
+CORPUS_DIR = REPO_ROOT / "fixtures" / "sites" / "widget-corpus"
+CORPUS_SERVER = CORPUS_DIR / "server.py"
 EXTENSION_DIR = REPO_ROOT / "apps" / "extension"
 EXTENSION_DIST = EXTENSION_DIR / "dist"
 
@@ -220,6 +223,7 @@ class Harness:
     workers: list[subprocess.Popen] = field(default_factory=list)
     worker_logs: list[Path] = field(default_factory=list)
     messy_url: str | None = None
+    corpus_url: str | None = None
 
     # -- HTTP ------------------------------------------------------------
     def api_get(self, path: str) -> Any:
@@ -245,6 +249,19 @@ class Harness:
 
     def messy_reset(self) -> None:
         _http_json(f"{self.messy_url}/__test__/reset", method="POST", payload=None)
+
+    def corpus_get(self, path: str) -> Any:
+        """A request to the widget-corpus fixture (PL-018); fails when it was not started."""
+        if not self.corpus_url:
+            raise AssertionError("the widget-corpus fixture is not part of this harness")
+        return _http_json(f"{self.corpus_url}{path}")
+
+    def corpus_state(self) -> dict[str, Any]:
+        """The corpus fixture's own truth: every widget's persisted value."""
+        return self.corpus_get("/__test__/state")
+
+    def corpus_reset(self) -> None:
+        _http_json(f"{self.corpus_url}/__test__/reset", method="POST", payload=None)
 
     def fixture_state(self) -> dict[str, Any]:
         """The fixture's own truth: how many leads exist per email, plus its counters."""
@@ -1213,6 +1230,91 @@ def messy_harness(
         ready.stop_workers()
         # The command session is one per extension; hand it back to the lead-crm tab so the shared
         # session is left as the lead-crm harness expects it, whatever order the tests ran in.
+        with contextlib.suppress(Exception):
+            harness.page.bring_to_front()
+            harness.popup.evaluate(
+                "v => { document.getElementById('hub').value = v; }", api_server["base"]
+            )
+            harness.popup.evaluate("document.getElementById('connect').click()")
+            harness.popup.wait_for_function(
+                "() => ['ready', 'connecting'].includes("
+                "document.getElementById('session-state')?.dataset.state)",
+                timeout=15_000,
+            )
+
+
+@pytest.fixture(scope="session")
+def corpus_site() -> Iterator[dict[str, Any]]:
+    """The widget-corpus fixture (PL-018), started as a subprocess from its handshake line."""
+    process = subprocess.Popen(
+        [sys.executable, str(CORPUS_SERVER), "--port", "0"],
+        cwd=str(CORPUS_DIR),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        bufsize=1,
+    )
+    try:
+        assert process.stdout is not None
+        line = _read_line(process.stdout, timeout=30.0)
+        yield json.loads(line)
+    finally:
+        process.terminate()
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+
+
+@pytest.fixture(scope="session")
+def corpus_harness(
+    context: Any,
+    extension_id: str,
+    api_server: dict[str, Any],
+    corpus_site: dict[str, Any],
+    database_url: str,
+    harness: Harness,
+) -> Iterator[Harness]:
+    """A Harness whose extension is bound to the widget corpus (PL-018 requirements 6 and 7).
+
+    Same shape as ``messy_harness``: the extension binds the tab that is active at Connect, so the
+    corpus tab is brought forward and the session re-established against it, with a popup of its
+    own so the lead-crm harness's session is left untouched. On teardown the session is handed back
+    to the lead-crm tab.
+    """
+    page = context.new_page()
+    page.goto(corpus_site["crm_url"] + "/")
+    popup = context.new_page()
+    popup.goto(f"chrome-extension://{extension_id}/popup/popup.html")
+    popup.evaluate("v => { document.getElementById('hub').value = v; }", api_server["base"])
+    page.bring_to_front()
+    popup.evaluate("document.getElementById('connect').click()")
+    popup.wait_for_function(
+        "() => document.getElementById('session-state')?.dataset.state === 'ready'",
+        timeout=30_000,
+    )
+    stored = popup.evaluate(
+        "async () => (await chrome.storage.session.get('processlens:command-session'))"
+        "['processlens:command-session'] ?? null"
+    )
+    assert stored and stored.get("sessionId"), "the extension did not store a session id"
+
+    ready = Harness(
+        api_base=api_server["base"],
+        crm_url=corpus_site["crm_url"],
+        partner_url=corpus_site["crm_url"],
+        crm_port=int(corpus_site["crm_port"]),
+        dsn=database_url,
+        session_id=str(stored["sessionId"]),
+        extension_id=extension_id,
+        page=page,
+        popup=popup,
+        corpus_url=corpus_site["crm_url"],
+    )
+    try:
+        yield ready
+    finally:
+        ready.stop_workers()
         with contextlib.suppress(Exception):
             harness.page.bring_to_front()
             harness.popup.evaluate(
