@@ -340,7 +340,10 @@ export class CommandSession {
   private onOpen(socket: WebSocketLike): void {
     if (this.socket !== socket) return;
     this.reconnectAttempt = 0;
-    this.setState("ready");
+    // A command aborted on the last close may still be unwinding, and until it settles a new
+    // command is refused (B3). Saying "ready" then would be a promise the session cannot keep;
+    // the aborted command's `finally` reports ready once it has settled.
+    this.setState(this.unwinding === null ? "ready" : "executing");
     this.startKeepalive();
     // B2: a restore that found the bound tab gone says so, once the socket can carry it.
     if (this.announceTabClosed) {
@@ -707,7 +710,13 @@ export class CommandSession {
     } finally {
       this.recentIds.add(command.command_id);
       if (this.currentAbort === abort) this.currentAbort = null;
-      if (this.unwinding === command.command_id) this.unwinding = null;
+      if (this.unwinding === command.command_id) {
+        this.unwinding = null;
+        // The reconnected socket held back "ready" while this command unwound; say it now.
+        if (this.socket && this.inFlight === null && this.state === "executing") {
+          this.setState("ready");
+        }
+      }
       if (current()) {
         this.executing = null;
         this.inFlight = null;

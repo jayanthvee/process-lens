@@ -609,6 +609,34 @@ describe("CommandSession", () => {
     await flush();
   });
 
+  it("does not report ready on a reconnect until the aborted command has unwound", async () => {
+    // B3: "ready" is the popup's promise that a command would be taken. While an aborted command
+    // is still unwinding, a new one is refused, so the session must not say ready until it settles.
+    const gate: { release: (() => void) | null } = { release: null };
+    const harness = makeHarness({
+      runStep: async (_step, opts) => {
+        opts.sentInput();
+        await new Promise<void>((done) => {
+          gate.release = done;
+        });
+        return { id: "step-1", action: "click", outcome: "done" };
+      },
+    });
+    const socket = await openSession(harness);
+
+    deliver(socket, command({ command_id: "c1" }));
+    await flush();
+    socket.emit("close");
+    expect(harness.fireTimers(500)).toBe(1);
+    harness.sockets[1]?.emit("open");
+    await flush();
+    expect(harness.states.at(-1)).toBe("executing");
+
+    gate.release?.();
+    await flush();
+    expect(harness.states.at(-1)).toBe("ready");
+  });
+
   it("an error after the first input is reported lost, not rejected", async () => {
     // F2: an exception after input is not a provable rejection; the runner must reconcile.
     const harness = makeHarness({
