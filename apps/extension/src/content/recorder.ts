@@ -374,6 +374,50 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
   let baseline: Snapshot | null = null;
   /** The value each element's fill was last recorded with, so a diff cannot repeat a step. */
   const lastEmitted = new Map<Element, string>();
+  /**
+   * The values each element's *recorded* fills have carried, chip fills excluded.
+   *
+   * A chip whose value is already here is not a new step. The person's own fill plus the recorded
+   * action that produced the chip (the Add click, the key, the option click) already put that value
+   * there, and the replay reproduces it. Emitting the chip as well is what produced two adjacent
+   * same-target fills of one field — the typed value and, after it, the stale chip value — and the
+   * compiler's `coalesce_fills` kept the second one, so the recipe typed the old value twice and
+   * the chip fold had nothing left to consume (PL-018). A chip's own fill is deliberately NOT
+   * recorded here: a chip is a consequence, and the question this answers is whether the person's
+   * typing already carries the value.
+   */
+  const emittedFillValues = new Map<Element, Set<string>>();
+
+  /** Remember that a non-chip fill put this value in this element. */
+  function rememberEmittedFill(el: Element, value: string): void {
+    const values = emittedFillValues.get(el) ?? new Set<string>();
+    values.add(value);
+    emittedFillValues.set(el, values);
+  }
+
+  /**
+   * Whether a recorded non-chip fill already carries this value for this element.
+   *
+   * The set holds the *raw* values that were emitted — it is the record of what the recipe says —
+   * but the comparison normalizes both sides, because a page may trim or lowercase what it puts in
+   * the chip: this fixture's `addChip` does `(address || "").trim()`. Typing "bob@example.test "
+   * fills the set with the trailing space while the chip carries the trimmed value, so a raw
+   * comparison would miss and re-emit the chip — the stale value the compiler's `coalesce_fills`
+   * then keeps. (The compiler's own chip fold guard at compiler.py:348 already compares
+   * case-insensitively, so matching that here keeps the two ends agreeing.) The premise is
+   * unchanged: the person's own recorded fill plus the recorded action that produced the chip is
+   * what reproduces it.
+   */
+  function valueAlreadyFilled(field: Element, value: string): boolean {
+    const values = emittedFillValues.get(field);
+    if (!values) return false;
+    const normalized = value.trim().toLowerCase();
+    for (const emitted of values) {
+      if (emitted.trim().toLowerCase() === normalized) return true;
+    }
+    return false;
+  }
+
   /** The fields the recorder watched offer suggestions for. */
   const witnessedAutocomplete = new Set<Element>();
   /** Chip values a remove click already accounts for: the click is the step, not the removal. */
@@ -585,6 +629,7 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
       if (flushed.has(fill.element) || lastEmitted.get(fill.element) === fill.value) continue;
       const step = fillStep(fill.element, fill.value);
       lastEmitted.set(fill.element, fill.value);
+      rememberEmittedFill(fill.element, fill.value);
       lastFillElement = fill.element;
       lastTypedFillId.set(fill.element, step.id);
       hooks.send(
@@ -609,6 +654,14 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
 
     for (const added of diff.chipsAdded) {
       const field = controllingField(added.list);
+      // A chip the person's own recorded fill already carries is not a new step: that fill, plus the
+      // recorded action that produced the chip, replays it. Emitting it here too would put two
+      // fills of the same value-bearing field side by side, and the compiler's coalesce keeps the
+      // later one — the stale chip value — which overwrites the recipient it was meant to add
+      // (PL-018). A chip the typing did NOT carry (type "ma", accept "ma@example.test") still gets
+      // its fill, with its supersedes pointer. The comparison normalizes both sides because the
+      // page may trim or lowercase the chip's value; see valueAlreadyFilled.
+      if (field && valueAlreadyFilled(field, added.value)) continue;
       const supersedes = field ? lastTypedFillId.get(field) : undefined;
       const step: FillStep = {
         id: nextStepId("fill"),
@@ -981,6 +1034,7 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
     recordedTyping.set(el, value);
     const step = fillStep(el, value);
     lastEmitted.set(el, value);
+    rememberEmittedFill(el, value);
     lastFillElement = el;
     lastTypedFillId.set(el, step.id);
     emitStep("fill", step, isRequiredField(el));
@@ -1100,6 +1154,7 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
         recordedTyping.set(el, value);
         const step = fillStep(el, value);
         lastEmitted.set(el, value);
+        rememberEmittedFill(el, value);
         lastFillElement = el;
         lastTypedFillId.set(el, step.id);
         emitStep("fill", step);
@@ -1178,6 +1233,7 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
     recordedTyping.clear();
     baseline = null;
     lastEmitted.clear();
+    emittedFillValues.clear();
     touched.clear();
     removedByControl.clear();
     lastTypedFillId.clear();
