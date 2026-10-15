@@ -13,12 +13,16 @@ from psycopg.rows import dict_row
 
 from .models import (
     ApprovalRequestRow,
+    NeedsHelpRow,
     RecordClaim,
     ResultsRow,
     RunClaim,
     RunListRow,
+    RunningRunRow,
     RunSummaryRow,
+    TaskListRow,
     TransitionRow,
+    WeekCountsRow,
     _row,
 )
 
@@ -139,14 +143,187 @@ def list_open_approvals(conn: psycopg.Connection, run_id: uuid.UUID) -> list[App
         return [_row(ApprovalRequestRow, row) for row in cur.fetchall()]
 
 
+# The week's finished rows come from ``run_record_transitions``: one row per state change, written
+# by the database trigger, so a row is counted by when it actually reached ``verified`` or
+# ``skipped`` and not by the run's own timestamps. The join to ``run_records`` is only for the
+# tenant filter.
+_WEEK_COUNTS = """
+SELECT
+  count(*) FILTER (WHERE t.to_state = 'verified') AS done,
+  count(*) FILTER (WHERE t.to_state = 'skipped') AS already_there
+FROM run_record_transitions t
+JOIN run_records rr ON rr.id = t.run_record_id
+WHERE t.at >= now() - make_interval(days => %(days)s)
+  AND (%(tenant)s::uuid IS NULL OR rr.tenant_id = %(tenant)s)
+"""
+
+# The wall clock the window's runs took: an unfinished run is counted up to now, and a run that a
+# worker never claimed falls back to its creation time.
+_WINDOW_RUN_SECONDS = """
+SELECT coalesce(
+         sum(extract(epoch FROM (coalesce(finished_at, now()) - coalesce(started_at, created_at)))),
+         0
+       )::double precision AS seconds
+FROM runs
+WHERE coalesce(started_at, created_at) >= now() - make_interval(days => %(days)s)
+  AND (%(tenant)s::uuid IS NULL OR tenant_id = %(tenant)s)
+"""
+
+# Every row across all runs that needs a person, newest first: by when it entered the state it is
+# in now, so a problem that just appeared is at the top. The task's name is the recipe's own, with
+# the workflow name as the fallback, exactly as the runs list does.
+_LIST_NEEDS_HELP = """
+SELECT rr.id AS record_id, rr.run_id,
+       coalesce(rv.recipe -> 'meta' ->> 'name', w.name) AS task_name,
+       rr.record_key AS "row", rr.state::text AS state, rr.reason, rr.commit_attempted,
+       coalesce(entered.at, rr.created_at) AS entered_at
+FROM run_records rr
+JOIN runs ru ON ru.id = rr.run_id
+JOIN recipe_versions rv ON rv.id = ru.recipe_version_id
+JOIN workflows w ON w.id = ru.workflow_id
+LEFT JOIN LATERAL (
+  SELECT max(t.at) AS at
+  FROM run_record_transitions t
+  WHERE t.run_record_id = rr.id AND t.to_state = rr.state
+) entered ON true
+WHERE rr.state IN ('parked', 'failed')
+  AND (%(tenant)s::uuid IS NULL OR rr.tenant_id = %(tenant)s)
+ORDER BY entered_at DESC, rr.id DESC
+"""
+
+# The runs that are still going: ``queued``, ``running`` or ``paused``. ``done`` counts both the
+# rows that were added and the rows that were already there; ``already_there`` isolates the latter.
+_LIST_RUNNING_RUNS = """
+SELECT ru.id AS run_id,
+       coalesce(rv.recipe -> 'meta' ->> 'name', w.name) AS task_name,
+       coalesce(c.verified, 0) + coalesce(c.skipped, 0) AS done,
+       coalesce(c.total, 0) AS total,
+       coalesce(c.skipped, 0) AS already_there
+FROM runs ru
+JOIN recipe_versions rv ON rv.id = ru.recipe_version_id
+JOIN workflows w ON w.id = ru.workflow_id
+LEFT JOIN LATERAL (
+  SELECT count(*) AS total,
+         count(*) FILTER (WHERE rr.state = 'verified') AS verified,
+         count(*) FILTER (WHERE rr.state = 'skipped') AS skipped
+  FROM run_records rr
+  WHERE rr.run_id = ru.id
+) c ON true
+WHERE ru.status IN ('queued', 'running', 'paused')
+  AND (%(tenant)s::uuid IS NULL OR ru.tenant_id = %(tenant)s)
+ORDER BY ru.created_at DESC, ru.id
+"""
+
+# Every saved task: the latest version of each non-archived workflow, newest first. ``app`` is the
+# host of the first site the task may use -- the recipe document's own ``meta.allowed_origins``,
+# with the workflow's configured origins as the fallback for a version that predates that field.
+# ``last_run`` is the newest run of the workflow, or all-NULL when it has never run.
+_LIST_TASKS = """
+SELECT workflow_id, recipe_version_id, name,
+       CASE
+         WHEN origin IS NULL OR origin = '' THEN NULL
+         ELSE split_part(
+           regexp_replace(origin, '^[a-zA-Z][a-zA-Z0-9+.-]*://', ''),
+           '/', 1
+         )
+       END AS app,
+       last_run_id, last_run_status, last_run_started_at, last_run_counts
+FROM (
+  SELECT rv.workflow_id, rv.id AS recipe_version_id,
+         coalesce(rv.recipe -> 'meta' ->> 'name', w.name) AS name,
+         coalesce(rv.recipe -> 'meta' -> 'allowed_origins' ->> 0, w.allowed_origins[1]) AS origin,
+         last.id AS last_run_id, last.status::text AS last_run_status,
+         last.started_at AS last_run_started_at,
+         coalesce(last.counts, '{}'::jsonb) AS last_run_counts,
+         rv.created_at AS created_at
+  FROM recipe_versions rv
+  JOIN workflows w ON w.id = rv.workflow_id
+  LEFT JOIN LATERAL (
+    SELECT ru.id, ru.status, ru.started_at,
+           (SELECT coalesce(jsonb_object_agg(s.state::text, s.n), '{}'::jsonb)
+            FROM (
+              SELECT state, count(*) AS n FROM run_records WHERE run_id = ru.id GROUP BY state
+            ) s) AS counts
+    FROM runs ru
+    WHERE ru.workflow_id = rv.workflow_id AND ru.tenant_id = rv.tenant_id
+    ORDER BY ru.created_at DESC, ru.id
+    LIMIT 1
+  ) last ON true
+  WHERE w.archived_at IS NULL
+    AND rv.version = (
+      SELECT max(v.version) FROM recipe_versions v WHERE v.workflow_id = rv.workflow_id
+    )
+    AND (%(tenant)s::uuid IS NULL OR rv.tenant_id = %(tenant)s)
+) ranked
+ORDER BY created_at DESC, recipe_version_id
+LIMIT %(limit)s
+"""
+
+
+def week_counts(
+    conn: psycopg.Connection, *, days: int, tenant_id: uuid.UUID | None = None
+) -> WeekCountsRow:
+    """How many rows entered ``verified`` and ``skipped`` in the last ``days`` days."""
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(_WEEK_COUNTS, {"days": days, "tenant": tenant_id})
+        return _row(WeekCountsRow, cur.fetchone())
+
+
+def window_run_seconds(
+    conn: psycopg.Connection, *, days: int, tenant_id: uuid.UUID | None = None
+) -> float:
+    """The wall clock, in seconds, that the runs started in the last ``days`` days took."""
+    with conn.cursor() as cur:
+        cur.execute(_WINDOW_RUN_SECONDS, {"days": days, "tenant": tenant_id})
+        row = cur.fetchone()
+    return float(row[0]) if row is not None else 0.0
+
+
+def list_needs_help(
+    conn: psycopg.Connection, *, tenant_id: uuid.UUID | None = None
+) -> list[NeedsHelpRow]:
+    """Every row in state ``parked`` or ``failed``, newest first."""
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(_LIST_NEEDS_HELP, {"tenant": tenant_id})
+        return [_row(NeedsHelpRow, row) for row in cur.fetchall()]
+
+
+def list_running_runs(
+    conn: psycopg.Connection, *, tenant_id: uuid.UUID | None = None
+) -> list[RunningRunRow]:
+    """The runs that are queued, running or paused, newest first, with their progress."""
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(_LIST_RUNNING_RUNS, {"tenant": tenant_id})
+        return [_row(RunningRunRow, row) for row in cur.fetchall()]
+
+
+def list_tasks(
+    conn: psycopg.Connection, *, tenant_id: uuid.UUID | None = None, limit: int | None = None
+) -> list[TaskListRow]:
+    """The latest version of every non-archived workflow, newest first.
+
+    ``limit`` of ``None`` is every task (the SQL ``LIMIT NULL`` is no limit).
+    """
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(_LIST_TASKS, {"tenant": tenant_id, "limit": limit})
+        return [_row(TaskListRow, row) for row in cur.fetchall()]
+
+
 __all__ = [
     "RunClaim",
     "RunListRow",
+    "TaskListRow",
+    "WeekCountsRow",
+    "list_needs_help",
     "list_open_approvals",
     "list_run_records",
+    "list_running_runs",
     "list_runs",
+    "list_tasks",
     "list_transitions",
     "results_rows",
     "run_of_record",
     "run_summary",
+    "week_counts",
+    "window_run_seconds",
 ]

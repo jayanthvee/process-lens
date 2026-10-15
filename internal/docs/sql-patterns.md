@@ -299,6 +299,34 @@ WHERE run_id = $run AND state = 'pending';
 UPDATE runs SET status = 'cancelled' WHERE id = $run;
 ```
 
+## The Home screen's week, help list and task list (read-only)
+
+Three read shapes for PL-023, all in ``packages/ledger/reads.py``. The week's counts come from the
+append-only audit table, not from the run's own timestamps: a row is counted when it *entered*
+``verified`` or ``skipped`` inside the rolling window.
+
+```sql
+-- the week's finished rows (the join to run_records is only the tenant filter)
+SELECT count(*) FILTER (WHERE t.to_state = 'verified') AS done,
+       count(*) FILTER (WHERE t.to_state = 'skipped')  AS already_there
+FROM run_record_transitions t
+JOIN run_records rr ON rr.id = t.run_record_id
+WHERE t.at >= now() - make_interval(days => $1)
+  AND ($2::uuid IS NULL OR rr.tenant_id = $2::uuid);
+
+-- the wall clock the window's runs took (an unclaimed run falls back to its creation time)
+SELECT coalesce(sum(extract(epoch FROM (coalesce(finished_at, now())
+                                          - coalesce(started_at, created_at)))), 0)
+FROM runs
+WHERE coalesce(started_at, created_at) >= now() - make_interval(days => $1)
+  AND ($2::uuid IS NULL OR tenant_id = $2::uuid);
+```
+
+The needs-help set is every record in ``parked`` or ``failed`` across all runs, newest first by the
+audit row that put it in that state; the running set is every run in ``queued``/``running``/
+``paused`` with its per-state counts; and the task list is the latest version of each non-archived
+workflow with its newest run. Their SQL is in the same module, next to these two.
+
 ## Rules
 
 - Never `UPDATE` or `DELETE` on `recipe_versions`, `committed_keys`, `step_events`, `ai_calls`, `approvals`, `run_record_transitions`. Triggers will reject it anyway.

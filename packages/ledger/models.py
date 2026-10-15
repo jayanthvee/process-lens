@@ -36,6 +36,11 @@ class RunClaim:
     worker_id: str | None
     lease_epoch: int
     cancel_requested_at: datetime | None
+    # The two clocks the results screen needs for a finished run's time saved. They arrive with the
+    # rest of the row (``get_run`` reads ``SELECT *``), and they default so a test that builds a run
+    # by hand does not have to invent them.
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -160,3 +165,49 @@ class ResultsRow:
     attempts: int | None
     destination_ref: str | None
     issues: list[Any] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class WeekCountsRow:
+    """The week's finished rows, counted from the append-only audit table."""
+
+    done: int
+    already_there: int
+
+
+@dataclass(frozen=True)
+class NeedsHelpRow:
+    """One row that needs a person, with the task it came from and its plain reason."""
+
+    record_id: uuid.UUID
+    run_id: uuid.UUID
+    task_name: str
+    row: str
+    state: str
+    reason: str | None
+    commit_attempted: bool
+
+
+@dataclass(frozen=True)
+class RunningRunRow:
+    """One run that is still open, with the progress the page shows."""
+
+    run_id: uuid.UUID
+    task_name: str
+    done: int
+    total: int
+    already_there: int
+
+
+@dataclass(frozen=True)
+class TaskListRow:
+    """One saved task: its latest version, the site it may use, and its newest run."""
+
+    workflow_id: uuid.UUID
+    recipe_version_id: uuid.UUID
+    name: str
+    app: str | None
+    last_run_id: uuid.UUID | None
+    last_run_status: str | None
+    last_run_started_at: datetime | None
+    last_run_counts: dict[str, int]

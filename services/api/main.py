@@ -24,6 +24,7 @@ from starlette.responses import Response
 
 from .approvals import router as approvals_router
 from .compile import router as compile_router
+from .home import router as home_router
 from .hub import router as hub_router
 from .middleware import FrontDoorMiddleware
 from .recipes import router as recipes_router
@@ -48,6 +49,7 @@ app.include_router(compile_router)
 app.include_router(runs_router)
 app.include_router(approvals_router)
 app.include_router(hub_router)
+app.include_router(home_router)
 
 
 # NOTE: the page's static mount is added at the very END of this module, after every route is

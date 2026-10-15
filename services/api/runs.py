@@ -100,6 +100,10 @@ class RunDetail(BaseModel):
     status: str
     pause_reason: str | None
     cancel_requested_at: datetime | None
+    # The wall clock, for the results screen's "about N minutes saved". ``started_at`` is null until
+    # a worker claims the run; ``finished_at`` is null until it ends.
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
     counts: RunCounts
     open_approval: OpenApproval | None = None
 
@@ -225,6 +229,8 @@ def get_run_endpoint(run_id: uuid.UUID) -> RunDetail:
         status=run.status,
         pause_reason=run.pause_reason,
         cancel_requested_at=run.cancel_requested_at,
+        started_at=run.started_at,
+        finished_at=run.finished_at,
         counts=counts,
         open_approval=(
             OpenApproval(
