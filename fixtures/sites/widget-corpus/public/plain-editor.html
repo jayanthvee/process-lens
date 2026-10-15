@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Plain editor</title>
+<link rel="stylesheet" href="styles.css">
+<!--SWITCHES-->
+</head>
+<body data-page="plain-editor" data-mode="plain" data-source="plain-editor" data-field="note">
+<h1>Plain editor</h1>
+<p><a href="index.html" data-testid="back-to-index">All widgets</a></p>
+<p class="hint">
+  A contenteditable that fires <code>input</code> normally: the baseline that
+  must not regress.
+</p>
+<span class="field-label" id="note-label">Note</span>
+<div class="editor" contenteditable="true" role="textbox" aria-multiline="true" aria-label="Note"
+     aria-labelledby="note-label" data-testid="editor"></div>
+<input type="hidden" name="note" value="">
+<button type="button" data-testid="save">Save</button>
+<div role="status" data-testid="saved" hidden>Saved</div>
+<script src="app.js"></script>
+<script src="editors.js"></script>
+</body>
+</html>

@@ -9,7 +9,8 @@ import {
   shouldRecordNavigation,
   type NavigationDetails,
 } from "../src/background/recorder-session";
-import type { PendingEvent } from "../src/shared/events";
+import { shouldResetStepIds } from "../src/content/recorder";
+import { nextStepId, resetStepIds, type PendingEvent } from "../src/shared/events";
 
 function clickEvent(provisionalId: string, url = "https://mail.example.test/inbox"): PendingEvent {
   return {
@@ -234,5 +235,81 @@ describe("the action a navigation is owed evidence for (requirement 3)", () => {
     expect(session.count).toBe(0);
     expect(session.pendingTarget()).toBeNull();
     expect(session.append(clickEvent("click-1")).step?.id).toBe("click-1");
+  });
+});
+
+describe("step ids restart for a new recording (PL-018, requirement 4)", () => {
+  it("translates an envelope reference to the stored step id (PL-018, the supersedes fold)", () => {
+    const session = new RecorderSession();
+    // The page mints `fill-2` from its own global counter; the session stores that fill as `fill-1`.
+    const prefix = session.append({
+      at: "2026-10-12T00:00:00.000Z",
+      kind: "fill",
+      url: "https://mail.example.test/inbox",
+      step: {
+        id: "fill-2",
+        action: "fill",
+        name: "Fill To",
+        targets: [{ by: "role", role: "combobox", name: "To" }],
+        value: { kind: "constant", value: "dana" },
+      },
+    });
+    expect(prefix.step?.id).toBe("fill-1");
+
+    const chip = session.append({
+      at: "2026-10-12T00:00:00.000Z",
+      kind: "fill",
+      url: "https://mail.example.test/inbox",
+      step: {
+        id: "fill-4",
+        action: "fill",
+        name: "Fill To",
+        targets: [{ by: "role", role: "combobox", name: "To" }],
+        value: { kind: "constant", value: "dana@example.test" },
+      },
+      chip: true,
+      autocomplete: true,
+      supersedes: "fill-2",
+    });
+
+    // The reference must name the id the stored fill actually carries, or the compiler's fold
+    // cannot find the prefix and the accept stays a press of its own.
+    expect(chip.supersedes).toBe("fill-1");
+    expect(session.events[0]!.step?.id).toBe(chip.supersedes);
+  });
+
+  it("restarts the ids when a recording starts and when the recording is cleared", () => {
+    // A new recording: the previous demonstration's numbers mean nothing to it.
+    expect(shouldResetStepIds({ state: "recording", count: 0 }, { state: "idle", count: 0 })).toBe(
+      true,
+    );
+    // The same recording reporting again, and a stop: the ids belong to the session that is still
+    // there (the service worker renumbers what it holds), so neither restarts them.
+    expect(shouldResetStepIds({ state: "recording", count: 3 }, { state: "recording", count: 3 })).toBe(
+      false,
+    );
+    expect(shouldResetStepIds({ state: "idle", count: 3 }, { state: "recording", count: 3 })).toBe(
+      false,
+    );
+    // A clear: idle, with nothing recorded any more — however it got there.
+    expect(shouldResetStepIds({ state: "idle", count: 0 }, { state: "recording", count: 4 })).toBe(
+      true,
+    );
+    expect(shouldResetStepIds({ state: "idle", count: 0 }, { state: "idle", count: 5 })).toBe(true);
+  });
+
+  it("starts a second recording's ids at one again", () => {
+    resetStepIds();
+    expect(nextStepId("click")).toBe("click-1");
+    nextStepId("fill");
+    expect(nextStepId("click")).toBe("click-3");
+
+    // The transition into recording is what the content script resets on.
+    const transition = { state: "recording", count: 0 };
+    expect(shouldResetStepIds(transition, { state: "idle", count: 0 })).toBe(true);
+    resetStepIds();
+
+    expect(nextStepId("click")).toBe("click-1");
+    expect(nextStepId("fill")).toBe("fill-2");
   });
 });

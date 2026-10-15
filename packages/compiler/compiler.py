@@ -3,8 +3,8 @@
 The stages run in one order and each is a plain function over the last one's
 output:
 
-    parse -> drop noise -> fold keystrokes -> fold click/submit
-          -> parameterize -> infer assertions -> build meta -> render
+    parse -> drop noise -> fold keystrokes -> fold press/submit -> fold click/submit
+          -> fold chips -> parameterize -> infer assertions -> build meta -> render
           -> validate against the schema
 
 The result is deterministic: the same recording and options always compile to
@@ -24,12 +24,24 @@ from .assertions import (
     origin_of,
     path_pattern,
 )
-from .coalesce import coalesce_fills, collapse_submits
+from .coalesce import coalesce_fills, collapse_presses, collapse_submits
 from .errors import CompileError
-from .model import STEP_ACTIONS, Candidate, Event
-from .normalize import NAVIGATE_EVENT_KIND, parse_events
+from .model import ACTIONABLE_KINDS, STEP_ACTIONS, Candidate, Event, target_signature
+from .normalize import NAVIGATE_EVENT_KIND, UNRECORDABLE_EVENT_KIND, parse_events
 from .parameterize import parameterize_candidate
 from .validation import assert_valid_recipe
+
+# PL-018 (§3.8, §4.4). Each refusal is one sentence on purpose: it is the headline the Make recipe
+# form shows, and nothing is stored when it fires.
+KEY_COMMIT_REFUSAL = (
+    "The save or send was done with a key. Re-record it by clicking the button (for example Send)."
+)
+UNRECORDABLE_REFUSAL = (
+    "A recipient was removed in a way that can't be replayed (no remove button). Re-record it "
+    "using the \u2715, or don't remove recipients during the recording."
+)
+# The keys a person sends with: a press of one of these may be the send itself.
+COMMITTING_KEYS = frozenset({"Enter", "Control+Enter", "Meta+Enter"})
 
 
 @dataclass
@@ -139,6 +151,7 @@ def to_candidates(
                 targets=targets,
                 value=value,
                 name=step.get("name") if isinstance(step.get("name"), str) else None,
+                key=step.get("key") if isinstance(step.get("key"), str) else None,
                 url=event.url,
                 after_url=_next_actionable_url(events, index),
                 seq=event.seq,
@@ -146,6 +159,9 @@ def to_candidates(
                 observation=event.observation,
                 recorded_id=recorded_id,
                 frame=step.get("frame") if isinstance(step.get("frame"), list) else None,
+                chip=event.chip,
+                autocomplete=event.autocomplete,
+                supersedes=event.supersedes,
             )
         )
     return candidates, warnings
@@ -257,16 +273,134 @@ def _render_candidate(candidate: Candidate) -> dict[str, Any]:
     step["targets"] = candidate.targets
     if candidate.frame:
         step["frame"] = candidate.frame
+    if candidate.action == "press":
+        # The schema's step_press carries no commit and no assert_after -- a press alone changes no
+        # destination record -- so neither is ever emitted for one.
+        step["key"] = candidate.key
+        return step
     if candidate.action in ("fill", "select"):
         step["value"] = candidate.value
         if candidate.action == "select":
             step["option_match"] = "text"
         else:
             step["clear_first"] = True
+            # A fill the recorder witnessed as an autocomplete accept carries the witness onto the
+            # step, so the executor knows to complete it by containment rather than move on (§4.3).
+            if candidate.autocomplete:
+                step["autocomplete"] = True
     if candidate.commit:
         step["commit"] = True
         step["assert_after"] = candidate.assert_after
     return step
+
+
+def _literal(value: Any) -> Any:
+    """The literal a recorded value carries, or None when it is not a constant."""
+    if isinstance(value, dict) and value.get("kind") == "constant":
+        return value.get("value")
+    return None
+
+
+def _fold_chip_fills(candidates: list[Candidate]) -> tuple[list[Candidate], list[str]]:
+    """Fold a chip's fill and the prefix fill it superseded into one step (PL-018, §4.1.2).
+
+    The recorder witnessed the relationship, so it rides the envelope: the chip-add fill carries
+    ``chip``, ``autocomplete``, and the id of the prefix fill it ``supersedes``. When the guards
+    hold, the prefix fill and the accept step between the two (a ``select`` on the field, or a
+    ``press``) are dropped, and the chip's own fill -- the chip's value, never the typed text -- is
+    what remains. When a guard does not hold nothing is folded, and the warning names the guard that
+    failed: the one place a fold could hide a wrong value, so the compiler refuses to guess.
+    """
+    warnings: list[str] = []
+    dropped: set[int] = set()
+
+    for index, candidate in enumerate(candidates):
+        if not candidate.supersedes:
+            continue
+        prefix = next(
+            (
+                position
+                for position in range(index)
+                if candidates[position].recorded_id == candidate.supersedes
+            ),
+            None,
+        )
+        prefix_message = (
+            f"the chip fill at event {candidate.seq} supersedes {candidate.supersedes!r}"
+        )
+        if prefix is None or candidates[prefix].action != "fill":
+            warnings.append(
+                f"{prefix_message}, which is not an earlier fill; it stands as recorded"
+            )
+            continue
+        superseded = candidates[prefix]
+        if target_signature(superseded.targets) != target_signature(candidate.targets):
+            warnings.append(f"{prefix_message} a fill of another field; it stands as recorded")
+            continue
+        if not candidate.autocomplete:
+            warnings.append(
+                f"the chip fill at event {candidate.seq} carries no autocomplete witness; "
+                "it stands as recorded"
+            )
+            continue
+        typed = _literal(superseded.value)
+        chip_value = _literal(candidate.value)
+        if typed and str(typed).lower() not in str(chip_value).lower():
+            warnings.append(
+                f"the chip's value {chip_value!r} does not contain the typed text {typed!r}; "
+                "the fills stand as recorded"
+            )
+            continue
+
+        dropped.add(prefix)
+        for position in range(prefix + 1, index):
+            accept = candidates[position]
+            same_field = target_signature(accept.targets) == target_signature(candidate.targets)
+            # The accept the fold consumes: a key press, a select of the same field, or the click
+            # on the suggestion itself (the ticket's "by click, key or paste"). A click on the
+            # option is the same action as the chip that followed it, and leaving it in would make
+            # the replay accept a suggestion twice.
+            if (
+                accept.action == "press"
+                or (accept.action == "select" and same_field)
+                or (accept.action == "click" and _is_option_click(accept))
+            ):
+                dropped.add(position)
+        warnings.append(
+            f"folded the fill superseded by the chip fill at event {candidate.seq} into the chip"
+        )
+
+    if not dropped:
+        return list(candidates), warnings
+    return [item for position, item in enumerate(candidates) if position not in dropped], warnings
+
+
+def _is_option_click(candidate: Candidate) -> bool:
+    """Whether a click's ladder names a suggestion option (the accept, not an ordinary click)."""
+    return any(str(rung.get("role", "")).lower() == "option" for rung in candidate.targets or [])
+
+
+def _refuse_what_cannot_replay(events: list[Event], candidates: list[Candidate]) -> None:
+    """Refuse a recording the compiler cannot replay safely (PL-018, §3.8 and §4.4).
+
+    A press is never commit-capable, so a recording whose last action is a committing key, or whose
+    named commit step is a press, would replay with no write-ahead around the send. A chip removed
+    without its own control was recorded as nothing at all, and a replay would keep a recipient the
+    person removed. Neither is a warning: a warning in a list is easy to miss.
+    """
+    last_actionable = next(
+        (event for event in reversed(events) if event.kind in ACTIONABLE_KINDS), None
+    )
+    if (
+        last_actionable is not None
+        and last_actionable.kind == "press"
+        and (last_actionable.step or {}).get("key") in COMMITTING_KEYS
+    ):
+        raise CompileError(KEY_COMMIT_REFUSAL)
+    if any(candidate.action == "press" and candidate.commit for candidate in candidates):
+        raise CompileError(KEY_COMMIT_REFUSAL)
+    if any(event.kind == UNRECORDABLE_EVENT_KIND for event in events):
+        raise CompileError(UNRECORDABLE_REFUSAL)
 
 
 def _render_steps(
@@ -411,11 +545,16 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
 
     events, fold_warnings = coalesce_fills(events)
     warnings.extend(fold_warnings)
+    events, press_warnings = collapse_presses(events)
+    warnings.extend(press_warnings)
     events, submit_warnings = collapse_submits(events)
     warnings.extend(submit_warnings)
 
     candidates, candidate_warnings = to_candidates(events, options)
     warnings.extend(candidate_warnings)
+    _refuse_what_cannot_replay(events, candidates)
+    candidates, chip_warnings = _fold_chip_fills(candidates)
+    warnings.extend(chip_warnings)
     if not candidates:
         raise CompileError("no steps could be built from the recording")
 

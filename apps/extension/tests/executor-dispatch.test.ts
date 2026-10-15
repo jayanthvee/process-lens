@@ -12,6 +12,7 @@ import {
   focusAndSelect,
   measureTarget,
   prepareField,
+  resetInputClock,
 } from "../src/executor/dispatch";
 import { resolveTargetInPage } from "../src/executor/ladder";
 import { fakeCdp } from "./helpers/fake-cdp";
@@ -26,6 +27,9 @@ function stamp(html: string, token: string, target: Parameters<typeof resolveTar
 
 beforeEach(() => {
   document.body.innerHTML = "";
+  // The post-input quiet window is session state: a fill or a press in one test must not make the
+  // next test's click wait.
+  resetInputClock();
 });
 
 afterEach(() => {
@@ -143,7 +147,10 @@ describe("click", () => {
     await expect(dispatchClick(cdp, "c1", undefined, undefined, 40)).rejects.toThrow(
       /hit test found no element/,
     );
-    expect(callsTo("Input.dispatchMouseEvent")).toHaveLength(0);
+    // The final check refuses; the move that precedes it is the only mouse event -- never a press.
+    const mouseTypes = callsTo("Input.dispatchMouseEvent").map((call) => call.params["type"]);
+    expect(mouseTypes).not.toContain("mousePressed");
+    expect(mouseTypes).not.toContain("mouseReleased");
   });
 
   it("fails when the box center is covered by another element", async () => {
@@ -152,7 +159,10 @@ describe("click", () => {
     const { cdp, callsTo } = fakeCdp();
 
     await expect(dispatchClick(cdp, "c1", undefined, undefined, 40)).rejects.toThrow(/covered by/);
-    expect(callsTo("Input.dispatchMouseEvent")).toHaveLength(0);
+    // The final check refuses; the move that precedes it is the only mouse event -- never a press.
+    const mouseTypes = callsTo("Input.dispatchMouseEvent").map((call) => call.params["type"]);
+    expect(mouseTypes).not.toContain("mousePressed");
+    expect(mouseTypes).not.toContain("mouseReleased");
   });
 
   it("measureTarget fails when the marker is gone", async () => {

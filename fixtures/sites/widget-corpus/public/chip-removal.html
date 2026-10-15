@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Chip removal</title>
+<link rel="stylesheet" href="styles.css">
+<!--SWITCHES-->
+</head>
+<body data-page="chip-removal" data-source="chip-removal">
+<h1>Chip removal, and a Ctrl+Enter send</h1>
+<p><a href="index.html" data-testid="back-to-index">All widgets</a></p>
+<p class="hint">
+  Two compile-time cases live here. The chips have <strong>no remove control of
+  their own</strong>: a removal is done by selecting a chip and pressing Delete,
+  or from the page menu -- neither is a click the recording can replay, so the
+  compile must refuse (R2). The compose below sends on Ctrl+Enter and fires no
+  <code>submit</code> event, so a recording that ends there must be refused too
+  (R1).
+</p>
+
+<h2>Recipients</h2>
+<div role="listbox" aria-label="Recipients" data-testid="chips" class="chips">
+  <span class="chip" role="option" aria-selected="false" data-address="alice@example.test"
+        data-testid="chip"><span class="chip-name">Alice</span></span>
+  <span class="chip" role="option" aria-selected="false" data-address="bob@example.test"
+        data-testid="chip"><span class="chip-name">Bob</span></span>
+  <span class="chip" role="option" aria-selected="false" data-address="carol@example.test"
+        data-testid="chip"><span class="chip-name">Carol</span></span>
+</div>
+<button type="button" data-testid="chip-menu">Chip options</button>
+<div role="menu" data-testid="chip-actions" hidden>
+  <button type="button" role="menuitem" data-testid="remove-selected">Remove selected</button>
+</div>
+
+<h2>Send with a key</h2>
+<form id="key-form" action="/send" method="post" data-testid="key-form">
+  <label class="field-label" for="key-note">Message</label>
+  <textarea id="key-note" data-testid="key-note" name="body" aria-label="Message" rows="3"></textarea>
+  <input type="hidden" name="to" value="mary.an@example.test">
+  <p class="hint">Ctrl+Enter sends. There is no Send button here on purpose.</p>
+</form>
+<script src="app.js"></script>
+<script>
+  (function () {
+    "use strict";
+
+    // -- the chips: selection plus Delete, or the page menu -------------
+    var chips = document.querySelector('[data-testid="chips"]');
+    var selected = null;
+
+    function select(chip) {
+      Array.prototype.forEach.call(chips.querySelectorAll(".chip"), function (other) {
+        other.setAttribute("aria-selected", other === chip ? "true" : "false");
+      });
+      selected = chip;
+    }
+
+    function removeSelected() {
+      if (selected) {
+        selected.remove();
+        selected = null;
+      }
+    }
+
+    chips.addEventListener("click", function (event) {
+      var chip = event.target.closest ? event.target.closest(".chip") : null;
+      if (chip) {
+        select(chip);
+      }
+    });
+
+    document.addEventListener("keydown", function (event) {
+      if (event.key === "Delete" && selected) {
+        event.preventDefault();
+        removeSelected();
+      }
+    });
+
+    document.querySelector('[data-testid="chip-menu"]').addEventListener("click", function () {
+      window.Widgets.reveal(document.querySelector('[data-testid="chip-actions"]'));
+    });
+    document.querySelector('[data-testid="remove-selected"]').addEventListener(
+      "click",
+      removeSelected
+    );
+
+    // -- Ctrl+Enter sends, and no submit event is ever fired ------------
+    var form = document.querySelector('[data-testid="key-form"]');
+    var note = document.querySelector('[data-testid="key-note"]');
+    form.addEventListener("keydown", function (event) {
+      if (event.ctrlKey && event.key === "Enter") {
+        event.preventDefault();
+        window.Widgets.postJSON("/send", {
+          to: ["mary.an@example.test"],
+          body: note.value,
+          source: "chip-removal"
+        });
+      }
+    });
+  })();
+</script>
+</body>
+</html>

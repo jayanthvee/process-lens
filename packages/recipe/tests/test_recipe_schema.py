@@ -25,6 +25,7 @@ ACTIONS = (
     "fill",
     "select",
     "click",
+    "press",
     "upload_file",
     "read_value",
     "wait_for",
@@ -49,6 +50,7 @@ MINIMAL_BODY: dict[str, dict[str, Any]] = {
     "fill": {"targets": TARGET, "value": {"kind": "input", "column": "email"}},
     "select": {"targets": TARGET, "value": {"kind": "input", "column": "interest"}},
     "click": {"targets": TARGET},
+    "press": {"targets": TARGET, "key": "Enter"},
     "upload_file": {"targets": TARGET, "value": {"kind": "input", "column": "cv"}},
     "read_value": {"targets": TARGET, "as": "current_price"},
     "wait_for": {"condition": CONDITION, "timeout_ms": 5000},
@@ -196,6 +198,40 @@ def test_an_unknown_action_is_rejected(validator: Draft202012Validator) -> None:
     assert any(
         "is not valid under any of the given schemas" in m for m in messages(validator, document)
     )
+
+
+# --- the press action -----------------------------------------------------
+
+
+def test_a_press_step_validates(validator: Draft202012Validator) -> None:
+    document = recipe()
+    document["steps"] = [step("press")]
+    assert messages(validator, document) == []
+
+
+def test_a_press_step_cannot_commit(validator: Draft202012Validator) -> None:
+    """A key press alone changes no destination record, so commit is not a press field."""
+    document = recipe()
+    document["steps"] = [step("press", commit=True, assert_after=CONDITION)]
+    assert any(
+        "unexpected" in message and "commit" in message for message in messages(validator, document)
+    )
+
+
+def test_a_press_needs_a_key(validator: Draft202012Validator) -> None:
+    document = recipe()
+    body = dict(MINIMAL_BODY["press"])
+    body.pop("key")
+    document["steps"] = [{"id": "a-step", "action": "press", **body}]
+    assert any(
+        "'key' is a required property" in message for message in messages(validator, document)
+    )
+
+
+def test_a_press_rejects_a_key_outside_the_list(validator: Draft202012Validator) -> None:
+    document = recipe()
+    document["steps"] = [step("press", key="F5")]
+    assert any("'F5' is not one of" in message for message in messages(validator, document))
 
 
 @pytest.mark.parametrize(

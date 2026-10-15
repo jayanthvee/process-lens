@@ -1,0 +1,112 @@
+:root {
+  color-scheme: light;
+  font-family: system-ui, sans-serif;
+}
+
+body {
+  margin: 2rem auto;
+  max-width: 46rem;
+  padding: 0 1rem;
+}
+
+.hint {
+  color: #555;
+  font-size: 0.9rem;
+}
+
+.widget-list {
+  line-height: 1.8;
+}
+
+.field-label {
+  display: block;
+  margin-top: 0.75rem;
+  font-weight: 600;
+}
+
+input[type="text"],
+textarea,
+select {
+  box-sizing: border-box;
+  padding: 0.35rem 0.5rem;
+  width: 100%;
+}
+
+.suggestions {
+  border: 1px solid #bbb;
+  max-height: 12rem;
+  overflow: auto;
+}
+
+.suggestions [role="option"] {
+  display: block;
+  padding: 0.25rem 0.5rem;
+}
+
+.suggestions [role="option"][aria-selected="true"] {
+  background: #eef;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.35rem;
+  min-height: 1.8rem;
+}
+
+.chip {
+  align-items: center;
+  background: #eef;
+  border: 1px solid #99a;
+  border-radius: 1rem;
+  display: inline-flex;
+  gap: 0.35rem;
+  padding: 0.1rem 0.6rem;
+}
+
+.chip button {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 0.8rem;
+}
+
+.chip[aria-selected="true"] {
+  background: #dde;
+  outline: 2px solid #446;
+}
+
+.editor {
+  border: 1px solid #bbb;
+  min-height: 6rem;
+  padding: 0.5rem;
+}
+
+.compose-pane {
+  border: 1px solid #ccc;
+  border-radius: 0.5rem;
+  margin-top: 0.75rem;
+  padding: 0.75rem;
+}
+
+.toast {
+  background: #223;
+  border-radius: 0.25rem;
+  color: #fff;
+  display: inline-block;
+  margin-top: 0.75rem;
+  padding: 0.35rem 0.75rem;
+}
+
+.frame {
+  border: 1px solid #bbb;
+  height: 12rem;
+  width: 100%;
+}
+
+.fields {
+  display: grid;
+  gap: 0.25rem;
+  grid-template-columns: 8rem 1fr;
+}

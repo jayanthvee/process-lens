@@ -127,6 +127,61 @@ describe("post-action observation", () => {
     expect(recorded.events.map((event) => event.kind)).toEqual(["click"]);
   });
 
+  it("reports a pre-rendered toast that was empty until the action filled it", async () => {
+    // The Gmail-style case (PL-018): the page keeps its toast element in the markup and only
+    // writes the text after the action. An empty container is not stale evidence — its text
+    // arriving is what the window must report.
+    document.body.innerHTML =
+      "<button id='save'>Save</button>" +
+      "<div class='toast' role='status' id='toast' hidden></div>";
+    const recorded = harness();
+    document.getElementById("save")!.dispatchEvent(new Event("click", { bubbles: true }));
+
+    const toast = document.getElementById("toast")!;
+    toast.textContent = "Sent — Undo";
+    toast.hidden = false;
+    await flushMutations();
+    await vi.advanceTimersByTimeAsync(1500);
+
+    expect(recorded.events.map((event) => event.kind)).toEqual(["click", "observation"]);
+    expect(recorded.events[1]!.observation).toEqual({ text_visible: "Sent — Undo" });
+  });
+
+  it("reports a hidden pre-rendered status whose text was already there and is now revealed", async () => {
+    // The corpus widgets' shape: `<div role="status" hidden>Saved</div>` in the markup, revealed
+    // by the save. Hidden text is not showing yet, so its reveal is the evidence.
+    document.body.innerHTML =
+      "<button id='save'>Save</button>" +
+      "<div role='status' id='status' hidden>Saved</div>";
+    const recorded = harness();
+    document.getElementById("save")!.dispatchEvent(new Event("click", { bubbles: true }));
+
+    document.getElementById("status")!.hidden = false;
+    await flushMutations();
+    await vi.advanceTimersByTimeAsync(1500);
+
+    expect(recorded.events.map((event) => event.kind)).toEqual(["click", "observation"]);
+    expect(recorded.events[1]!.observation).toEqual({ text_visible: "Saved" });
+  });
+
+  it("reports a status revealed inside an open shadow root", async () => {
+    // The corpus's shadow form: the Save reveals `<div role="status" hidden>Saved</div>`
+    // inside an open shadow root, where neither a document-level query nor a
+    // document-level MutationObserver can see it.
+    document.body.innerHTML = "<button id='save'>Save</button><div id='host'></div>";
+    const root = document.getElementById("host")!.attachShadow({ mode: "open" });
+    root.innerHTML = "<div role='status' id='status' hidden>Saved</div>";
+    const recorded = harness();
+    document.getElementById("save")!.dispatchEvent(new Event("click", { bubbles: true }));
+
+    (root.getElementById("status") as HTMLElement).hidden = false;
+    await flushMutations();
+    await vi.advanceTimersByTimeAsync(1500);
+
+    expect(recorded.events.map((event) => event.kind)).toEqual(["click", "observation"]);
+    expect(recorded.events[1]!.observation).toEqual({ text_visible: "Saved" });
+  });
+
   it("does not observe while recording is off", async () => {
     document.body.innerHTML = "<button id='save'>Save</button><div id='host'></div>";
     const recorded = harness();

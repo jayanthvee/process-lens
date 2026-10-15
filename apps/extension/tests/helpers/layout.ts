@@ -33,6 +33,21 @@ export interface LayoutOptions {
 }
 
 export function installLayout(options: LayoutOptions = {}): () => void {
+  /** The marked element, light tree first, then inside every open shadow root. */
+  const deepMarker = (selector: string): Element | null => {
+    const light = document.querySelector(selector);
+    if (light) return light;
+    const collect = (root: Document | ShadowRoot): Element | null => {
+      for (const host of Array.from(root.querySelectorAll("*"))) {
+        const shadow = host.shadowRoot;
+        if (!shadow) continue;
+        const found = shadow.querySelector(selector) ?? collect(shadow);
+        if (found) return found;
+      }
+      return null;
+    };
+    return collect(document);
+  };
   const width = options.width ?? 120;
   const height = options.height ?? 24;
   const left = options.left ?? 10;
@@ -74,7 +89,7 @@ export function installLayout(options: LayoutOptions = {}): () => void {
     if (options.hitAt) return options.hitAt(call, x, y);
     if (options.hit === "none") return null;
     if (options.hit === "other") return document.createElement("div") as Element;
-    return document.querySelector("[data-pl-target]");
+    return deepMarker("[data-pl-target]");
   } as typeof Document.prototype.elementFromPoint;
 
   // A deterministic animation frame: jsdom's own may never fire without `pretendToBeVisual`, and a

@@ -19,7 +19,38 @@ const KEY_CODES: Record<string, number> = {
   Backspace: 8,
   Delete: 46,
   Enter: 13,
+  Tab: 9,
+  Escape: 27,
 };
+
+/**
+ * The keys a `press` step may send, each with what its CDP key event carries: the DOM `key` and
+ * `code`, the virtual key code (from `KEY_CODES`), and — for the chorded forms — the `modifiers`
+ * bitmask. `text` is what the keydown of a key that types a character carries in a real browser:
+ * an Enter keydown arrives with `"\r"`, a Tab with `"\t"`, and a widget that listens for Enter
+ * usually reads it, so a pair without it is ignored. The keys that only type characters are not
+ * here: they are typing, and a fill already carries the resulting value.
+ */
+interface PressKeySpec {
+  key: string;
+  code: string;
+  vk: number;
+  modifiers?: number;
+  text?: string;
+}
+
+const PRESS_KEYS: Record<string, PressKeySpec> = {
+  Enter: { key: "Enter", code: "Enter", vk: 13, text: "\r" },
+  Tab: { key: "Tab", code: "Tab", vk: 9, text: "\t" },
+  Escape: { key: "Escape", code: "Escape", vk: 27 },
+  Backspace: { key: "Backspace", code: "Backspace", vk: 8 },
+  Delete: { key: "Delete", code: "Delete", vk: 46 },
+  "Control+Enter": { key: "Enter", code: "Enter", vk: 13, modifiers: 2, text: "\r" },
+  "Meta+Enter": { key: "Enter", code: "Enter", vk: 13, modifiers: 4, text: "\r" },
+};
+
+/** The keys a `press` step may name, in the schema's order. */
+export const PRESS_KEY_NAMES: string[] = Object.keys(PRESS_KEYS);
 
 /**
  * The seam a command's owner uses to police its own input.
@@ -157,19 +188,65 @@ async function readFieldValue(
 /** Press Backspace once, used to clear a selection before typing. */
 async function pressBackspace(cdp: CdpTransport, beforeInput: () => void): Promise<void> {
   beforeInput();
-  await cdp.send("Input.dispatchKeyEvent", {
+  await sendInput(cdp, "Input.dispatchKeyEvent", {
     type: "keyDown",
     key: "Backspace",
     windowsVirtualKeyCode: KEY_CODES["Backspace"],
     nativeVirtualKeyCode: KEY_CODES["Backspace"],
   });
   beforeInput();
-  await cdp.send("Input.dispatchKeyEvent", {
+  await sendInput(cdp, "Input.dispatchKeyEvent", {
     type: "keyUp",
     key: "Backspace",
     windowsVirtualKeyCode: KEY_CODES["Backspace"],
     nativeVirtualKeyCode: KEY_CODES["Backspace"],
   });
+}
+
+/**
+ * Press one key on the element the resolver stamped.
+ *
+ * A real key event pair — `keyDown` then `keyUp`, never a `char` — is what a widget's own handler
+ * sees, and the pair is what makes it act: accept a suggestion, move focus with intent, dismiss a
+ * listbox. `token` names the element the key is destined for; CDP delivers a key event to whatever
+ * the page has focused, which a fill or the widget itself put there, so it is not part of the
+ * event. Both events go through the gate immediately before their own send, so a withdrawn or
+ * expired command presses no key at all (PL-017b). A key the executor cannot name correctly is
+ * refused before anything is sent, rather than pressed with a guessed code.
+ */
+export async function dispatchPress(
+  cdp: CdpTransport,
+  token: string,
+  key: string,
+  contextId?: number,
+  hooks?: InputHooks,
+): Promise<void> {
+  const spec = PRESS_KEYS[key];
+  if (!spec) {
+    throw new ExecutorError(
+      `the key ${JSON.stringify(key)} is not one the executor can press; it presses ${PRESS_KEY_NAMES.join(
+        ", ",
+      )}`,
+      undefined,
+      "park",
+    );
+  }
+  const gate = inputGate(hooks);
+  const base: Record<string, unknown> = {
+    key: spec.key,
+    code: spec.code,
+    windowsVirtualKeyCode: spec.vk,
+    nativeVirtualKeyCode: spec.vk,
+  };
+  if (spec.modifiers !== undefined) base["modifiers"] = spec.modifiers;
+  gate();
+  await sendInput(cdp, "Input.dispatchKeyEvent", {
+    type: "keyDown",
+    ...base,
+    ...(spec.text !== undefined ? { text: spec.text } : {}),
+  });
+  gate();
+  await sendInput(cdp, "Input.dispatchKeyEvent", { type: "keyUp", ...base });
 }
 
 /**
@@ -205,7 +282,7 @@ export async function dispatchFill(
   }
   if (clearFirst) await pressBackspace(cdp, gate);
   gate();
-  await cdp.send("Input.insertText", { text: value });
+  await sendInput(cdp, "Input.insertText", { text: value });
 
   const actual = await readFieldValue(cdp, token, options.contextId);
   if (actual !== value) {
@@ -224,6 +301,38 @@ export const DEFAULT_CLICK_SETTLE_MS = 2000;
 
 /** The floor for the landing listener's window, so the settle wait never spends it. */
 export const DEFAULT_LANDING_WINDOW_MS = 2000;
+
+/** How long after input the executor waits before a following click may check its target's box. */
+export const INPUT_QUIET_MS = 300;
+
+/**
+ * When the executor last sent input to the page -- a fill, a press or a select -- or `null` when it
+ * has sent none in this session. The extension binds one tab and runs one session at a time, so one
+ * clock is the session's. A click is deliberately not one of them (T1's ruling).
+ */
+let lastInputAt: number | null = null;
+
+/** Note the moment input was sent. The post-input quiet window is measured from here. */
+function noteInputSent(): void {
+  lastInputAt = Date.now();
+}
+
+/** Forget the last input. Only tests need this. */
+export function resetInputClock(): void {
+  lastInputAt = null;
+}
+
+/** A pause. The quiet window is a wait, not a retry: nothing is sent or pressed during it. */
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Send one trusted input event and note its moment for the quiet window. */
+async function sendInput(cdp: CdpTransport, method: string, params: Record<string, unknown>): Promise<unknown> {
+  const result = await cdp.send(method, params);
+  noteInputSent();
+  return result;
+}
 
 /**
  * Wait for a marked element to stop moving, in the page, before any input. Throws a `park` error —
@@ -286,7 +395,14 @@ function landingInstallExpression(token: string, deadlineMs: number): string {
     if (previous && typeof previous.cleanup === "function") previous.cleanup();
     const state = { token: ${JSON.stringify(token)}, result: null, cleanup: null };
     const onDown = (event) => {
-      state.result = el && (event.target === el || el.contains(event.target)) ? "target" : "other";
+      // A press inside an open shadow root is retargeted to the host here, so the target's own
+      // tree is consulted through the composed path as well: the press landed on the target if
+      // the target is anywhere on that path, host or no host.
+      const path = typeof event.composedPath === "function" ? event.composedPath() : [];
+      state.result =
+        el && (event.target === el || el.contains(event.target) || path.includes(el))
+          ? "target"
+          : "other";
       state.cleanup();
     };
     const timer = setTimeout(() => state.cleanup(), ${JSON.stringify(Math.max(0, deadlineMs))});
@@ -363,21 +479,43 @@ function watchNavigation(cdp: CdpTransport): {
   };
 }
 
+async function waitOutQuietWindow(remaining: () => number): Promise<void> {
+  // A page's reaction to input can be delayed -- the messy fixture opens its listbox 120 ms after
+  // the keystroke that triggered it -- so a click whose stability check would start within
+  // INPUT_QUIET_MS of the executor's own last input waits the remainder out first. The wait is
+  // bounded by the step's own deadline; when the deadline is nearer, the check runs with what is
+  // left. It sends nothing and presses nothing.
+  if (lastInputAt === null) return;
+  const quietMs = INPUT_QUIET_MS - (Date.now() - lastInputAt);
+  if (quietMs <= 0) return;
+  const waitMs = Math.min(quietMs, Math.max(0, remaining()));
+  if (waitMs > 0) await delay(waitMs);
+}
+
 /**
  * Click an element with a real mouse press and release, so that the element the guards approved is
  * the element acted on.
  *
- * Before the first `Input.*` event the target is scrolled into view and measured on two consecutive
- * animation frames until it holds still (R1); then its box is re-measured and the box center is
- * hit-tested immediately before the press (R2), re-measuring within `deadlineMs` when the point has
- * been covered since — a page that opens an in-flow autocomplete after the box last held still
- * pushes the target down and puts the listbox under the old point. A target that keeps moving or
- * stays covered until the deadline parks with NO input sent. A one-shot capture `mousedown` listener
- * is installed before the press and read after the release (R3): a press that landed on something
- * else throws a `park` error. That error is thrown AFTER the first input, so the command session
- * reports it `lost` (F2), never `rejected` — this function has no notion of a commit step and needs
- * none. When the page navigated and took its listener with it, the result is missing; that counts as
- * landed only when a `Page.frameNavigated` arrived after the press.
+ * When the executor sent input moments ago -- a fill, a press or a select -- the click first waits
+ * out what is left of a short quiet window (INPUT_QUIET_MS, measured from that input and bounded by
+ * the step's own deadline), because a page's reaction to input can be delayed: a listbox that opens
+ * 120 ms after the keystroke would otherwise be measured as though the page had already settled.
+ * The wait sends nothing and presses nothing.
+ *
+ * The order of the guards is then: the target is scrolled into view and measured on two consecutive
+ * animation frames until it holds still (R1); the one-shot capture `mousedown` listener is armed
+ * and the pointer is moved to the settled point; and only THEN is the box re-measured and its
+ * center hit-tested (R2), so the hit test is the last check before the press and the window in
+ * which a late reflow can invalidate the checked point is the single press send -- a page that
+ * reacts to the move itself is seen by the check that follows it. When the final check fails, the
+ * click re-settles within the SAME step deadline and checks again: a press that was never sent is
+ * never retried, and the deadline is never raised. A target that keeps moving or stays covered
+ * until the deadline parks with NO press sent. The armed listener is read after the release (R3,
+ * unchanged): a press that landed on something else throws a `park` error. That error is thrown
+ * AFTER the first input, so the command session reports it `lost` (F2), never `rejected` -- this
+ * function has no notion of a commit step and needs none. When the page navigated and took its
+ * listener with it, the result is missing; that counts as landed only when a `Page.frameNavigated`
+ * arrived after the press.
  */
 export async function dispatchClick(
   cdp: CdpTransport,
@@ -390,75 +528,97 @@ export async function dispatchClick(
   const gate = inputGate(hooks);
   const started = Date.now();
   const remaining = (): number => deadlineMs - (Date.now() - started);
+  await waitOutQuietWindow(remaining);
 
-  // R1 then R2, in a loop: wait for the box to hold still, re-measure the box and hit-test the
-  // point right before the press, and if the point is covered, wait again and re-measure. Reaching
-  // here past the deadline parks — and no `Input.*` was sent before the loop breaks, so the session
-  // reports a covered target `not_dispatched`, not `lost`.
-  let box: MeasureResult;
-  for (;;) {
-    box = await settleTarget(cdp, token, Math.max(1, remaining()), contextId);
-    // The click is dispatched at the top document's coordinates. An element inside a subframe
-    // cannot be clicked from here without landing on whatever the top document shows at those
-    // coordinates, so the step is parked instead.
-    if (box.topFrame !== true) {
-      throw new ExecutorError(
-        "refusing to click: the target is inside a frame, so a click at its coordinates would land on the top document instead",
-        undefined,
-        "park",
-      );
-    }
-    const hit = await hitTestTarget(cdp, token, contextId);
-    if (hit.ok) {
-      box = { ...box, x: hit.x, y: hit.y };
-      break;
-    }
-    if (remaining() <= 0) {
-      throw new ExecutorError(
-        hit.reason ?? "the target is covered by another element",
-        undefined,
-        "park",
-      );
-    }
-  }
-
-  // Install the landing listener now — after the settle/hit-test loop, immediately before the input
-  // it must observe, so its window is not spent waiting for the box. It is one page evaluate and
-  // sends no input. A generous window covers mouseMoved/mousePressed/mouseReleased and the read
-  // back; a click that navigates destroys the document and the listener with it.
+  // R1 then R2, in a loop: wait for the box to hold still, arm the landing listener and move the
+  // pointer, then hit-test the point LAST -- immediately before the press -- and if the point is
+  // covered, re-settle and check again within the same deadline. Reaching here past the deadline
+  // parks -- and nothing was pressed before the loop breaks, so the session reports a covered
+  // target `not_dispatched`, not `lost`.
+  //
+  // The armed section is wrapped: a step that throws before its verdict (a withdrawn command at the
+  // gate, a settle that failed on a later attempt) removes the listener on its way out, so no
+  // listener and no timer can outlive the step. The paths that reach a verdict set `settled` and
+  // pay no extra round trip -- the listener removed itself the moment the press landed, or the
+  // document the click navigated to took it away.
   const landingWindowMs = Math.max(deadlineMs, DEFAULT_LANDING_WINDOW_MS);
-  await evaluate(cdp, landingInstallExpression(token, landingWindowMs), scope);
-
-  const base = { x: box.x, y: box.y, button: "left", clickCount: 1 };
-  const navigation = typeof cdp.on === "function" ? watchNavigation(cdp) : null;
-  let landed: string | null;
-  let navigatedByClick = false;
+  let settled = false;
   try {
-    gate();
-    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: box.x, y: box.y });
-    gate();
-    await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", ...base });
-    gate();
-    await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", ...base });
-    landed = await readLanding(cdp, scope);
-    // Only a MISSING result needs the navigation check: when the press landed somewhere the
-    // listener could see, its verdict stands whatever else happens.
-    if (landed === null && navigation) {
-      navigatedByClick = await navigation.whenNavigated(Math.max(0, remaining()));
+    let movedTo: { x: number; y: number } | null = null;
+    let box: MeasureResult;
+    for (;;) {
+      box = await settleTarget(cdp, token, Math.max(1, remaining()), contextId);
+      // The click is dispatched at the top document's coordinates. An element inside a subframe
+      // cannot be clicked from here without landing on whatever the top document shows at those
+      // coordinates, so the step is parked instead.
+      if (box.topFrame !== true) {
+        throw new ExecutorError(
+          "refusing to click: the target is inside a frame, so a click at its coordinates would land on the top document instead",
+          undefined,
+          "park",
+        );
+      }
+      // Arm the landing listener and move the pointer BEFORE the final hit test, so that hit test is
+      // the last check before the press (T1's ruling): the window in which a late reflow can
+      // invalidate the checked point is then the single press send, and a page that reacts to the
+      // move itself is seen by the check that follows it. Re-arming per attempt cleans the previous
+      // listener up first; a duplicate move to a point the pointer already holds is skipped.
+      await evaluate(cdp, landingInstallExpression(token, landingWindowMs), scope);
+      if (movedTo === null || Math.abs(movedTo.x - box.x) > 1 || Math.abs(movedTo.y - box.y) > 1) {
+        gate();
+        await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: box.x, y: box.y });
+        movedTo = { x: box.x, y: box.y };
+      }
+      const hit = await hitTestTarget(cdp, token, contextId);
+      if (hit.ok) {
+        box = { ...box, x: hit.x, y: hit.y };
+        break;
+      }
+      if (remaining() <= 0) {
+        // The point never came back within the step's own deadline: nothing was pressed, and the
+        // `finally` below leaves no listener armed.
+        throw new ExecutorError(
+          hit.reason ?? "the target is covered by another element",
+          undefined,
+          "park",
+        );
+      }
+      // Otherwise re-settle within the same deadline and check again. Nothing was pressed, so this
+      // is a re-check, never a retry of a sent press.
     }
+
+    const base = { x: box.x, y: box.y, button: "left", clickCount: 1 };
+    const navigation = typeof cdp.on === "function" ? watchNavigation(cdp) : null;
+    let landed: string | null;
+    let navigatedByClick = false;
+    try {
+      gate();
+      await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", ...base });
+      gate();
+      await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", ...base });
+      landed = await readLanding(cdp, scope);
+      // Only a MISSING result needs the navigation check: when the press landed somewhere the
+      // listener could see, its verdict stands whatever else happens.
+      if (landed === null && navigation) {
+        navigatedByClick = await navigation.whenNavigated(Math.max(0, remaining()));
+      }
+    } finally {
+      navigation?.stop();
+    }
+    if (landed === "target") {
+      settled = true;
+      return box;
+    }
+    // A click that navigated takes its document, and the listener with it: no result is expected
+    // then, and the navigation this very click caused is what stands in for it.
+    if (landed === null && navigatedByClick) {
+      settled = true;
+      return box;
+    }
+    throw new ExecutorError("the click landed on a different element", undefined, "park");
   } finally {
-    navigation?.stop();
+    if (!settled) await removeLanding(cdp, scope);
   }
-  // On the happy path the listener removed itself the moment the press landed, so there is nothing
-  // to clean up and no extra round trip.
-  if (landed === "target") return box;
-  // A click that navigated takes its document, and the listener with it: no result is expected
-  // then, and the navigation this very click caused is what stands in for it.
-  if (landed === null && navigatedByClick) return box;
-  // Otherwise the listener may still be armed: remove it before throwing, so it cannot outlive the
-  // step.
-  await removeLanding(cdp, scope);
-  throw new ExecutorError("the click landed on a different element", undefined, "park");
 }
 
 /**
@@ -518,6 +678,11 @@ export async function dispatchSelect(
     expression,
     contextId !== undefined ? { contextId } : {},
   )) as { matched?: boolean; value?: string | null; reason?: string; custom?: boolean } | undefined;
+  // The page write above IS this step's input, so the quiet window is measured from it -- but only
+  // when it actually wrote: a custom combobox (opened by the caller's click) and a select that
+  // matched nothing changed no value, and marking them would make the NEXT click wait for input
+  // that never happened.
+  if (result?.matched === true) noteInputSent();
   return {
     matched: result?.matched === true,
     value: result?.value ?? null,

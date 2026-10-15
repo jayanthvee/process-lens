@@ -1,10 +1,11 @@
 // PL-017b: a click lands only on the element the guards approved.
 //
-// Three guards close the gap between the measure and the press: the target must hold still across
-// two animation frames (R1), the point must hit-test to the target immediately before the press
-// (R2), and a one-shot capture listener checks where the press actually landed (R3). Each refusal
-// sends NO `Input.*` at all; a press that lands elsewhere throws only AFTER input was sent, so the
-// command session reports it `lost` (the runner reconciles), never `rejected` (F2).
+// R1 (the target must hold still across two animation frames), R2 (the point must hold its hit test
+// to the target as the LAST check before the press), and R3 (a one-shot capture listener checks where
+// the press actually landed). Each refusal sends no press at all -- the hover move that precedes the
+// final hit test is not a press, per T1's ruling; a press that lands elsewhere throws only AFTER
+// input was sent, so the command session reports it `lost` (the runner reconciles), never `rejected`
+// (F2).
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { dispatchCommandStep } from "../src/background/command-step";
 import type { CdpTransport } from "../src/executor/cdp";
@@ -16,7 +17,7 @@ import {
   type StoredSession,
   type WebSocketLike,
 } from "../src/background/command-session";
-import { dispatchClick } from "../src/executor/dispatch";
+import { dispatchClick, resetInputClock } from "../src/executor/dispatch";
 import { resolveTargetInPage } from "../src/executor/ladder";
 import type { StepReport } from "../src/executor/types";
 import { fakeCdp } from "./helpers/fake-cdp";
@@ -35,6 +36,8 @@ function stamp(html: string, token: string): void {
 
 beforeEach(() => {
   document.body.innerHTML = "";
+  // The post-input quiet window is session state: input in one test must not slow the next one.
+  resetInputClock();
 });
 
 afterEach(() => {
@@ -83,13 +86,16 @@ describe("R1 — the target must stop moving before the click", () => {
 });
 
 describe("R2 — the point is hit-tested again before the press", () => {
-  it("parks with zero Input.* calls when the point is covered by an overlay", async () => {
+  it("parks with no press when the point is covered by an overlay", async () => {
     stamp("<button id='save'>Save</button>", "c1");
     restoreLayout = installLayout({ hit: "other" });
     const { cdp, callsTo } = fakeCdp();
 
     await expect(dispatchClick(cdp, "c1", undefined, undefined, 60)).rejects.toThrow(/covered by/);
-    expect(callsTo("Input.dispatchMouseEvent")).toHaveLength(0);
+    // The final check refuses; the move that precedes it is the only mouse event -- never a press.
+    const mouseTypes = callsTo("Input.dispatchMouseEvent").map((call) => call.params["type"]);
+    expect(mouseTypes).not.toContain("mousePressed");
+    expect(mouseTypes).not.toContain("mouseReleased");
   });
 
   it("re-measures and clicks at the target's new position when an overlay opens under the old point", async () => {

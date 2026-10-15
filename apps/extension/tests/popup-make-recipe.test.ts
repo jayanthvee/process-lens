@@ -8,11 +8,13 @@ import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   createMakeRecipeForm,
+  commitChoices,
   defaultCommitStepId,
   defaultRecordKeyColumn,
   makeRecipeRequest,
   parkFieldDefaults,
   recordedValues,
+  recordedWarnings,
   searchDetected,
   type FormStorage,
   type MakeRecipeForm,
@@ -645,4 +647,72 @@ it("makeRecipeRequest carries duplicate_check and park_fields", () => {
   });
   expect(defaults.duplicate_check).toBe(true);
   expect(defaults.park_fields).toEqual([]);
+});
+
+describe("an accepted suggestion (PL-018)", () => {
+  /** Type "ma", accept the suggestion: the prefix fill is superseded by the chip's address. */
+  function suggestionRecording(): RecordedEvent[] {
+    return [
+      fillEvent(1, "fill-1", "To", "ma"),
+      {
+        ...fillEvent(2, "fill-2", "To", "ma@example.test"),
+        chip: true,
+        autocomplete: true,
+        supersedes: "fill-1",
+      },
+      clickEvent(3, "click-1", "Send"),
+    ];
+  }
+
+  it("offers the address, not the typed prefix, and it has no column of its own", () => {
+    const values = recordedValues(suggestionRecording());
+
+    expect(values).toHaveLength(1);
+    expect(values[0]).toMatchObject({
+      stepId: "fill-2",
+      column: "to",
+      value: "ma@example.test",
+    });
+    // The typed prefix is not a sample row value at all.
+    expect(JSON.stringify(values)).not.toContain('"ma"');
+  });
+
+  it("defaults the record key to the address the chip carried", () => {
+    const events = suggestionRecording();
+    expect(defaultRecordKeyColumn(events)).toBe("to");
+
+    const { fetchImpl } = fakeFetch({});
+    const form = mount(fetchImpl);
+    form.refresh(events);
+
+    expect(control<HTMLSelectElement>("make-key").value).toBe("to");
+    expect(control("make-key").textContent).toContain("To");
+  });
+
+  it("shows an unrecordable event's warning and never crashes on its empty step", () => {
+    const events: RecordedEvent[] = [
+      clickEvent(1, "click-2", "Send"),
+      {
+        seq: 2,
+        at: STAMP,
+        kind: "unrecordable",
+        url: PAGE,
+        step: null,
+        reason: "chip-removal",
+        warning: "a recipient was removed without a remove button; the recording cannot replay it",
+      },
+    ];
+
+    // A recording of clicks alone offers no sample-row value, and the null step never crashes.
+    expect(recordedValues(events)).toEqual([]);
+    expect(commitChoices(events).map((choice) => choice.id)).toEqual(["click-2"]);
+    expect(recordedWarnings(events)).toEqual([
+      "step unrecordable: a recipient was removed without a remove button; the recording cannot replay it",
+    ]);
+
+    const { fetchImpl } = fakeFetch({});
+    const form = mount(fetchImpl);
+    form.refresh(events);
+    expect(control("make-warnings").textContent).toContain("cannot replay it");
+  });
 });

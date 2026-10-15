@@ -50,6 +50,12 @@ export interface FillStep extends StepCommon {
   frame?: FrameStep[];
   value: ValueSource;
   clear_first?: boolean;
+  /**
+   * PL-018: the recorder witnessed this field offer suggestions, so a replay types the value and
+   * accepts the single suggestion that contains it. Absent on an ordinary fill, which is typed and
+   * left alone.
+   */
+  autocomplete?: boolean;
 }
 
 export interface SelectStep extends StepCommon {
@@ -61,8 +67,35 @@ export interface SelectStep extends StepCommon {
   option_match?: "text" | "value" | "index";
 }
 
+/**
+ * The keys the recorder records as a `press`: the ones that do something other than type a
+ * character (accept a suggestion, move focus with intent, dismiss a listbox, delete a token) and
+ * the two chorded forms a composer sends with. A printable single character is never one of these.
+ */
+export type PressKey =
+  | "Enter"
+  | "Tab"
+  | "Escape"
+  | "Backspace"
+  | "Delete"
+  | "Control+Enter"
+  | "Meta+Enter";
+
+/**
+ * One key sent to the focused element. Deliberately not commit-capable: the recipe schema gives a
+ * press step neither `commit` nor `assert_after`, so "a key alone changes no destination record"
+ * is enforced by the schema rather than by convention.
+ */
+export interface PressStep extends StepCommon {
+  action: "press";
+  targets: LocatorRung[];
+  within?: string;
+  frame?: FrameStep[];
+  key: PressKey;
+}
+
 /** The step shapes the recorder emits. It never emits a commit step. */
-export type RecordedStep = ClickStep | FillStep | SelectStep;
+export type RecordedStep = ClickStep | FillStep | SelectStep | PressStep;
 
 /**
  * The kinds the recorder captures: click, fill/input, change/select, submit, a
@@ -75,8 +108,22 @@ export type RecordedStep = ClickStep | FillStep | SelectStep;
  * `navigate` is not an interaction either: it says the page moved — a typed URL,
  * a bookmark, a back/forward, a reload — without anybody clicking. Its event has
  * no step and carries the URL the tab landed on.
+ *
+ * `press` is one key sent to the focused element, in a step of its own.
+ *
+ * `unrecordable` is the opposite of a step: it says the person did something the recording cannot
+ * replay (a recipient removed with no remove button), so the compiler can refuse it instead of
+ * compiling a recording that would replay the wrong change. Like `navigate`, it has no step.
  */
-export type RecordedKind = "click" | "fill" | "select" | "submit" | "navigate" | "observation";
+export type RecordedKind =
+  | "click"
+  | "fill"
+  | "select"
+  | "submit"
+  | "navigate"
+  | "observation"
+  | "press"
+  | "unrecordable";
 
 /**
  * One captured interaction, in order.
@@ -113,4 +160,27 @@ export interface RecordedEvent {
    * event and lives on the envelope, never on the step.
    */
   required?: boolean;
+  /**
+   * Present only on the `fill` a chip-add produced: this fill's value is a chip's value (an
+   * address the field now holds), not text the person typed there.
+   */
+  chip?: boolean;
+  /**
+   * Present only on a `fill` whose field showed a listbox of suggestions for it, as the recorder
+   * witnessed: the field is an autocomplete. It is the envelope note the compiler folds on and the
+   * executor's replay rule mirrors, and it is envelope-only because a step may not carry extras.
+   */
+  autocomplete?: boolean;
+  /**
+   * The id of the fill this event supersedes: a chip-add fill that followed a prefix fill of the
+   * same field in the same interval is the same action, so the compiler drops the named fill. The
+   * value is a step id; the fill that carries it is the step that survives.
+   */
+  supersedes?: string;
+  /**
+   * Why an event carries no step at all (`kind: "unrecordable"`): the machine-readable reason for a
+   * change the recording cannot replay. It rides the envelope; `warning` is the sentence a person
+   * reads beside it.
+   */
+  reason?: string;
 }

@@ -99,16 +99,27 @@ function allocate(base: string, taken: Map<string, number>): string {
  * Every distinct value the recording typed or chose, in recording order.
  *
  * A `fill`/`select` that carried a non-constant source is skipped: the compiler's
- * row can only hold what was actually demonstrated.
+ * row can only hold what was actually demonstrated. A fill the envelope marks as
+ * `supersedes`d contributes nothing either: it is the typed prefix an accepted
+ * suggestion replaced, so the chip fill that absorbed it is the value and the
+ * column the person wants to see -- the popup and the compiler must not disagree.
  */
 export function recordedValues(events: RecordedEvent[]): RecordedValue[] {
   const values: RecordedValue[] = [];
   const seenValues = new Set<string>();
   const takenColumns = new Map<string, number>();
 
+  // A fill another event's envelope names in `supersedes` is the typed prefix an accepted
+  // suggestion replaced; the chip fill that absorbed it is the value and the column to offer.
+  const superseded = new Set<string>();
+  for (const event of events) {
+    if (event?.supersedes) superseded.add(event.supersedes);
+  }
+
   for (const event of events) {
     const step = event?.step ?? null;
     if (!step) continue;
+    if (step.id !== undefined && superseded.has(String(step.id))) continue;
     const value = constantValue(step);
     if (value === null) continue;
     if (seenValues.has(value)) continue;
@@ -130,7 +141,8 @@ export function recordedValues(events: RecordedEvent[]): RecordedValue[] {
 /**
  * The recorder's own caveats about the recording, one sentence per event that carries one.
  * The form shows these so a person sees a step that rests on a positional selector before
- * they compile, rather than after a replay moves the layout out from under it.
+ * they compile, rather than after a replay moves the layout out from under it. An
+ * `unrecordable` event has no step and still has a warning, so the label falls back to its kind.
  */
 export function recordedWarnings(events: RecordedEvent[]): string[] {
   const warnings: string[] = [];

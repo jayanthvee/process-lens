@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Shadow form</title>
+<link rel="stylesheet" href="styles.css">
+<!--SWITCHES-->
+</head>
+<body data-page="shadow-form" data-source="shadow-form">
+<h1>Shadow form</h1>
+<p><a href="index.html" data-testid="back-to-index">All widgets</a></p>
+<p class="hint">
+  The whole form -- the labelled input, the native select and Save -- lives in
+  an <strong>open</strong> shadow root. The host element below is empty in the
+  light DOM; the page fills it with <code>attachShadow({ mode: "open" })</code>.
+</p>
+<div data-testid="shadow-host"></div>
+<script src="app.js"></script>
+<script src="shadow.js"></script>
+</body>
+</html>

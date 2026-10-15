@@ -1,10 +1,13 @@
 """Fold fragmented events into single actions.
 
-Two folds, both required by the way a browser reports what a person did:
+Three folds, all required by the way a browser reports what a person did:
 
 * **Keystrokes become one fill.** Typing a value fires an input event per
   character; adjacent fills on the same element are one action, and the last
   value is the one the person meant.
+* **A press that submitted becomes the submit.** Enter in a field fires a
+  ``press`` and then a ``submit``; the submit's click is the commit-capable
+  step, so the press is dropped rather than replayed alongside it.
 * **A click and its submit become one step.** Clicking a button that submits a
   form produces a click and then a submit. They describe one action, so they
   collapse into a single commit step. A form submitted without a click (Enter in
@@ -61,6 +64,35 @@ def coalesce_fills(events: list[Event]) -> tuple[list[Event], list[str]]:
     if merged:
         warnings.append(f"merged {merged} keystroke event(s) into their fill steps")
     return folded, warnings
+
+
+def collapse_presses(events: list[Event]) -> tuple[list[Event], list[str]]:
+    """Drop a press(Enter) the very next submit already describes.
+
+    Pressing Enter in a field is how most forms submit: the browser then fires a submit, and the
+    recorder turns that into a click on the form's submit control. Recorded naively that is two
+    steps, and a replay would press Enter and click Save -- committing twice. The submit's click is
+    the commit-capable one, so the press is the event that goes.
+    """
+    collapsed: list[Event] = []
+    warnings: list[str] = []
+    folded = 0
+
+    for index, event in enumerate(events):
+        following = events[index + 1] if index + 1 < len(events) else None
+        if (
+            event.kind == "press"
+            and (event.step or {}).get("key") == "Enter"
+            and following is not None
+            and following.kind == "submit"
+        ):
+            folded += 1
+            continue
+        collapsed.append(event)
+
+    if folded:
+        warnings.append(f"folded {folded} press/submit pair(s) into the submit click")
+    return collapsed, warnings
 
 
 def collapse_submits(events: list[Event]) -> tuple[list[Event], list[str]]:

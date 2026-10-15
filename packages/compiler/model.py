@@ -13,10 +13,12 @@ from typing import Any
 
 # The event kinds that describe an action. Anything else is noise: focus, blur,
 # scroll, mousemove, and the like say nothing about what the workflow does.
-ACTIONABLE_KINDS = frozenset({"click", "fill", "select", "submit"})
+# ``press`` is a recorded key; ``unrecordable`` is the recorder's own mark that something
+# happened it could not describe as a step, which the compiler must see so it can refuse.
+ACTIONABLE_KINDS = frozenset({"click", "fill", "select", "submit", "press", "unrecordable"})
 
 # The step actions the recorder can produce. A submit collapses into a click.
-STEP_ACTIONS = ("click", "fill", "select")
+STEP_ACTIONS = ("click", "fill", "select", "press")
 
 
 @dataclass(frozen=True)
@@ -29,6 +31,11 @@ class Event:
     step: dict[str, Any] | None
     observation: dict[str, Any] | None = None
     commit: bool = False
+    # PL-018 envelope carriers: how the event came about, never what the step does. They ride the
+    # envelope because a step may not carry a field the schema does not know.
+    chip: bool = False
+    autocomplete: bool = False
+    supersedes: str | None = None
 
 
 @dataclass
@@ -39,6 +46,7 @@ class Candidate:
     targets: list[dict[str, Any]]
     value: Any = None
     name: str | None = None
+    key: str | None = None
     url: str = ""
     after_url: str | None = None
     seq: int = 0
@@ -47,6 +55,10 @@ class Candidate:
     assert_after: dict[str, Any] | None = None
     recorded_id: str | None = None
     frame: list[dict[str, Any]] | None = None
+    # The envelope carriers, copied from the event so the chip fold can see the relationship.
+    chip: bool = False
+    autocomplete: bool = False
+    supersedes: str | None = None
     notes: list[str] = field(default_factory=list)
 
 

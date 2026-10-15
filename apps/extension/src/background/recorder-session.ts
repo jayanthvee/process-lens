@@ -82,6 +82,12 @@ export class RecorderSession {
   private stored: RecordedEvent[] = [];
   private sequence = 0;
   private readonly counters = new Map<string, number>();
+  /**
+   * The page's provisional step id → the session's stored id. The content script mints ids from
+   * its own counter (`fill-2`) while the session re-stamps every step per action (`fill-1`), so an
+   * envelope reference like PL-018's `supersedes` must be translated or it points at nothing.
+   */
+  private readonly idMap = new Map<string, string>();
   private arrival: { stepId: string; at: number; delivered: boolean } | null = null;
 
   constructor(deps: { now?: () => number; maxEvents?: number } = {}) {
@@ -120,10 +126,24 @@ export class RecorderSession {
    */
   append(pending: PendingEvent): RecordedEvent {
     this.sequence += 1;
+    const provisional = typeof pending.step?.id === "string" ? pending.step.id : null;
     const step = pending.step
       ? { ...pending.step, id: this.nextStepId(pending.step.action) }
       : null;
-    const event: RecordedEvent = { ...pending, seq: this.sequence, step };
+    if (provisional && step) this.idMap.set(provisional, step.id);
+    // An envelope reference to a step (PL-018's `supersedes`) is minted with the page's own
+    // provisional id, and the step is re-stamped above. Translate it, or the reference would point
+    // at an id no stored event carries and the compiler could not fold the pair.
+    const supersedes =
+      typeof pending.supersedes === "string"
+        ? (this.idMap.get(pending.supersedes) ?? pending.supersedes)
+        : undefined;
+    const event: RecordedEvent = {
+      ...pending,
+      seq: this.sequence,
+      step,
+      ...(supersedes !== undefined ? { supersedes } : {}),
+    };
     this.stored.push(event);
     if (this.stored.length > this.maxEvents) {
       this.stored.splice(0, this.stored.length - this.maxEvents);
@@ -145,6 +165,7 @@ export class RecorderSession {
     this.stored = [];
     this.sequence = 0;
     this.counters.clear();
+    this.idMap.clear();
     this.arrival = null;
   }
 

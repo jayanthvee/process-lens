@@ -18,6 +18,7 @@ import {
   dispatchClick,
   dispatchFill,
   dispatchNavigate,
+  dispatchPress,
   dispatchSelect,
   measureTarget,
   type InputHooks,
@@ -26,6 +27,7 @@ import { destructiveMatch } from "./guards";
 import { readFrameTree, selectFrame, type FrameContexts } from "./frames";
 import {
   resolverExpression,
+  TARGET_MARKER,
   type ResolveQuery,
   type ResolveResult,
   type ResolveRung,
@@ -212,12 +214,20 @@ export function assertionContext(deps: StepRunDeps): ConditionContext {
  * whole document for a `role=option` would let an option belonging to another
  * listbox be clicked ------ the wrong record's value ------ so a listbox that cannot be
  * resolved is a refusal, not a document-wide search.
+ *
+ * The failure carries `kind` so a caller can tell "this widget never opened a popup" (`no_listbox`,
+ * which is benign for a fill) from "the control names a listbox that is not in the document"
+ * (`missing_listbox`, which is not: the popup the control describes is gone).
  */
+type ListboxLookup =
+  | { ok: true; descriptor: string }
+  | { ok: false; reason: string; kind: "no_listbox" | "missing_listbox" | "other" };
+
 async function resolveListboxDescriptor(
   cdp: CdpTransport,
   token: string,
   contextId: number | undefined,
-): Promise<{ ok: true; descriptor: string } | { ok: false; reason: string }> {
+): Promise<ListboxLookup> {
   const expression = `(() => {
     const el = ${markerExpression(token)};
     if (!el) return { ok: false, reason: "the select target is no longer in the document" };
@@ -250,7 +260,12 @@ async function resolveListboxDescriptor(
   if (result?.ok === true && typeof result.descriptor === "string") {
     return { ok: true, descriptor: result.descriptor };
   }
-  return { ok: false, reason: result?.reason ?? "the combobox's listbox could not be resolved" };
+  const reason = result?.reason ?? "the combobox's listbox could not be resolved";
+  if (reason === "the combobox has no listbox to search") return { ok: false, reason, kind: "no_listbox" };
+  if (reason === "the listbox the control names is not in the document") {
+    return { ok: false, reason, kind: "missing_listbox" };
+  }
+  return { ok: false, reason, kind: "other" };
 }
 
 /** Climb the 5-rung ladder for one step and return the resolver's result. */
@@ -368,8 +383,276 @@ export function stepTimeoutMs(step: ExecutorStep, deps: StepRunDeps): number {
   return DEFAULT_NAVIGATE_TIMEOUT_MS;
 }
 
+/** How often the popup is re-read while it opens: a debounced widget inserts its options late. */
+export const AUTOCOMPLETE_POLL_MS = 100;
+
+/** One read of a listbox: how many suggestions match, which they are, and which the widget has active. */
+interface SuggestionPoll {
+  ok?: boolean;
+  reason?: string;
+  count?: number;
+  options?: Array<{ index: number; text?: string }>;
+  activeIndex?: number;
+  /** How many options the widget marks `aria-selected="true"`, when it marks no active descendant. */
+  selectedCount?: number;
+}
+
+/** Wait `ms` milliseconds: the poll's own pause between two reads. */
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** The element id a `listbox:<id>` descriptor names. */
+function listboxIdOf(descriptor: string): string {
+  const prefix = "listbox:";
+  return descriptor.startsWith(prefix) ? descriptor.slice(prefix.length) : descriptor;
+}
+
 /**
- * Perform one step's action: navigate, fill, select, or click. It does NOT
+ * The page-side matcher for one listbox's suggestions, as a function source so the poll and the
+ * fallback stamp share exactly one definition of "this option is the typed value".
+ *
+ * An option matches when its normalised, lowercased text CONTAINS the typed value, or when one of
+ * its value-shaped tokens (`data-address`, `data-email`, `data-value`, `value`, or any attribute
+ * whose value parses as `x@y`) EQUALS it — a widget may show a person's name while the value it
+ * will accept is their address. A match is counted by its index among the listbox's `role=option`
+ * children, and `activeIndex` is the option the widget itself marks active: the id its
+ * `aria-activedescendant` names (read on the listbox, else on the field), or, when neither carries
+ * one, the single option marked `aria-selected="true"`.
+ */
+function suggestionMatcherSource(): string {
+  return `function plSuggestionMatches(box, typed, field) {
+    const norm = (value) => String(value === null || value === undefined ? "" : value).replace(/\\s+/g, " ").trim();
+    const needle = norm(typed).toLowerCase();
+    const addressish = (value) => /^[^\\s@]+@[^\\s@]+$/.test(value);
+    const tokensOf = (el) => {
+      const tokens = [];
+      for (const name of ["data-address", "data-email", "data-value", "value"]) {
+        const value = norm(el.getAttribute(name));
+        if (value !== "") tokens.push(value);
+      }
+      for (const attr of Array.from(el.attributes || [])) {
+        const value = norm(attr.value);
+        if (value !== "" && addressish(value)) tokens.push(value);
+      }
+      return tokens;
+    };
+    const options = Array.from(box.querySelectorAll('[role="option"]'));
+    const matches = [];
+    options.forEach((el, index) => {
+      const text = norm(el.textContent);
+      const tokenHit = tokensOf(el).some((token) => token.toLowerCase() === needle);
+      if (needle !== "" && (text.toLowerCase().includes(needle) || tokenHit)) {
+        matches.push({ index: index, text: text });
+      }
+    });
+    const activeId =
+      norm(box.getAttribute("aria-activedescendant")) ||
+      (field ? norm(field.getAttribute("aria-activedescendant")) : "");
+    let activeIndex = -1;
+    let selectedCount = 0;
+    if (activeId !== "") {
+      options.forEach((el, index) => {
+        if (el.id === activeId) activeIndex = index;
+      });
+    } else {
+      const selected = [];
+      options.forEach((el, index) => {
+        if (norm(el.getAttribute("aria-selected")).toLowerCase() === "true") selected.push(index);
+      });
+      selectedCount = selected.length;
+      if (selected.length === 1) activeIndex = selected[0];
+    }
+    return {
+      ok: true,
+      count: matches.length,
+      options: matches,
+      activeIndex: activeIndex,
+      selectedCount: selectedCount,
+    };
+  }`;
+}
+
+/** Read one listbox's suggestions out of the page. Re-resolves nothing else. */
+function suggestionPollExpression(descriptor: string, typed: string, fieldToken: string): string {
+  return `(() => {
+    const plSuggestionMatches = ${suggestionMatcherSource()};
+    const box = document.getElementById(${JSON.stringify(listboxIdOf(descriptor))});
+    if (!box) return { ok: false, reason: "the listbox is no longer in the document" };
+    const field = ${markerExpression(fieldToken)};
+    return plSuggestionMatches(box, ${JSON.stringify(typed)}, field);
+  })()`;
+}
+
+/**
+ * Stamp the single matching option with `token`, after re-proving it is still the only match and
+ * still a target a click could reach. The accessibility predicates are the ladder's own (`hidden`,
+ * `display`/`visibility`, `disabled`/`aria-disabled`), plus the two a click needs and the ladder
+ * does not ask for: a box with area to measure, and a `pointer-events` that lets the press land
+ * there. An option that fails any of them is not a click target, and this fallback must not say it
+ * is.
+ */
+function suggestionStampExpression(descriptor: string, typed: string, token: string): string {
+  return `(() => {
+    const plSuggestionMatches = ${suggestionMatcherSource()};
+    const box = document.getElementById(${JSON.stringify(listboxIdOf(descriptor))});
+    if (!box) return { ok: false, reason: "the listbox is no longer in the document" };
+    const found = plSuggestionMatches(box, ${JSON.stringify(typed)}, null);
+    if (found.count !== 1) {
+      return { ok: false, reason: "the suggestion is no longer the only match (" + found.count + ")" };
+    }
+    const options = Array.from(box.querySelectorAll('[role="option"]'));
+    const el = options[found.options[0].index];
+    if (!el) return { ok: false, reason: "the suggestion is no longer in the listbox" };
+    const view = document.defaultView;
+    const style = view && view.getComputedStyle ? view.getComputedStyle(el) : null;
+    if (el.hasAttribute("hidden")) return { ok: false, reason: "the suggestion is hidden" };
+    if (style && (style.display === "none" || style.visibility === "hidden")) {
+      return { ok: false, reason: "the suggestion is not rendered" };
+    }
+    if (style && style.pointerEvents === "none") {
+      return { ok: false, reason: "the page refuses pointer events on the suggestion" };
+    }
+    if (el.disabled === true || String(el.getAttribute("aria-disabled") || "").toLowerCase() === "true") {
+      return { ok: false, reason: "the suggestion is disabled" };
+    }
+    const rect = typeof el.getBoundingClientRect === "function" ? el.getBoundingClientRect() : null;
+    if (!rect || rect.width <= 0 || rect.height <= 0) {
+      return { ok: false, reason: "the suggestion has no box with area to click" };
+    }
+    const marker = ${JSON.stringify(TARGET_MARKER)};
+    for (const marked of Array.from(document.querySelectorAll("[" + marker + "]"))) {
+      marked.removeAttribute(marker);
+    }
+    el.setAttribute(marker, ${JSON.stringify(token)});
+    return { ok: true };
+  })()`;
+}
+
+/**
+ * Complete a fill the recorder witnessed as an autocomplete (PL-018 §4.3).
+ *
+ * The recorder only sets `autocomplete: true` on a field whose suggestion the person accepted, so
+ * on replay the fill is not finished until that suggestion is accepted too: a half-typed value
+ * must never be submitted in its place. The suggestion is found by containment — one match is
+ * accepted, zero or several park — and it is accepted by CLICKING the option through the guarded
+ * click path, which is the deterministic accept the executor already proved safe.
+ *
+ * `Enter` is used only when the widget offers no clickable option AND its own active descendant
+ * (or, when the widget marks none, its single selected option) is that one match: the widget is
+ * then the one saying "press Enter accepts this", and the press is never blind. A field that
+ * shows no listbox at all — a widget that never opened a popup — is left exactly as filled.
+ */
+async function completeAutocomplete(
+  deps: StepRunDeps,
+  step: ExecutorStep,
+  contextId: number | undefined,
+  token: string,
+  typed: string,
+  timeoutMs: number,
+  hooks: InputHooks,
+): Promise<void> {
+  const scope = contextId !== undefined ? { contextId } : {};
+  const listbox = await resolveListboxDescriptor(deps.cdp, token, contextId);
+  if (!listbox.ok) {
+    if (listbox.kind === "no_listbox") return;
+    throw new ExecutorError(
+      `the autocomplete step ${step.id} has a listbox it cannot use for the value ${JSON.stringify(
+        typed,
+      )}: ${listbox.reason}`,
+      step.id,
+      "park",
+    );
+  }
+
+  // The popup opens (and filters) asynchronously after the last keystroke, so read it again on a
+  // fixed interval until it offers a suggestion or the step's own deadline passes.
+  const deadline = Date.now() + timeoutMs;
+  let found: SuggestionPoll = { ok: false, reason: "the listbox was never read" };
+  for (;;) {
+    const read = (await evaluate(
+      deps.cdp,
+      suggestionPollExpression(listbox.descriptor, typed, token),
+      scope,
+    )) as SuggestionPoll | undefined;
+    if (read?.ok === true) {
+      found = read;
+      if ((read.count ?? 0) > 0) break;
+    }
+    if (Date.now() >= deadline) break;
+    await delay(Math.max(0, Math.min(AUTOCOMPLETE_POLL_MS, deadline - Date.now())));
+  }
+
+  const matches = found.options ?? [];
+  if (matches.length === 0) {
+    throw new ExecutorError(
+      `no suggestion contains ${JSON.stringify(
+        typed,
+      )} in the listbox of step ${step.id}; the fill is refused rather than submitted half-written`,
+      step.id,
+      "park",
+    );
+  }
+  if (matches.length > 1) {
+    throw new ExecutorError(
+      `more than one suggestion contains ${JSON.stringify(typed)} for step ${step.id} (${
+        matches.length
+      } matches); choosing one would be a guess`,
+      step.id,
+      "park",
+    );
+  }
+  const only = matches[0] as { index: number; text?: string };
+  const activeIndex = typeof found.activeIndex === "number" ? found.activeIndex : -1;
+
+  // Whether the widget offers a *clickable* option is decided in the page, not by the ladder: a
+  // keyboard-only popup can render an option the ladder would happily name while no pointer can
+  // reach it. The probe re-proves the match is still the only one and stamps it, so the fallback
+  // click has an element to act on.
+  const stampedToken = nextToken();
+  const stamped = (await evaluate(
+    deps.cdp,
+    suggestionStampExpression(listbox.descriptor, typed, stampedToken),
+    scope,
+  )) as { ok?: boolean; reason?: string } | undefined;
+  if (stamped?.ok === true) {
+    // The ladder's role rung is the accept route the guarded click path already trusts; the stamp
+    // above is the fallback for a widget whose accessible name is not the option's own text (a
+    // `title`, an `aria-label`, a name-plus-address split).
+    const named = await resolveStep(deps.cdp, step, deps, contextId, [
+      { by: "role", role: "option", name: only.text ?? "", within: listbox.descriptor },
+    ]);
+    await dispatchClick(
+      deps.cdp,
+      named.result.ok ? named.token : stampedToken,
+      contextId,
+      hooks,
+      timeoutMs,
+    );
+    return;
+  }
+
+  // No clickable option. Enter is allowed only when the widget itself points at this match.
+  if (activeIndex !== only.index) {
+    const activeNote =
+      (found.selectedCount ?? 0) > 1
+        ? `the widget marks ${found.selectedCount} suggestions selected`
+        : activeIndex === -1
+          ? "the widget marks no suggestion active"
+          : `the widget marks suggestion ${activeIndex} active, not this one`;
+    throw new ExecutorError(
+      `the only suggestion for ${JSON.stringify(typed)} in step ${step.id} is not clickable (${
+        stamped?.reason ?? "the page refused it"
+      }) and ${activeNote}; refusing to press Enter blind`,
+      step.id,
+      "park",
+    );
+  }
+  await dispatchPress(deps.cdp, token, "Enter", contextId, hooks);
+}
+
+/**
+ * Perform one step's action: navigate, fill, select, click, or press. It does NOT
  * verify `assert_after` ------ the caller does that, because in command mode a
  * separate `check` command carries the post-condition.
  *
@@ -404,6 +687,21 @@ export async function performStep(
     return { id: step.id, action: step.action, outcome: "done" };
   }
 
+  if (step.action === "press") {
+    // A press acts on the focused element itself, not on a box: no `measureTarget`, exactly like a
+    // fill or a select. The ladder still proves the element is the one the step named.
+    const { result, token } = await resolveStep(deps.cdp, step, deps, contextId, undefined, preset);
+    if (!result.ok) {
+      throw new ExecutorError(
+        `the press target for step ${step.id} could not be resolved: ${result.error ?? "no rung matched"}`,
+        step.id,
+        "park",
+      );
+    }
+    await dispatchPress(deps.cdp, token, step.key ?? "", contextId, hooks);
+    return { id: step.id, action: step.action, outcome: "done", rung: result.rung, by: result.by };
+  }
+
   if (step.action === "fill") {
     const value = resolveValue(step.value, context);
     const text = value === undefined ? "" : String(value);
@@ -427,6 +725,11 @@ export async function performStep(
       contextId,
       hooks,
     });
+    // A fill the recorder witnessed as an autocomplete is not finished until its suggestion is
+    // accepted; an ordinary fill is byte-identical to before — no listbox read, no poll, no click.
+    if (step.autocomplete === true) {
+      await completeAutocomplete(deps, step, contextId, token, text, stepTimeoutMs(step, deps), hooks);
+    }
     return { id: step.id, action: step.action, outcome: "done", rung: result.rung, by: result.by };
   }
 

@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { waitForCondition } from "../src/executor/assertions";
 import type { CdpTransport } from "../src/executor/cdp";
 import { RunControl } from "../src/executor/control";
-import { dispatchClick, dispatchFill, dispatchNavigate } from "../src/executor/dispatch";
+import { dispatchClick, dispatchFill, dispatchNavigate, resetInputClock } from "../src/executor/dispatch";
 import { runRecipe } from "../src/executor/executor";
 import { resolveTargetInPage, type ResolveRung } from "../src/executor/ladder";
 import { performStep } from "../src/executor/step-runner";
@@ -26,6 +26,8 @@ let restoreStubs: (() => void) | null = null;
 
 beforeEach(() => {
   document.body.innerHTML = "";
+  // The post-input quiet window is session state: input in one test must not slow the next one.
+  resetInputClock();
   // Clicks measure a box and hit-test it; jsdom has no layout engine.
   restoreLayout = installLayout();
 });
@@ -191,7 +193,10 @@ describe("the click hit test", () => {
     expect(error).toBeInstanceOf(ExecutorError);
     expect((error as ExecutorError).message).toMatch(/covered by <div>/);
     expect((error as ExecutorError).disposition).toBe("park");
-    expect(callsTo("Input.dispatchMouseEvent")).toHaveLength(0);
+    // The final check refuses; the move that precedes it is the only mouse event -- never a press.
+    const mouseTypes = callsTo("Input.dispatchMouseEvent").map((call) => call.params["type"]);
+    expect(mouseTypes).not.toContain("mousePressed");
+    expect(mouseTypes).not.toContain("mouseReleased");
   });
 
   it("a click inside an iframe is refused", async () => {

@@ -6,6 +6,7 @@
 // selector) rather than by coordinates. A password field is never captured: its
 // value is not read, buffered, or sent.
 import {
+  accessibleName,
   computeFramePath,
   computeTargets,
   describeElement,
@@ -16,8 +17,25 @@ import {
   normalizeText,
   semanticRole,
 } from "../shared/fingerprint";
-import { makeEvent, nextStepId, type PendingEvent } from "../shared/events";
-import type { ClickStep, Condition, FillStep, SelectStep, RecordedStep } from "../shared/recipe-types";
+import { makeEvent, nextStepId, resetStepIds, type PendingEvent } from "../shared/events";
+import {
+  chipAncestorOf,
+  chipListAncestor,
+  chipValueOf,
+  collectSnapshot,
+  diffSnapshot,
+  isVisibleElement,
+  type Snapshot,
+} from "./snapshot";
+import type {
+  ClickStep,
+  Condition,
+  FillStep,
+  PressKey,
+  PressStep,
+  RecordedStep,
+  SelectStep,
+} from "../shared/recipe-types";
 
 /** Roles whose value is typed, so a click on them is focus noise, not an action. */
 const TYPING_ROLES = new Set(["textbox", "searchbox", "spinbutton"]);
@@ -47,6 +65,30 @@ export const POSITIONAL_ONLY_WARNING = "only a positional selector remains";
  * for the three seconds the ticket allows.
  */
 export const ARRIVAL_OBSERVATION_WINDOW_MS = 3000;
+
+/**
+ * The envelope warning a checkpoint emits when a field's value changed with nothing typing into it.
+ * The value is still recorded — that is the whole reason the checkpoint exists — but the
+ * provenance rides the envelope so a page-set value is visible rather than silent.
+ */
+export const PAGE_SET_VALUE_WARNING = "this field changed without any typing: the page set it";
+
+/**
+ * The warning an `unrecordable` event carries when a chip left a list with no remove button
+ * clicked: the recording knows the recipient is gone and cannot replay how.
+ */
+export const UNRECORDABLE_CHIP_WARNING =
+  "a recipient was removed without a remove button; the recording cannot replay it";
+
+/**
+ * One pointer gesture is one checkpoint: a `click` this soon after its own `pointerdown` does not
+ * take a second one. Many autocompletes accept a suggestion on the press, so the press is where the
+ * typed prefix has to be seen — and undoing it at the click would see the chip instead.
+ */
+const GESTURE_CHECKPOINT_WINDOW_MS = 700;
+
+/** A control whose accessible name begins with this verb is the chip's remove button. */
+const REMOVE_NAME = /^remove\b/i;
 
 /**
  * Elements that read as a confirmation: an alert, a status message, a live
@@ -131,6 +173,55 @@ export interface RecorderHooks {
 function elementFrom(target: EventTarget | null): Element | null {
   if (!target || (target as Element).nodeType !== 1) return null;
   return target as Element;
+}
+
+/**
+ * The element an event really happened on.
+ *
+ * An event raised inside an open shadow root is retargeted at the document: `event.target` is the
+ * host, and a listener that trusted it would attribute the person's typing (and their click) to
+ * the host. The composed path's first node is the inner element, which is also the element the
+ * snapshot reads, so both halves of the recorder agree on what changed.
+ */
+function realTarget(event: Event): EventTarget | null {
+  const path = typeof event.composedPath === "function" ? event.composedPath() : null;
+  return path && path.length > 0 ? (path[0] ?? null) : event.target;
+}
+
+/**
+ * Whether a node is on display: nothing on its ancestor chain hides it.
+ *
+ * Deliberately DOM-only (the `hidden` attribute, `display:none`, `visibility:hidden`), so it is
+ * decided without layout — the same answer in a browser and in a jsdom test — and so a
+ * pre-rendered status element the page keeps hidden is never mistaken for a stale confirmation.
+ */
+function isShown(node: Element): boolean {
+  for (let el: Element | null = node; el; el = el.parentElement) {
+    if (el.hasAttribute("hidden")) return false;
+    const style = (el as HTMLElement).style;
+    if (style) {
+      if (style.display === "none" || style.visibility === "hidden") return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Every element matching `selector` under `root`, descending through open shadow roots.
+ *
+ * A confirmation inside an open shadow root is invisible to a document-level query (and a
+ * document-level MutationObserver never sees its mutations either), so a scan that stops at
+ * the document boundary cannot witness the reveal — the corpus's shadow form reveals its
+ * `role=status` inside one. Hosts are found by their `shadowRoot`, exactly as the snapshot
+ * walk does.
+ */
+function deepQueryAll(root: ParentNode, selector: string): Element[] {
+  const found: Element[] = Array.from(root.querySelectorAll(selector));
+  for (const el of Array.from(root.querySelectorAll("*"))) {
+    const shadow = (el as Element & { shadowRoot?: ShadowRoot | null }).shadowRoot ?? null;
+    if (shadow) found.push(...deepQueryAll(shadow, selector));
+  }
+  return found;
 }
 
 function inputType(el: Element): string {
@@ -254,12 +345,18 @@ function firstSubmitControl(form: Element): Element | null {
 }
 
 /**
+ * What `attachRecorder` returns: the detacher, with the checkpoint the callers that need one can
+ * ask for explicitly (a navigation, a stop). A caller that only detaches keeps working unchanged.
+ */
+export type RecorderHandle = (() => void) & { checkpoint: () => void };
+
+/**
  * Attach the recorder to a document. Returns a function that detaches it.
  *
  * The hooks make this testable without a browser: tests pass a document, a
  * collector for `send`, and a flag for `isActive`.
  */
-export function attachRecorder(doc: Document, hooks: RecorderHooks): () => void {
+export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHandle {
   const pending = new Map<Element, string>();
   /**
    * The value each element's typing was last recorded with. A combobox reports the same entry
@@ -271,6 +368,71 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): () => void 
   const frame = computeFramePath(doc.defaultView ?? window);
 
   const active = (): boolean => hooks.isActive();
+
+  // ---- The PL-018 checkpoint's state ---------------------------------------------------------
+  /** The page as the previous checkpoint left it. The first checkpoint is the baseline. */
+  let baseline: Snapshot | null = null;
+  /** The value each element's fill was last recorded with, so a diff cannot repeat a step. */
+  const lastEmitted = new Map<Element, string>();
+  /**
+   * The values each element's *recorded* fills have carried, chip fills excluded.
+   *
+   * A chip whose value is already here is not a new step. The person's own fill plus the recorded
+   * action that produced the chip (the Add click, the key, the option click) already put that value
+   * there, and the replay reproduces it. Emitting the chip as well is what produced two adjacent
+   * same-target fills of one field — the typed value and, after it, the stale chip value — and the
+   * compiler's `coalesce_fills` kept the second one, so the recipe typed the old value twice and
+   * the chip fold had nothing left to consume (PL-018). A chip's own fill is deliberately NOT
+   * recorded here: a chip is a consequence, and the question this answers is whether the person's
+   * typing already carries the value.
+   */
+  const emittedFillValues = new Map<Element, Set<string>>();
+
+  /** Remember that a non-chip fill put this value in this element. */
+  function rememberEmittedFill(el: Element, value: string): void {
+    const values = emittedFillValues.get(el) ?? new Set<string>();
+    values.add(value);
+    emittedFillValues.set(el, values);
+  }
+
+  /**
+   * Whether a recorded non-chip fill already carries this value for this element.
+   *
+   * The set holds the *raw* values that were emitted — it is the record of what the recipe says —
+   * but the comparison normalizes both sides, because a page may trim or lowercase what it puts in
+   * the chip: this fixture's `addChip` does `(address || "").trim()`. Typing "bob@example.test "
+   * fills the set with the trailing space while the chip carries the trimmed value, so a raw
+   * comparison would miss and re-emit the chip — the stale value the compiler's `coalesce_fills`
+   * then keeps. (The compiler's own chip fold guard at compiler.py:348 already compares
+   * case-insensitively, so matching that here keeps the two ends agreeing.) The premise is
+   * unchanged: the person's own recorded fill plus the recorded action that produced the chip is
+   * what reproduces it.
+   */
+  function valueAlreadyFilled(field: Element, value: string): boolean {
+    const values = emittedFillValues.get(field);
+    if (!values) return false;
+    const normalized = value.trim().toLowerCase();
+    for (const emitted of values) {
+      if (emitted.trim().toLowerCase() === normalized) return true;
+    }
+    return false;
+  }
+
+  /** The fields the recorder watched offer suggestions for. */
+  const witnessedAutocomplete = new Set<Element>();
+  /** Chip values a remove click already accounts for: the click is the step, not the removal. */
+  const removedByControl = new Set<string>();
+  /** Elements the person typed into or put their hand on since the last checkpoint. */
+  const touched = new Set<Element>();
+  /** When the last pointerdown checkpoint ran, in ms; see GESTURE_CHECKPOINT_WINDOW_MS. */
+  let lastGestureCheckpoint = 0;
+  /** The element the last fill was emitted for: the fallback owner of an unowned chip list. */
+  let lastFillElement: Element | null = null;
+  /**
+   * The last *typed* fill's id per field. A chip-add fill supersedes one of these and never another
+   * chip-add fill: superseding one chip with the next would drop a real recipient from the fold.
+   */
+  const lastTypedFillId = new Map<Element, string>();
 
   /**
    * The recorder's caveat for a step, or undefined when at least one rung is durable.
@@ -301,6 +463,270 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): () => void 
 
   function emitStep(kind: PendingEvent["kind"], step: RecordedStep, required = false): void {
     hooks.send(stepEvent(kind, step, required));
+  }
+
+  /**
+   * The event that carries a step, plus the envelope notes a checkpoint's own steps add. The
+   * recorder's caveat about the step is kept alongside them: a page-set value that also left only a
+   * positional selector behind is two true things at once, and a person needs to see both.
+   */
+  function annotatedStepEvent(
+    kind: PendingEvent["kind"],
+    step: RecordedStep | null,
+    notes: {
+      warning?: string;
+      required?: boolean;
+      chip?: boolean;
+      autocomplete?: boolean;
+      supersedes?: string;
+      reason?: string;
+    },
+  ): PendingEvent {
+    const warning =
+      [notes.warning, stepWarning(step)]
+        .filter((note): note is string => Boolean(note))
+        .join("; ") || undefined;
+    return makeEvent({
+      kind,
+      url: url(),
+      step,
+      frame,
+      at: stamp(),
+      ...(warning ? { warning } : {}),
+      ...(notes.required ? { required: true } : {}),
+      ...(notes.chip !== undefined ? { chip: notes.chip } : {}),
+      ...(notes.autocomplete !== undefined ? { autocomplete: notes.autocomplete } : {}),
+      ...(notes.supersedes !== undefined ? { supersedes: notes.supersedes } : {}),
+      ...(notes.reason !== undefined ? { reason: notes.reason } : {}),
+    });
+  }
+
+  /** Whether an element is something a person types text into. */
+  function isTextEntryElement(el: Element): boolean {
+    const tag = el.tagName.toUpperCase();
+    if (tag === "INPUT" || tag === "TEXTAREA") return true;
+    if (isRichText(el)) return true;
+    return el.matches("[role='textbox']");
+  }
+
+  /**
+   * The key a `keydown` records, or null for the ones that are not a press. A printable single
+   * character is typing, never a press: the fill carries the value it produced.
+   */
+  function pressKeyOf(event: KeyboardEvent, el: Element | null): PressKey | null {
+    if (event.altKey) return null;
+    const raw = event.key;
+    if (!raw || raw.length === 1) return null;
+    if (raw === "Escape") return "Escape";
+    if (raw === "Enter") {
+      if (event.ctrlKey) return "Control+Enter";
+      if (event.metaKey) return "Meta+Enter";
+      return "Enter";
+    }
+    if (raw === "Tab") return "Tab";
+    if (raw === "Backspace" || raw === "Delete") {
+      // Inside a text field this is editing, and the checkpoint records the resulting value.
+      return el && isTextEntryElement(el) ? null : raw;
+    }
+    return null;
+  }
+
+  /** The element that has focus, descending open shadow roots and same-origin frames. */
+  function deepActiveElement(root: Document | ShadowRoot): Element | null {
+    let el = root.activeElement;
+    while (el) {
+      const shadow = (el as Element & { shadowRoot?: ShadowRoot | null }).shadowRoot ?? null;
+      if (shadow?.activeElement) {
+        el = shadow.activeElement;
+        continue;
+      }
+      if (el.tagName.toUpperCase() === "IFRAME") {
+        let inner: Document | null = null;
+        try {
+          inner = (el as HTMLIFrameElement).contentDocument;
+        } catch {
+          inner = null;
+        }
+        if (inner?.activeElement) {
+          el = inner.activeElement;
+          continue;
+        }
+      }
+      break;
+    }
+    return el;
+  }
+
+  /** The element whose `aria-controls`/`aria-owns` names the given list, if any. */
+  function ownerOfList(list: Element): Element | null {
+    const id = list.getAttribute("id");
+    if (!id) return null;
+    const tokens = (field: Element, name: string): string[] =>
+      normalizeText(field.getAttribute(name))
+        .split(" ")
+        .filter((token) => token.length > 0);
+    for (const field of Array.from(doc.querySelectorAll("[aria-controls], [aria-owns]"))) {
+      if (tokens(field, "aria-controls").includes(id)) return field;
+      if (tokens(field, "aria-owns").includes(id)) return field;
+    }
+    return null;
+  }
+
+  /** Whether two elements share an ancestor: a chip list and the field that owns it do. */
+  function sharesAncestor(field: Element, list: Element): boolean {
+    for (let node: Element | null = list; node; node = node.parentElement) {
+      if (node.contains(field)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * The field a chip list belongs to: the field focused inside its container, else the field that
+   * points at it with `aria-controls`/`aria-owns`, else the field the last fill was emitted for.
+   */
+  function controllingField(list: Element): Element | null {
+    const focused = doc.activeElement;
+    if (focused && isTextEntryElement(focused) && sharesAncestor(focused, list)) return focused;
+    const owner = ownerOfList(list);
+    if (owner && isTextEntryElement(owner)) return owner;
+    return lastFillElement;
+  }
+
+  /** Fields the page showed suggestions for: a recorded option, or a live listbox, witnesses one. */
+  function witnessAutocomplete(): void {
+    for (const list of Array.from(doc.querySelectorAll("[role='listbox']"))) {
+      if (!isVisibleElement(list)) continue;
+      const field = ownerOfList(list);
+      if (field) witnessedAutocomplete.add(field);
+    }
+  }
+
+  /**
+   * Take the checkpoint: what the page changed since the last one, emitted as steps before the
+   * action that triggered this checkpoint is emitted. The first checkpoint is the baseline and
+   * emits nothing, which is why a form the person found prefilled produces no steps.
+   */
+  function checkpoint(): void {
+    if (!active()) return;
+
+    // Typing still in the buffer is emitted first, so it precedes whatever this checkpoint is for.
+    const flushed = new Set<Element>();
+    for (const el of Array.from(pending.keys())) {
+      flushed.add(el);
+      flushFill(el);
+    }
+
+    const current = collectSnapshot(doc);
+    if (baseline === null) {
+      baseline = current;
+      touched.clear();
+      return;
+    }
+
+    const diff = diffSnapshot(baseline, current);
+
+    for (const fill of diff.fills) {
+      if (flushed.has(fill.element) || lastEmitted.get(fill.element) === fill.value) continue;
+      const step = fillStep(fill.element, fill.value);
+      lastEmitted.set(fill.element, fill.value);
+      rememberEmittedFill(fill.element, fill.value);
+      lastFillElement = fill.element;
+      lastTypedFillId.set(fill.element, step.id);
+      hooks.send(
+        annotatedStepEvent("fill", step, {
+          ...(touched.has(fill.element) ? {} : { warning: PAGE_SET_VALUE_WARNING }),
+          ...(isRequiredField(fill.element) ? { required: true } : {}),
+        }),
+      );
+    }
+
+    for (const change of diff.selects) {
+      if (flushed.has(change.element) || lastEmitted.get(change.element) === change.value) continue;
+      lastEmitted.set(change.element, change.value);
+      emitStep(
+        "select",
+        selectStep(change.element, change.value),
+        isRequiredField(change.element),
+      );
+    }
+
+    witnessAutocomplete();
+
+    for (const added of diff.chipsAdded) {
+      const field = controllingField(added.list);
+      // A chip the person's own recorded fill already carries is not a new step: that fill, plus the
+      // recorded action that produced the chip, replays it. Emitting it here too would put two
+      // fills of the same value-bearing field side by side, and the compiler's coalesce keeps the
+      // later one — the stale chip value — which overwrites the recipient it was meant to add
+      // (PL-018). A chip the typing did NOT carry (type "ma", accept "ma@example.test") still gets
+      // its fill, with its supersedes pointer. The comparison normalizes both sides because the
+      // page may trim or lowercase the chip's value; see valueAlreadyFilled.
+      if (field && valueAlreadyFilled(field, added.value)) continue;
+      const supersedes = field ? lastTypedFillId.get(field) : undefined;
+      const step: FillStep = {
+        id: nextStepId("fill"),
+        action: "fill",
+        name: `Fill ${field ? describeElement(field) : "recipients"}`,
+        // The ladder is computed lazily, here, for the one chip list the diff reported — never
+        // during the snapshot, which reads every field on the page.
+        targets: field ? computeTargets(field) : computeTargets(added.list),
+        value: { kind: "constant", value: added.value },
+        // The chip is already in the field: clearing would delete a recipient the person kept.
+        clear_first: false,
+      };
+      if (field) lastFillElement = field;
+      hooks.send(
+        annotatedStepEvent("fill", step, {
+          chip: true,
+          autocomplete: field ? witnessedAutocomplete.has(field) : false,
+          ...(supersedes ? { supersedes } : {}),
+        }),
+      );
+    }
+
+    for (const removed of diff.chipsRemoved) {
+      // A remove control the person clicked is the step for the chip going away; a chip that
+      // vanished with no click is not replayable, so it is reported rather than dropped.
+      if (removedByControl.has(removed.value)) continue;
+      hooks.send(
+        annotatedStepEvent("unrecordable", null, {
+          reason: "chip-removal",
+          warning: UNRECORDABLE_CHIP_WARNING,
+        }),
+      );
+    }
+
+    removedByControl.clear();
+    touched.clear();
+    baseline = current;
+  }
+
+  /** A pointer gesture's own checkpoint: many autocompletes accept a suggestion on the press. */
+  function onPointerDown(): void {
+    if (!active()) return;
+    checkpoint();
+    lastGestureCheckpoint = Date.now();
+  }
+
+  function onKeyDown(event: KeyboardEvent): void {
+    if (!active()) return;
+    if (event.altKey) return;
+    const el = deepActiveElement(doc) ?? elementFrom(realTarget(event));
+    if (!el) return;
+    const key = pressKeyOf(event, el);
+    if (!key) return;
+    // A key sent to a password field is never recorded, exactly as a click or a fill is not.
+    if (isPasswordField(el) || (isRichText(el) && isCredentialContext(el))) return;
+    // The typing that preceded this key is emitted first.
+    checkpoint();
+    const step: PressStep = {
+      id: nextStepId("press"),
+      action: "press",
+      name: `Press ${key}`,
+      targets: computeTargets(el),
+      key,
+    };
+    emitStep("press", step);
   }
 
   const observationWindowMs = hooks.observationWindowMs ?? DEFAULT_OBSERVATION_WINDOW_MS;
@@ -344,22 +770,36 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): () => void 
     );
   }
 
-  function confirmationText(observation: ObservationWindow): string {
-    for (const node of Array.from(doc.querySelectorAll(CONFIRMATION_SELECTOR))) {
+  /**
+   * The confirmation the window found, and the node it came from. A heading that was not there
+   * before is weaker evidence, but still evidence — and it has no busy state of its own.
+   */
+  function confirmationIn(observation: ObservationWindow): { text: string; node: Element | null } {
+    for (const node of deepQueryAll(doc, CONFIRMATION_SELECTOR)) {
       if (observation.preexisting.has(node)) continue;
       const text = trimmedText(node);
-      if (text) return text;
+      if (text) return { text, node };
     }
-    // A heading that was not there before is weaker evidence, but still evidence.
     const headings = Array.from(doc.querySelectorAll(HEADING_SELECTOR)).map((el) =>
       normalizeText(el.textContent),
     );
-    return headings.find((text) => text && !observation.headings.includes(text)) ?? "";
+    const text = headings.find((heading) => heading && !observation.headings.includes(heading)) ?? "";
+    return { text, node: null };
+  }
+
+  /**
+   * Whether a confirmation is itself a progress indicator: a spinner or a busy region says work is
+   * still running, so the text it shows is weaker evidence than a settled message (§8.2).
+   */
+  function isBusyConfirmation(node: Element): boolean {
+    if (node.getAttribute("aria-busy") === "true") return true;
+    if (normalizeText(node.getAttribute("role")).toLowerCase() === "progressbar") return true;
+    return node.querySelector("[aria-busy='true'], [role='progressbar']") !== null;
   }
 
   /** The first confirmation text on this page right now, if any. */
   function presentConfirmationText(): string {
-    for (const node of Array.from(doc.querySelectorAll(CONFIRMATION_SELECTOR))) {
+    for (const node of deepQueryAll(doc, CONFIRMATION_SELECTOR)) {
       const text = trimmedText(node);
       if (text) return text;
     }
@@ -391,7 +831,8 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): () => void 
     const observation = watching;
     if (!observation) return;
 
-    const confirmation = confirmationText(observation);
+    const found = confirmationIn(observation);
+    const confirmation = found.text;
     const navigated =
       observation.observedUrl && observation.observedUrl !== observation.startUrl
         ? observation.observedUrl
@@ -400,7 +841,13 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): () => void 
     if (!active()) return;
 
     if (confirmation) {
-      emitObservation({ text_visible: confirmation }, url());
+      emitObservation(
+        {
+          text_visible: confirmation,
+          ...(found.node && isBusyConfirmation(found.node) ? { busy: true } : {}),
+        },
+        url(),
+      );
       return;
     }
     if (navigated) {
@@ -423,7 +870,20 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): () => void 
     const observation: ObservationWindow = {
       startUrl: url(),
       observedUrl: null,
-      preexisting: new Set(Array.from(doc.querySelectorAll(CONFIRMATION_SELECTOR))),
+      // A confirmation node the action must not be credited with is one that was already
+      // *saying* something when the window opened — a stale "Saved" left from an earlier
+      // action. A pre-rendered container that is empty until the action fills it (a toast
+      // element the page keeps in its markup, hidden or not) is new evidence the moment its
+      // text arrives, so only the nodes that already carried text are skipped.
+      // A confirmation node the action must not be credited with is one that was already *showing*
+      // text when the window opened: a stale "Saved" left behind by an earlier action. A
+      // pre-rendered status element the page keeps in its markup — hidden, or empty — is not
+      // showing anything yet, so its reveal (or its first text) is the evidence this window wants.
+      preexisting: new Set(
+        deepQueryAll(doc, CONFIRMATION_SELECTOR).filter(
+          (node) => trimmedText(node) !== "" && isShown(node),
+        ),
+      ),
       headings: Array.from(doc.querySelectorAll(HEADING_SELECTOR)).map((el) =>
         normalizeText(el.textContent),
       ),
@@ -572,17 +1032,39 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): () => void 
     // Remember what this element's value was recorded as, so the `change` that follows the very
     // same typing is not recorded a second time as the same action (see the combobox branch).
     recordedTyping.set(el, value);
-    emitStep("fill", fillStep(el, value), isRequiredField(el));
+    const step = fillStep(el, value);
+    lastEmitted.set(el, value);
+    rememberEmittedFill(el, value);
+    lastFillElement = el;
+    lastTypedFillId.set(el, step.id);
+    emitStep("fill", step, isRequiredField(el));
   }
 
   function onClick(event: Event): void {
     if (!active()) return;
-    const start = elementFrom(event.target);
+    // The checkpoint runs before the click's own step, so the typing that produced it is emitted
+    // first. A pointer gesture already checkpointed at its pointerdown and does not run again here:
+    // one gesture, one checkpoint, one set of steps.
+    if (Date.now() - lastGestureCheckpoint > GESTURE_CHECKPOINT_WINDOW_MS) checkpoint();
+    const start = elementFrom(realTarget(event));
     if (!start) return;
     const { element: el, viaLabel } = resolveClickTarget(start);
     if (isPasswordField(el) || isPasswordField(start)) return;
 
     const role = semanticRole(el);
+    // A click on a field is focus, not an action -- but it is the person's hand on the field, so a
+    // value the page changes afterwards is not a page-set value.
+    if (TYPING_ROLES.has(role)) touched.add(el);
+
+    // A control whose name says "Remove", sitting inside a chip list, is the step for that chip
+    // leaving: the checkpoint that later sees it gone must not call the removal unreplayable.
+    const removeName = normalizeText(ownNameOf(el) || accessibleName(el));
+    if (REMOVE_NAME.test(removeName)) {
+      const chip = chipAncestorOf(el);
+      const value = chip ? chipValueOf(chip) : null;
+      if (chipListAncestor(el) && value) removedByControl.add(value);
+    }
+
     // A click on a label is the person naming the control they want, so it is recorded against
     // that control even where a click directly on it would be focus noise. A toggle or a select
     // still records itself through its change event, so those are left to it rather than
@@ -595,6 +1077,8 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): () => void 
       const combo = el.closest("[role='combobox'], select");
       const text = normalizeText(el.textContent);
       if (combo && text) {
+        // The field showed suggestions and the person took one: this field is an autocomplete.
+        witnessedAutocomplete.add(combo);
         emitStep("select", selectStep(combo, text));
         return;
       }
@@ -604,7 +1088,7 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): () => void 
 
   function onInput(event: Event): void {
     if (!active()) return;
-    const el = elementFrom(event.target);
+    const el = elementFrom(realTarget(event));
     if (!el) return;
     if (isPasswordField(el) || (isRichText(el) && isCredentialContext(el))) {
       pending.delete(el);
@@ -620,12 +1104,13 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): () => void 
     }
     // Typing resumed: whatever was recorded for this element before is no longer what it holds.
     recordedTyping.delete(el);
+    touched.add(el);
     pending.set(el, typedValueOf(el));
   }
 
   function onChange(event: Event): void {
     if (!active()) return;
-    const el = elementFrom(event.target);
+    const el = elementFrom(realTarget(event));
     if (!el) return;
     if (isPasswordField(el) || (isRichText(el) && isCredentialContext(el))) {
       pending.delete(el);
@@ -636,7 +1121,11 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): () => void 
     if (tag === "SELECT") {
       // One change, one event: drop any buffered value so no focusout can flush a second one.
       pending.delete(el);
-      emitStep("select", selectStep(el, selectedOptionText(el)), isRequiredField(el));
+      const value = selectedOptionText(el);
+      // Remembered, so the checkpoint that follows the change does not record it again.
+      lastEmitted.set(el, value);
+      touched.add(el);
+      emitStep("select", selectStep(el, value), isRequiredField(el));
       return;
     }
     if (tag === "INPUT") {
@@ -655,6 +1144,7 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): () => void 
       const value = valueOf(el) || normalizeText(el.textContent);
       const typed = pending.has(el);
       pending.delete(el);
+      touched.add(el);
       if (recordedTyping.get(el) === value) {
         recordedTyping.delete(el);
         return;
@@ -662,9 +1152,15 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): () => void 
       if (!value) return;
       if (typed) {
         recordedTyping.set(el, value);
-        emitStep("fill", fillStep(el, value));
+        const step = fillStep(el, value);
+        lastEmitted.set(el, value);
+        rememberEmittedFill(el, value);
+        lastFillElement = el;
+        lastTypedFillId.set(el, step.id);
+        emitStep("fill", step);
         return;
       }
+      lastEmitted.set(el, value);
       emitStep("select", selectStep(el, value));
       return;
     }
@@ -673,14 +1169,17 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): () => void 
 
   function onFocusOut(event: Event): void {
     if (!active()) return;
-    const el = elementFrom(event.target);
+    const el = elementFrom(realTarget(event));
     if (el && pending.has(el)) flushFill(el);
   }
 
   function onSubmit(event: Event): void {
     if (!active()) return;
-    const form = elementFrom(event.target);
+    const form = elementFrom(realTarget(event));
     if (!form || form.tagName.toUpperCase() !== "FORM") return;
+
+    // Whatever the page changed before it submitted is emitted before the submit itself.
+    checkpoint();
 
     for (const el of Array.from(pending.keys())) {
       if (form.contains(el)) flushFill(el);
@@ -702,6 +1201,9 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): () => void 
    */
   function onPageHide(): void {
     if (!active() || !actionAwaitingEvidence) return;
+    // The document is going away: whatever changed since the last checkpoint is emitted now, while
+    // there is still a page to read it from.
+    checkpoint();
     hooks.onLeaving?.();
   }
 
@@ -710,21 +1212,56 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): () => void 
   doc.addEventListener("change", onChange, true);
   doc.addEventListener("focusout", onFocusOut, true);
   doc.addEventListener("submit", onSubmit, true);
+  // The checkpoint's own listeners: a pointer press may be the action, and a key can be one too.
+  doc.addEventListener("pointerdown", onPointerDown, true);
+  doc.addEventListener("keydown", onKeyDown as EventListener, true);
   doc.defaultView?.addEventListener?.("pagehide", onPageHide);
 
   if (hooks.arrival?.stepId) beginArrivalWindow(hooks.arrival.stepId);
 
-  return () => {
+  const detach = ((): void => {
     doc.removeEventListener("click", onClick, true);
     doc.removeEventListener("input", onInput, true);
     doc.removeEventListener("change", onChange, true);
     doc.removeEventListener("focusout", onFocusOut, true);
     doc.removeEventListener("submit", onSubmit, true);
+    doc.removeEventListener("pointerdown", onPointerDown, true);
+    doc.removeEventListener("keydown", onKeyDown as EventListener, true);
     doc.defaultView?.removeEventListener?.("pagehide", onPageHide);
     endObservation();
     pending.clear();
     recordedTyping.clear();
-  };
+    baseline = null;
+    lastEmitted.clear();
+    emittedFillValues.clear();
+    touched.clear();
+    removedByControl.clear();
+    lastTypedFillId.clear();
+    lastFillElement = null;
+  }) as RecorderHandle;
+  // A caller that has just navigated, or is about to stop, takes the last checkpoint itself.
+  detach.checkpoint = checkpoint;
+  return detach;
+}
+
+/**
+ * Whether a `record:state` status means this document's step ids must restart at one.
+ *
+ * A new recording starts at one (the previous demonstration's numbers mean nothing to it), and a
+ * clear — the worker broadcasting `idle` with nothing left recorded — restarts them too. A stop
+ * does not: the recording it belongs to is still there, and the service worker renumbers the
+ * events it already holds. Resetting on attach would be wrong for the same reason: a page loaded
+ * mid-recording continues that recording's count rather than restarting it.
+ */
+export function shouldResetStepIds(
+  incoming: { state?: string; count?: number } | undefined,
+  previous: { state?: string; count?: number } | undefined,
+): boolean {
+  const state = incoming?.state;
+  if (state === "recording") return previous?.state !== "recording";
+  // A clear leaves the state `idle` and takes the count back to zero; a stop leaves it above zero.
+  if (state === "idle") return (incoming?.count ?? 0) === 0 && (previous?.count ?? 0) > 0;
+  return false;
 }
 
 /**
@@ -740,6 +1277,7 @@ function bootstrap(): void {
   if (!ext?.runtime?.id) return;
 
   let recording = false;
+  let previousStatus: { state?: string; count?: number } | undefined;
   const send = (event: PendingEvent): void => {
     if (!recording) return;
     void ext.runtime.sendMessage({ type: "record:event", event }).catch(() => undefined);
@@ -763,9 +1301,13 @@ function bootstrap(): void {
   };
 
   ext.runtime.onMessage.addListener((message: unknown) => {
-    const incoming = message as { type?: string; status?: { state?: string } };
+    const incoming = message as { type?: string; status?: { state?: string; count?: number } };
     if (incoming?.type === "record:state") {
-      recording = incoming.status?.state === "recording";
+      const status = incoming.status;
+      // A new recording, or a clear, restarts the ids; a stop and an ongoing recording do not.
+      if (shouldResetStepIds(status, previousStatus)) resetStepIds();
+      previousStatus = status;
+      recording = status?.state === "recording";
     }
   });
 
@@ -773,9 +1315,13 @@ function bootstrap(): void {
     .sendMessage({ type: "record:pending-observation" })
     .then((response: unknown) => {
       const current = response as
-        | { status?: { state?: string }; observationTarget?: string | null }
+        | { status?: { state?: string; count?: number }; observationTarget?: string | null }
         | undefined;
-      if (current?.status) recording = current.status.state === "recording";
+      if (current?.status) {
+        // The state this page loaded into is the previous one for every change that follows.
+        previousStatus = current.status;
+        recording = current.status.state === "recording";
+      }
       attach(current?.observationTarget ?? null);
     })
     .catch(() => attach(null));

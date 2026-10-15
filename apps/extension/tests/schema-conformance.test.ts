@@ -115,4 +115,52 @@ describe("recorded steps conform to the recipe schema", () => {
     const ids = recordScriptedSession().map((event) => event.step?.id);
     expect(new Set(ids).size).toBe(ids.length);
   });
+
+  it("validates a press step against the same $defs/step", () => {
+    const events: PendingEvent[] = [];
+    const detach = attachRecorder(document, {
+      send: (event) => events.push(event),
+      isActive: () => true,
+      url: () => "https://mail.example.test/inbox",
+      now: () => "2026-10-14T00:00:00.000Z",
+    });
+    document.body.innerHTML = "<input id='to' aria-label='To'>";
+    const field = document.getElementById("to") as HTMLInputElement;
+    field.focus();
+    field.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    detach();
+
+    const press = events.find((event) => event.kind === "press");
+    expect(press, "no press event was recorded").toBeDefined();
+    expect(validateStep(press!.step), JSON.stringify(validateStep.errors)).toBe(true);
+    // A press is never commit-capable, and carries no assertion of its own.
+    expect(press!.step?.commit).toBeUndefined();
+    expect(press!.step?.assert_after).toBeUndefined();
+  });
+
+  it("carries no step on an unrecordable event", () => {
+    Object.defineProperty(Element.prototype, "checkVisibility", {
+      configurable: true,
+      value: () => true,
+    });
+    document.body.innerHTML =
+      "<ul id='list' aria-label='Recipients'><li>Ada " +
+      "<button aria-label='Remove ada@example.test'>x</button></li></ul>";
+    const events: PendingEvent[] = [];
+    const recorder = attachRecorder(document, {
+      send: (event) => events.push(event),
+      isActive: () => true,
+      url: () => "https://mail.example.test/inbox",
+      now: () => "2026-10-14T00:00:00.000Z",
+    });
+    recorder.checkpoint(); // the baseline
+    document.getElementById("list")!.innerHTML = "";
+    recorder.checkpoint();
+    recorder();
+
+    const unrecordable = events.filter((event) => event.kind === "unrecordable");
+    expect(unrecordable).toHaveLength(1);
+    expect(unrecordable[0]!.step).toBeNull();
+    expect(unrecordable[0]!.reason).toBe("chip-removal");
+  });
 });
