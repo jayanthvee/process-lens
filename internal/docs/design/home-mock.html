@@ -1,0 +1,234 @@
+<title>ProcessLens Dashboard Mock</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@300;400;500;600&display=swap">
+<style>
+/* Layout: light "Fog" with a slim frosted sidebar (4 places) and one main column:
+   header (title, search, one primary action) -> headline -> two panels (needs you | running) -> a simple tasks table.
+   Fewer things on screen; each item has one plain action. */
+/* Deliberately light-only: an internal tool used all day in an office. Gold is the one accent. */
+:root {
+  color-scheme: light;
+  --fog-1: #fdfdfc; --fog-2: #f4f5f3; --fog-3: #e9ebe6;
+  --glass: rgba(255,255,255,.78); --glass-line: rgba(255,255,255,.95); --glass-strong: rgba(255,255,255,.95);
+  --ink: #2a2d2b; --ink-2: #5d6461; --muted: #959c98; --hair: rgba(42,45,43,.07); --hair-2: rgba(42,45,43,.13);
+  --gold: #c8a04a; --gold-deep: #9c7a2c; --gold-soft: #f7f0de; --gold-line: #e8d6aa;
+  --primary-a: #d9b663; --primary-b: #c59a3f; --on-primary: #2b2210;
+  --ok: #3d7a55; --help: #b0532c; --live: #b8892f;
+  --font: "Public Sans", "Helvetica Neue", Arial, sans-serif;
+}
+
+* { box-sizing: border-box; }
+html, body { min-height: 100%; }
+body {
+  margin: 0; color: var(--ink); font: 14.5px/1.5 var(--font); -webkit-font-smoothing: antialiased;
+  background:
+    radial-gradient(1200px 560px at 10% -10%, var(--fog-1) 0%, transparent 60%),
+    radial-gradient(1000px 640px at 105% 105%, var(--fog-3) 0%, transparent 62%),
+    linear-gradient(180deg, var(--fog-1), var(--fog-2));
+  background-attachment: fixed; background-color: var(--fog-2);
+}
+:focus-visible { outline: 2px solid var(--ink-2); outline-offset: 2px; border-radius: 6px; }
+svg.i { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+
+.app { display: grid; grid-template-columns: 216px minmax(0, 1fr); min-height: 100vh; }
+
+/* sidebar: four places, then settings and the extension at the bottom */
+.side { position: sticky; top: 0; height: 100vh; padding: 16px 12px; display: flex; flex-direction: column; gap: 22px;
+  background: var(--glass); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); border-right: 1px solid var(--glass-line); }
+.logo { display: flex; align-items: center; gap: 9px; font-weight: 600; font-size: 15px; padding: 2px 8px; }
+.logo svg { width: 21px; height: 21px; }
+.nav { display: grid; gap: 2px; }
+.nav a { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: var(--ink-2); text-decoration: none; font-weight: 500; }
+.nav a:hover { background: var(--hair); color: var(--ink); }
+.nav a.on { background: var(--glass-strong); color: var(--ink); box-shadow: 0 1px 2px rgba(0,0,0,.04), inset 0 0 0 1px var(--hair); }
+.nav .n { margin-left: auto; font-size: 12px; font-weight: 600; color: var(--help); }
+.navs { display: grid; gap: 4px; overflow-y: auto; }
+.grp { font-size: 12px; color: var(--muted); padding: 12px 10px 4px; }
+.side-foot { margin-top: auto; display: grid; gap: 8px; }
+.ext { display: flex; gap: 9px; align-items: center; padding: 8px 10px; font-size: 13px; color: var(--ink-2); }
+.ext i { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); flex: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 16%, transparent); }
+
+/* main */
+main { min-width: 0; padding: 16px clamp(16px, 3vw, 40px) 64px; display: grid; gap: 30px; align-content: start; max-width: 1180px; }
+.head { display: flex; align-items: center; gap: 12px; min-height: 44px; flex-wrap: wrap; }
+.head h2 { margin: 0; font-size: 15px; font-weight: 600; }
+.search { margin-left: auto; display: flex; align-items: center; gap: 8px; width: min(300px, 40vw); padding: 8px 11px; border-radius: 9px; border: 1px solid var(--hair-2); background: var(--glass-strong); color: var(--muted); font-size: 13.5px; }
+.search kbd { margin-left: auto; font: 500 11px var(--font); border: 1px solid var(--hair-2); border-radius: 4px; padding: 0 5px; color: var(--ink-2); }
+.avatar { width: 32px; height: 32px; border-radius: 50%; background: var(--glass-strong); border: 1px solid var(--hair-2); display: grid; place-items: center; font-size: 12px; font-weight: 600; }
+.btn { display: inline-flex; align-items: center; gap: 8px; font: 500 14px var(--font); border-radius: 9px; padding: 9px 14px; cursor: pointer; border: 1px solid transparent; text-decoration: none; white-space: nowrap; transition: transform .15s ease; }
+.btn.primary { background: linear-gradient(180deg, var(--primary-a), var(--primary-b)); color: var(--on-primary); box-shadow: inset 0 1px 0 rgba(255,255,255,.35), 0 1px 2px rgba(120,90,20,.2), 0 8px 18px -10px rgba(120,90,20,.45); }
+.saved-fig { text-align: right; display: grid; gap: 2px; padding: 14px 20px; border-radius: 14px; background: linear-gradient(180deg, rgba(255,255,255,.85), var(--gold-soft)); border: 1px solid var(--gold-line); }
+.saved-fig b { font-size: clamp(30px, 3.4vw, 42px); font-weight: 300; letter-spacing: -0.035em; color: var(--gold-deep); font-variant-numeric: tabular-nums; line-height: 1.05; }
+.saved-fig span { color: var(--ink-2); font-size: 13.5px; }
+.saved-fig small { color: var(--muted); font-size: 12.5px; }
+.hero { display: flex; justify-content: space-between; align-items: flex-end; gap: 24px; flex-wrap: wrap; }
+.btn.primary:hover { transform: translateY(-1px); }
+.btn.quiet { background: var(--glass-strong); color: var(--ink); border-color: var(--hair-2); padding: 7px 12px; font-size: 13.5px; }
+.btn.quiet:hover { border-color: var(--ink-2); }
+
+.big { margin: 6px 0 0; font-size: clamp(34px, 4.2vw, 52px); font-weight: 300; letter-spacing: -0.04em; line-height: 1.04; }
+.big span { color: var(--muted); }
+.lede { margin: 12px 0 0; color: var(--ink-2); font-size: 15.5px; }
+
+.panel { background: var(--glass); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); border: 1px solid var(--glass-line); border-radius: 14px;
+  box-shadow: 0 1px 1px rgba(0,0,0,.02), 0 18px 40px -30px rgba(0,0,0,.28); min-width: 0; }
+.panel-h { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 15px 20px 6px; }
+.panel-h h3 { margin: 0; font-size: 15px; font-weight: 600; }
+.panel-h a { color: var(--ink-2); font-size: 13.5px; text-decoration: none; }
+.panel-h a:hover { color: var(--ink); }
+.two { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 18px; }
+
+.rows { list-style: none; margin: 0; padding: 0 0 6px; }
+.rows li { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 14px; align-items: center; padding: 12px 20px; border-top: 1px solid var(--hair); }
+.rows li:first-child { border-top: 0; }
+.rows b { font-weight: 500; }
+.rows p { margin: 1px 0 0; color: var(--ink-2); font-size: 14px; }
+
+.run { padding: 10px 20px 20px; display: grid; gap: 12px; }
+.run b { font-weight: 500; font-size: 15px; }
+.track { height: 6px; border-radius: 6px; background: var(--hair-2); overflow: hidden; }
+.track i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--primary-a), var(--primary-b)); border-radius: 6px; transition: width .9s cubic-bezier(.3,.1,.2,1); }
+.run .meta { display: flex; justify-content: space-between; gap: 12px; color: var(--ink-2); font-size: 13.5px; font-variant-numeric: tabular-nums; }
+.live { display: inline-flex; align-items: center; gap: 7px; color: var(--live); font-size: 13px; font-weight: 500; }
+.live i { width: 6px; height: 6px; border-radius: 50%; background: var(--live); animation: pulse 1.8s ease-out infinite; }
+@keyframes pulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--live) 55%, transparent); } 70%, 100% { box-shadow: 0 0 0 6px transparent; } }
+
+table { width: 100%; border-collapse: collapse; }
+th { text-align: left; font-weight: 500; font-size: 13px; color: var(--muted); padding: 10px 20px; border-bottom: 1px solid var(--hair); }
+td { padding: 14px 20px; border-bottom: 1px solid var(--hair); vertical-align: middle; }
+tbody tr:last-child td { border-bottom: 0; }
+tbody tr:hover { background: color-mix(in srgb, var(--glass-strong) 75%, transparent); }
+td b { font-weight: 500; display: block; }
+td small { color: var(--muted); font-size: 13px; }
+.res { display: inline-flex; align-items: center; gap: 8px; }
+.res::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.res.ok { color: var(--ok); } .res.help { color: var(--help); } .res.live { color: var(--live); } .res.idle { color: var(--muted); }
+td.act { text-align: right; width: 1%; white-space: nowrap; }
+
+.in { animation: blurin .85s cubic-bezier(.2,.7,.2,1) both; animation-delay: calc(var(--i, 0) * 70ms); }
+@keyframes blurin { from { opacity: 0; filter: blur(10px); transform: translateY(8px); } }
+@media (prefers-reduced-motion: reduce) { .in, .live i { animation: none !important; } .track i { transition: none; } }
+
+@media (max-width: 1040px) { .two { grid-template-columns: minmax(0,1fr); } }
+@media (max-width: 780px) {
+  .app { grid-template-columns: minmax(0,1fr); }
+  .side { position: static; height: auto; flex-direction: row; align-items: center; border-right: 0; border-bottom: 1px solid var(--glass-line); overflow-x: auto; }
+  .side .nav { grid-auto-flow: column; }
+  .navs { grid-auto-flow: column; align-items: center; }
+  .grp { display: none; }
+  .side-foot, .search { display: none; }
+  th:nth-child(2), td:nth-child(2) { display: none; }
+}
+</style>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-home" viewBox="0 0 16 16"><path d="M2.5 7 8 2.5 13.5 7v6.5h-11z"/><path d="M6.5 13.5V9.5h3v4"/></symbol>
+  <symbol id="i-tasks" viewBox="0 0 16 16"><rect x="2.5" y="2.5" width="11" height="11" rx="2"/><path d="M5.5 6h5M5.5 8.5h5M5.5 11h3"/></symbol>
+  <symbol id="i-hist" viewBox="0 0 16 16"><path d="M2.8 8a5.2 5.2 0 1 0 1.5-3.7"/><path d="M2.5 2.8v2.4h2.4M8 5.2V8l2 1.4"/></symbol>
+  <symbol id="i-help" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5"/><path d="M8 5v3.4M8 10.8v.1"/></symbol>
+  <symbol id="i-sheet" viewBox="0 0 16 16"><rect x="2.5" y="2.5" width="11" height="11" rx="1.5"/><path d="M2.5 6.2h11M2.5 9.8h11M6.4 2.5v11"/></symbol>
+  <symbol id="i-doc" viewBox="0 0 16 16"><path d="M4 2.5h5.5L12 5v8.5H4z"/><path d="M9.5 2.5V5H12M6 8.5h4M6 11h3"/></symbol>
+  <symbol id="i-map" viewBox="0 0 16 16"><path d="M3 5h6M3 11h10"/><path d="m7 3 2 2-2 2M11 9l2 2-2 2"/></symbol>
+  <symbol id="i-apps" viewBox="0 0 16 16"><rect x="2.5" y="2.5" width="4.5" height="4.5" rx="1"/><rect x="9" y="2.5" width="4.5" height="4.5" rx="1"/><rect x="2.5" y="9" width="4.5" height="4.5" rx="1"/><rect x="9" y="9" width="4.5" height="4.5" rx="1"/></symbol>
+  <symbol id="i-q" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5"/><path d="M6.4 6.4a1.7 1.7 0 0 1 3.2.6c0 1.1-1.6 1.4-1.6 2.4M8 11.2v.1"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 16 16"><circle cx="8" cy="8" r="2"/><path d="M8 2.2v1.6M8 12.2v1.6M2.2 8h1.6M12.2 8h1.6M3.9 3.9l1.1 1.1M11 11l1.1 1.1M3.9 12.1 5 11M11 5l1.1-1.1"/></symbol>
+  <symbol id="i-search" viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.3"/><path d="m10.3 10.3 3.2 3.2"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 16 16"><path d="M8 3.2v9.6M3.2 8h9.6"/></symbol>
+</svg>
+
+<div class="app">
+  <aside class="side">
+    <div class="logo"><svg viewBox="0 0 22 22" aria-hidden="true"><circle cx="11" cy="11" r="9" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M5.5 13.5c2-3.4 4-5 5.5-5s3.5 1.6 5.5 5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>ProcessLens</div>
+    <div class="navs">
+      <nav class="nav">
+        <a class="on" href="#"><svg class="i"><use href="#i-home"/></svg>Home</a>
+        <a href="#"><svg class="i"><use href="#i-help"/></svg>Needs help<span class="n">3</span></a>
+      </nav>
+      <div class="grp">Automate</div>
+      <nav class="nav">
+        <a href="#"><svg class="i"><use href="#i-tasks"/></svg>Tasks</a>
+        <a href="#"><svg class="i"><use href="#i-hist"/></svg>Runs</a>
+      </nav>
+      <div class="grp">Your data</div>
+      <nav class="nav">
+        <a href="#"><svg class="i"><use href="#i-sheet"/></svg>Spreadsheets</a>
+        <a href="#"><svg class="i"><use href="#i-doc"/></svg>Documents</a>
+        <a href="#"><svg class="i"><use href="#i-map"/></svg>Saved answers</a>
+      </nav>
+      <div class="grp">Connect</div>
+      <nav class="nav">
+        <a href="#"><svg class="i"><use href="#i-apps"/></svg>Apps</a>
+      </nav>
+    </div>
+    <div class="side-foot">
+      <nav class="nav"><a href="#"><svg class="i"><use href="#i-gear"/></svg>Settings</a><a href="#"><svg class="i"><use href="#i-q"/></svg>Help</a></nav>
+      <div class="ext"><i></i>Chrome connected</div>
+    </div>
+  </aside>
+
+  <main>
+    <div class="head in" style="--i:0">
+      <h2>Home</h2>
+      <div class="search"><svg class="i"><use href="#i-search"/></svg>Search<kbd>Ctrl K</kbd></div>
+      <a class="btn primary" href="#"><svg class="i"><use href="#i-plus"/></svg>Teach a new task</a>
+      <span class="avatar">JV</span>
+    </div>
+
+    <section class="hero">
+      <div>
+        <h1 class="big in" style="--i:1">412 rows done this week.<br><span>3 need you.</span></h1>
+        <p class="lede in" style="--i:2">Nothing was entered twice.</p>
+      </div>
+      <div class="saved-fig in" style="--i:2">
+        <b>6 h 12 m</b>
+        <span>Time saved this week</span>
+        <small>vs. about 3 minutes a row by hand</small>
+      </div>
+    </section>
+
+    <section class="two">
+      <div class="panel in" style="--i:3">
+        <div class="panel-h"><h3>Needs your help</h3><a href="#">See all</a></div>
+        <ul class="rows">
+          <li><div><b>Priya Nair</b><p>The salesperson “R. Iyer” isn't in Odoo.</p></div><button class="btn quiet">Choose salesperson</button></li>
+          <li><div><b>Invoice INV-2041</b><p>The total doesn't match its items.</p></div><button class="btn quiet">Check invoice</button></li>
+          <li><div><b>SKU-88120</b><p>The new price is negative.</p></div><button class="btn quiet">Fix row</button></li>
+        </ul>
+      </div>
+      <div class="panel in" style="--i:4">
+        <div class="panel-h"><h3>Running now</h3><span class="live"><i></i>Live</span></div>
+        <div class="run">
+          <b>Add customer inquiries to Odoo CRM</b>
+          <div class="track" aria-hidden="true"><i id="bar"></i></div>
+          <div class="meta"><span><span id="done">11</span> of 20 done</span><span><span id="already">2</span> already there</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel in" style="--i:5">
+      <div class="panel-h"><h3>My tasks</h3><a href="#">See all</a></div>
+      <table>
+        <thead><tr><th>Task</th><th>Last run</th><th>Result</th><th></th></tr></thead>
+        <tbody>
+          <tr><td><b>Add customer inquiries</b><small>Odoo CRM</small></td><td>Now</td><td><span class="res live">Running</span></td><td class="act"><button class="btn quiet">Open</button></td></tr>
+          <tr><td><b>Update product prices</b><small>Odoo Inventory</small></td><td>2 hours ago</td><td><span class="res help">1 needs help</span></td><td class="act"><button class="btn quiet">Run again</button></td></tr>
+          <tr><td><b>Enroll students in courses</b><small>Odoo Contacts</small></td><td>Yesterday</td><td><span class="res ok">All done</span></td><td class="act"><button class="btn quiet">Run again</button></td></tr>
+          <tr><td><b>Add leads</b><small>Twenty</small></td><td>Never</td><td><span class="res idle">Ready</span></td><td class="act"><button class="btn quiet">Try one row</button></td></tr>
+        </tbody>
+      </table>
+    </section>
+  </main>
+</div>
+
+<script>
+(() => {
+  let done = 11, already = 2, n = 0;
+  const paint = () => {
+    document.getElementById("bar").style.width = (done / 20 * 100) + "%";
+    document.getElementById("done").textContent = done;
+    document.getElementById("already").textContent = already;
+  };
+  paint();
+  if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  setInterval(() => { if (done >= 20) return; done++; if (n++ % 5 === 3) already++; paint(); }, 3200);
+})();
+</script>
