@@ -1,0 +1,35 @@
+/* Home's own placement. Every shared primitive -- the panels, the buttons, the rows, the tables,
+   the gold figure and the blur-in entrance -- is already ported into styles/global.css from the
+   approved mock, so nothing here duplicates it. */
+
+.home {
+  display: grid;
+  gap: 30px;
+  align-content: start;
+}
+
+.home .hero {
+  align-items: flex-end;
+}
+
+.home .saved-fig {
+  min-width: 190px;
+}
+
+.home .panel-note {
+  margin: 0;
+  padding: 12px 20px 20px;
+  color: var(--ink-2);
+  font-size: 14px;
+}
+
+.home .empty-action {
+  margin: 14px 0 0;
+}
+
+@media (max-width: 780px) {
+  .home .saved-fig {
+    min-width: 0;
+    text-align: left;
+  }
+}
