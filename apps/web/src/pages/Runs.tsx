@@ -76,7 +76,7 @@ export function Runs(): JSX.Element {
             </span>
           ) : null}
         </div>
-        <table>
+        <table className="drop-second">
           <thead>
             <tr>
               <th>Task</th>

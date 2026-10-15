@@ -82,7 +82,7 @@ export function Tasks(): JSX.Element {
           <h3>Your tasks</h3>
           <span className="count">{rows.length} saved</span>
         </div>
-        <table>
+        <table className="drop-second">
           <thead>
             <tr>
               <th>Task</th>

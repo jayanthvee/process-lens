@@ -2,7 +2,7 @@ import { type CSSProperties, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { useJson } from "../lib/useJson";
-import { durationWords, isOpenStatus, relativeTime, runStatusWords } from "../lib/words";
+import { durationWords, isOpenStatus, plainReason, relativeTime, runStatusWords } from "../lib/words";
 import type { HomeSummary, TaskRow } from "../types";
 import "./home.css";
 
@@ -120,8 +120,11 @@ export function Home(): JSX.Element {
               {needsHelp.map((row) => (
                 <li key={row.record_id}>
                   <div>
+                    {/* The mock's row shape: what it is, why it needs a person, then what it came
+                        from. The reason is the one sentence that tells the person what to do. */}
                     <b>{row.row}</b>
-                    <p>{row.task_name}</p>
+                    <p>{plainReason(row.reason, row.state)}</p>
+                    <small>{row.task_name}</small>
                   </div>
                   <Link className="btn quiet" to="/needs-help">
                     Open
@@ -174,7 +177,7 @@ export function Home(): JSX.Element {
         {tasks.length === 0 ? (
           <p className="panel-note">No tasks yet.</p>
         ) : (
-          <table>
+          <table className="drop-second">
             <thead>
               <tr>
                 <th>Task</th>

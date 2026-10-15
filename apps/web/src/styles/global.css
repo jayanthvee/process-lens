@@ -82,6 +82,15 @@ td.act { text-align: right; width: 1%; white-space: nowrap; }
 
 @media (max-width: 1040px) { .two { grid-template-columns: minmax(0,1fr); } }
 @media (max-width: 780px) {
-  th:nth-child(2), td:nth-child(2) { display: none; }
+  /* Phone width: a table must not push the page sideways. The cells lose half their side padding,
+     and a long value -- a host name, an email address, a task name -- breaks rather than widening
+     the document past the screen. The status words are left alone: a state reads "Stopped", never
+     "Stopp/ed", so only the value cells may break mid-token. */
+  th, td { padding: 12px 12px; }
+  th, td b, td small { overflow-wrap: anywhere; }
+  .res { overflow-wrap: normal; }
+  /* A second column that is only context -- when a task last ran, when a run started -- is what
+     goes first on a phone. A table whose second column carries the result itself keeps it. */
+  .drop-second th:nth-child(2), .drop-second td:nth-child(2) { display: none; }
   .saved-fig { text-align: left; }
 }

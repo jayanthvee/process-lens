@@ -27,6 +27,12 @@
   margin: 14px 0 0;
 }
 
+/* The third line of a needs-your-help row is the task it came from: quieter than the reason. */
+.home .rows small {
+  color: var(--muted);
+  font-size: 13px;
+}
+
 @media (max-width: 780px) {
   .home .saved-fig {
     min-width: 0;
