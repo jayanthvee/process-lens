@@ -1,0 +1,184 @@
+/** The plain-words vocabulary: the mapping table, the reasons, and the two word forms. */
+
+import { describe, expect, it } from "vitest";
+
+import {
+  durationWords,
+  isOpenStatus,
+  minutesSavedWords,
+  pauseReasonWords,
+  plainReason,
+  relativeTime,
+  rowOutcome,
+  runActions,
+  runStatusWords,
+} from "../src/lib/words";
+
+describe("rowOutcome", () => {
+  it("maps every state of the ledger to the design's words", () => {
+    const expected: Array<[string, string, string]> = [
+      ["pending", "Waiting", "idle"],
+      ["claimed", "Waiting", "idle"],
+      ["prechecked", "Waiting", "idle"],
+      ["filling", "Waiting", "idle"],
+      ["submitting", "Checking…", "live"],
+      ["submitted_unverified", "Checking…", "live"],
+      ["reconciling", "Checking…", "live"],
+      ["verified", "Done", "ok"],
+      ["skipped", "Already there", "idle"],
+      ["parked", "Needs your help", "help"],
+      ["failed", "Didn't work", "help"],
+    ];
+
+    for (const [state, label, tone] of expected) {
+      expect(rowOutcome(state), state).toEqual({ label, tone });
+    }
+  });
+
+  it("falls back to Waiting for a state it does not know", () => {
+    expect(rowOutcome("something_new")).toEqual({ label: "Waiting", tone: "idle" });
+  });
+
+  it("never shows the engine's own word on screen", () => {
+    for (const state of ["parked", "verified", "submitting", "submitted_unverified", "reconciling"]) {
+      expect(rowOutcome(state).label.toLowerCase()).not.toContain(state);
+    }
+  });
+});
+
+describe("runStatusWords", () => {
+  it("maps every run status to the design's words", () => {
+    expect(runStatusWords("queued")).toEqual({ label: "Queued", tone: "idle" });
+    expect(runStatusWords("running")).toEqual({ label: "Running", tone: "live" });
+    expect(runStatusWords("paused")).toEqual({ label: "Paused", tone: "help" });
+    expect(runStatusWords("completed")).toEqual({ label: "Finished", tone: "ok" });
+    expect(runStatusWords("cancelled")).toEqual({ label: "Stopped", tone: "idle" });
+    expect(runStatusWords("failed")).toEqual({ label: "Didn't work", tone: "help" });
+  });
+});
+
+describe("plainReason", () => {
+  it("turns each reason the runner writes into one sentence", () => {
+    expect(plainReason("attempts exhausted")).toBe("It didn't work after three tries.");
+    expect(plainReason("already committed in an earlier run")).toBe(
+      "It was already added in an earlier run.",
+    );
+    expect(plainReason("run cancelled")).toBe("The run was stopped before this row was reached.");
+    expect(plainReason("dismissed by a person")).toBe("You dismissed this row.");
+    expect(plainReason("duplicate")).toBe("It was already there.");
+  });
+
+  it("shows a reason the runner wrote for a person as it stands, and never a missing one", () => {
+    expect(plainReason("The salesperson isn't in Odoo.")).toBe("The salesperson isn't in Odoo.");
+    expect(plainReason("A value it needs is missing from the row.")).toBe(
+      "A value it needs is missing from the row.",
+    );
+    expect(plainReason(null)).toBe("Something went wrong.");
+    expect(plainReason("   ")).toBe("Something went wrong.");
+  });
+
+  it("never lets an identifier reach the screen, even for a code it has never seen", () => {
+    expect(plainReason("some_new_code")).toBe("Some new code.");
+  });
+});
+
+describe("pauseReasonWords", () => {
+  it("says what a person can do about a pause", () => {
+    expect(pauseReasonWords("paused_by_operator")).toBe(
+      "You paused this run. Resume when you are ready.",
+    );
+    expect(pauseReasonWords("login_required")).toBe(
+      "Log in to the site in the bound tab, then resume.",
+    );
+    expect(pauseReasonWords("challenge")).toBe(
+      "Solve the security challenge the site is showing in the bound tab, then resume.",
+    );
+    expect(pauseReasonWords("awaiting_approval")).toBe(
+      "An approval request is waiting for your decision, then resume.",
+    );
+    expect(pauseReasonWords("rate_limited")).toBe(
+      "The site is rate limiting us. Wait a moment, then resume.",
+    );
+    expect(pauseReasonWords("destination_unreachable")).toBe(
+      "The site could not be reached. Check it, then resume.",
+    );
+  });
+
+  it("accepts the older spelling and the case the API happens to send", () => {
+    expect(pauseReasonWords("operator_paused")).toBe(
+      "You paused this run. Resume when you are ready.",
+    );
+    expect(pauseReasonWords("  Login_Required ")).toBe(
+      "Log in to the site in the bound tab, then resume.",
+    );
+  });
+
+  it("writes a reason it has never seen as a sentence, not an identifier", () => {
+    expect(pauseReasonWords("network_error")).toBe(
+      "Paused: Network error. Sort that out, then resume.",
+    );
+  });
+
+  it("answers null when the run is not paused for a reason", () => {
+    expect(pauseReasonWords(null)).toBeNull();
+    expect(pauseReasonWords("  ")).toBeNull();
+  });
+});
+
+describe("runActions and isOpenStatus", () => {
+  it("offers the right buttons for each status", () => {
+    expect(runActions("running")).toEqual({ pause: true, resume: false, cancel: true });
+    expect(runActions("queued")).toEqual({ pause: true, resume: false, cancel: true });
+    expect(runActions("paused")).toEqual({ pause: true, resume: true, cancel: true });
+    expect(runActions("completed")).toEqual({ pause: false, resume: false, cancel: false });
+    expect(runActions("failed")).toEqual({ pause: false, resume: false, cancel: false });
+  });
+
+  it("counts queued, running and paused as open", () => {
+    expect(isOpenStatus("queued")).toBe(true);
+    expect(isOpenStatus("running")).toBe(true);
+    expect(isOpenStatus("paused")).toBe(true);
+    expect(isOpenStatus("completed")).toBe(false);
+    expect(isOpenStatus("cancelled")).toBe(false);
+    expect(isOpenStatus("failed")).toBe(false);
+    expect(isOpenStatus(null)).toBe(false);
+  });
+});
+
+describe("relativeTime", () => {
+  const now = new Date("2026-10-15T12:00:00Z");
+
+  it("says when something happened, in words", () => {
+    expect(relativeTime("2026-10-15T11:59:30Z", now)).toBe("Now");
+    expect(relativeTime("2026-10-15T11:58:00Z", now)).toBe("2 minutes ago");
+    expect(relativeTime("2026-10-15T11:00:00Z", now)).toBe("1 hour ago");
+    expect(relativeTime("2026-10-15T10:00:00Z", now)).toBe("2 hours ago");
+    expect(relativeTime("2026-10-14T11:00:00Z", now)).toBe("Yesterday");
+    expect(relativeTime("2026-10-12T11:00:00Z", now)).toBe("3 days ago");
+  });
+
+  it("says Never when there is no time at all", () => {
+    expect(relativeTime(null, now)).toBe("Never");
+    expect(relativeTime("", now)).toBe("Never");
+    expect(relativeTime("not a date", now)).toBe("Never");
+  });
+});
+
+describe("durationWords and minutesSavedWords", () => {
+  it("writes minutes as hours and minutes, and never goes negative", () => {
+    expect(durationWords(372)).toBe("6 h 12 m");
+    expect(durationWords(60)).toBe("1 h");
+    expect(durationWords(45)).toBe("45 m");
+    expect(durationWords(0)).toBe("0 m");
+    expect(durationWords(-30)).toBe("0 m");
+  });
+
+  it("says how much time was saved, the way a person would", () => {
+    expect(minutesSavedWords(52)).toBe("About 52 minutes saved");
+    expect(minutesSavedWords(60)).toBe("About 1 hour saved");
+    expect(minutesSavedWords(125)).toBe("About 2 hours saved");
+    expect(minutesSavedWords(1)).toBe("About 1 minute saved");
+    expect(minutesSavedWords(0)).toBe("Nothing saved yet");
+    expect(minutesSavedWords(-5)).toBe("Nothing saved yet");
+  });
+});

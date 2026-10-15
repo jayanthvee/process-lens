@@ -478,6 +478,23 @@ async def detach_executor_session(
     return {"detached": True}
 
 
+@router.get("/executor/session")
+async def read_executor_session(request: Request) -> dict[str, Any]:
+    """Whether an extension session is attached right now, for the sidebar's status line.
+
+    Read-only, so nothing here touches a socket, a frame, a token check or the protocol version.
+    The answer comes from the hub's own in-memory registry, read under the same lock the rest of the
+    hub uses and after the same expiry purge, so a session whose life has run out is not reported as
+    attached. The status lives nowhere else: no database row knows about a Chrome tab.
+    """
+    if not _request_is_local(request):
+        raise _forbidden("the executor API answers only on the local interface")
+    async with _sessions_lock:
+        _purge_expired(time.time())
+        attached = any(row.extension is not None for row in _sessions.values())
+    return {"attached": attached}
+
+
 @router.websocket("/executor/ws")
 async def executor_socket(websocket: WebSocket, session: str | None = None) -> None:
     """The extension's socket: one per session, and its first frame carries the resume token."""

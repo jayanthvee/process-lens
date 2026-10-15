@@ -1,13 +1,9 @@
-/** The shapes the API returns, exactly as the ticket freezes them. */
-
-export interface RunCounts {
-  total: number;
-  verified: number;
-  skipped: number;
-  parked: number;
-  failed: number;
-  in_progress: number;
-}
+/**
+ * The shapes the API returns, exactly as the ticket freezes them.
+ *
+ * Every screen reads these types, so a page never invents a field: if a value is not here, the API
+ * does not send it yet.
+ */
 
 /** One row of `GET /api/v1/runs`. */
 export interface RunSummary {
@@ -20,26 +16,18 @@ export interface RunSummary {
   counts: Record<string, number>;
 }
 
-/** An approval request. */
-export interface ApprovalRequest {
-  id: string;
-  run_record_id: string;
-  step_id: string;
-  kind: string;
-  shown: Record<string, unknown>;
-  created_at: string;
-}
-
-/** `GET /api/v1/runs/{id}`. */
+/** `GET /api/v1/runs/{id}`. `started_at`/`finished_at` are what a finished run's time saved needs. */
 export interface RunDetail {
   id: string;
   status: string;
   pause_reason: string | null;
-  counts: Partial<RunCounts>;
+  counts: Record<string, number>;
   open_approval: ApprovalRequest | null;
+  started_at?: string | null;
+  finished_at?: string | null;
 }
 
-/** One row of `GET /api/v1/runs/{id}/records`. */
+/** One row of `GET /api/v1/runs/{id}/records`: a row of the spreadsheet, and where it got to. */
 export interface RecordRow {
   id: string;
   record_key: string;
@@ -62,6 +50,26 @@ export interface Transition {
   at: string;
 }
 
+/** An approval request a run is waiting on. */
+export interface ApprovalRequest {
+  id: string;
+  run_record_id: string;
+  step_id: string;
+  kind: string;
+  shown: Record<string, unknown>;
+  created_at: string;
+}
+
+export type ApprovalDecision = "approved" | "rejected";
+
+/** The body of `POST /api/v1/approvals`. */
+export interface ApprovalDecisionBody {
+  request_id: string;
+  decision: ApprovalDecision;
+  decided_by: string;
+  reason?: string;
+}
+
 /** `GET /api/v1/operator`. */
 export interface OperatorInfo {
   operator_id: string;
@@ -79,12 +87,65 @@ export interface RecordActionResponse {
   state: string;
 }
 
-export type ApprovalDecision = "approved" | "rejected";
+/** One row of `GET /api/v1/needs-help`, and one entry of `home.needs_help`. */
+export interface NeedsHelpRow {
+  record_id: string;
+  run_id: string;
+  task_name: string;
+  row: string;
+  state: string;
+  reason: string | null;
+  commit_attempted: boolean;
+}
 
-/** The body of `POST /api/v1/approvals`. */
-export interface ApprovalDecisionBody {
-  request_id: string;
-  decision: ApprovalDecision;
-  decided_by: string;
-  reason?: string;
+/** One running run on `GET /api/v1/home`. */
+export interface RunningRun {
+  run_id: string;
+  task_name: string;
+  done: number;
+  total: number;
+  already_there: number;
+}
+
+/** One task on `GET /api/v1/tasks`, and one entry of `home.tasks`. */
+export interface TaskRow {
+  workflow_id: string;
+  recipe_version_id: string;
+  name: string;
+  app: string | null;
+  last_run: TaskLastRun | null;
+}
+
+/** A task's most recent run. */
+export interface TaskLastRun {
+  run_id: string;
+  status: string;
+  started_at: string | null;
+  counts: Record<string, number>;
+}
+
+/** `GET /api/v1/home`. */
+export interface HomeSummary {
+  window_days: number;
+  counts: { done: number; already_there: number; needs_help: number };
+  minutes_saved: number;
+  needs_help: NeedsHelpRow[];
+  running: RunningRun[];
+  tasks: TaskRow[];
+}
+
+/** `GET /api/v1/executor/session`: whether the Chrome extension is attached right now. */
+export interface ExecutorSession {
+  attached: boolean;
+}
+
+/**
+ * One step of a task, in plain words (builder C builds the sentences; the type is shared so every
+ * page shows a step the same way).
+ */
+export interface StepWords {
+  /** One sentence: "Open Odoo CRM", "Type the email", "Click Save". */
+  title: string;
+  /** An optional second line, such as the value a step fills in. */
+  detail?: string;
 }

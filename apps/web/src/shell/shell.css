@@ -1,0 +1,56 @@
+/* The app shell: the frosted sidebar, the content column and the header, ported from
+   internal/docs/design/home-mock.html. */
+
+.app { display: grid; grid-template-columns: 216px minmax(0, 1fr); min-height: 100vh; }
+
+/* sidebar: the four places, then settings and the extension status at the bottom */
+.side { position: sticky; top: 0; height: 100vh; padding: 16px 12px; display: flex; flex-direction: column; gap: 22px;
+  background: var(--glass); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); border-right: 1px solid var(--glass-line); }
+.logo { display: flex; align-items: center; gap: 9px; font-weight: 600; font-size: 15px; padding: 2px 8px; color: var(--ink); text-decoration: none; }
+.logo svg { width: 21px; height: 21px; }
+.nav { display: grid; gap: 2px; }
+.nav a { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: var(--ink-2); text-decoration: none; font-weight: 500; }
+.nav a:hover { background: var(--hair); color: var(--ink); }
+.nav a.on { background: var(--glass-strong); color: var(--ink); box-shadow: 0 1px 2px rgba(0,0,0,.04), inset 0 0 0 1px var(--hair); }
+.nav .n { margin-left: auto; font-size: 12px; font-weight: 600; color: var(--help); }
+.navs { display: grid; gap: 4px; overflow-y: auto; }
+.grp { font-size: 12px; color: var(--muted); padding: 12px 10px 4px; }
+.side-foot { margin-top: auto; display: grid; gap: 8px; }
+.ext { display: flex; gap: 9px; align-items: center; padding: 8px 10px; font-size: 13px; color: var(--ink-2); }
+.ext i { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); flex: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 16%, transparent); }
+.ext.off i { background: var(--muted); box-shadow: 0 0 0 3px color-mix(in srgb, var(--muted) 16%, transparent); }
+
+/* the content column */
+main { min-width: 0; padding: 16px clamp(16px, 3vw, 40px) 64px; display: grid; gap: 30px; align-content: start; max-width: 1180px; }
+
+/* header */
+.head { display: flex; align-items: center; gap: 12px; min-height: 44px; flex-wrap: wrap; }
+.head h2 { margin: 0; font-size: 15px; font-weight: 600; }
+.search { margin-left: auto; display: flex; align-items: center; gap: 8px; width: min(300px, 40vw); padding: 8px 11px; border-radius: 9px; border: 1px solid var(--hair-2); background: var(--glass-strong); color: var(--muted); font-size: 13.5px; cursor: pointer; font-family: var(--font); }
+.search kbd { margin-left: auto; font: 500 11px var(--font); border: 1px solid var(--hair-2); border-radius: 4px; padding: 0 5px; color: var(--ink-2); }
+.avatar { width: 32px; height: 32px; border-radius: 50%; background: var(--glass-strong); border: 1px solid var(--hair-2); display: grid; place-items: center; color: var(--ink-2); flex: none; }
+
+/* the Ctrl K search panel */
+.search-panel { position: absolute; right: clamp(16px, 3vw, 40px); top: 62px; z-index: 20; width: min(380px, 90vw); padding: 12px 0 8px; border-radius: 14px;
+  background: var(--glass-strong); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); border: 1px solid var(--hair-2); box-shadow: 0 18px 40px -24px rgba(0,0,0,.35); }
+.search-panel input { width: calc(100% - 32px); margin: 0 16px 8px; padding: 8px 10px; border-radius: 9px; border: 1px solid var(--hair-2); background: #fff; color: var(--ink); font: 400 14px var(--font); }
+.search-panel .rows li { padding: 10px 16px; }
+.search-panel .rows a { color: var(--ink); text-decoration: none; font-weight: 500; }
+.search-panel .rows a:hover { text-decoration: underline; }
+.search-panel p { margin: 4px 16px 0; color: var(--muted); font-size: 13px; }
+
+/* empty states */
+.empty { padding: 26px 20px 30px; display: grid; gap: 6px; justify-items: start; }
+.empty-sentence { margin: 0; color: var(--ink-2); font-size: 15px; }
+.empty-soon { margin: 0; color: var(--muted); font-size: 13px; }
+.empty-action { margin-top: 8px; }
+
+@media (max-width: 780px) {
+  .app { grid-template-columns: minmax(0,1fr); }
+  .side { position: static; height: auto; flex-direction: row; align-items: center; border-right: 0; border-bottom: 1px solid var(--glass-line); overflow-x: auto; gap: 12px; }
+  .side .nav { grid-auto-flow: column; }
+  .navs { grid-auto-flow: column; align-items: center; }
+  .grp { display: none; }
+  .side-foot, .search { display: none; }
+  .search-panel { left: 12px; right: 12px; top: 56px; width: auto; }
+}
