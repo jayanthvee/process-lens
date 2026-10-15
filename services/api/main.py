@@ -124,20 +124,37 @@ class SpaStaticFiles(StaticFiles):
 
     A person can refresh on ``/runs/abc``. No such file exists, so the mount would answer 404 and
     the page would never load. A path with no file extension therefore answers ``index.html`` and
-    the router inside the page decides what to draw. A missing *asset* -- ``*.js``, ``*.css``,
-    ``*.png`` and the rest -- still 404s, so a broken build is visible rather than a page that
-    quietly serves a stylesheet that is not there.
+    the router inside the page decides what to draw.
+
+    Two things still 404 rather than answering the page, on purpose:
+
+    * a missing *asset* -- ``*.js``, ``*.css``, ``*.png`` and the rest -- so a broken build is
+      visible instead of a page that quietly serves a stylesheet that is not there;
+    * anything under ``/api/``, so a mistyped API path stays the JSON 404 the API itself would
+      send. Handing the page's HTML to an API caller would turn a plain 404 into a 200 whose body
+      no caller can parse.
     """
 
+    # The prefix the API owns; a miss under it is the API's 404, never the page.
+    API_PREFIX = "api/"
+
     async def get_response(self, path: str, scope: MutableMapping[str, Any]) -> Response:
-        """Answer the file, or the page for a route, or 404 for a missing asset."""
+        """Answer the file, or the page for a route, or 404 for a missing asset or API path.
+
+        ``path`` has already been through ``os.path.normpath``, so on Windows its separators are
+        backslashes; they are normalised back before the prefix test, or ``/api/...`` would slip
+        past it on this machine and not on the deployment.
+        """
+        relative = path.replace("\\", "/").lstrip("/")
+        if relative.startswith(self.API_PREFIX) or Path(relative).suffix:
+            return await super().get_response(path, scope)
         try:
             response = await super().get_response(path, scope)
         except StarletteHTTPException as exc:
-            if exc.status_code != 404 or Path(path).suffix:
+            if exc.status_code != 404:
                 raise
             return await super().get_response("index.html", scope)
-        if response.status_code == 404 and not Path(path).suffix:
+        if response.status_code == 404:
             return await super().get_response("index.html", scope)
         return response
 

@@ -37,3 +37,16 @@ def test_a_missing_asset_still_404s(client: TestClient) -> None:
     response = client.get("/assets/does-not-exist-0000.js")
 
     assert response.status_code == 404, response.text
+
+
+def test_an_unknown_api_path_still_404s_as_json(client: TestClient) -> None:
+    """A miss under `/api/` is the API's own 404, never the page: a caller gets JSON, not HTML.
+
+    Otherwise a mistyped API path would answer 200 with the app shell, and a page that parses JSON
+    would sit on "Loading…" for a request that actually failed.
+    """
+    response = client.get("/api/v1/nope")
+
+    assert response.status_code == 404, response.text
+    assert response.headers["content-type"].startswith("application/json")
+    assert ROOT_ELEMENT not in response.text
