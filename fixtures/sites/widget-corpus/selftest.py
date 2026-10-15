@@ -135,7 +135,9 @@ def raw(base: str, path: str, method: str = "GET", body=None, content_type: str 
         payload = body.encode("utf-8")
     conn.request(method, path, body=payload, headers=headers)
     response = conn.getresponse()
-    text = response.read().decode("utf-8", "replace")
+    # A Windows checkout under core.autocrlf=true serves the static files with CRLF; the checks
+    # below match source lines joined with "\n", so compare on normalized line endings.
+    text = response.read().decode("utf-8", "replace").replace("\r\n", "\n")
     result = {
         "status": response.status,
         "headers": {k.lower(): v for k, v in response.getheaders()},
