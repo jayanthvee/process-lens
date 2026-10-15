@@ -1,0 +1,160 @@
+# PL-022: the real test apps — Odoo 18 Community and Twenty CRM — running locally.
+#
+# This file is deliberately separate from the repository root docker-compose.yml,
+# which stays untouched. Conventions here:
+#   * every published port binds 127.0.0.1 only, so nothing listens beyond loopback;
+#   * all state lives in named volumes;
+#   * outgoing mail is off in both apps (no SMTP server, or a null mailer);
+#   * env-var names are namespaced ODOO_* / TWENTY_* on purpose: the repository root
+#     .env defines POSTGRES_* and MINIO_*, and Compose interpolation must never feed
+#     those values into these containers.
+#
+# Every variable has a working test default, so this runs with no .env at all:
+#   docker compose -f infra/test-apps/docker-compose.yml up -d
+# See .env.example for the same values plus the logins.
+
+name: processlens-test-apps
+
+x-twenty-environment: &twenty-environment
+  # Null mailer: Twenty logs the message instead of talking to any SMTP server.
+  EMAIL_DRIVER: logger
+  EMAIL_FROM_ADDRESS: no-reply@processlens.invalid
+  EMAIL_FROM_NAME: ProcessLens Test
+  PG_DATABASE_URL: postgres://${TWENTY_DB_USER:-postgres}:${TWENTY_DB_PASSWORD:-twenty-test-password}@twenty-db:5432/${TWENTY_DB_NAME:-default}
+  REDIS_URL: redis://twenty-redis:6379
+  SERVER_URL: ${TWENTY_SERVER_URL:-http://localhost:3000}
+  # Throwaway keys for local test data. Never reuse them for anything real.
+  # Both are exactly the shape their docs ask for: ENCRYPTION_KEY is base64 of 32
+  # bytes (44 characters), APP_SECRET is 64 hex characters.
+  ENCRYPTION_KEY: ${TWENTY_ENCRYPTION_KEY:-cHJvY2Vzc2xlbnMtdGVzdC1lbmNyeXB0aW9uLWtleXM=}
+  APP_SECRET: ${TWENTY_APP_SECRET:-6f1c9b2a4d8e0f3b5a7c9d1e2f4a6b8c0d2e4f6a8b0c1d3e5f7a9b1c3d5e7f9a}
+  STORAGE_TYPE: local
+
+services:
+  # --------------------------------------------------------------- Odoo 18 ---
+  odoo-db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: ${ODOO_DB_USER:-odoo}
+      POSTGRES_PASSWORD: ${ODOO_DB_PASSWORD:-odoo-test-password}
+    volumes:
+      - odoo-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${ODOO_DB_USER:-odoo} -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 10s
+
+  odoo:
+    image: odoo:18.0-20260926
+    restart: unless-stopped
+    depends_on:
+      odoo-db:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${ODOO_HTTP_PORT:-8069}:8069"
+    environment:
+      # The image entrypoint turns these into --db_host/--db_user/--db_password.
+      HOST: odoo-db
+      PORT: 5432
+      USER: ${ODOO_DB_USER:-odoo}
+      PASSWORD: ${ODOO_DB_PASSWORD:-odoo-test-password}
+    command:
+      - odoo
+      # No outgoing mail: the CLI-level SMTP fallback (Odoo 18 spells it --smtp)
+      # points at an RFC 6761 reserved name that never resolves, and the seeder
+      # leaves ir.mail_server empty, so nothing can leave the container.
+      - --smtp=smtp.invalid
+      - --smtp-port=25
+      - --email-from=no-reply@processlens.invalid
+      - --without-demo=all
+    volumes:
+      - odoo-filestore:/var/lib/odoo
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -o /dev/null http://127.0.0.1:8069/web/login"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  # ----------------------------------------------------------------- Twenty ---
+  twenty-db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${TWENTY_DB_NAME:-default}
+      POSTGRES_USER: ${TWENTY_DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${TWENTY_DB_PASSWORD:-twenty-test-password}
+    volumes:
+      - twenty-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${TWENTY_DB_USER:-postgres} -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 10s
+
+  twenty-redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: ["--maxmemory-policy", "noeviction"]
+    volumes:
+      - twenty-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  twenty-server:
+    image: twentycrm/twenty:v2.47.0
+    restart: unless-stopped
+    depends_on:
+      twenty-db:
+        condition: service_healthy
+      twenty-redis:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${TWENTY_HTTP_PORT:-3000}:3000"
+    environment:
+      <<: *twenty-environment
+      NODE_PORT: 3000
+    volumes:
+      - twenty-local-storage:/app/packages/twenty-server/.local-storage
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -o /dev/null http://127.0.0.1:3000/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 120s
+
+  twenty-worker:
+    image: twentycrm/twenty:v2.47.0
+    restart: unless-stopped
+    # The documented self-host layout: the same image runs the worker with a
+    # different command.
+    command: ["yarn", "worker:prod"]
+    depends_on:
+      twenty-db:
+        condition: service_healthy
+      twenty-redis:
+        condition: service_healthy
+      twenty-server:
+        condition: service_healthy
+    environment:
+      <<: *twenty-environment
+      # The server already ran them; the worker must not run them twice.
+      DISABLE_DB_MIGRATIONS: "true"
+      DISABLE_CRON_JOBS_REGISTRATION: "true"
+    volumes:
+      - twenty-local-storage:/app/packages/twenty-server/.local-storage
+
+volumes:
+  odoo-db-data:
+  odoo-filestore:
+  twenty-db-data:
+  twenty-redis-data:
+  twenty-local-storage:
