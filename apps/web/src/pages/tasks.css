@@ -1,0 +1,91 @@
+/* Tasks' own placement. The panels, rows, tables, dots and buttons are already ported into
+   styles/global.css from the approved mock, so nothing here duplicates them. */
+
+.tasks,
+.task-detail {
+  display: grid;
+  gap: 30px;
+  align-content: start;
+}
+
+.tasks .empty,
+.task-detail .empty {
+  padding: 8px 20px 20px;
+}
+
+.tasks .empty-sentence,
+.task-detail .empty-sentence {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 14.5px;
+}
+
+.tasks .empty-action {
+  margin: 14px 0 0;
+}
+
+.tasks .count {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+/* A task's name is the way into the task, so it reads as the row's title rather than a link. */
+.tasks a.task-name {
+  color: var(--ink);
+  font-weight: 500;
+  text-decoration: none;
+  display: block;
+}
+
+.tasks a.task-name:hover {
+  text-decoration: underline;
+}
+
+.task-detail .panel-note {
+  margin: 0;
+  padding: 12px 20px 20px;
+  color: var(--ink-2);
+  font-size: 14px;
+}
+
+/* The steps: one sentence each, in the order the run follows them. */
+.task-detail ol.steps {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 6px;
+  counter-reset: step;
+}
+
+.task-detail ol.steps li {
+  counter-increment: step;
+  padding: 12px 20px;
+  border-top: 1px solid var(--hair);
+}
+
+.task-detail ol.steps li:first-child {
+  border-top: 0;
+}
+
+.task-detail ol.steps li b::before {
+  content: counter(step) ". ";
+  color: var(--muted);
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+
+.task-detail ol.steps b {
+  font-weight: 500;
+}
+
+.task-detail ol.steps small {
+  display: block;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+@media (max-width: 780px) {
+  .tasks .empty,
+  .task-detail .empty {
+    padding: 4px 16px 18px;
+  }
+}

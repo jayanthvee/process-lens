@@ -1,6 +1,123 @@
-import { EmptyState } from "../shell/EmptyState";
+import { type CSSProperties } from "react";
+import { Link } from "react-router-dom";
 
-/** Placeholder: builder C replaces this file with the Tasks list of the approved mock. */
+import { useJson } from "../lib/useJson";
+import { isOpenStatus, relativeTime, runStatusWords } from "../lib/words";
+import type { TaskRow } from "../types";
+import "./tasks.css";
+
+/** The blur-in stagger: the header and the table rise 70 ms apart (DESIGN.md §7). */
+function slot(index: number): CSSProperties {
+  return { "--i": index } as CSSProperties;
+}
+
+/**
+ * The one quiet button a task row offers. The run flow arrives in a later ticket, so both "Run
+ * again" and "Try one row" open the task page rather than starting a run. The Shell already draws
+ * the page's one primary action ("Teach a new task"), so these stay quiet.
+ */
+function taskAction(task: TaskRow): { label: string; to: string } {
+  if (task.last_run === null || task.last_run === undefined) {
+    return { label: "Try one row", to: `/tasks/${task.workflow_id}` };
+  }
+  if (task.last_run.status === "running") {
+    return { label: "Open", to: `/runs/${task.last_run.run_id}` };
+  }
+  return { label: "Run again", to: `/tasks/${task.workflow_id}` };
+}
+
+/** A task's result in plain words, never a state name (DESIGN.md §2). */
+function taskResult(task: TaskRow): { label: string; tone: string } {
+  const run = task.last_run;
+  if (run === null || run === undefined) return { label: "Ready", tone: "idle" };
+  const parked = run.counts?.parked ?? 0;
+  const failed = run.counts?.failed ?? 0;
+  if (isOpenStatus(run.status)) {
+    const outcome = runStatusWords(run.status);
+    return { label: outcome.label, tone: outcome.tone };
+  }
+  if (failed > 0) return { label: "Didn't work", tone: "help" };
+  if (parked > 0) return { label: `${parked} needs help`, tone: "help" };
+  const outcome = runStatusWords(run.status);
+  return { label: outcome.label, tone: outcome.tone };
+}
+
+/** Every task that has been taught, in one table. */
 export function Tasks(): JSX.Element {
-  return <EmptyState sentence="Your saved tasks will appear here." />;
+  const { data, error } = useJson<TaskRow[]>("/api/v1/tasks");
+  // A refusal (or a stubbed answer that is not a list) shows one sentence instead of throwing.
+  const rows = Array.isArray(data) ? data : null;
+
+  if (rows === null) {
+    return (
+      <div className="tasks">
+        <p className="lede in" style={slot(1)}>
+          {error ?? "Loading your tasks…"}
+        </p>
+      </div>
+    );
+  }
+
+  if (rows.length === 0) {
+    return (
+      <div className="tasks">
+        <section className="panel in" style={slot(1)}>
+          <div className="empty">
+            <p className="empty-sentence">The tasks you teach will appear here.</p>
+            <p className="empty-action">
+              <Link className="btn quiet" to="/teach">
+                Teach your first task
+              </Link>
+            </p>
+          </div>
+        </section>
+      </div>
+    );
+  }
+
+  return (
+    <div className="tasks">
+      <section className="panel in" style={slot(1)}>
+        <div className="panel-h">
+          <h3>Your tasks</h3>
+          <span className="count">{rows.length} saved</span>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Task</th>
+              <th>Last run</th>
+              <th>Result</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((task) => {
+              const action = taskAction(task);
+              const result = taskResult(task);
+              return (
+                <tr key={task.workflow_id}>
+                  <td>
+                    <Link className="task-name" to={`/tasks/${task.workflow_id}`}>
+                      {task.name}
+                    </Link>
+                    <small>{task.app ?? "No site yet"}</small>
+                  </td>
+                  <td>{relativeTime(task.last_run?.started_at ?? null)}</td>
+                  <td>
+                    <span className={`res ${result.tone}`}>{result.label}</span>
+                  </td>
+                  <td className="act">
+                    <Link className="btn quiet" to={action.to}>
+                      {action.label}
+                    </Link>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </section>
+    </div>
+  );
 }
