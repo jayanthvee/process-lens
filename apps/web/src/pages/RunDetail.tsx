@@ -2,20 +2,24 @@ import { type CSSProperties, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import { apiPost, errorText } from "../lib/api";
-import { useJson } from "../lib/useJson";
+import { APPROVALS_PATH, approvalBody, approvalLines } from "../lib/approvals";
+import { POLL_INTERVAL_MS, useJson } from "../lib/useJson";
 import {
   isOpenStatus,
   minutesSavedWords,
+  operatorNote,
   pauseReasonWords,
   plainReason,
+  refusalWords,
   rowOutcome,
   runActions,
   runStatusWords,
 } from "../lib/words";
-import type { RecordRow, RunDetail as RunDetailPayload } from "../types";
+import type { OperatorInfo, RecordRow, RunDetail as RunDetailPayload } from "../types";
 import "./runs.css";
 
 type RunAction = "pause" | "resume" | "cancel";
+type Decision = "approved" | "rejected";
 
 /** The blur-in stagger for the sections (DESIGN.md §7). */
 function slot(index: number): CSSProperties {
@@ -61,9 +65,10 @@ export function RunDetail(): JSX.Element {
   const runPath = id === undefined ? null : `/api/v1/runs/${id}`;
   const recordsPath = id === undefined ? null : `/api/v1/runs/${id}/records`;
 
-  // The poll is 2 s while the run is still going, and `null` the moment it is not, so a finished
-  // run makes no further requests (PL-015's verified behaviour, carried forward).
-  const [pollMs, setPollMs] = useState<number | null>(2000);
+  // The poll starts only once the run is known to be open. Starting at 2 s would give a run that
+  // is already finished one more request two seconds after the page loaded, for nothing
+  // (PL-015's "does not poll a run that is already finished", carried forward).
+  const [pollMs, setPollMs] = useState<number | null>(null);
   const run = useJson<RunDetailPayload>(runPath, pollMs);
   const records = useJson<RecordRow[]>(recordsPath, pollMs);
 
@@ -72,12 +77,40 @@ export function RunDetail(): JSX.Element {
   const open = isOpenStatus(detail?.status ?? null);
 
   useEffect(() => {
-    const next = isOpenStatus(detail?.status ?? null) ? 2000 : null;
+    const next = isOpenStatus(detail?.status ?? null) ? POLL_INTERVAL_MS : null;
     setPollMs((current) => (current === next ? current : next));
   }, [detail]);
 
   const [busy, setBusy] = useState<RunAction | null>(null);
   const [refusal, setRefusal] = useState<{ action: RunAction; text: string } | null>(null);
+  // The operator identity, and the decision on the request the run is stopped at (PL-015's
+  // approval behaviour, carried forward): a request is answered as the person the API names, and
+  // when the API names nobody every decision is off and the page says why.
+  const operator = useJson<OperatorInfo>("/api/v1/operator");
+  const [deciding, setDeciding] = useState<Decision | null>(null);
+  const [decisionRefusal, setDecisionRefusal] = useState<string | null>(null);
+
+  async function decide(decision: Decision): Promise<void> {
+    const request = detail?.open_approval;
+    if (id === undefined || request === null || request === undefined) return;
+    setDeciding(decision);
+    setDecisionRefusal(null);
+    try {
+      await apiPost(
+        APPROVALS_PATH,
+        approvalBody({
+          requestId: request.id,
+          decision,
+          operatorId: operator.data?.operator_id ?? null,
+        }),
+      );
+      run.reload();
+    } catch (failure) {
+      setDecisionRefusal(refusalWords(errorText(failure)));
+    } finally {
+      setDeciding(null);
+    }
+  }
 
   async function act(action: RunAction): Promise<void> {
     if (id === undefined) return;
@@ -87,8 +120,9 @@ export function RunDetail(): JSX.Element {
       await apiPost(`/api/v1/runs/${id}/${action}`);
       run.reload();
     } catch (failure) {
-      // The API's own `detail` text, shown next to the button that caused it.
-      setRefusal({ action, text: errorText(failure) });
+      // The API's own `detail` text, translated so no engine word reaches the person, shown next to
+      // the button that caused it.
+      setRefusal({ action, text: refusalWords(errorText(failure)) });
     } finally {
       setBusy(null);
     }
@@ -114,6 +148,10 @@ export function RunDetail(): JSX.Element {
   const pauseReason = pauseReasonWords(detail.pause_reason);
   const started = stamp(detail.started_at);
   const finished = stamp(detail.finished_at);
+  const request = detail.open_approval;
+  const shown = approvalLines(request?.shown);
+  const operatorProblem = operator.error;
+  const decisionsOff = operatorProblem !== null;
 
   // "About 52 minutes saved": the rows this run finished would have taken about three minutes each
   // by hand, less the wall-clock the run itself took. Only a finished run has both times.
@@ -163,55 +201,56 @@ export function RunDetail(): JSX.Element {
         )}
         <div className="actions">
           {buttons.pause ? (
-            <>
+            <span className="run-action">
               <button
                 type="button"
-                className="btn quiet"
+                className="btn quiet run-action-pause"
                 disabled={busy !== null}
                 onClick={() => void act("pause")}
               >
                 Pause
               </button>
+              {/* The refusal sits in the same element as the button that caused it. */}
               {refusal?.action === "pause" ? (
-                <span className="refusal" role="status">
+                <span className="refusal action-error" role="status">
                   {refusal.text}
                 </span>
               ) : null}
-            </>
+            </span>
           ) : null}
           {buttons.resume ? (
-            <>
+            <span className="run-action">
               <button
                 type="button"
-                className="btn quiet"
+                className="btn quiet run-action-resume"
                 disabled={busy !== null}
                 onClick={() => void act("resume")}
               >
                 Resume
               </button>
               {refusal?.action === "resume" ? (
-                <span className="refusal" role="status">
+                <span className="refusal action-error" role="status">
                   {refusal.text}
                 </span>
               ) : null}
-            </>
+            </span>
           ) : null}
           {buttons.cancel ? (
-            <>
+            <span className="run-action">
               <button
                 type="button"
-                className="btn quiet"
+                className="btn quiet run-action-cancel"
                 disabled={busy !== null}
                 onClick={() => void act("cancel")}
               >
                 Cancel
               </button>
               {refusal?.action === "cancel" ? (
-                <span className="refusal" role="status">
+                <span className="refusal action-error" role="status">
                   {refusal.text}
                 </span>
               ) : null}
-            </>
+            </span>
           ) : null}
           <a className="btn quiet export" href={`/api/v1/runs/${detail.id}/results.csv`}>
             Export CSV
@@ -224,6 +263,61 @@ export function RunDetail(): JSX.Element {
           <b>{saved}</b>
           <span>Time saved</span>
           <small>vs. about 3 minutes a row by hand</small>
+        </section>
+      )}
+
+      {/* PL-015's approval decision, carried forward: the run is stopped at a gate, and this is
+          where a person looks at the exact values and says yes or no. */}
+      {request === null ? null : (
+        <section className="panel in" style={slot(3)}>
+          <div className="panel-h">
+            <h3>Waiting for your decision</h3>
+            <span className="res live">Waiting</span>
+          </div>
+          <div className="approval">
+            <p className="approval-ask">
+              This run stopped before saving one row. Check these values, then say whether to go
+              ahead.
+            </p>
+            {shown.length === 0 ? null : (
+              <dl className="approval-values">
+                {shown.map((line, index) => (
+                  <div className="approval-line" key={`${line.label}-${index}`}>
+                    <dt>{line.label}</dt>
+                    <dd>{line.value}</dd>
+                  </div>
+                ))}
+              </dl>
+            )}
+            {decisionsOff ? (
+              <p className="operator-note" role="status">
+                {operatorNote(operatorProblem)}
+              </p>
+            ) : null}
+            <div className="actions">
+              <button
+                type="button"
+                className="btn primary approval-approved"
+                disabled={deciding !== null || decisionsOff}
+                onClick={() => void decide("approved")}
+              >
+                Go ahead
+              </button>
+              <button
+                type="button"
+                className="btn quiet approval-rejected"
+                disabled={deciding !== null || decisionsOff}
+                onClick={() => void decide("rejected")}
+              >
+                No, stop this row
+              </button>
+              {decisionRefusal === null ? null : (
+                <span className="refusal" role="status">
+                  {decisionRefusal}
+                </span>
+              )}
+            </div>
+          </div>
         </section>
       )}
 

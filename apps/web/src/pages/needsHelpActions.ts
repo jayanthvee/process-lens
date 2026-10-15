@@ -13,20 +13,17 @@ import type { RecordActionBody } from "../types";
 /** The exact words the confirmation carries. The ticket fixes them. */
 export const DESTINATION_CHECK_LABEL = "I checked Odoo and it isn't there";
 
-/** Why the box is there, in one sentence, next to it. */
+/**
+ * Why the box is there, in one sentence, next to it.
+ */
 export const DESTINATION_CHECK_WHY =
   "We may already have saved this row before it went wrong, so look it up in Odoo and tick the box only if it is not there.";
 
 /**
- * Said once at the top of the page when `GET /api/v1/operator` refuses. The API's own `detail` text
- * follows it verbatim, so the person can see the words the server used.
+ * The wording of the operator problem lives in `lib/words.ts`, because the run page's decision
+ * panel needs the same sentence. Re-exported here so this page's imports stay in one place.
  */
-export const OPERATOR_PROBLEM =
-  "The API has no operator identity, so every action on this page is off";
-
-/** What to do about it, keeping the API's own variable name in view. */
-export const OPERATOR_NOTE =
-  "Set PROCESSLENS_OPERATOR_ID and restart the API, then reload this page.";
+export { OPERATOR_NOTE, OPERATOR_PROBLEM, operatorNote } from "../lib/words";
 
 export type RecordAction = "requeue" | "dismiss";
 

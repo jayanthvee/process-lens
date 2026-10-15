@@ -112,6 +112,84 @@ export function pauseReasonWords(reason: string | null): string | null {
   return `Paused: ${sentence(key)}. Sort that out, then resume.`;
 }
 
+/**
+ * Every word the engine uses that a person must never read, with the DESIGN.md §2 wording each one
+ * has to appear as instead. The engine-word test enforces this list, and `refusalWords` below is
+ * built on the same list, so the rule the tests check and the rule the page applies cannot drift
+ * apart.
+ */
+export const ENGINE_WORDS: ReadonlyArray<{ engine: string; pattern: RegExp; plain: string }> = [
+  { engine: "recipe", pattern: /recipe/i, plain: "task" },
+  { engine: "ledger", pattern: /ledger/i, plain: "never shown" },
+  { engine: "parked", pattern: /parked/i, plain: "needs your help" },
+  { engine: "record key", pattern: /record[\s_-]*key/i, plain: "the person's or thing's name" },
+  { engine: "verified", pattern: /verified/i, plain: "added, updated or done" },
+  { engine: "rung", pattern: /rung/i, plain: "never shown" },
+  { engine: "idempotency", pattern: /idempotency/i, plain: "never shown" },
+  // Whole tokens only, so an ordinary word or an id that merely contains the letters is not a hit.
+  { engine: "v1", pattern: /\bv1\b/i, plain: "never shown" },
+  { engine: "v2", pattern: /\bv2\b/i, plain: "never shown" },
+  { engine: "step_", pattern: /step_/i, plain: "one plain sentence" },
+  { engine: "fill-", pattern: /fill-/i, plain: "the element's own words" },
+  { engine: "click-", pattern: /click-/i, plain: "the element's own words" },
+];
+
+/** The engine words this text contains, so a caller can name the rule it would break. */
+export function engineWordsIn(text: string): string[] {
+  return ENGINE_WORDS.filter((rule) => rule.pattern.test(text)).map((rule) => rule.engine);
+}
+
+/** The API refused a request, and it had nothing a person could use to say why. */
+export const REFUSAL_FALLBACK = "The API refused that. Reload the page and try again.";
+
+/** The row moved on between the page loading and the button being pressed. */
+export const DEALT_WITH =
+  "Someone else has already dealt with this row. Reload the page to see where it stands.";
+
+const ALREADY_DEALT_WITH: readonly RegExp[] = [
+  /is not parked or failed/i,
+  /is not parked/i,
+  /does not exist/i,
+  /not the expected state/i,
+  /illegal ledger transition/i,
+];
+
+/** Said once when `GET /api/v1/operator` refuses: the API named nobody, so nobody can act. */
+export const OPERATOR_PROBLEM =
+  "The API has no operator identity, so this screen's actions are off";
+
+/** What to do about it, keeping the API's own variable name in view. */
+export const OPERATOR_NOTE =
+  "Set PROCESSLENS_OPERATOR_ID and restart the API, then reload this page.";
+
+/**
+ * The whole operator problem in one sentence, with the API's own `detail` inside it.
+ *
+ * One function for both screens that need it, so the wording cannot drift between them.
+ */
+export function operatorNote(detail: string | null | undefined): string {
+  const text = (detail ?? "").trim();
+  const said = text === "" ? "" : ` It said: ${text}.`;
+  return `${OPERATOR_PROBLEM}.${said} ${OPERATOR_NOTE}`;
+}
+
+/**
+ * A refusal, in the words a person can act on.
+ *
+ * The API's own `detail` is written for an engineer: it names a state, `run_record`, or
+ * `commit_attempted`, and DESIGN.md §2 and requirement 7 keep every one of those off the screen.
+ * The translation lives here, once, rather than in each page -- and the last word belongs to
+ * `engineWordsIn`, so a sentence that still carries an engine word is never shown whatever shape
+ * the API happens to use next.
+ */
+export function refusalWords(detail: string | null | undefined): string {
+  const text = (detail ?? "").trim();
+  if (text === "") return REFUSAL_FALLBACK;
+  if (ALREADY_DEALT_WITH.some((shape) => shape.test(text))) return DEALT_WITH;
+  if (engineWordsIn(text).length > 0) return REFUSAL_FALLBACK;
+  return text;
+}
+
 /** The states a run is still working through: `queued`, `running` or `paused`. */
 export function isOpenStatus(status: string | null): boolean {
   return status === "queued" || status === "running" || status === "paused";

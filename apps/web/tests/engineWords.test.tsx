@@ -23,11 +23,14 @@
  * before they can be rendered, which is exactly what the page checks below prove.
  */
 
+import { fireEvent } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
+import { ENGINE_WORDS } from "../src/lib/words";
 import type {
   HomeSummary,
   NeedsHelpRow,
+  OperatorInfo,
   RecordRow,
   RunDetail as RunDetailPayload,
   RunSummary,
@@ -37,27 +40,8 @@ import { createFetchStub, renderApp, settle, type StubRoutes } from "./helpers";
 
 const OPERATOR_ID = "0f8fad5b-d9cb-469f-a165-70867728950e";
 
-interface Forbidden {
-  engine: string;
-  pattern: RegExp;
-  plain: string;
-}
-
-const FORBIDDEN: Forbidden[] = [
-  { engine: "recipe", pattern: /recipe/i, plain: "task" },
-  { engine: "ledger", pattern: /ledger/i, plain: "never shown" },
-  { engine: "parked", pattern: /parked/i, plain: "needs your help" },
-  { engine: "record key", pattern: /record[\s_-]*key/i, plain: "the person's or thing's name" },
-  { engine: "verified", pattern: /verified/i, plain: "added, updated or done" },
-  { engine: "rung", pattern: /rung/i, plain: "never shown" },
-  { engine: "idempotency", pattern: /idempotency/i, plain: "never shown" },
-  // Whole tokens only, so an ordinary word or an id that merely contains the letters is not a hit.
-  { engine: "v1", pattern: /\bv1\b/i, plain: "never shown" },
-  { engine: "v2", pattern: /\bv2\b/i, plain: "never shown" },
-  { engine: "step_", pattern: /step_/i, plain: "one plain sentence" },
-  { engine: "fill-", pattern: /fill-/i, plain: "the element's own words" },
-  { engine: "click-", pattern: /click-/i, plain: "the element's own words" },
-];
+/** The rule is `lib/words.ts`'s own list, so the test and the pages can never drift apart. */
+const FORBIDDEN = ENGINE_WORDS;
 
 /** Every forbidden word this text contains, so a failure names the rule it broke. */
 function engineWordsIn(text: string): string[] {
@@ -244,6 +228,69 @@ describe("every page shows only plain words", () => {
       expect(found, `${page.name} must say: ${detail}`).toEqual([]);
     });
   }
+});
+
+/** The Needs help page's refusal, in the words the ledger itself sends. */
+const HELP_REFUSAL: StubRoutes = {
+  "/api/v1/records/": {
+    status: 409,
+    body: { detail: "run_record 3f0e1c2a-0000-4000-8000-00000000abcd is not parked" },
+  },
+};
+
+/** The run page's own refusal, in the same raw style: a state name and a sentence for an engineer. */
+const RUN_REFUSAL: StubRoutes = {
+  "/api/v1/runs/run-1/pause": {
+    status: 409,
+    body: { detail: "run run-1 is submitted_unverified and cannot be paused" },
+  },
+};
+
+describe("a refusal is shown in plain words too", () => {
+  it("Needs help says what happened, not the ledger's own sentence, when the API answers 409", async () => {
+    // A row that never reached a commit, so Try again is live and the refusal can be triggered.
+    const stub = createFetchStub(
+      routes({
+        ...HELP_REFUSAL,
+        "/api/v1/needs-help": { body: [{ ...HELP_ROWS[0], commit_attempted: false }] },
+      }),
+    );
+    const view = renderApp("/needs-help");
+    await settle();
+
+    const bell = view.container.querySelector<HTMLButtonElement>(".record-requeue");
+    expect(bell, "the page offers its actions").not.toBeNull();
+    fireEvent.click(bell as HTMLButtonElement);
+    await settle();
+
+    const text = visibleText(view.container);
+    const found = engineWordsIn(text);
+    expect(found, `the refusal must not carry: ${found.join(", ")}`).toEqual([]);
+    expect(text).not.toContain("run_record");
+    expect(text).toContain("already dealt with this row");
+    stub.restore();
+    view.unmount();
+  });
+
+  it("a run page says what happened, not the run's own state, when the API answers 409", async () => {
+    const stub = createFetchStub(
+      routes({
+        ...RUN_REFUSAL,
+        "/api/v1/runs/run-1": { body: { ...RUN_DETAIL, status: "running", finished_at: null } },
+      }),
+    );
+    const view = renderApp("/runs/run-1");
+    await settle();
+
+    fireEvent.click(view.container.querySelector(".run-action-pause") as HTMLButtonElement);
+    await settle();
+
+    const text = visibleText(view.container);
+    const found = engineWordsIn(text);
+    expect(found, `the refusal must not carry: ${found.join(", ")}`).toEqual([]);
+    stub.restore();
+    view.unmount();
+  });
 });
 
 describe("the sample data", () => {

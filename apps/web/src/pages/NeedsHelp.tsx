@@ -2,15 +2,14 @@ import { type CSSProperties, useState } from "react";
 
 import { apiPost, errorText } from "../lib/api";
 import { useJson } from "../lib/useJson";
-import { plainReason, rowOutcome } from "../lib/words";
+import { plainReason, refusalWords, rowOutcome } from "../lib/words";
 import type { NeedsHelpRow, OperatorInfo } from "../types";
 import {
   DESTINATION_CHECK_LABEL,
   DESTINATION_CHECK_WHY,
-  OPERATOR_NOTE,
-  OPERATOR_PROBLEM,
   actionBody,
   actionGate,
+  operatorNote,
   recordActionLabel,
   recordActionPath,
   type RecordAction,
@@ -79,8 +78,9 @@ export function NeedsHelp(): JSX.Element {
       );
       help.reload();
     } catch (failure) {
-      // The API's own `detail` text, shown beside the button that caused it. Nothing is retried.
-      setErrors((current) => ({ ...current, [row.record_id]: errorText(failure) }));
+      // The API's own `detail` text, translated so no engine word reaches the person. Nothing is
+      // retried.
+      setErrors((current) => ({ ...current, [row.record_id]: refusalWords(errorText(failure)) }));
     } finally {
       setBusy(null);
     }
@@ -90,9 +90,7 @@ export function NeedsHelp(): JSX.Element {
     <div className="needs-help">
       {operatorProblem === null ? null : (
         <p className="operator-note in" style={slot(1)} role="status">
-          {OPERATOR_PROBLEM}
-          {": "}
-          <span className="operator-problem">{operatorProblem}</span> {OPERATOR_NOTE}
+          {operatorNote(operatorProblem)}
         </p>
       )}
 

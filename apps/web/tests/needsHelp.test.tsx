@@ -32,8 +32,22 @@ const OPERATOR_ID = "0f8fad5b-d9cb-469f-a165-70867728950e";
 
 /** The API's own words for a missing operator identity (services/api/main.py). */
 const OPERATOR_503 = "PROCESSLENS_OPERATOR_ID is not set, so there is no operator id to act as";
-/** The API's own words when the ledger will not make the move (services/api/runs.py). */
-const CONFLICT = "record record-1 is parked and commit_attempted needs a destination check";
+
+/*
+ * The 409 the API really sends comes from the ledger itself: `str(exc)` of a `StateConflict` or the
+ * database trigger's own text (services/api/runs.py, packages/ledger/records.py,
+ * db/migrations/0003_run_orchestration.sql). It is written for an engineer -- it names a state and
+ * the table row -- so it must never be what the person reads. These two constants are the two
+ * shapes that actually arrive: the state conflict and the trigger's refusal.
+ */
+const REAL_CONFLICT = "run_record 3f0e1c2a-0000-4000-8000-00000000abcd is not parked";
+const TRIGGER_CONFLICT =
+  "run_record 3f0e1c2a-0000-4000-8000-00000000abcd was commit-attempted; parked -> skipped requires a fresh destination check";
+/** What the person reads instead: one sentence about what happened and what to do. */
+const DEALT_WITH =
+  "Someone else has already dealt with this row. Reload the page to see where it stands.";
+/** The same, when the refusal's shape is one we cannot characterise at all. */
+const REFUSAL_FALLBACK = "The API refused that. Reload the page and try again.";
 
 function sampleRow(over: Partial<NeedsHelpRow> = {}): NeedsHelpRow {
   return {
@@ -242,11 +256,11 @@ describe("the destination check gates a commit-attempted row on the page", () =>
   });
 });
 
-describe("a refused request shows the API's detail text next to the button", () => {
+describe("a refused request shows one plain sentence next to the button", () => {
   it("shows a 409 from Dismiss beside the Dismiss button and does not retry", async () => {
     const stub = createFetchStub(
       routes([sampleRow({ commit_attempted: false })], {
-        "/api/v1/records/record-1/dismiss": { status: 409, body: { detail: CONFLICT } },
+        "/api/v1/records/record-1/dismiss": { status: 409, body: { detail: REAL_CONFLICT } },
       }),
     );
     const view = renderApp("/needs-help");
@@ -257,9 +271,13 @@ describe("a refused request shows the API's detail text next to the button", () 
 
     const cell = view.container.querySelector<HTMLElement>(".row-actions");
     const error = cell?.querySelector<HTMLElement>(".action-error");
-    expect(error?.textContent).toBe(CONFLICT);
+    expect(error?.textContent).toBe(DEALT_WITH);
     // "next to the button": the same cell the Dismiss button lives in.
     expect(button(view.container, ".record-dismiss").closest(".row-actions")).toBe(cell);
+    // The API's own words name a state and a table row, and a person never reads either.
+    expect(view.container.textContent).not.toContain("run_record");
+    expect(view.container.textContent).not.toContain("parked");
+    expect(view.container.textContent).not.toContain("3f0e1c2a");
 
     expect(callsTo(stub, "/api/v1/records/record-1/dismiss")).toBe(1);
     await settle();
@@ -268,10 +286,10 @@ describe("a refused request shows the API's detail text next to the button", () 
     view.unmount();
   });
 
-  it("shows a 409 from Try again beside the Try again button", async () => {
+  it("shows a 409 from Try again beside the Try again button, in the same plain words", async () => {
     const stub = createFetchStub(
       routes([sampleRow({ commit_attempted: false })], {
-        "/api/v1/records/record-1/requeue": { status: 409, body: { detail: CONFLICT } },
+        "/api/v1/records/record-1/requeue": { status: 409, body: { detail: TRIGGER_CONFLICT } },
       }),
     );
     const view = renderApp("/needs-help");
@@ -281,8 +299,10 @@ describe("a refused request shows the API's detail text next to the button", () 
     await settle();
 
     const cell = view.container.querySelector<HTMLElement>(".row-actions");
-    expect(cell?.querySelector(".action-error")?.textContent).toBe(CONFLICT);
+    expect(cell?.querySelector(".action-error")?.textContent).toBe(REFUSAL_FALLBACK);
     expect(button(view.container, ".record-requeue").closest(".row-actions")).toBe(cell);
+    expect(view.container.textContent).not.toContain("commit-attempted");
+    expect(view.container.textContent).not.toContain("destination check");
     stub.restore();
     view.unmount();
   });
@@ -307,10 +327,8 @@ describe("the operator identity", () => {
     // It refuses to act, and it says why -- including the API's own words and the variable to set.
     const note = view.container.querySelector<HTMLElement>(".operator-note");
     expect(note?.textContent).toContain(OPERATOR_PROBLEM);
+    expect(note?.textContent).toContain(OPERATOR_503);
     expect(note?.textContent).toContain("PROCESSLENS_OPERATOR_ID");
-    expect(view.container.querySelector<HTMLElement>(".operator-problem")?.textContent).toBe(
-      OPERATOR_503,
-    );
 
     fireEvent.click(button(view.container, ".record-dismiss"));
     await settle();
