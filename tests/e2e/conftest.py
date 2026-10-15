@@ -1340,6 +1340,13 @@ def _clean_fixture(harness: Harness) -> Iterator[None]:
     _retire_open_runs(harness.dsn)
     harness.reset_fixture()
     harness.settle_page()
+    # A test that closed the session mid-command leaves that command unwinding, and the extension
+    # refuses new work until it settles; it reports "ready" only then. Starting before that would
+    # park the next test's first record with "the previous command has not finished unwinding".
+    harness.popup.wait_for_function(
+        "() => document.getElementById('session-state')?.dataset.state === 'ready'",
+        timeout=60_000,
+    )
     yield
     harness.stop_workers()
 
