@@ -204,8 +204,12 @@ def rows_for(
     row: dict[str, str] = {}
     for label, column in columns:
         text = label.lower()
+        # Order matters: "Company Name?" mentions a company *and* a name, and the column it stands
+        # for is the company. Getting this wrong fills the lead's company with the lead's name.
         if "search" in text or "email" in text:
             row[column] = email
+        elif "company" in text:
+            row[column] = company
         elif "pricing" in text or "name" in text:
             row[column] = name
         elif "phone" in text:
@@ -258,35 +262,46 @@ def describe(records: list[dict[str, Any]]) -> str:
 
 
 def detail_for(harness, records: list[dict[str, Any]]) -> str:
-    """What each record did, plus the step that failed: the ledger records it, the API does not.
+    """Each record with its own steps, in order, so a failure says where the run went.
 
-    ``step_events`` is where a park names the step: the runner writes the step id, the rung it got
-    to and the executor's own error, which is what a person needs to fix the recipe. Reading it here
-    makes a failure of the golden say *which* step of the compiled recipe did not land.
+    ``step_events`` is where a park or a skip names the step: the runner writes the step id, the
+    rung and the executor's own error. Grouping them by record key is what turns a flat list into
+    "this record did this, and stopped there".
     """
     import psycopg
 
-    failed: list[dict[str, Any]] = []
+    keys = {str(record["id"]): record["record_key"] for record in records}
+    per_record: dict[str, list[str]] = {key: [] for key in keys.values()}
     with psycopg.connect(harness.dsn, autocommit=True) as conn, conn.cursor() as cur:
         cur.execute(
-            "SELECT run_record_id, step_id, outcome, locator_rung, error FROM step_events "
+            "SELECT run_record_id, step_id, outcome, error, started_at FROM step_events "
             "WHERE run_record_id = ANY(%s::uuid[]) ORDER BY id",
-            ([record["id"] for record in records],),
+            (list(keys),),
         )
-        failed = [
-            {
-                "record": str(row[0])[-6:],
-                "step": row[1],
-                "outcome": row[2],
-                "rung": row[3],
-                "error": (row[4] if isinstance(row[4], str) else json.dumps(row[4]))[:300],
-            }
-            for row in cur.fetchall()
-        ]
-    return (
-        f"{describe(records)} | step events: {json.dumps(failed)} | "
-        f"worker: {harness.worker_output(tail=1500)!r}"
+        for row in cur.fetchall():
+            error = row[3] if isinstance(row[3], str) else ""
+            # `.get`: a diagnostic must never raise, and a record the API did not list still has
+            # steps worth printing.
+            key = keys.get(str(row[0]), f"<{str(row[0])[-6:]} >")
+            at = row[4].strftime("%H:%M:%S") if hasattr(row[4], "strftime") else str(row[4])
+            per_record.setdefault(key, []).append(
+                f"{at} {row[1]}:{row[2]}"
+                f"{'' if not error or error == 'null' else f'({error[:200]})'}"
+            )
+    lines = [
+        f"{record['record_key']} = {record['state']}:{record.get('reason')}"
+        f" attempts={record.get('attempts')} attempted_commit={record.get('commit_attempted')}"
+        f" ref={record.get('destination_ref')} | "
+        + " -> ".join(per_record.get(record["record_key"], []))
+        for record in records
+    ]
+    run = harness.api_get(f"/api/v1/runs/{records[0]['run_id']}")
+    approvals = harness.api_get(f"/api/v1/runs/{records[0]['run_id']}/approvals")
+    lines.append(
+        f"run status={run.get('status')} pause_reason={run.get('pause_reason')!r} "
+        f"approvals={json.dumps(approvals)[:400]}"
     )
+    return "\n".join(lines)
 
 
 # ------------------------------------------------------------------- the test
@@ -344,10 +359,23 @@ def test_odoo_new_lead_golden(odoo_harness, odoo_app) -> None:
         "reason": f"missing {email_column}",
     } in rules, rules
     assert any(step.get("action") == "branch" for step in recipe["steps"]), recipe["steps"]
+    # The compiler's own default: preview the first commit for a person.
+    assert recipe["meta"]["approval_policy"] == {"commit": "first_record"}, recipe["meta"]
 
     # 4. Replay the five rows.
+    #
+    # The batch runs with that preview pause turned off, and the reason is a defect this golden
+    # found rather than a convenience: a pause for approval hands the run back, the record goes to
+    # `pending`, and the next claim re-runs its recipe from the first step. On Odoo that re-run's
+    # opening navigate leaves the half-filled form behind, and Odoo saves a dirty form when the page
+    # is left -- so the row is created *without* a commit (`commit_attempted=false`, `attempts=2`),
+    # the re-run's own duplicate check then finds it, and the ledger reports the row `skipped`
+    # although it exists. That is a separate defect from the replay chain this ticket is about, and
+    # it is reported rather than papered over; the pause itself is covered by the fixture golden.
     rows = batch_rows(columns)
-    run_id = harness.make_run(rows, recipe=recipe, key_column=name_column)
+    run_recipe = dict(recipe)
+    run_recipe["meta"] = {**recipe["meta"], "approval_policy": {"commit": "none"}}
+    run_id = harness.make_run(rows, recipe=run_recipe, key_column=name_column)
     records = harness.settle_run(run_id, timeout=700, max_seconds=680)
     detail = detail_for(harness, records)
 

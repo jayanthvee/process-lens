@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import http.client
 import json
-import re
 import subprocess
 import sys
 import time
@@ -247,10 +246,14 @@ def login_odoo(page: Any, env: dict[str, str], *, base: str | None = None) -> No
 
 
 def login_twenty(page: Any, env: dict[str, str], *, base: str | None = None) -> None:
-    """Log the page into Twenty, as a person does, through the real sign-in form.
+    """Sign the page into Twenty, through the app's own forms.
 
-    Twenty shows the sign-in form at `/auth/password` (the email step first on a fresh profile).
-    The seeder created the login over Twenty's own API, so no sign-up happens here.
+    A workspace's first run shows a two-step welcome ("Welcome, <name>": the email, then the
+    password, submitted with Continue/Sign in); a later run goes straight to `/auth/password` with
+    both fields. Either way the session is ready once the URL is neither `/welcome` nor `/auth/`.
+
+    Both forms are React-controlled, so the email is typed key by key rather than assigned, and the
+    submit control is a real click on the button the person would press.
     """
     origin = base or twenty_base(env)
     email = setting(env, "TWENTY_LOGIN_EMAIL", "test@processlens.test")
@@ -259,31 +262,98 @@ def login_twenty(page: Any, env: dict[str, str], *, base: str | None = None) -> 
     page.wait_for_timeout(4000)
 
     def signed_in() -> bool:
-        return "/auth/" not in page.url and page.locator("input[type='password']").count() == 0
+        return "/auth/" not in page.url and "/welcome" not in page.url
 
-    for _ in range(10):
-        if signed_in():
-            return
-        email_box = page.locator("input[type='email'], input[name='email']").first
-        if email_box.count() and email_box.is_visible() and not email_box.input_value():
-            email_box.fill(email)
-        for label in ("Continue", "Next"):
+    def submit() -> None:
+        for label in ("Continue", "Sign in", "Sign up", "Next"):
             button = page.get_by_role("button", name=label, exact=True)
-            if button.count() and button.first.is_visible():
+            if button.count() and button.first.is_visible() and button.first.is_enabled():
                 button.first.click()
-                page.wait_for_timeout(1500)
-                break
-        password_box = page.locator("input[type='password']").first
+                page.wait_for_timeout(2000)
+                return
+        page.keyboard.press("Enter")
+        page.wait_for_timeout(2000)
+
+    for _ in range(14):
+        if signed_in():
+            break
+        email_box = page.get_by_placeholder("Email").first
+        if email_box.count() and email_box.is_visible() and email_box.input_value().strip() == "":
+            email_box.click()
+            email_box.press_sequentially(email, delay=25)
+            page.wait_for_timeout(400)
+            submit()
+        password_box = page.get_by_placeholder("Password").first
         if password_box.count() and password_box.is_visible():
-            password_box.fill(password)
-            submit = page.get_by_role("button", name=re.compile("sign in|log in|continue", re.I))
-            if submit.count():
-                submit.first.click()
-            else:
-                page.keyboard.press("Enter")
-            page.wait_for_timeout(4000)
+            if password_box.input_value() == "":
+                password_box.click()
+                password_box.press_sequentially(password, delay=25)
+                page.wait_for_timeout(400)
+            submit()
+        page.wait_for_timeout(2000)
     if not signed_in():
         raise AssertionError(f"Twenty never left the sign-in page (url={page.url})")
+
+    # The workspace's own onboarding, which a fresh login walks before the app opens: a profile
+    # (name and job title) and, before that, whatever else the build asks for. Each page is a form
+    # whose fields are filled and whose Continue is pressed, until the app itself is on screen.
+    for _ in range(12):
+        if not onboarding(page.url):
+            return
+        # A setup step's own Skip may ask again in a dialog ("Twenty works better with your team"
+        # -> "Skip anyway"), and the dialog owns the page until it is answered: any click under it
+        # is intercepted. The dialog is answered first, then the step.
+        if click_button(page, "onboarding-skip-dialog-skip-anyway", "Skip anyway"):
+            continue
+        if click_button(page, None, "Skip"):
+            continue
+        if click_button(page, None, "Close"):
+            continue
+        filled = False
+        for index, value in enumerate(PROFILE_VALUES):
+            fields = page.locator("input:visible")
+            if fields.count() > index and not fields.nth(index).input_value().strip():
+                fields.nth(index).click()
+                fields.nth(index).press_sequentially(value, delay=25)
+                filled = True
+        page.wait_for_timeout(400 if filled else 1200)
+        submit()
+        page.wait_for_timeout(2000)
+    raise AssertionError(f"Twenty never left its onboarding (url={page.url})")
+
+
+def click_button(page: Any, test_id: str | None, label: str) -> bool:
+    """Click the first visible, enabled control with this test id or this exact name.
+
+    Returns whether it clicked. Nothing is clicked when the control is absent, hidden or disabled,
+    so a caller can try the next way of saying the same thing without failing on the way.
+    """
+    locator = (
+        page.get_by_test_id(test_id)
+        if test_id
+        else page.get_by_role("button", name=label, exact=True)
+    )
+    if not locator.count():
+        return False
+    target = locator.first
+    if not target.is_visible() or not target.is_enabled():
+        return False
+    target.click()
+    page.wait_for_timeout(2500)
+    return True
+
+
+# The values the workspace's own profile page needs. Synthetic, like everything else here.
+PROFILE_VALUES = ("Test", "User", "QA Engineer")
+
+# The paths a workspace walks before the app itself: the sign-in, the profile and the invite step.
+ONBOARDING_PATHS = ("/welcome", "/auth/", "/create/profile", "/invite-team")
+
+
+def onboarding(url: str) -> bool:
+    """Whether the page is one of the workspace's own setup steps rather than the app."""
+    path = urllib.parse.urlsplit(url).path
+    return any(path.startswith(prefix) for prefix in ONBOARDING_PATHS)
 
 
 # ---------------------------------------------------------------- Twenty ---

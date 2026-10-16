@@ -192,6 +192,47 @@ def test_a_value_the_page_set_itself_is_not_a_step_or_a_column() -> None:
     )
 
 
+def test_a_fill_that_only_restates_the_suggestion_is_folded_away() -> None:
+    """Odoo's many2one records the typed prefix, the option click, and then the value the field
+    holds -- which is the option's own text.
+
+    Typing that value a second time fought the widget: Odoo's inline completion had already left
+    "Priya Rama" in the field, so the replay wrote "Priya RamaPriya Raman" and parked the record.
+    The click already put the value there, so the fill is not a step; the column it came from stays
+    in the sample row, so the option rung is still templated from it.
+    """
+    events = [
+        fill(1, "fill-1", "Salesperson", "Priya"),
+        {
+            "seq": 2,
+            "kind": "click",
+            "url": FORM,
+            "step": {
+                "id": "click-1",
+                "action": "click",
+                "name": "Click Priya Raman",
+                "targets": [
+                    {"by": "role", "role": "option", "name": "Priya Raman"},
+                    {"by": "css", "selector": "#user_id_0_0_0"},
+                ],
+            },
+        },
+        fill(3, "fill-2", "Salesperson", "Priya Raman"),
+        click(4, "click-2", "Save manually"),
+        # The move the save made: without evidence a commit cannot be compiled.
+        {"seq": 5, "kind": "navigate", "url": f"{ORIGIN}/odoo/crm/21", "step": None},
+    ]
+
+    result = compile_recording(events, options(commit_step_ids=["click-2"]))
+
+    rendered = [step for step in result.recipe["steps"] if step.get("action") in ("fill", "click")]
+    assert [step["id"] for step in rendered] == ["fill-1", "click-1", "click-2"], rendered
+    # The suggestion the clicked option names is still row-driven, so another row can name another
+    # salesperson: the value the fold dropped is not lost, only the step that repeated it.
+    assert rendered[1]["targets"][0]["name"] == "{{row.salesperson_2}}", rendered[1]
+    assert any("folded the fill" in warning for warning in result.warnings), result.warnings
+
+
 def test_a_navigation_assertion_must_not_hold_before_the_change() -> None:
     """Odoo saves a new lead to ``/odoo/crm/12`` from ``/odoo/crm/new``.
 

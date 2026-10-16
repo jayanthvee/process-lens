@@ -392,6 +392,52 @@ def _is_option_click(candidate: Candidate) -> bool:
     return any(str(rung.get("role", "")).lower() == "option" for rung in candidate.targets or [])
 
 
+def _option_text(candidate: Candidate) -> str:
+    """The text a suggestion click accepted: the option's own accessible name."""
+    for rung in candidate.targets or []:
+        for key in ("name", "text", "value"):
+            text = rung.get(key)
+            if isinstance(text, str) and text.strip():
+                return text.strip()
+    return ""
+
+
+def _fold_option_fills(candidates: list[Candidate]) -> tuple[list[Candidate], list[str]]:
+    """Drop the fill that only restates the suggestion the previous step accepted.
+
+    A suggestion click puts the option's own text into the field, so the value change that follows
+    it is the page's doing, not a second edit. Odoo's many2one records exactly that: ``fill
+    "Priya"``, ``click "Priya Raman"`` (the option), then ``fill "Priya Raman"`` on the input the
+    option filled. The replay has no need of the last one -- the click already put the value there
+    -- and typing it again fights the widget: Odoo's own inline completion had left "Priya Rama" in
+    the field, so the second fill wrote "Priya RamaPriya Raman" and parked the record (PL-027).
+
+    The value is not lost: the fold drops a *step*, and the popup's sample row still carries the
+    column the option rung is templated from (``{{row.salesperson_2}}``), so a row can still name
+    the suggestion to take.
+    """
+    warnings: list[str] = []
+    kept: list[Candidate] = []
+    for candidate in candidates:
+        previous = kept[-1] if kept else None
+        if (
+            previous is not None
+            and candidate.action == "fill"
+            and _is_option_click(previous)
+            and not candidate.chip
+            and isinstance(candidate.value, dict)
+            and candidate.value.get("kind") == "constant"
+            and str(candidate.value.get("value", "")).strip() == _option_text(previous)
+        ):
+            warnings.append(
+                f"folded the fill at event {candidate.seq} into the suggestion accepted at event "
+                f"{previous.seq}: the click already put {_option_text(previous)!r} in the field"
+            )
+            continue
+        kept.append(candidate)
+    return kept, warnings
+
+
 def _refuse_what_cannot_replay(events: list[Event], candidates: list[Candidate]) -> None:
     """Refuse a recording the compiler cannot replay safely (PL-018, §3.8 and §4.4).
 
@@ -605,6 +651,8 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
     _refuse_what_cannot_replay(events, candidates)
     candidates, chip_warnings = _fold_chip_fills(candidates)
     warnings.extend(chip_warnings)
+    candidates, option_warnings = _fold_option_fills(candidates)
+    warnings.extend(option_warnings)
     if not candidates:
         raise CompileError("no steps could be built from the recording")
 
