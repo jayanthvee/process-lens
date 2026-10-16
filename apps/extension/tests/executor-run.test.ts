@@ -148,16 +148,19 @@ describe("the abandon guard and a navigate", () => {
     // guard may be released -- and the requests it refused are the evidence a person needs that a
     // parked record did not quietly reach the destination.
     resetAbandonGuard();
-    const { cdp, callsTo, emit } = fakeCdp((method) =>
+    const { cdp, emit } = fakeCdp((method, params) => {
+      // The dirty page's save, sent as it unloads while the guard has the network shut.
+      if (method === "Page.navigate" && params["url"] === "about:blank") {
+        emit("Network.requestWillBeSent", {
+          requestId: "w1",
+          request: { method: "POST", url: "http://localhost:3000/web/save" },
+        });
+      }
       // A same-document reply: nothing to await, and the tab's URL is the proof of arrival.
-      method === "Page.navigate" ? { frameId: "F1", loaderId: "" } : undefined,
-    );
-    await armAbandonGuard(cdp);
-    emit("Fetch.requestPaused", {
-      requestId: "w1",
-      request: { method: "POST", url: "http://localhost:3000/web/save" },
+      return method === "Page.navigate" ? { frameId: "F1", loaderId: "" } : undefined;
     });
-    await Promise.resolve();
+    await armAbandonGuard(cdp);
+    expect(guardArmed()).toBe(true);
 
     const summary = await runRecipe(
       recipe([{ id: "navigate-1", action: "navigate", url: `${ORIGIN}/records/new` }]),
@@ -166,7 +169,9 @@ describe("the abandon guard and a navigate", () => {
     );
 
     expect(summary.steps.map((step) => step.outcome)).toEqual(["done"]);
-    expect(callsTo("Fetch.disable")).toHaveLength(1);
+    expect(summary.steps[0]?.observed).toEqual({
+      blocked: [{ method: "POST", url: "http://localhost:3000/web/save" }],
+    });
     expect(guardArmed()).toBe(false);
     resetAbandonGuard();
   });

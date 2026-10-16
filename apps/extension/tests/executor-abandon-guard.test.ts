@@ -3,11 +3,11 @@
 //
 // The page's behaviour being modelled is Odoo's: it autosaves a dirty form when the document
 // unloads, so a record the runner parked would be written by the destination itself, with no
-// commit step and no approval. The guard intercepts the tab's requests and refuses everything that
-// is not a read.
+// commit step and no approval. The guard shuts the tab's network in the browser, retires the dirty
+// document to a blank page, and reopens the network once the blank page has arrived.
 import { beforeEach, describe, expect, it } from "vitest";
 import {
-  BLOCKED_ERROR_REASON,
+  BLANK_URL,
   BLOCKED_LIMIT,
   armAbandonGuard,
   blockedRequests,
@@ -21,120 +21,120 @@ beforeEach(() => {
   resetAbandonGuard();
 });
 
-/** A request as CDP's `Fetch.requestPaused` reports it. */
-function paused(requestId: string, method: string, url: string): Record<string, unknown> {
-  return { requestId, request: { method, url }, resourceType: "XHR" };
+/** A request as CDP's `Network.requestWillBeSent` reports it. */
+function sent(method: string, url: string): Record<string, unknown> {
+  return { requestId: url, request: { method, url } };
 }
 
 describe("the abandon guard", () => {
-  it("starts unarmed and arms by enabling Fetch interception", async () => {
-    const { cdp, callsTo } = fakeCdp();
-    expect(guardArmed()).toBe(false);
+  it("blocks the network, retires the page to a blank one, then reopens the network", async () => {
+    const { cdp, calls } = fakeCdp();
 
     await armAbandonGuard(cdp);
 
     expect(guardArmed()).toBe(true);
-    // A page load is hundreds of requests; pausing the ones that cannot carry a write starved the
-    // extension's single worker thread and killed the run's own hub socket.
-    const patterns = (
-      callsTo("Fetch.enable")[0]?.params as {
-        patterns: { resourceType: string; urlPattern: string; requestStage: string }[];
+    const order = calls
+      .map((call) =>
+        call.method === "Network.setBlockedURLs"
+          ? `block ${JSON.stringify(call.params["urls"])}`
+          : call.method,
+      )
+      .filter((step) => step !== "Runtime.evaluate");
+    // The block is in place before the page is left, and lifted only after the blank page arrived.
+    expect(order).toEqual([
+      "Network.enable",
+      'block ["*"]',
+      "Page.navigate",
+      "block []",
+      "Network.disable",
+    ]);
+    expect(calls.find((call) => call.method === "Page.navigate")?.params).toEqual({ url: BLANK_URL });
+    // The extension never answers requests one by one: that is what starved its worker on Odoo.
+    expect(calls.some((call) => call.method.startsWith("Fetch."))).toBe(false);
+  });
+
+  it("keeps the writes the dying page tried to send, and ignores its reads", async () => {
+    const { cdp, emit } = fakeCdp((method) => {
+      if (method === "Page.navigate") {
+        // The unload handlers run as the page is left, while the network is blocked.
+        emit("Network.requestWillBeSent", sent("GET", "http://127.0.0.1:8069/web/logo.png"));
+        emit("Network.requestWillBeSent", sent("POST", "http://127.0.0.1:8069/web/dataset/call_kw"));
+        emit("Network.requestWillBeSent", sent("POST", "http://127.0.0.1:8069/web/beacon"));
       }
-    ).patterns;
-    expect(patterns.map((pattern) => pattern.resourceType)).toEqual([
-      "Document",
-      "XHR",
-      "Fetch",
-      "Ping",
-      "Preflight",
-      "Other",
-    ]);
-    expect(patterns.every((pattern) => pattern.urlPattern === "*")).toBe(true);
-    expect(patterns.every((pattern) => pattern.requestStage === "Request")).toBe(true);
-  });
-
-  it("refuses every write the page tries to make, and lets reads through", async () => {
-    const { cdp, callsTo, emit } = fakeCdp();
-    await armAbandonGuard(cdp);
-
-    // A read is not a leak: the page may keep loading its own assets.
-    emit("Fetch.requestPaused", paused("r1", "GET", "http://127.0.0.1:8069/web/logo.png"));
-    emit("Fetch.requestPaused", paused("r2", "HEAD", "http://127.0.0.1:8069/web/x.css"));
-    await Promise.resolve();
-
-    expect(callsTo("Fetch.continueRequest").map((call) => call.params["requestId"])).toEqual([
-      "r1",
-      "r2",
-    ]);
-    expect(callsTo("Fetch.failRequest")).toHaveLength(0);
-
-    // The three ways a page leaves a record behind: a form submit, a fetch (with or without
-    // `keepalive`) and a `sendBeacon`. All of them are requests, so all of them are refused.
-    emit("Fetch.requestPaused", paused("w1", "POST", "http://127.0.0.1:8069/web/dataset/call_kw"));
-    emit("Fetch.requestPaused", paused("w2", "PUT", "http://127.0.0.1:8069/web/beacon"));
-    await Promise.resolve();
-
-    const failures = callsTo("Fetch.failRequest");
-    expect(failures.map((call) => call.params["requestId"])).toEqual(["w1", "w2"]);
-    expect(failures[0]?.params).toMatchObject({ errorReason: BLOCKED_ERROR_REASON });
-    expect(blockedRequests()).toEqual([
-      { method: "POST", url: "http://127.0.0.1:8069/web/dataset/call_kw" },
-      { method: "PUT", url: "http://127.0.0.1:8069/web/beacon" },
-    ]);
-  });
-
-  it("releases the tab when it is disarmed, and reports what it held back", async () => {
-    const { cdp, callsTo, emit } = fakeCdp();
-    await armAbandonGuard(cdp);
-    emit("Fetch.requestPaused", paused("w1", "POST", "http://127.0.0.1:8069/web/save"));
-    await Promise.resolve();
-
-    const blocked = await disarmAbandonGuard(cdp);
-
-    expect(guardArmed()).toBe(false);
-    expect(callsTo("Fetch.disable")).toHaveLength(1);
-    expect(blocked).toEqual([{ method: "POST", url: "http://127.0.0.1:8069/web/save" }]);
-    // The report is handed over once: a second release has nothing left to say.
-    expect(await disarmAbandonGuard(cdp)).toEqual([]);
-
-    // And an unarmed guard lets the page be: nothing is intercepted any more.
-    emit("Fetch.requestPaused", paused("w2", "POST", "http://127.0.0.1:8069/web/save"));
-    await Promise.resolve();
-    expect(callsTo("Fetch.failRequest")).toHaveLength(1);
-  });
-
-  it("is idempotent, and keeps a page in a loop from growing the report without bound", async () => {
-    const { cdp, callsTo, emit } = fakeCdp();
-    await armAbandonGuard(cdp);
-    await armAbandonGuard(cdp);
-    expect(callsTo("Fetch.enable")).toHaveLength(1);
-
-    for (let index = 0; index < BLOCKED_LIMIT + 10; index += 1) {
-      emit("Fetch.requestPaused", paused(`w${index}`, "POST", `http://127.0.0.1:8069/web/${index}`));
-    }
-    await Promise.resolve();
-
-    expect(blockedRequests()).toHaveLength(BLOCKED_LIMIT);
-    expect(callsTo("Fetch.failRequest")).toHaveLength(BLOCKED_LIMIT + 10);
-  });
-
-  it("does not claim to be armed when the browser refused to intercept", async () => {
-    const { cdp } = fakeCdp((method) => {
-      if (method === "Fetch.enable") throw new Error("Fetch is not available on this target");
       return undefined;
     });
 
-    await expect(armAbandonGuard(cdp)).rejects.toThrow(/not available/);
-    expect(guardArmed()).toBe(false);
-  });
-
-  it("ignores a paused event that names no request", async () => {
-    const { cdp, callsTo, emit } = fakeCdp();
     await armAbandonGuard(cdp);
 
-    emit("Fetch.requestPaused", { request: { method: "POST" } });
-    await Promise.resolve();
+    expect(blockedRequests()).toEqual([
+      { method: "POST", url: "http://127.0.0.1:8069/web/dataset/call_kw" },
+      { method: "POST", url: "http://127.0.0.1:8069/web/beacon" },
+    ]);
+    const report = await disarmAbandonGuard(cdp);
+    expect(report).toHaveLength(2);
+    expect(guardArmed()).toBe(false);
+    expect(blockedRequests()).toEqual([]);
+  });
 
-    expect(callsTo("Fetch.failRequest")).toHaveLength(0);
+  it("accepts a leave-this-page dialog, and no other kind", async () => {
+    const { cdp, emit, callsTo } = fakeCdp((method) => {
+      if (method === "Page.navigate") {
+        emit("Page.javascriptDialogOpening", { type: "alert" });
+        emit("Page.javascriptDialogOpening", { type: "beforeunload" });
+      }
+      return undefined;
+    });
+
+    await armAbandonGuard(cdp);
+
+    expect(callsTo("Page.handleJavaScriptDialog")).toEqual([
+      { method: "Page.handleJavaScriptDialog", params: { accept: true } },
+    ]);
+  });
+
+  it("is idempotent, and keeps a page in a loop from growing the report without bound", async () => {
+    const { cdp, emit, callsTo } = fakeCdp((method) => {
+      if (method === "Page.navigate") {
+        for (let index = 0; index < BLOCKED_LIMIT + 20; index += 1) {
+          emit("Network.requestWillBeSent", sent("POST", `http://127.0.0.1:8069/web/${index}`));
+        }
+      }
+      return undefined;
+    });
+
+    await armAbandonGuard(cdp);
+    await armAbandonGuard(cdp);
+
+    expect(callsTo("Page.navigate")).toHaveLength(1);
+    expect(blockedRequests()).toHaveLength(BLOCKED_LIMIT);
+  });
+
+  it("fails, and still reopens the network, when the tab never reaches the blank page", async () => {
+    const { cdp, callsTo } = fakeCdp((method, params) => {
+      if (method === "Runtime.evaluate" && String(params["expression"]).trim() === "location.href") {
+        return { result: { value: "http://127.0.0.1:8069/odoo/crm/new" } };
+      }
+      return undefined;
+    });
+
+    await expect(armAbandonGuard(cdp, 250)).rejects.toThrow(/did not reach about:blank/);
+
+    expect(guardArmed()).toBe(false);
+    const blocks = callsTo("Network.setBlockedURLs").map((call) => call.params["urls"]);
+    expect(blocks.at(-1)).toEqual([]);
+  });
+
+  it("fails without navigating when the browser refuses to block", async () => {
+    const { cdp, callsTo } = fakeCdp((method, params) => {
+      if (method === "Network.setBlockedURLs" && JSON.stringify(params["urls"]) === '["*"]') {
+        throw new Error("refused");
+      }
+      return undefined;
+    });
+
+    await expect(armAbandonGuard(cdp)).rejects.toThrow(/refused/);
+
+    expect(callsTo("Page.navigate")).toHaveLength(0);
+    expect(guardArmed()).toBe(false);
   });
 });

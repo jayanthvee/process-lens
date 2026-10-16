@@ -7,17 +7,22 @@
 // record the runner PARKED (a step could not be resolved, an approval was refused, the person
 // cancelled) has not been committed, and it must not reach the destination. Left alone, the next
 // record's opening navigate unloads the page and Odoo saves the abandoned form: a lead exists that
-// no commit step created, which is exactly the invariant ("nothing reaches the destination without
-// the commit step") this guard restores.
+// no commit step created.
 //
-// It works by intercepting the tab's own network layer for as long as the page is dirty: every
-// request is paused and every one that is not a read (GET/HEAD) is failed with `BlockedByClient`.
-// That covers `sendBeacon` and `keepalive` fetches too, both of which are ordinary requests. The
-// guard is released the moment the next record's navigate has loaded a new document, because from
-// there the abandoned document no longer exists and has nothing to say.
+// How it works: the dirty document is retired at once, with the network shut. Every URL is
+// blocked in the browser's own network stack (`Network.setBlockedURLs`), the tab is sent to
+// `about:blank` -- which runs the page's unload handlers, whose save requests fail inside the
+// browser -- and only once the blank page has arrived is the block lifted. The next record then
+// starts from a clean tab.
 //
-// Nothing here decides anything about a record: the runner arms it when a record leaves the tab,
-// and the executor releases it on arrival.
+// An earlier version paused every request with `Fetch.enable` and answered each one from the
+// extension. On real Odoo that stalled the extension's single service-worker thread (a page whose
+// blocked RPCs it retries is a stream of paused requests, each a round trip through the worker)
+// until the hub socket timed out. Blocking in the network stack costs the extension nothing per
+// request, and the window it is open for is one navigation to a blank page.
+//
+// Nothing here decides anything about a record: the runner asks for it when a record leaves the
+// tab without committing, and the next navigate collects what it refused for the ledger.
 import type { CdpTransport } from "./cdp";
 
 /** One request the guard refused to let leave the page. */
@@ -29,36 +34,27 @@ export interface BlockedRequest {
 /** How many blocked requests are remembered; a page in a loop must not grow this without bound. */
 export const BLOCKED_LIMIT = 50;
 
-/** CDP's own reason for "the client refused this request". */
-export const BLOCKED_ERROR_REASON = "BlockedByClient";
+/** Where the abandoned document is sent: a page with no handlers and no network of its own. */
+export const BLANK_URL = "about:blank";
 
-/** The methods that change nothing, and are therefore allowed through a dirty page. */
+/** How long the tab may take to reach the blank page before the guard gives up on it. */
+export const RETIRE_TIMEOUT_MS = 10_000;
+
+const RETIRE_POLL_MS = 100;
+
+/** The methods that change nothing; a read the dying page makes is not worth reporting. */
 const READ_METHODS = new Set(["GET", "HEAD"]);
 
-/**
- * The request types a page can leave a record through, and the only ones worth intercepting.
- *
- * CDP can pause *every* request of a tab, and the requirement is that no request which is not a
- * read gets out. Pausing all of them means continuing all of them, and a page load is hundreds of
- * requests: measured against real Odoo, that flood starved the extension's single service-worker
- * thread badly enough that its own hub socket timed out and the run paused `executor_disconnected`
- * -- the guard broke the very run it was protecting. These are the types a write can travel in:
- * a form post (`Document`), an RPC (`XHR`, `Fetch`), `navigator.sendBeacon` and `keepalive`
- * (`Ping`), a CORS preflight, and anything unclassified (`Other`). A stylesheet, an image or a
- * script request cannot create a record, so letting those through costs the invariant nothing.
- */
-const WRITE_RESOURCE_TYPES = ["Document", "XHR", "Fetch", "Ping", "Preflight", "Other"];
-
+/** True between a retirement and the next record's navigate collecting its report. */
 let armed = false;
 let blocked: BlockedRequest[] = [];
-let unsubscribe: (() => void) | null = null;
 
-/** Whether the guard is currently intercepting this tab's requests. For tests and diagnostics. */
+/** Whether a retirement's report is waiting to be collected. For tests and diagnostics. */
 export function guardArmed(): boolean {
   return armed;
 }
 
-/** What the guard has refused since it was armed. */
+/** What the guard has refused since the last report was collected. */
 export function blockedRequests(): BlockedRequest[] {
   return [...blocked];
 }
@@ -67,7 +63,6 @@ export function blockedRequests(): BlockedRequest[] {
 export function resetAbandonGuard(): void {
   armed = false;
   blocked = [];
-  unsubscribe = null;
 }
 
 function remember(entry: BlockedRequest): void {
@@ -75,70 +70,101 @@ function remember(entry: BlockedRequest): void {
   blocked.push(entry);
 }
 
-/**
- * Arm the guard on one tab.
- *
- * Every request is paused at the request stage, so a `POST` a page makes on its way out -- a
- * `sendBeacon`, a `keepalive` fetch, a form submit, a jQuery `$.post` -- is answered with
- * `BlockedByClient` instead of reaching the destination. Reads are passed straight through: a page
- * that is still loading a stylesheet is not leaking a record.
- *
- * Idempotent: arming an armed guard changes nothing.
- */
-export async function armAbandonGuard(cdp: CdpTransport): Promise<void> {
-  if (armed) return;
-  const handle = (params: Record<string, unknown>): void => {
-    const requestId = params["requestId"];
-    if (typeof requestId !== "string") return;
-    const request = (params["request"] ?? {}) as { method?: unknown; url?: unknown };
-    const method = String(request.method ?? "GET").toUpperCase();
-    if (READ_METHODS.has(method)) {
-      void cdp.send("Fetch.continueRequest", { requestId }).catch(() => undefined);
-      return;
-    }
-    remember({ method, url: String(request.url ?? "") });
-    void cdp
-      .send("Fetch.failRequest", { requestId, errorReason: BLOCKED_ERROR_REASON })
-      .catch(() => undefined);
-  };
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
-  const listener = cdp.on?.("Fetch.requestPaused", handle) ?? null;
+async function tabHref(cdp: CdpTransport): Promise<string> {
   try {
-    // One pattern per write-capable type, all methods: the guard's job is to catch the request
-    // nobody thought of, and these are the types it can arrive in.
-    await cdp.send("Fetch.enable", {
-      patterns: WRITE_RESOURCE_TYPES.map((resourceType) => ({
-        urlPattern: "*",
-        requestStage: "Request",
-        resourceType,
-      })),
-    });
-  } catch (error) {
-    listener?.();
-    throw error;
+    const reply = (await cdp.send("Runtime.evaluate", {
+      expression: "location.href",
+      returnByValue: true,
+    })) as { result?: { value?: unknown } } | undefined;
+    const value = reply?.result?.value;
+    return typeof value === "string" ? value : "";
+  } catch {
+    // A document mid-replacement has no context to evaluate in yet; the next poll asks again.
+    return "";
   }
-  unsubscribe = listener;
-  armed = true;
+}
+
+/** Wait until the top frame shows the blank page: its own event, or its URL read back. */
+async function waitForBlank(cdp: CdpTransport, timeoutMs: number): Promise<boolean> {
+  let arrived = false;
+  const off =
+    cdp.on?.("Page.frameNavigated", (params) => {
+      const frame = (params["frame"] ?? {}) as { parentId?: unknown; url?: unknown };
+      if (frame.parentId === undefined && frame.url === BLANK_URL) arrived = true;
+    }) ?? null;
+  try {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (arrived || (await tabHref(cdp)) === BLANK_URL) return true;
+      await delay(RETIRE_POLL_MS);
+    }
+    return arrived;
+  } finally {
+    off?.();
+  }
 }
 
 /**
- * Release the guard, and report what it refused while it held.
+ * Retire the tab's dirty document with the network shut, and keep what was refused.
  *
- * Called when the next record's navigate has arrived (the abandoned document is gone) and when the
- * run ends or is cancelled. Idempotent, and never throws: a tab whose debugger has already gone
- * away has no interception left to release, and that is not an error.
+ * Throws when the browser refuses to block, or the tab never reaches the blank page: the runner
+ * then treats the tab as unsafe rather than letting the next navigate unload the form unguarded.
+ * The block is lifted on every path, so a failure never leaves the person's tab offline.
+ *
+ * Idempotent: a tab already retired and not yet collected is left alone.
  */
-export async function disarmAbandonGuard(cdp: CdpTransport): Promise<BlockedRequest[]> {
+export async function armAbandonGuard(
+  cdp: CdpTransport,
+  timeoutMs: number = RETIRE_TIMEOUT_MS,
+): Promise<void> {
+  if (armed) return;
+  const offRequest =
+    cdp.on?.("Network.requestWillBeSent", (params) => {
+      const request = (params["request"] ?? {}) as { method?: unknown; url?: unknown };
+      const method = String(request.method ?? "GET").toUpperCase();
+      const url = String(request.url ?? "");
+      if (READ_METHODS.has(method) || url === BLANK_URL) return;
+      remember({ method, url });
+    }) ?? null;
+  // A page that asks "leave this page?" would hold the blank navigation forever; leaving is
+  // exactly what is wanted, and the save it would have made is blocked either way.
+  const offDialog =
+    cdp.on?.("Page.javascriptDialogOpening", (params) => {
+      if (String(params["type"] ?? "") !== "beforeunload") return;
+      void cdp.send("Page.handleJavaScriptDialog", { accept: true }).catch(() => undefined);
+    }) ?? null;
+  try {
+    await cdp.send("Network.enable");
+    await cdp.send("Network.setBlockedURLs", { urls: ["*"] });
+    await cdp.send("Page.navigate", { url: BLANK_URL });
+    if (!(await waitForBlank(cdp, timeoutMs))) {
+      throw new Error(`the tab did not reach ${BLANK_URL} within ${timeoutMs}ms`);
+    }
+    armed = true;
+  } finally {
+    offDialog?.();
+    offRequest?.();
+    await cdp.send("Network.setBlockedURLs", { urls: [] }).catch(() => undefined);
+    // Network events are not needed past the retirement, and every one of them would otherwise
+    // be delivered to the service worker for the rest of the run.
+    await cdp.send("Network.disable").catch(() => undefined);
+  }
+}
+
+/**
+ * Collect what the guard refused, for the ledger.
+ *
+ * Called when the next record's navigate has arrived and when the run ends or is cancelled. The
+ * network was already reopened when the blank page arrived, so there is nothing to release here.
+ * Idempotent, and never throws.
+ */
+export async function disarmAbandonGuard(_cdp: CdpTransport): Promise<BlockedRequest[]> {
   const collected = [...blocked];
   blocked = [];
-  unsubscribe?.();
-  unsubscribe = null;
-  if (!armed) return collected;
   armed = false;
-  try {
-    await cdp.send("Fetch.disable");
-  } catch {
-    // The tab detached, or the debugger is gone: nothing is intercepting any more either way.
-  }
   return collected;
 }
