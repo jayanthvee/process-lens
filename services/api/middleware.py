@@ -18,14 +18,14 @@ Four checks, each answering 403 with the check it refused named in ``detail``:
   allowed: a CLI, a worker or a test client sends none, and a browser that can send a cross-site
   request always sends one.
 
-  Three routes are the exceptions: ``POST /api/v1/executor/sessions``,
-  ``POST /api/v1/executor/version`` and ``POST /api/v1/recipes/compile`` also accept exactly
-  ``chrome-extension://{PROCESSLENS_EXTENSION_ID}`` -- the pinned id the hub uses for its socket.
-  The extension's service worker opens that session and reports its own manifest version from its
-  own origin and has no other one to present, and the popup compiles the recording it just captured
-  from that same origin, because the popup has none other to present either. An unset
-  ``PROCESSLENS_EXTENSION_ID`` accepts no extension origin at all, and every other route accepts
-  only this API's own origin.
+  Four routes are the exceptions: ``POST /api/v1/executor/sessions``,
+  ``POST /api/v1/executor/version``, ``POST /api/v1/recipes/compile`` and ``POST /api/v1/tasks``
+  also accept exactly ``chrome-extension://{PROCESSLENS_EXTENSION_ID}`` -- the pinned id the hub
+  uses for its socket. The extension's service worker opens that session, reports its own manifest
+  version from its own origin and compiles the recording it just captured from that same origin,
+  and the popup saves the compiled task from it too, because the popup has no other origin to
+  present. An unset ``PROCESSLENS_EXTENSION_ID`` accepts no extension origin at all, and every
+  other route accepts only this API's own origin.
 * ``content-type``: a state-changing request with a body must declare ``application/json`` (its
   parameters are ignored, so ``application/json; charset=utf-8`` is fine). A browser cannot send
   that cross-origin without a preflight, and this API sends no CORS headers, so the preflight
@@ -57,15 +57,21 @@ JSON_MEDIA_TYPE = "application/json"
 FORM_MEDIA_TYPE = "multipart/form-data"
 UPLOAD_PATH = "/api/v1/batches"
 FORBIDDEN_STATUS = 403
-# The three routes a browser page never calls and the extension does, so the three routes where an
+# The four routes a browser page never calls and the extension does, so the four routes where an
 # origin other than this API's own is meaningful: the service worker opens a session and reports its
-# manifest version, and the popup compiles the recording it just captured. All accept the pinned id
-# and nothing else.
+# manifest version, and the popup compiles the recording it just captured and saves the task it
+# compiled into. All accept the pinned id and nothing else.
 EXTENSION_SESSION_PATH = "/api/v1/executor/sessions"
 EXTENSION_VERSION_PATH = "/api/v1/executor/version"
 EXTENSION_COMPILE_PATH = "/api/v1/recipes/compile"
+EXTENSION_TASKS_PATH = "/api/v1/tasks"
 EXTENSION_ORIGIN_PATHS = frozenset(
-    {EXTENSION_SESSION_PATH, EXTENSION_VERSION_PATH, EXTENSION_COMPILE_PATH}
+    {
+        EXTENSION_SESSION_PATH,
+        EXTENSION_VERSION_PATH,
+        EXTENSION_COMPILE_PATH,
+        EXTENSION_TASKS_PATH,
+    }
 )
 
 HOST_DETAIL = "refused by the host check: Host must be 127.0.0.1:<port> or localhost:<port>"
@@ -109,11 +115,11 @@ def _origin_refusal(request: Request) -> str | None:
         return None  # a CLI, a worker or a test client sends none
     if origin.strip().lower() == _own_origin(request).lower():
         return None
-    # Opening a session, reporting a version and compiling a recording are the three things the
-    # extension does over HTTP, and it can present no origin but its own `chrome-extension://<id>`.
-    # Only those paths, and only the pinned id: every other route and every other extension id is
-    # refused as before. `origin_is_extension` owns the id comparison and answers False when no id
-    # is configured.
+    # Opening a session, reporting a version, compiling a recording and saving the task it
+    # compiled into are the four things the extension does over HTTP, and it can present no origin
+    # but its own `chrome-extension://<id>`. Only those paths, and only the pinned id: every other
+    # route and every other extension id is refused as before. `origin_is_extension` owns the id
+    # comparison and answers False when no id is configured.
     if request.url.path.rstrip("/") in EXTENSION_ORIGIN_PATHS and origin_is_extension(origin):
         return None
     return ORIGIN_DETAIL

@@ -18,6 +18,7 @@ from datetime import datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, HTTPException, Query
+from psycopg import Connection
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel
 
@@ -181,6 +182,43 @@ JOIN workflows w ON w.id = rv.workflow_id
 WHERE rv.id = %s
 """
 
+_VERSION_COLUMNS = (
+    "id",
+    "tenant_id",
+    "workflow_id",
+    "workflow_name",
+    "version",
+    "format_version",
+    "change_reason",
+    "created_at",
+)
+
+
+def store_recipe_version(
+    conn: Connection,
+    *,
+    workflow_id: uuid.UUID,
+    document: dict[str, Any],
+    change_reason: str = DEFAULT_CHANGE_REASON,
+) -> dict[str, Any] | None:
+    """Store the document as the workflow's next immutable version, in the caller's transaction.
+
+    The caller owns the boundary: this runs one statement and commits nothing, so the workflow an
+    insert creates and the version that pins its recipe can land together, or not at all. Returns
+    the stored row's columns, or ``None`` when the workflow is missing or archived -- the INSERT's
+    SELECT matches nothing, so nothing is written.
+    """
+    format_version = document.get("format_version", 1)
+    with conn.cursor() as cur:
+        cur.execute(
+            _INSERT_RECIPE_VERSION,
+            (workflow_id, format_version, Jsonb(document), change_reason),
+        )
+        row = cur.fetchone()
+    if row is None:
+        return None
+    return dict(zip(_VERSION_COLUMNS, row, strict=True))
+
 
 @router.post("/recipes", response_model=RecipeVersionDetail, status_code=201)
 def ingest_recipe(
@@ -204,33 +242,18 @@ def ingest_recipe(
             },
         )
 
-    format_version = document.get("format_version", 1)
     with connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                _INSERT_RECIPE_VERSION,
-                (workflow_id, format_version, Jsonb(document), change_reason),
-            )
-            row = cur.fetchone()
+        stored = store_recipe_version(
+            conn, workflow_id=workflow_id, document=document, change_reason=change_reason
+        )
         conn.commit()
 
-    if row is None:
+    if stored is None:
         raise HTTPException(
             status_code=404,
             detail=f"workflow {workflow_id} does not exist or is archived",
         )
 
-    columns = (
-        "id",
-        "tenant_id",
-        "workflow_id",
-        "workflow_name",
-        "version",
-        "format_version",
-        "change_reason",
-        "created_at",
-    )
-    stored = dict(zip(columns, row, strict=True))
     return RecipeVersionDetail(**_summary(stored, document).model_dump(), recipe=document)
 
 
