@@ -38,15 +38,20 @@ function detailFromPayload(status: number, payload: unknown): string {
 }
 
 async function request<T>(
-  method: "GET" | "POST",
+  method: "GET" | "POST" | "PUT",
   path: string,
   body?: unknown,
   signal?: AbortSignal,
+  form?: FormData,
 ): Promise<T> {
   const headers: Record<string, string> = { Accept: "application/json" };
   const init: RequestInit = { method, headers };
   if (signal !== undefined) init.signal = signal;
-  if (body !== undefined) {
+  if (form !== undefined) {
+    // A form is sent as it stands: the browser adds `Content-Type` itself, with the multipart
+    // boundary. Setting the header here would leave the boundary out and the API would refuse it.
+    init.body = form;
+  } else if (body !== undefined) {
     headers["Content-Type"] = "application/json";
     init.body = JSON.stringify(body);
   }
@@ -77,6 +82,19 @@ export function apiGet<T>(path: string, signal?: AbortSignal): Promise<T> {
 /** `POST` a JSON body (omit it when the API sends nothing) and read the JSON answer. */
 export function apiPost<T>(path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
   return request<T>("POST", path, body, signal);
+}
+
+/**
+ * `POST` a form: a file, and the fields beside it. The browser sets `Content-Type` with the
+ * multipart boundary, so this never sets it.
+ */
+export function apiPostFile<T>(path: string, form: FormData, signal?: AbortSignal): Promise<T> {
+  return request<T>("POST", path, undefined, signal, form);
+}
+
+/** `PUT` a JSON body and read the JSON answer. */
+export function apiPut<T>(path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+  return request<T>("PUT", path, body, signal);
 }
 
 /** The API's `detail` text, so a refusal can be shown next to the button that caused it. */
