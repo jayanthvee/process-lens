@@ -14,6 +14,36 @@ export function normalizeText(value: string | null | undefined): string {
   return (value ?? "").replace(/\s+/g, " ").trim();
 }
 
+/**
+ * The text of a node, omitting `<sup>` and `<sub>` children whose trimmed text is "?".
+ *
+ * Odoo renders `<label>Contact<sup>?</sup></label>`, which would give an accessible name and
+ * label text of "Contact?". Dropping the help marker here keeps recordings readable and means
+ * the compiled recipe does not have to strip it after the fact.
+ */
+function nodeTextExcludingHelp(node: Node | null | undefined): string {
+  if (!node) return "";
+  const pieces: string[] = [];
+  const walk = (current: Node, skip: boolean) => {
+    if (current.nodeType === Node.TEXT_NODE) {
+      if (!skip) pieces.push(current.textContent ?? "");
+      return;
+    }
+    if (current.nodeType !== Node.ELEMENT_NODE) return;
+    const el = current as Element;
+    const tag = el.tagName.toUpperCase();
+    const childSkip =
+      skip || ((tag === "SUP" || tag === "SUB") && normalizeText(el.textContent) === "?");
+    for (const child of Array.from(el.childNodes)) {
+      walk(child, childSkip);
+    }
+  };
+  for (const child of Array.from(node.childNodes)) {
+    walk(child, false);
+  }
+  return normalizeText(pieces.join(""));
+}
+
 function truncate(value: string, limit: number): string {
   return value.length <= limit ? value : value.slice(0, limit);
 }
@@ -133,7 +163,7 @@ export function semanticRole(el: Element): string {
 }
 
 function textOf(label: Element | null): string {
-  return label ? normalizeText(label.textContent) : "";
+  return label ? nodeTextExcludingHelp(label) : "";
 }
 
 /** The text of the `<label>` associated by `for` or by wrapping, if any. */
@@ -156,7 +186,7 @@ function nameFromLabelledBy(el: Element, attr = "aria-labelledby"): string {
   return normalizeText(
     ids
       .split(" ")
-      .map((id) => root.getElementById(id)?.textContent ?? "")
+      .map((id) => nodeTextExcludingHelp(root.getElementById(id)))
       .join(" "),
   );
 }
@@ -200,7 +230,7 @@ export function accessibleName(el: Element): string {
 
   if (isRichText(el)) return "";
 
-  const text = normalizeText(el.textContent);
+  const text = nodeTextExcludingHelp(el);
   return text ? truncate(text, 200) : "";
 }
 

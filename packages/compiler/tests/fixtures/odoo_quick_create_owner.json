@@ -1,0 +1,399 @@
+[
+  {
+    "at": "2026-10-16T21:52:15.440Z",
+    "kind": "click",
+    "seq": 1,
+    "step": {
+      "action": "click",
+      "id": "click-2",
+      "name": "Click New",
+      "targets": [
+        {
+          "by": "role",
+          "name": "New",
+          "role": "button"
+        },
+        {
+          "by": "css",
+          "selector": "button.btn.o-kanban-button-new"
+        },
+        {
+          "by": "text_fuzzy",
+          "value": "New"
+        }
+      ]
+    },
+    "url": "http://localhost:8069/odoo/crm"
+  },
+  {
+    "at": "2026-10-16T21:52:21.250Z",
+    "kind": "fill",
+    "seq": 2,
+    "step": {
+      "action": "fill",
+      "clear_first": true,
+      "id": "fill-3",
+      "name": "Fill Contact?",
+      "targets": [
+        {
+          "by": "role",
+          "name": "Contact?",
+          "role": "combobox"
+        },
+        {
+          "by": "label",
+          "text": "Contact?"
+        },
+        {
+          "by": "css",
+          "selector": "#partner_id_0"
+        }
+      ],
+      "value": {
+        "kind": "constant",
+        "value": "Probe Person Zero"
+      }
+    },
+    "url": "http://localhost:8069/odoo/crm"
+  },
+  {
+    "at": "2026-10-16T21:52:21.321Z",
+    "kind": "click",
+    "seq": 3,
+    "step": {
+      "action": "click",
+      "id": "click-4",
+      "name": "Click Contact?OpportunityEmailPhoneExpected Revenue$ 0.00$",
+      "targets": [
+        {
+          "by": "role",
+          "name": "Contact?OpportunityEmailPhoneExpected Revenue$ 0.00$",
+          "role": "generic"
+        },
+        {
+          "by": "css",
+          "selector": "div.o_inner_group.grid"
+        },
+        {
+          "by": "text_fuzzy",
+          "value": "Contact?OpportunityEmailPhoneExpected Revenue$ 0.00$"
+        }
+      ]
+    },
+    "url": "http://localhost:8069/odoo/crm"
+  },
+  {
+    "at": "2026-10-16T21:52:22.521Z",
+    "kind": "click",
+    "seq": 4,
+    "step": {
+      "action": "click",
+      "id": "click-5",
+      "name": "Click Contact?",
+      "targets": [
+        {
+          "by": "role",
+          "name": "Contact?",
+          "role": "combobox"
+        },
+        {
+          "by": "label",
+          "text": "Contact?"
+        },
+        {
+          "by": "css",
+          "selector": "#partner_id_0"
+        }
+      ]
+    },
+    "url": "http://localhost:8069/odoo/crm"
+  },
+  {
+    "at": "2026-10-16T21:52:26.831Z",
+    "kind": "click",
+    "seq": 5,
+    "step": {
+      "action": "click",
+      "id": "click-6",
+      "name": "Click Start typing...",
+      "targets": [
+        {
+          "by": "role",
+          "name": "Start typing...",
+          "role": "option"
+        },
+        {
+          "by": "css",
+          "selector": "#partner_id_0_0_9"
+        },
+        {
+          "by": "text_fuzzy",
+          "value": "Start typing..."
+        }
+      ]
+    },
+    "url": "http://localhost:8069/odoo/crm"
+  },
+  {
+    "at": "2026-10-16T21:52:27.390Z",
+    "kind": "click",
+    "seq": 6,
+    "step": {
+      "action": "click",
+      "id": "click-7",
+      "name": "Click div",
+      "targets": [
+        {
+          "by": "css",
+          "selector": "div.o_cell.o_wrap_input.text-break"
+        }
+      ]
+    },
+    "url": "http://localhost:8069/odoo/crm"
+  },
+  {
+    "at": "2026-10-16T21:52:27.745Z",
+    "kind": "click",
+    "seq": 7,
+    "step": {
+      "action": "click",
+      "id": "click-8",
+      "name": "Click Contact?",
+      "targets": [
+        {
+          "by": "role",
+          "name": "Contact?",
+          "role": "combobox"
+        },
+        {
+          "by": "label",
+          "text": "Contact?"
+        },
+        {
+          "by": "css",
+          "selector": "#partner_id_0"
+        }
+      ]
+    },
+    "url": "http://localhost:8069/odoo/crm"
+  },
+  {
+    "at": "2026-10-16T21:52:32.895Z",
+    "kind": "fill",
+    "seq": 8,
+    "step": {
+      "action": "fill",
+      "clear_first": true,
+      "id": "fill-9",
+      "name": "Fill Contact?",
+      "targets": [
+        {
+          "by": "role",
+          "name": "Contact?",
+          "role": "combobox"
+        },
+        {
+          "by": "label",
+          "text": "Contact?"
+        },
+        {
+          "by": "css",
+          "selector": "#partner_id_0"
+        }
+      ],
+      "value": {
+        "kind": "constant",
+        "value": "Probe Person Zero"
+      }
+    },
+    "url": "http://localhost:8069/odoo/crm"
+  },
+  {
+    "at": "2026-10-16T21:52:32.956Z",
+    "kind": "click",
+    "seq": 9,
+    "step": {
+      "action": "click",
+      "id": "click-10",
+      "name": "Click Create \"Probe Person Zero\"",
+      "targets": [
+        {
+          "by": "role",
+          "name": "Create \"Probe Person Zero\"",
+          "role": "option"
+        },
+        {
+          "by": "css",
+          "selector": "#partner_id_0_0_0"
+        },
+        {
+          "by": "text_fuzzy",
+          "value": "Create \"Probe Person Zero\""
+        }
+      ]
+    },
+    "url": "http://localhost:8069/odoo/crm"
+  },
+  {
+    "at": "2026-10-16T21:52:35.400Z",
+    "kind": "fill",
+    "seq": 10,
+    "step": {
+      "action": "fill",
+      "clear_first": true,
+      "id": "fill-11",
+      "name": "Fill Email",
+      "targets": [
+        {
+          "by": "role",
+          "name": "Email",
+          "role": "textbox"
+        },
+        {
+          "by": "label",
+          "text": "Email"
+        },
+        {
+          "by": "css",
+          "selector": "#email_from_0"
+        },
+        {
+          "by": "text_fuzzy",
+          "value": "e.g. \"email@address.com\""
+        }
+      ],
+      "value": {
+        "kind": "constant",
+        "value": "probe.zero@example.test"
+      }
+    },
+    "url": "http://localhost:8069/odoo/crm"
+  },
+  {
+    "at": "2026-10-16T21:52:35.402Z",
+    "kind": "fill",
+    "seq": 11,
+    "step": {
+      "action": "fill",
+      "clear_first": true,
+      "id": "fill-12",
+      "name": "Fill Opportunity",
+      "targets": [
+        {
+          "by": "role",
+          "name": "Opportunity",
+          "role": "textbox"
+        },
+        {
+          "by": "label",
+          "text": "Opportunity"
+        },
+        {
+          "by": "css",
+          "selector": "#name_0"
+        },
+        {
+          "by": "text_fuzzy",
+          "value": "e.g. Product Pricing"
+        }
+      ],
+      "value": {
+        "kind": "constant",
+        "value": "Probe Person Zero"
+      }
+    },
+    "url": "http://localhost:8069/odoo/crm"
+  },
+  {
+    "at": "2026-10-16T21:52:35.404Z",
+    "kind": "fill",
+    "seq": 12,
+    "step": {
+      "action": "fill",
+      "clear_first": true,
+      "id": "fill-13",
+      "name": "Fill Phone",
+      "targets": [
+        {
+          "by": "role",
+          "name": "Phone",
+          "role": "textbox"
+        },
+        {
+          "by": "label",
+          "text": "Phone"
+        },
+        {
+          "by": "css",
+          "selector": "#phone_0"
+        },
+        {
+          "by": "text_fuzzy",
+          "value": "e.g. \"0123456789\""
+        }
+      ],
+      "value": {
+        "kind": "constant",
+        "value": "5550000000"
+      }
+    },
+    "url": "http://localhost:8069/odoo/crm"
+  },
+  {
+    "at": "2026-10-16T21:52:40.491Z",
+    "kind": "fill",
+    "seq": 13,
+    "step": {
+      "action": "fill",
+      "clear_first": true,
+      "id": "fill-14",
+      "name": "Fill Expected Revenue",
+      "targets": [
+        {
+          "by": "role",
+          "name": "Expected Revenue",
+          "role": "textbox"
+        },
+        {
+          "by": "label",
+          "text": "Expected Revenue"
+        },
+        {
+          "by": "css",
+          "selector": "#expected_revenue_0"
+        }
+      ],
+      "value": {
+        "kind": "constant",
+        "value": "3000"
+      }
+    },
+    "url": "http://localhost:8069/odoo/crm"
+  },
+  {
+    "at": "2026-10-16T21:52:40.541Z",
+    "kind": "click",
+    "seq": 14,
+    "step": {
+      "action": "click",
+      "id": "click-15",
+      "name": "Click Add",
+      "targets": [
+        {
+          "by": "role",
+          "name": "Add",
+          "role": "button"
+        },
+        {
+          "by": "css",
+          "selector": "button.btn.o_kanban_add"
+        },
+        {
+          "by": "text_fuzzy",
+          "value": "Add"
+        }
+      ]
+    },
+    "url": "http://localhost:8069/odoo/crm"
+  }
+]

@@ -16,7 +16,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from .assertions import (
@@ -91,6 +91,86 @@ def _next_actionable_url(events: list[Event], index: int) -> str | None:
     return None
 
 
+def _parse_iso(text: str) -> Any:
+    """Parse an ISO timestamp, returning None on failure."""
+    from datetime import datetime
+
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _is_page_set_fill(
+    event: Event,
+    previous_fills: list[tuple[list[dict[str, Any]], Any, str]],
+) -> bool:
+    """Whether a fill is one the page produced, not the person.
+
+    PL-031: a fill whose value equals the value of a different field filled just before it,
+    and that arrived with no keystrokes on its own target, is page_set. When the recorder reports
+    a keystroke count, zero keystrokes is decisive. For older recordings without that envelope
+    field, the same value on a different field is page_set only when the fill arrived in a burst
+    of fills (within 50 ms of another fill), which is how Odoo copies a contact name into the
+    Opportunity field.
+    """
+    if event.page_set:
+        return True
+    if event.kind != "fill" or not event.step:
+        return False
+    value = event.step.get("value")
+    literal = _literal(value)
+    if literal is None or str(literal).strip() == "":
+        return False
+    current_targets = event.step.get("targets") or []
+    current_signature = target_signature(current_targets)
+    current_time = _parse_iso(event.at)
+
+    # New recordings: the recorder tells us the value arrived without typing.
+    if event.keystrokes == 0:
+        for previous_targets, previous_value, _previous_at in previous_fills:
+            if target_signature(previous_targets) == current_signature:
+                continue
+            previous_literal = _literal(previous_value)
+            if previous_literal is None:
+                continue
+            if str(previous_literal).strip() == str(literal).strip():
+                return True
+        return False
+
+    # Older recordings without keystrokes: infer page-set only from a same-value burst.
+    if event.keystrokes is not None:
+        return False
+    if current_time is None:
+        return False
+
+    has_burst = False
+    for previous_targets, _previous_value, previous_at in previous_fills:
+        if target_signature(previous_targets) == current_signature:
+            continue
+        previous_time = _parse_iso(previous_at)
+        if previous_time is None:
+            continue
+        if abs((current_time - previous_time).total_seconds()) <= 0.05:
+            has_burst = True
+            break
+
+    if not has_burst:
+        return False
+
+    for previous_targets, previous_value, _previous_at in previous_fills:
+        if target_signature(previous_targets) == current_signature:
+            continue
+        previous_literal = _literal(previous_value)
+        if previous_literal is None:
+            continue
+        if str(previous_literal).strip() == str(literal).strip():
+            return True
+    return False
+
+
 def to_candidates(
     events: list[Event], options: CompileOptions
 ) -> tuple[list[Candidate], list[str]]:
@@ -98,6 +178,7 @@ def to_candidates(
     commit_ids = set(options.commit_step_ids or ())
     candidates: list[Candidate] = []
     warnings: list[str] = []
+    previous_fills: list[tuple[list[dict[str, Any]], Any, str]] = []
 
     for index, event in enumerate(events):
         if event.kind == NAVIGATE_EVENT_KIND:
@@ -139,7 +220,7 @@ def to_candidates(
         # real value on a real page, so it is skipped by name rather than silently dropped: a
         # builder reading the warnings learns that a field filled itself and can re-record with a
         # value they type if the workflow really needs one there.
-        if event.page_set:
+        if _is_page_set_fill(event, previous_fills):
             warnings.append(
                 f"skipped the {action} at event {event.seq}: the page set that value itself, "
                 "the demonstration did not type it"
@@ -176,6 +257,8 @@ def to_candidates(
                 supersedes=event.supersedes,
             )
         )
+        if action == "fill":
+            previous_fills.append((targets, value, event.at))
     return candidates, warnings
 
 
@@ -450,6 +533,208 @@ def _fold_option_fills(candidates: list[Candidate]) -> tuple[list[Candidate], li
     return kept, warnings
 
 
+def _first_rung(targets: list[dict[str, Any]]) -> dict[str, Any] | None:
+    return targets[0] if targets else None
+
+
+def _rung_text(rung: dict[str, Any] | None) -> str:
+    if rung is None:
+        return ""
+    for key in ("name", "text", "value"):
+        text = rung.get(key)
+        if isinstance(text, str):
+            return text
+    return ""
+
+
+def _input_labels(candidates: list[Candidate]) -> set[str]:
+    """The label/name texts of every fill field in the recording."""
+    labels: set[str] = set()
+    for candidate in candidates:
+        if candidate.action != "fill":
+            continue
+        for rung in candidate.targets or []:
+            for key in ("name", "text", "value"):
+                text = rung.get(key)
+                if isinstance(text, str) and text.strip():
+                    labels.add(text.strip())
+    return labels
+
+
+def _drop_container_clicks(
+    candidates: list[Candidate],
+) -> tuple[list[Candidate], list[str]]:
+    """Drop clicks on containers, not controls.
+
+    PL-031: a click on a group or card whose text contains the labels of two or more inputs is
+    not a control click. So is a bare css-only click with no role, label or test id.
+    """
+    warnings: list[str] = []
+    kept: list[Candidate] = []
+    labels = _input_labels(candidates)
+
+    for candidate in candidates:
+        if candidate.action != "click":
+            kept.append(candidate)
+            continue
+
+        targets = candidate.targets or []
+        # A css-only target with no durable semantic rung is a container, not a control.
+        has_semantic = any(rung.get("by") in ("role", "testid", "label") for rung in targets)
+        if not has_semantic:
+            warnings.append(
+                f"dropped container click at event {candidate.seq}: "
+                "it has no role, label or test id"
+            )
+            continue
+
+        # A generic-role click whose name/text contains two or more input labels is a group/card.
+        first = _first_rung(targets)
+        if first and first.get("by") == "role" and str(first.get("role")).lower() == "generic":
+            text = candidate.name or _rung_text(first)
+            matched = [label for label in labels if label in text]
+            if len(matched) >= 2:
+                warnings.append(
+                    f"dropped container click at event {candidate.seq}: it touched the labels "
+                    f"{matched!r}, not a control"
+                )
+                continue
+
+        kept.append(candidate)
+
+    return kept, warnings
+
+
+def _click_touches_field(
+    click: Candidate,
+    field_targets: list[dict[str, Any]],
+    field_labels: set[str],
+    all_input_labels: set[str],
+) -> bool:
+    """Whether a click only touched the given field, its options, or a container around it."""
+    if target_signature(click.targets) == target_signature(field_targets):
+        return True
+    if _is_option_click(click):
+        return True
+    click_text = (
+        (click.name or "") + " " + " ".join(_rung_text(rung) for rung in click.targets or [])
+    )
+    matched = [label for label in field_labels if label in click_text]
+    other_labels = all_input_labels - field_labels
+    return matched and not any(label in click_text for label in other_labels)
+
+
+def _fold_retried_fills(candidates: list[Candidate]) -> tuple[list[Candidate], list[str]]:
+    """Keep only the last attempt to fill a field before the commit step.
+
+    PL-031: when the same target (equal first rung) is filled again before the commit step, the
+    earlier fill and every click between the two fills that only touched that field are dropped.
+    """
+    warnings: list[str] = []
+    if not candidates:
+        return candidates, warnings
+
+    # Find the first commit step; retried fills after that are not folded.
+    commit_index = next(
+        (i for i, candidate in enumerate(candidates) if candidate.commit), len(candidates)
+    )
+    all_input_labels = _input_labels(candidates)
+
+    dropped: set[int] = set()
+    for index, candidate in enumerate(candidates[:commit_index]):
+        if candidate.action != "fill" or index in dropped:
+            continue
+        first = _first_rung(candidate.targets)
+        if first is None:
+            continue
+
+        # Look for a later fill of the same first rung before the commit step.
+        retry_index: int | None = None
+        for later in range(index + 1, commit_index):
+            later_candidate = candidates[later]
+            if later_candidate.action != "fill" or later_candidate.chip:
+                continue
+            later_first = _first_rung(later_candidate.targets)
+            if later_first == first:
+                retry_index = later
+                break
+        if retry_index is None:
+            continue
+
+        field_labels: set[str] = set()
+        for rung in candidate.targets or []:
+            for key in ("name", "text", "value"):
+                text = rung.get(key)
+                if isinstance(text, str) and text.strip():
+                    field_labels.add(text.strip())
+
+        dropped.add(index)
+        for between in range(index + 1, retry_index):
+            between_candidate = candidates[between]
+            if between_candidate.action != "click":
+                continue
+            if _click_touches_field(
+                between_candidate, candidate.targets, field_labels, all_input_labels
+            ):
+                dropped.add(between)
+        warnings.append(
+            f"folded the retried fill at event {candidate.seq} into the later fill at event "
+            f"{candidates[retry_index].seq}"
+        )
+
+    if not dropped:
+        return candidates, warnings
+    return [item for i, item in enumerate(candidates) if i not in dropped], warnings
+
+
+def _expand_create_option(candidates: list[Candidate]) -> list[Candidate]:
+    """Turn a Create "<value>" option click into a ladder that accepts the record first.
+
+    PL-031: an option named ``Create "<value>"``, where ``<value>`` is a fill value just typed,
+    is replaced by two role rungs in this order: the exact column value first, then the Create
+    template. The runner takes the first rung that matches exactly one element, so an existing
+    record is accepted before a new one is created.
+    """
+    updated: list[Candidate] = []
+    for index, candidate in enumerate(candidates):
+        if candidate.action != "click" or not _is_option_click(candidate):
+            updated.append(candidate)
+            continue
+
+        previous_fill = next(
+            (
+                c
+                for c in reversed(candidates[:index])
+                if c.action == "fill" and isinstance(c.value, dict)
+            ),
+            None,
+        )
+        if previous_fill is None or not isinstance(previous_fill.value, dict):
+            updated.append(candidate)
+            continue
+
+        column = previous_fill.value.get("column")
+        if not isinstance(column, str):
+            updated.append(candidate)
+            continue
+
+        first = _first_rung(candidate.targets)
+        if first is None or first.get("by") != "role":
+            updated.append(candidate)
+            continue
+
+        name = str(first.get("name", ""))
+        expected = f'Create "{{{{row.{column}}}}}"'
+        if name != expected:
+            updated.append(candidate)
+            continue
+
+        exact = {"by": "role", "role": "option", "name": f"{{{{row.{column}}}}}"}
+        new_targets = [exact, *candidate.targets]
+        updated.append(replace(candidate, targets=new_targets))
+    return updated
+
+
 def _refuse_what_cannot_replay(events: list[Event], candidates: list[Candidate]) -> None:
     """Refuse a recording the compiler cannot replay safely (PL-018, §3.8 and §4.4).
 
@@ -641,6 +926,57 @@ def _resolve_commit_assertion(
     )
 
 
+def _required_columns(options: CompileOptions) -> set[str]:
+    """Columns the input schema marks required, plus any park_fields."""
+    required: set[str] = set()
+    if options.input_fields:
+        for column, spec in options.input_fields.items():
+            if isinstance(spec, dict) and spec.get("required"):
+                required.add(column)
+    if options.park_fields:
+        required.update(options.park_fields)
+    return required
+
+
+def _infer_assertion_from_fills(
+    candidate: Candidate,
+    prior_candidates: list[Candidate],
+    options: CompileOptions,
+) -> dict[str, Any] | None:
+    """Infer a commit assertion from the fills before a commit that showed no evidence.
+
+    PL-031: a quick-create save changes no URL and shows no message. The only evidence is the
+    new record appearing. A commit qualifies only when one of the fills before it was templated
+    from the record key or a required column; the text it then waits for is the FIRST templated
+    fill of the form, because that is the field a list or kanban card shows as the record's name
+    (Odoo's quick-create card shows the contact, never the email the key may be).
+    """
+    if candidate.action != "click" or candidate.observation or candidate.after_url:
+        return None
+    commit_ids = set(options.commit_step_ids or ())
+    if candidate.recorded_id not in commit_ids:
+        return None
+
+    required = _required_columns(options)
+    record_key_column = options.record_key_column
+    columns: list[str] = []
+    for previous in prior_candidates:
+        if previous.action != "fill" or not isinstance(previous.value, dict):
+            continue
+        column = previous.value.get("column")
+        if isinstance(column, str):
+            columns.append(column)
+
+    if not any(column == record_key_column or column in required for column in columns):
+        return None
+    best_column = columns[0]
+
+    return {
+        "text_visible": f"{{{{row.{best_column}}}}}",
+        "timeout_ms": options.assertion_timeout_ms,
+    }
+
+
 def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
     """Compile a recorded event stream into a recipe that matches the schema.
 
@@ -665,6 +1001,10 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
     warnings.extend(chip_warnings)
     candidates, option_warnings = _fold_option_fills(candidates)
     warnings.extend(option_warnings)
+    candidates, container_warnings = _drop_container_clicks(candidates)
+    warnings.extend(container_warnings)
+    candidates, retried_warnings = _fold_retried_fills(candidates)
+    warnings.extend(retried_warnings)
     if not candidates:
         raise CompileError("no steps could be built from the recording")
 
@@ -675,6 +1015,8 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
         updated, param_warnings = parameterize_candidate(candidate, options.sample_row)
         warnings.extend(param_warnings)
         parameterized.append(updated)
+
+    parameterized = _expand_create_option(parameterized)
 
     meta = _resolve_meta(parameterized, recording_urls, options, warnings)
 
@@ -693,13 +1035,18 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
         searched_column = ""
 
     without_assertion: list[str] = []
-    for candidate in parameterized:
+    for index, candidate in enumerate(parameterized):
         if not candidate.commit:
             continue
         supplied = (options.commit_assertions or {}).get(candidate.recorded_id or "")
-        candidate.assert_after = candidate.assert_after or _resolve_commit_assertion(
-            candidate, options
-        )
+        assert_after = _resolve_commit_assertion(candidate, options)
+        inferred_from_fill = False
+        if assert_after is None:
+            assert_after = _infer_assertion_from_fills(candidate, parameterized[:index], options)
+            if assert_after is not None:
+                inferred_from_fill = True
+                warnings.append("this save is checked by the new record's name appearing")
+        candidate.assert_after = assert_after
         if candidate.assert_after is None:
             without_assertion.append(
                 f"commit step {candidate.recorded_id or candidate.seq} has no assert_after: "
@@ -715,6 +1062,11 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
             warnings.append(
                 f"assertion for {candidate.recorded_id or candidate.seq} "
                 "taken from the recorded observation"
+            )
+        elif inferred_from_fill:
+            warnings.append(
+                f"assertion for {candidate.recorded_id or candidate.seq} "
+                "inferred from a previous fill of the record key"
             )
         else:
             warnings.append(

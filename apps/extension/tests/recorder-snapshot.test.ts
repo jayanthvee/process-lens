@@ -132,6 +132,39 @@ describe("the baseline and the diff", () => {
     expect(recorded.events[0]!.page_set).toBe(true);
   });
 
+  it("records zero keystrokes on a page-set fill", () => {
+    document.body.innerHTML =
+      "<label for='name'>Name</label><input id='name'><button id='send'>Send</button>";
+    declareVisible();
+    const recorded = harness();
+    recorded.checkpoint();
+
+    const field = document.getElementById("name") as HTMLInputElement;
+    field.value = "Page Set";
+    click("send");
+
+    expect(kinds(recorded.events)).toEqual(["fill", "click"]);
+    expect(recorded.events[0]!.page_set).toBe(true);
+    expect(recorded.events[0]!.keystrokes).toBe(0);
+  });
+
+  it("records keystrokes on a typed fill", () => {
+    document.body.innerHTML =
+      "<label for='name'>Name</label><input id='name'><button id='send'>Send</button>";
+    declareVisible();
+    const recorded = harness();
+    recorded.checkpoint();
+
+    const field = document.getElementById("name") as HTMLInputElement;
+    field.value = "typed";
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+    click("send");
+
+    expect(kinds(recorded.events)).toEqual(["fill", "click"]);
+    expect(recorded.events[0]!.keystrokes).toBe(1);
+    expect(recorded.events[0]!.page_set).toBeUndefined();
+  });
+
   it("reads an open shadow root and a same-origin frame", () => {
     document.body.innerHTML =
       "<div id='host'></div><iframe id='frame'></iframe><button id='go'>Go</button>";

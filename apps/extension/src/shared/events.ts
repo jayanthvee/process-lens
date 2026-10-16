@@ -48,6 +48,8 @@ export interface EventInput {
    * type this", which is not the same as saying nothing about it.
    */
   page_set?: boolean | undefined;
+  /** PL-031: how many input events the recorder saw for this fill. */
+  keystrokes?: number | undefined;
 }
 
 export function makeEvent(input: EventInput): PendingEvent {
@@ -67,6 +69,7 @@ export function makeEvent(input: EventInput): PendingEvent {
   if (input.supersedes !== undefined) event.supersedes = input.supersedes;
   if (input.reason !== undefined) event.reason = input.reason;
   if (input.page_set !== undefined) event.page_set = input.page_set;
+  if (input.keystrokes !== undefined) event.keystrokes = input.keystrokes;
   if (input.step && input.frame && input.frame.length > 0) {
     input.step.frame = input.frame;
   }

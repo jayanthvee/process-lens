@@ -21,6 +21,7 @@ something to ignore in silence.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Mapping
 from dataclasses import replace
 from typing import Any
@@ -28,6 +29,43 @@ from typing import Any
 from .assertions import OBSERVATION_EVENT_KIND
 from .errors import CompileError
 from .model import ACTIONABLE_KINDS, Event
+
+# Odoo renders <label>Contact<sup>?</sup></label>, so the accessible name and label text come out
+# as "Contact?". Strip a trailing "?" from recorded labels and names when the text before it is a
+# real word, so existing recordings replay without a help marker in every target rung.
+_REAL_WORD = re.compile(r"^[A-Za-z][A-Za-z\s\-]*[A-Za-z]$")
+
+
+def _strip_help_question(text: str) -> str:
+    """Drop a trailing '?' when it is the Odoo help marker, not part of the real label."""
+    if not text.endswith("?"):
+        return text
+    prefix = text[:-1].strip()
+    if _REAL_WORD.match(prefix):
+        return prefix
+    return text
+
+
+def _clean_step_text(step: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Remove trailing help-marker '?' from recorded step names and target rungs."""
+    if step is None:
+        return None
+    step = dict(step)
+    if isinstance(step.get("name"), str):
+        step["name"] = _strip_help_question(step["name"])
+    targets = step.get("targets")
+    if isinstance(targets, list):
+        cleaned = []
+        for rung in targets:
+            if isinstance(rung, dict):
+                rung = dict(rung)
+                for key in ("name", "text", "value"):
+                    if isinstance(rung.get(key), str):
+                        rung[key] = _strip_help_question(rung[key])
+            cleaned.append(rung)
+        step["targets"] = cleaned
+    return step
+
 
 # The recorder's own event for a top-level navigation. It carries the url the page moved to, but no
 # action and no caller intent. It is kept as its own event -- with its url and no step -- so the
@@ -162,7 +200,7 @@ def parse_events(recording: Any) -> tuple[list[Event], list[str]]:
                 seq=seq,
                 kind=kind,
                 url=_coerce_text(raw.get("url")),
-                step=dict(step) if step is not None else None,
+                step=_clean_step_text(step) if step is not None else None,
                 observation=dict(observation) if observation is not None else None,
                 chip=raw.get("chip") is True,
                 autocomplete=raw.get("autocomplete") is True,
@@ -170,6 +208,10 @@ def parse_events(recording: Any) -> tuple[list[Event], list[str]]:
                 supersedes=(
                     raw.get("supersedes") if isinstance(raw.get("supersedes"), str) else None
                 ),
+                keystrokes=(
+                    raw.get("keystrokes") if isinstance(raw.get("keystrokes"), int) else None
+                ),
+                at=_coerce_text(raw.get("at")),
             )
         )
 

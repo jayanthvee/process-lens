@@ -86,6 +86,17 @@ describe("fill capture", () => {
     });
   });
 
+  it("counts keystrokes on a typed fill", () => {
+    document.body.innerHTML = "<label for='email'>Email</label><input id='email'>";
+    const recorded = harness();
+    const field = document.getElementById("email") as HTMLInputElement;
+
+    typeInto(field, "ravi@example.com");
+    field.dispatchEvent(new Event("focusout", { bubbles: true }));
+
+    expect(recorded.events[0]?.keystrokes).toBe(1);
+  });
+
   it("keeps events in the order they happened", () => {
     document.body.innerHTML =
       "<button id='new'>New lead</button><input id='name'><select id='interest'><option>A</option><option>B</option></select>";
