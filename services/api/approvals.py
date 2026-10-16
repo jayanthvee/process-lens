@@ -16,6 +16,7 @@ from pydantic import BaseModel
 
 from packages.ledger import StateConflict, get_request, record_approval, resume_run
 
+from .admin import require_active_person
 from .db import connection
 
 router = APIRouter(prefix="/api/v1", tags=["approvals"])
@@ -40,8 +41,13 @@ class ApprovalResponse(BaseModel):
 
 @router.post("/approvals", response_model=ApprovalResponse, status_code=201)
 def record_approval_endpoint(payload: Annotated[ApprovalRequest, Body()]) -> ApprovalResponse:
-    """Record a decision on an approval request and resume the run it belongs to."""
+    """Record a decision on an approval request and resume the run it belongs to.
+
+    PL-026: a person whose access has been turned off cannot approve anything (403). Their runs keep
+    the state they are in -- the decision is refused, nothing about the ledger is changed.
+    """
     with connection() as conn:
+        require_active_person(conn, payload.decided_by)
         request_row = get_request(conn, payload.request_id)
         if request_row is None:
             raise HTTPException(

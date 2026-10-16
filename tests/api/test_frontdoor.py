@@ -121,11 +121,51 @@ def test_another_extension_id_may_not_open_a_session(
 def test_the_extension_origin_opens_no_other_route(
     connected: TestClient, ledger: Ledger, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The exception is the session endpoint alone: a run cancel still wants this API's origin."""
+    """The exception is the extension's own three routes: a run cancel still wants this origin."""
     monkeypatch.setenv("PROCESSLENS_EXTENSION_ID", EXTENSION_ID)
     run = ledger.new_run()
 
     response = connected.post(f"/api/v1/runs/{run.id}/cancel", headers={"origin": EXTENSION_ORIGIN})
+
+    assert response.status_code == 403, response.text
+    assert "origin" in response.json()["detail"]
+
+
+def test_the_pinned_extension_origin_may_report_its_version(
+    connected: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PL-026: the service worker reports its manifest version from its own origin too.
+
+    The body is refused for its own reason -- there is no operator configured here -- so a status
+    other than 403 proves the front door let the extension's origin through to the route.
+    """
+    monkeypatch.setenv("PROCESSLENS_EXTENSION_ID", EXTENSION_ID)
+    monkeypatch.delenv("PROCESSLENS_OPERATOR_ID", raising=False)
+
+    response = connected.post(
+        "/api/v1/executor/version",
+        json={"version": "1.9.2"},
+        headers={"origin": EXTENSION_ORIGIN, "x-processlens-client": "extension"},
+    )
+
+    assert response.status_code == 503, response.text
+    assert "origin" not in response.json()["detail"]
+
+
+def test_another_extension_id_may_not_report_a_version(
+    connected: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The new path is not a hole: only the pinned id is let through it."""
+    monkeypatch.setenv("PROCESSLENS_EXTENSION_ID", EXTENSION_ID)
+
+    response = connected.post(
+        "/api/v1/executor/version",
+        json={"version": "1.9.2"},
+        headers={
+            "origin": "chrome-extension://bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "x-processlens-client": "extension",
+        },
+    )
 
     assert response.status_code == 403, response.text
     assert "origin" in response.json()["detail"]
