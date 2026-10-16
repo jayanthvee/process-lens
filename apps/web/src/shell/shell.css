@@ -39,6 +39,14 @@ main { min-width: 0; padding: 16px clamp(16px, 3vw, 40px) 64px; display: grid; g
 .search-panel .rows a:hover { text-decoration: underline; }
 .search-panel p { margin: 4px 16px 0; color: var(--muted); font-size: 13px; }
 
+/* the shell's two bars: an admin paused runs, or the Chrome extension is out of date. One slim
+   full-width line each, shown only while it is true, never an empty bar and never a panel. */
+.banners { display: grid; gap: 8px; }
+.banner { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 9px 14px; border-radius: 9px;
+  background: var(--glass-strong); border: 1px solid var(--hair-2); }
+.banner p { margin: 0; font-size: 13.5px; color: var(--ink-2); }
+.banner .res { font-size: 13px; font-weight: 500; flex: none; }
+
 /* empty states */
 .empty { padding: 26px 20px 30px; display: grid; gap: 6px; justify-items: start; }
 .empty-sentence { margin: 0; color: var(--ink-2); font-size: 15px; }

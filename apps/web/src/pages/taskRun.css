@@ -1,0 +1,149 @@
+/* The run flow's own placement. The panels, tables, buttons, status words and the blur-in entrance
+   are already ported into styles/global.css, so nothing here duplicates them. */
+
+.task-run {
+  display: grid;
+  gap: 30px;
+  align-content: start;
+}
+
+.task-run .run-count {
+  color: var(--muted);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.task-run .run-note {
+  margin: 0;
+  padding: 12px 20px 20px;
+  color: var(--ink-2);
+  font-size: 14px;
+}
+
+.task-run .run-drop {
+  padding: 2px 20px 20px;
+  border-radius: 12px;
+  border: 1px dashed transparent;
+}
+
+.task-run .run-drop.over {
+  border-color: var(--ink-2);
+}
+
+.task-run .run-choose {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 0;
+  padding: 12px 20px 0;
+}
+
+.task-run .run-or {
+  color: var(--muted);
+  font-size: 13.5px;
+}
+
+/* The one input: a person reaches it through the button or a drop, never by looking for it. */
+.task-run .run-file {
+  display: none;
+}
+
+.task-run table.run-mapping td small {
+  display: block;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.task-run select.run-select {
+  font: 400 14px var(--font);
+  color: var(--ink);
+  background: var(--glass-strong);
+  border: 1px solid var(--hair-2);
+  border-radius: 9px;
+  padding: 7px 10px;
+  width: 100%;
+  max-width: 260px;
+}
+
+.task-run select.run-select.missing {
+  border-color: var(--help);
+}
+
+.task-run .run-summary {
+  margin: 0;
+  padding: 14px 20px 0;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.task-run ul.run-look {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0 20px;
+  color: var(--ink-2);
+  font-size: 14px;
+}
+
+.task-run ul.run-look li {
+  padding: 8px 0;
+  border-top: 1px solid var(--hair);
+}
+
+.task-run ul.run-look b {
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.task-run .actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding: 16px 20px 20px;
+}
+
+.task-run .run-first {
+  padding: 2px 20px 0;
+}
+
+.task-run .run-about {
+  margin: 0 0 8px;
+  color: var(--ink-2);
+}
+
+.task-run dl.run-values {
+  margin: 0;
+}
+
+.task-run .run-value {
+  display: grid;
+  grid-template-columns: minmax(0, 200px) minmax(0, 1fr);
+  gap: 12px;
+  padding: 9px 0;
+  border-top: 1px solid var(--hair);
+}
+
+.task-run dt {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.task-run dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.task-run .refusal.run-problem {
+  margin: 0;
+  padding: 0 20px 20px;
+  color: var(--help);
+  font-size: 13.5px;
+}
+
+@media (max-width: 780px) {
+  .task-run .run-value {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+  }
+}

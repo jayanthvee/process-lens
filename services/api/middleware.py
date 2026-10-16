@@ -18,17 +18,24 @@ Four checks, each answering 403 with the check it refused named in ``detail``:
   allowed: a CLI, a worker or a test client sends none, and a browser that can send a cross-site
   request always sends one.
 
-  Exactly two routes are the exceptions: ``POST /api/v1/executor/sessions`` and
-  ``POST /api/v1/recipes/compile`` also accept exactly
+  Three routes are the exceptions: ``POST /api/v1/executor/sessions``,
+  ``POST /api/v1/executor/version`` and ``POST /api/v1/recipes/compile`` also accept exactly
   ``chrome-extension://{PROCESSLENS_EXTENSION_ID}`` -- the pinned id the hub uses for its socket.
-  The extension's service worker opens that session from its own origin and has no other one to
-  present, and the popup compiles the recording it just captured from that same origin, because
-  the popup has none other to present either. An unset ``PROCESSLENS_EXTENSION_ID`` accepts no
-  extension origin at all, and every other route accepts only this API's own origin.
+  The extension's service worker opens that session and reports its own manifest version from its
+  own origin and has no other one to present, and the popup compiles the recording it just captured
+  from that same origin, because the popup has none other to present either. An unset
+  ``PROCESSLENS_EXTENSION_ID`` accepts no extension origin at all, and every other route accepts
+  only this API's own origin.
 * ``content-type``: a state-changing request with a body must declare ``application/json`` (its
   parameters are ignored, so ``application/json; charset=utf-8`` is fine). A browser cannot send
   that cross-origin without a preflight, and this API sends no CORS headers, so the preflight
   fails and the request is never sent. A request with no body is fine, whatever it declares.
+
+  ``POST /api/v1/batches`` is the one exception: a spreadsheet upload is a file, so that path also
+  accepts ``multipart/form-data``. ``multipart/form-data`` is a CORS-safelisted media type, so a
+  cross-site form could send one without a preflight -- but it cannot hide its ``Origin``, and the
+  origin check above refuses every ``Origin`` that is not this API's own. The exception is one path
+  wide for that reason, and every other state-changing request keeps the JSON-only rule.
 
 A non-``http`` scope passes straight through, so ``/api/v1/executor/ws`` and ``/api/v1/runner/ws``
 keep their own, stricter checks: the hub refuses a socket by close code, not by 403.
@@ -44,13 +51,22 @@ from .hub import host_header_is_local, is_loopback, origin_is_extension
 
 STATE_CHANGING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 JSON_MEDIA_TYPE = "application/json"
+# The spreadsheet upload reads a file, so ``POST /api/v1/batches`` is the one route that takes a
+# form body. Every other state-changing request still has to be JSON, which a browser cannot send
+# cross-origin without a preflight.
+FORM_MEDIA_TYPE = "multipart/form-data"
+UPLOAD_PATH = "/api/v1/batches"
 FORBIDDEN_STATUS = 403
-# The two routes a browser page never calls and the extension does, so the two routes where an
-# origin other than this API's own is meaningful: the service worker opens a session, and the popup
-# compiles the recording it just captured. Both accept the pinned id and nothing else.
+# The three routes a browser page never calls and the extension does, so the three routes where an
+# origin other than this API's own is meaningful: the service worker opens a session and reports its
+# manifest version, and the popup compiles the recording it just captured. All accept the pinned id
+# and nothing else.
 EXTENSION_SESSION_PATH = "/api/v1/executor/sessions"
+EXTENSION_VERSION_PATH = "/api/v1/executor/version"
 EXTENSION_COMPILE_PATH = "/api/v1/recipes/compile"
-EXTENSION_ORIGIN_PATHS = frozenset({EXTENSION_SESSION_PATH, EXTENSION_COMPILE_PATH})
+EXTENSION_ORIGIN_PATHS = frozenset(
+    {EXTENSION_SESSION_PATH, EXTENSION_VERSION_PATH, EXTENSION_COMPILE_PATH}
+)
 
 HOST_DETAIL = "refused by the host check: Host must be 127.0.0.1:<port> or localhost:<port>"
 LOOPBACK_DETAIL = "refused by the loopback check: the client is not this machine's loopback address"
@@ -93,10 +109,11 @@ def _origin_refusal(request: Request) -> str | None:
         return None  # a CLI, a worker or a test client sends none
     if origin.strip().lower() == _own_origin(request).lower():
         return None
-    # Opening a session and compiling a recording are the two things the extension does over HTTP,
-    # and it can present no origin but its own `chrome-extension://<id>`. Only those paths, and only
-    # the pinned id: every other route and every other extension id is refused as before.
-    # `origin_is_extension` owns the id comparison and answers False when no id is configured.
+    # Opening a session, reporting a version and compiling a recording are the three things the
+    # extension does over HTTP, and it can present no origin but its own `chrome-extension://<id>`.
+    # Only those paths, and only the pinned id: every other route and every other extension id is
+    # refused as before. `origin_is_extension` owns the id comparison and answers False when no id
+    # is configured.
     if request.url.path.rstrip("/") in EXTENSION_ORIGIN_PATHS and origin_is_extension(origin):
         return None
     return ORIGIN_DETAIL
@@ -118,6 +135,8 @@ def _content_type_refusal(request: Request, *, body: bool) -> str | None:
         return None
     media_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
     if media_type == JSON_MEDIA_TYPE:
+        return None
+    if media_type == FORM_MEDIA_TYPE and request.url.path.rstrip("/") == UPLOAD_PATH:
         return None
     return CONTENT_TYPE_DETAIL
 

@@ -101,6 +101,9 @@ const PAUSE_REASONS: Record<string, string> = {
   manual_review: "A row in the table below needs your decision, then resume.",
   rate_limited: "The site is rate limiting us. Wait a moment, then resume.",
   destination_unreachable: "The site could not be reached. Check it, then resume.",
+  // The runner's own reason for a run it paused at a step boundary because an admin froze runs
+  // (PL-026). Without a sentence here the page would show the raw `admin_freeze` code.
+  admin_freeze: "An admin paused all runs. Resume when an admin lets runs start again.",
 };
 
 /** A pause reason in one actionable sentence, or `null` when there is none. */

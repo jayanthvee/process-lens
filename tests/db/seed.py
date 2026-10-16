@@ -60,6 +60,7 @@ class Ledger:
     def __init__(self, conn: psycopg.Connection) -> None:
         self.conn = conn
         self._row_index = 0
+        self._users_added = 0
         self.tenant_id: uuid.UUID = self._one(
             "INSERT INTO tenants (name) VALUES (%s) RETURNING id", (TENANT_NAME,)
         )
@@ -158,6 +159,28 @@ class Ledger:
         """One run with ``count`` ledger rows, all in the same state."""
         target = run or self.new_run()
         return target, [self.add_record(target, state=state) for _ in range(count)]
+
+    def add_user(
+        self,
+        *,
+        email: str | None = None,
+        name: str = "Synthetic person",
+        role: str = "builder",
+        deactivated: bool = False,
+    ) -> uuid.UUID:
+        """Insert one ``users`` row for this tenant and return its id.
+
+        The email defaults to ``person-<n>@example.com``, ``n`` counting the users this instance has
+        added, so two calls in one test never collide with the tenant's unique email. A deactivated
+        person carries ``deactivated_at = now()``.
+        """
+        self._users_added += 1
+        address = email if email is not None else f"person-{self._users_added}@example.com"
+        return self._one(
+            "INSERT INTO users (tenant_id, email, name, role, deactivated_at) "
+            "VALUES (%s, %s, %s, %s, CASE WHEN %s THEN now() ELSE NULL END) RETURNING id",
+            (self.tenant_id, address, name, role, deactivated),
+        )
 
     def count_committed_keys(self) -> int:
         return int(

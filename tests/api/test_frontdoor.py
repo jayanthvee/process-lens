@@ -121,11 +121,51 @@ def test_another_extension_id_may_not_open_a_session(
 def test_the_extension_origin_opens_no_other_route(
     connected: TestClient, ledger: Ledger, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The exception is the session endpoint alone: a run cancel still wants this API's origin."""
+    """The exception is the extension's own three routes: a run cancel still wants this origin."""
     monkeypatch.setenv("PROCESSLENS_EXTENSION_ID", EXTENSION_ID)
     run = ledger.new_run()
 
     response = connected.post(f"/api/v1/runs/{run.id}/cancel", headers={"origin": EXTENSION_ORIGIN})
+
+    assert response.status_code == 403, response.text
+    assert "origin" in response.json()["detail"]
+
+
+def test_the_pinned_extension_origin_may_report_its_version(
+    connected: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PL-026: the service worker reports its manifest version from its own origin too.
+
+    The body is refused for its own reason -- there is no operator configured here -- so a status
+    other than 403 proves the front door let the extension's origin through to the route.
+    """
+    monkeypatch.setenv("PROCESSLENS_EXTENSION_ID", EXTENSION_ID)
+    monkeypatch.delenv("PROCESSLENS_OPERATOR_ID", raising=False)
+
+    response = connected.post(
+        "/api/v1/executor/version",
+        json={"version": "1.9.2"},
+        headers={"origin": EXTENSION_ORIGIN, "x-processlens-client": "extension"},
+    )
+
+    assert response.status_code == 503, response.text
+    assert "origin" not in response.json()["detail"]
+
+
+def test_another_extension_id_may_not_report_a_version(
+    connected: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The new path is not a hole: only the pinned id is let through it."""
+    monkeypatch.setenv("PROCESSLENS_EXTENSION_ID", EXTENSION_ID)
+
+    response = connected.post(
+        "/api/v1/executor/version",
+        json={"version": "1.9.2"},
+        headers={
+            "origin": "chrome-extension://bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "x-processlens-client": "extension",
+        },
+    )
 
     assert response.status_code == 403, response.text
     assert "origin" in response.json()["detail"]
@@ -145,3 +185,46 @@ def test_an_unset_extension_id_accepts_no_extension_origin(
 
     assert response.status_code == 403, response.text
     assert "origin" in response.json()["detail"]
+
+
+def test_the_spreadsheet_upload_may_send_a_form_body(connected: TestClient, ledger: Ledger) -> None:
+    """The one path that takes a file: the upload's multipart body is not refused.
+
+    The assertion is the status the *route* answers, so a 403 out of the content-type check could
+    never pass this: a valid upload answers 201, and a workflow that does not exist answers 404.
+    """
+    response = connected.post(
+        "/api/v1/batches",
+        data={"workflow_id": str(ledger.workflow_id)},
+        files={"file": ("inquiries.csv", b"Email\na@x.com\n", "text/csv")},
+    )
+
+    assert response.status_code == 201, response.text
+    assert response.json()["row_count"] == 1
+    assert response.json()["columns"] == ["Email"]
+
+
+def test_a_form_body_is_still_refused_on_any_other_path(
+    connected: TestClient, ledger: Ledger
+) -> None:
+    """The exception is one path wide: a form body elsewhere is refused as it always was."""
+    run = ledger.new_run()
+
+    response = connected.post(
+        f"/api/v1/runs/{run.id}/pause",
+        data={"anything": "at all"},
+        files={"file": ("x.csv", b"a\n", "text/csv")},
+    )
+
+    assert response.status_code == 403, response.text
+    assert "content-type" in response.json()["detail"]
+
+
+def test_a_json_body_is_still_accepted_everywhere(connected: TestClient, ledger: Ledger) -> None:
+    """The JSON-only rule is unchanged for every request that does not carry a file."""
+    run = ledger.new_run()
+
+    response = connected.post(f"/api/v1/runs/{run.id}/pause", json={})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "paused"

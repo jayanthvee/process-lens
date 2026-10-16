@@ -4,6 +4,7 @@ import { Link, useParams } from "react-router-dom";
 import { stepWordsList, type RecipeStep } from "../lib/steps";
 import { useJson } from "../lib/useJson";
 import { relativeTime, runStatusWords } from "../lib/words";
+import { runsBlocked, useWorkspaceState } from "../lib/workspace";
 import type { RunSummary, TaskRow } from "../types";
 import "./tasks.css";
 
@@ -36,11 +37,16 @@ function totalCount(counts: Record<string, number>): number {
 }
 
 /**
- * One task, read only for now: its steps in plain words and its runs. The editor arrives in a later
- * ticket, so this page shows and changes nothing.
+ * One task: its steps in plain words and its runs. The steps are read only for now -- the editor
+ * arrives in a later ticket -- and the page's one primary action opens the run flow.
  */
 export function TaskDetail(): JSX.Element {
   const { id } = useParams<{ id: string }>();
+
+  // Whether an admin has paused runs, or this person's extension is too old. The page's one
+  // primary action stands down while that is true; the shell's banner is what says why.
+  const workspace = useWorkspaceState();
+  const blocked = runsBlocked(workspace.data);
 
   // The page needs the task's name, its site and the id of the recipe version it is running, and
   // `GET /api/v1/tasks` carries all three: one task out of that list is the whole lookup.
@@ -78,6 +84,18 @@ export function TaskDetail(): JSX.Element {
           <h1 className="big">{task.name}</h1>
           <p className="lede">{task.app ?? "No site yet"}</p>
         </div>
+        {/* The page's one obvious next action, and its only primary button (DESIGN.md §1). While
+            runs are blocked it is the same control, standing down: a link would still open the run
+            flow and offer a person a button the API will refuse. */}
+        {blocked ? (
+          <button type="button" className="btn primary task-run-link" disabled>
+            Run this task
+          </button>
+        ) : (
+          <Link className="btn primary task-run-link" to={`/tasks/${task.workflow_id}/run`}>
+            Run this task
+          </Link>
+        )}
       </section>
 
       <section className="two">

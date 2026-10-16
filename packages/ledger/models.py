@@ -211,3 +211,33 @@ class TaskListRow:
     last_run_status: str | None
     last_run_started_at: datetime | None
     last_run_counts: dict[str, int]
+
+
+@dataclass(frozen=True)
+class TenantAdminState:
+    """A tenant's admin switches: the freeze, who set it, and the extension floor."""
+
+    tenant_id: uuid.UUID
+    runs_frozen_at: datetime | None
+    runs_frozen_by: uuid.UUID | None
+    min_extension_version: str | None
+
+
+@dataclass(frozen=True)
+class UserRow:
+    """A person, as the API needs them: their tenant, their role, whether they are turned off."""
+
+    id: uuid.UUID
+    tenant_id: uuid.UUID
+    role: str
+    deactivated_at: datetime | None
+
+
+@dataclass(frozen=True)
+class ExtensionReportRow:
+    """The version one person's Chrome extension last reported, and when."""
+
+    user_id: uuid.UUID
+    tenant_id: uuid.UUID
+    version: str
+    reported_at: datetime

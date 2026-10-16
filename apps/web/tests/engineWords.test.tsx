@@ -193,7 +193,10 @@ const PAGES: { name: string; path: string; shows: string[] }[] = [
   { name: "Task detail", path: "/tasks/task-1", shows: ["Add inquiries", "Type the email"] },
   { name: "Runs", path: "/runs", shows: ["Add inquiries"] },
   { name: "Run detail", path: "/runs/run-1", shows: ["Priya Nair", "ACME-2"] },
-  { name: "ComingSoon", path: "/teach", shows: ["Teaching a new task"] },
+  { name: "Teach", path: "/teach", shows: ["Open the app you want to automate in Chrome."] },
+  { name: "Run this task", path: "/tasks/task-1/run", shows: ["Add your spreadsheet"] },
+  // A route that is still a placeholder, so the ComingSoon sample stays covered too.
+  { name: "ComingSoon", path: "/settings", shows: ["Your workspace, your people"] },
 ];
 
 /* ------------------------------------------------------------------ */

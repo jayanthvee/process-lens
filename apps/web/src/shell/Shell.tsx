@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { Link, Outlet, useLocation } from "react-router-dom";
 
+import { Banners } from "./Banners";
 import { Header } from "./Header";
 import { Icon, IconSprite } from "./Icons";
 import { Sidebar } from "./Sidebar";
@@ -13,8 +14,8 @@ interface PageChrome {
 }
 
 /**
- * The one primary action this ticket can offer: teaching the next task opens the Teach page, which
- * arrives in a later ticket. Pages that own their own primary button leave this unset.
+ * The one primary action this ticket can offer: teaching the next task opens the Teach page. Pages
+ * that own their own primary button leave this unset.
  */
 function teachAction(): ReactNode {
   return (
@@ -25,10 +26,12 @@ function teachAction(): ReactNode {
   );
 }
 
-/* The order matters: a detail route is tested before its list route. */
+/* The order matters: a detail route is tested before its list route, and the run flow before the
+   task page it belongs to. */
 const PAGES: PageChrome[] = [
   { match: (path) => path === "/", title: "Home", action: teachAction },
   { match: (path) => path === "/needs-help", title: "Needs help" },
+  { match: (path) => /^\/tasks\/[^/]+\/run$/.test(path), title: "Run this task" },
   { match: (path) => path.startsWith("/tasks/"), title: "Task" },
   { match: (path) => path === "/tasks", title: "Tasks", action: teachAction },
   { match: (path) => path.startsWith("/runs/"), title: "Run" },
@@ -57,6 +60,7 @@ export function Shell(): JSX.Element {
       <Sidebar />
       <main>
         <Header title={page?.title ?? "ProcessLens"} action={action === undefined ? null : action()} />
+        <Banners />
         <Outlet />
       </main>
     </div>

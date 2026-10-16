@@ -325,7 +325,8 @@ class Harness:
         the one a precheck rule parks, and it still needs an input key of its own.
         """
         import psycopg
-        from psycopg.types.json import Jsonb
+
+        from packages.ledger import BatchRow, insert_batch
 
         document = recipe if recipe is not None else self.recipe()
         document = _rewrite_origin(document, self.crm_port)
@@ -339,30 +340,26 @@ class Harness:
                 "VALUES (%s, 'E2E leads', 'lead-crm', %s) RETURNING id",
                 (tenant_id, [self.crm_url]),
             )
-            batch_id = self._one(
+            batch_id = insert_batch(
                 conn,
-                "INSERT INTO input_batches (tenant_id, workflow_id, kind) "
-                "VALUES (%s, %s, 'csv') RETURNING id",
-                (tenant_id, workflow_id),
+                tenant_id=tenant_id,
+                workflow_id=workflow_id,
+                kind="csv",
+                rows=[
+                    # The ledger requires a ready row to carry its record_key (0001_init's check).
+                    BatchRow(
+                        row_index=index,
+                        raw=dict(row),
+                        clean=dict(row),
+                        record_key=(
+                            str(row[key_column]).lower()
+                            if row.get(key_column)
+                            else f"row-{index:04d}"
+                        ),
+                    )
+                    for index, row in enumerate(rows, start=1)
+                ],
             )
-            for index, row in enumerate(rows, start=1):
-                # The ledger requires a ready row to carry its record_key (0001_init's check).
-                raw_key = row.get(key_column)
-                record_key = str(raw_key).lower() if raw_key else f"row-{index:04d}"
-                conn.execute(
-                    "INSERT INTO input_records "
-                    "(tenant_id, batch_id, row_index, raw, clean, record_key, status, issues) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, 'ready', %s)",
-                    (
-                        tenant_id,
-                        batch_id,
-                        index,
-                        Jsonb(dict(row)),
-                        Jsonb(dict(row)),
-                        record_key,
-                        Jsonb([]),
-                    ),
-                )
         version = self.api_post(f"/api/v1/recipes?workflow_id={workflow_id}", document)
         run = self.api_post(
             "/api/v1/runs",

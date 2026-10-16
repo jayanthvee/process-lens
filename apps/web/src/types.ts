@@ -140,6 +140,77 @@ export interface ExecutorSession {
 }
 
 /**
+ * `GET /api/v1/workspace/state`: whether this workspace's runs may start at all.
+ *
+ * `extension_out_of_date` is the API's own verdict, so the page never compares versions itself:
+ * the answer is true only when a report exists and it is below `min_extension_version`.
+ */
+export interface WorkspaceState {
+  tenant_id: string;
+  runs_frozen: boolean;
+  min_extension_version: string | null;
+  extension_version: string | null;
+  extension_out_of_date: boolean;
+}
+
+/** `POST /api/v1/batches`: the batch a spreadsheet became, and what is in it. */
+export interface BatchUpload {
+  batch_id: string;
+  row_count: number;
+  columns: string[];
+}
+
+/**
+ * One entry of a check's `mapping`: one column the task needs.
+ *
+ * `label` is how a person reads it ("Contact name"), `chosen` is the spreadsheet column the check
+ * picked or `null`, and `confidence` is how sure the match is: exact, close or none.
+ */
+export interface MappingEntry {
+  column: string;
+  label: string;
+  chosen: string | null;
+  confidence: "exact" | "close" | "none";
+  required: boolean;
+  alternatives: string[];
+}
+
+/** One row of `check.rows_need_a_look`: the row's number and one plain reason. */
+export interface NeedALook {
+  row: number;
+  reason: string;
+}
+
+/** `check.first_ready`: the first row that is ready, as the task's own columns see it. */
+export interface FirstReady {
+  row: number;
+  values: Record<string, unknown>;
+}
+
+/** `GET /api/v1/batches/{id}/check`: the mapping, the row counts, and the rows to look at. */
+export interface BatchCheck {
+  batch_id: string;
+  row_count: number;
+  columns: string[];
+  recipe_name: string;
+  mapping: MappingEntry[];
+  rows_ok: number;
+  rows_need_a_look: NeedALook[];
+  first_ready: FirstReady | null;
+}
+
+/** The body of `PUT /api/v1/batches/{id}/mapping`, and the API's answer. */
+export interface MappingBody {
+  mapping: Record<string, string | null>;
+}
+
+/** `POST /api/v1/runs`: the run that was just created. */
+export interface RunCreated {
+  run_id: string;
+  status: string;
+}
+
+/**
  * One step of a task, in plain words (builder C builds the sentences; the type is shared so every
  * page shows a step the same way).
  */

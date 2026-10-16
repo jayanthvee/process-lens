@@ -13,6 +13,12 @@ This module holds the logic the plan's pseudocode describes, amended for T1's re
 * S2  a reconcile error parks the record, it never fails it.
 * S4  every executor step writes a ``step_events`` row.
 
+PL-026 adds the admin freeze, and it is one boundary: the tenant's ``runs_frozen_at`` is read at the
+same step boundary where ``cancel_requested_at`` is read, and the run pauses there with
+``pause_reason = 'admin_freeze'``. The record is released outside the commit window and reconciled
+inside it, so a freeze never stops anything between ``submitting`` and ``verified``. Unfreezing does
+not resume anything: each run is resumed by a person.
+
 PL-014 adds the real-extension path, and three of its rules live here:
 
 * R1  a condition check that got no answer never counts as "false". ``passed=False`` is only an
@@ -65,6 +71,7 @@ from packages.ledger import (
     set_run_status,
     skip_already_committed,
     skip_pending_records,
+    tenant_is_frozen,
     verify_commit,
 )
 
@@ -113,6 +120,11 @@ DISPATCH_BUDGET_SECONDS = 5.0
 PAUSE_EVENTS = frozenset({"challenge", "login_required", "policy_blocked"})
 DISCONNECT_EVENTS = frozenset({"detached", "tab_closed"})
 EXECUTOR_DISCONNECTED = "executor_disconnected"
+
+# PL-026: an admin paused every run for this tenant. The switch is read at the step boundary, and
+# the record's own reason says what happened in words a person reads.
+ADMIN_FREEZE = "admin_freeze"
+ADMIN_FREEZE_REASON = "an admin paused all runs"
 
 # R1: a condition check the browser never answered decided nothing.
 UNANSWERED_CONDITION_REASON = "the browser could not answer a condition check"
@@ -520,6 +532,27 @@ class RunLoop:
                 return "paused"
             if current.cancel_requested_at is not None:
                 return "cancelled"
+
+            # PL-026: the admin freeze switch is read at this same boundary. A frozen tenant pauses
+            # the run here, with its own reason, and the record is released outside the commit
+            # window; a record in the commit window is reconciled first, because the one thing that
+            # is never done is stopping between `submitting` and `verified`.
+            if tenant_is_frozen(conn, run.tenant_id):
+                self._stop_record_for_event(
+                    conn, record, run, epoch, box, ADMIN_FREEZE, ADMIN_FREEZE_REASON
+                )
+                with conn.transaction():
+                    set_run_status(
+                        conn,
+                        run.id,
+                        "paused",
+                        pause_reason=ADMIN_FREEZE,
+                        worker=self.worker_id,
+                        epoch=epoch,
+                    )
+                logger.warning("run %s paused: an admin paused all runs", run.id)
+                return "paused"
+
             if current.status != "running":
                 if box.state == "filling":
                     self._transition(conn, record, "filling", "pending", "paused")
