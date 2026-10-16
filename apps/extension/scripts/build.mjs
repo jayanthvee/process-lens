@@ -48,6 +48,18 @@ async function run() {
   await cp(resolve(root, "src/popup/popup.html"), resolve(dist, "popup/popup.html"));
   await cp(resolve(root, "src/popup/popup.css"), resolve(dist, "popup/popup.css"));
 
+  // The popup's design tokens sit next to its stylesheet, and its fonts are bundled, never
+  // fetched: the four Public Sans weights are copied out of @fontsource/public-sans so the
+  // popup's CSP never has to allow a remote font.
+  await cp(resolve(root, "src/popup/tokens.css"), resolve(dist, "popup/tokens.css"));
+
+  const fontFiles = resolve(root, "node_modules/@fontsource/public-sans/files");
+  await mkdir(resolve(dist, "popup/fonts"), { recursive: true });
+  for (const weight of [300, 400, 500, 600]) {
+    const file = `public-sans-latin-${weight}-normal.woff2`;
+    await cp(resolve(fontFiles, file), resolve(dist, "popup/fonts", file));
+  }
+
   console.log(`built extension into ${dist}`);
 }
 
