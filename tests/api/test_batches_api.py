@@ -325,6 +325,28 @@ def test_the_check_matches_a_column_by_the_taught_sample_value(
     assert (entry["chosen"], entry["confidence"]) == ("Contact details", "exact")
 
 
+def test_the_check_matches_a_column_by_the_example_stored_in_the_recipe(
+    connected: TestClient, conn: psycopg.Connection, ledger: Ledger
+) -> None:
+    """The taught value lives on the recipe, so the check needs no ``sample_row`` passed.
+
+    The web app never has the values the task was taught with, so the recipe carries them: the
+    `Contact` column says nothing about `email`, and only the value in row 1 settles it (PL-028).
+    """
+    document = recipe_document(
+        fields={"email": {"type": "string", "required": True, "example": "ana@x.test"}}
+    )
+    workflow_id, version_id = add_task(conn, ledger.tenant_id, document=document)
+    content = csv_bytes([["Contact"], ["ana@x.test"]])
+    batch_id = upload(connected, workflow_id, content).json()["batch_id"]
+
+    body = check(connected, batch_id, version_id)
+
+    entry = body["mapping"][0]
+    assert (entry["chosen"], entry["confidence"]) == ("Contact", "exact")
+    assert body["rows_ok"] == 1
+
+
 def test_the_check_lists_the_reasons_and_writes_the_verdicts(
     connected: TestClient, conn: psycopg.Connection, ledger: Ledger
 ) -> None:

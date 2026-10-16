@@ -179,7 +179,12 @@
           "default": false,
           "description": "The value must be unique inside the uploaded file; a repeat is flagged in Input Review before anything runs."
         },
-        "description": { "type": "string", "maxLength": 500 }
+        "description": { "type": "string", "maxLength": 500 },
+        "example": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "The value this column held when the task was taught; used only to match spreadsheet columns."
+        }
       }
     },
 

@@ -174,6 +174,18 @@ def derive_origins(candidates: list[Candidate], recording_urls: Iterable[str]) -
     return sorted(origins)
 
 
+def _derived_field(value: Any) -> dict[str, Any]:
+    """One derived input column, with the sample value it was taught with (PL-028).
+
+    The example is what lets the batch check match a spreadsheet column by value; it is cut to the
+    schema's 200 characters and left out entirely when the sample held nothing.
+    """
+    text = "" if value is None else str(value)
+    if not text.strip():
+        return {"type": "string"}
+    return {"type": "string", "example": text[:200]}
+
+
 def _resolve_meta(
     candidates: list[Candidate],
     recording_urls: list[str],
@@ -194,7 +206,7 @@ def _resolve_meta(
                 "an input schema is required: pass input_fields, or a sample_row to derive "
                 "string columns from"
             )
-        fields = {column: {"type": "string"} for column in options.sample_row}
+        fields = {column: _derived_field(value) for column, value in options.sample_row.items()}
         warnings.append(
             "derived the input schema from the sample row; every column was assumed to be a string"
         )
