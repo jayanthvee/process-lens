@@ -165,7 +165,7 @@ def world(conn: psycopg.Connection) -> World:
 def test_an_unset_admin_token_closes_the_admin_api(
     monkeypatch: MonkeyPatch, connected: TestClient, world: World
 ) -> None:
-    """No token configured is not "everyone is an admin": the surface closes, as the runner's does."""
+    """No token configured is not "everyone is an admin": the surface closes."""
     monkeypatch.delenv(ADMIN_TOKEN_ENV_VAR, raising=False)
 
     response = connected.post("/api/v1/admin/freeze", json={}, headers=TOKEN_HEADERS)
@@ -243,7 +243,9 @@ def test_unfreezing_clears_it_and_writes_its_own_row(connected: TestClient, worl
     assert world.audit_rows() == [("unfreeze_runs", "core", str(world.tenant_id))]
 
 
-def test_freezing_a_tenant_that_does_not_exist_is_a_404(connected: TestClient, world: World) -> None:
+def test_freezing_a_tenant_that_does_not_exist_is_a_404(
+    connected: TestClient, world: World
+) -> None:
     missing = uuid.uuid4()
 
     response = connected.post(
@@ -359,9 +361,7 @@ def test_a_malformed_floor_is_refused_before_anything_is_stored(
 
     assert world.audit_rows() == []
     with world.conn.cursor() as cur:
-        cur.execute(
-            "SELECT min_extension_version FROM tenants WHERE id = %s", (world.tenant_id,)
-        )
+        cur.execute("SELECT min_extension_version FROM tenants WHERE id = %s", (world.tenant_id,))
         assert cur.fetchone()[0] is None
 
 
@@ -415,7 +415,7 @@ def test_an_up_to_date_extension_may_start_one(
 def test_a_person_who_has_never_reported_is_not_below_the_floor(
     monkeypatch: MonkeyPatch, connected: TestClient, world: World
 ) -> None:
-    """"Not seen yet" is not "out of date": the floor is compared against a report that exists."""
+    """ "Not seen yet" is not "out of date": the floor is compared against a report that exists."""
     monkeypatch.setenv(OPERATOR_ENV_VAR, str(world.person()))
     world.add_input("a@example.com")
     _set_floor(connected, world, "99.0.0")
@@ -434,6 +434,49 @@ def test_a_new_floor_does_not_touch_a_run_already_going(
     with world.conn.cursor() as cur:
         cur.execute("SELECT status FROM runs WHERE id = %s", (run_id,))
         assert cur.fetchone()[0] == "queued", "the run is exactly where it was"
+
+
+def test_a_floor_written_past_the_api_is_refused_rather_than_crashing(
+    monkeypatch: MonkeyPatch, connected: TestClient, world: World
+) -> None:
+    """The database stores what it is told, so the gate has to answer for a floor it cannot read.
+
+    Nothing in this build writes an unreadable floor -- the endpoint validates before it stores --
+    but the admin role holds the column, so a value can arrive there anyway. A 500 out of the gate
+    would take the whole run route down with it; a refusal naming the offending value is something
+    an admin can act on.
+    """
+    person = world.person()
+    monkeypatch.setenv(OPERATOR_ENV_VAR, str(person))
+    world.add_input("a@example.com")
+    connected.post(
+        "/api/v1/executor/version",
+        json={"version": "1.9.2"},
+        headers={"X-ProcessLens-Client": "extension"},
+    )
+    with world.conn.cursor() as cur:
+        cur.execute(
+            "UPDATE tenants SET min_extension_version = 'v1.9' WHERE id = %s",
+            (world.tenant_id,),
+        )
+
+    response = connected.post(
+        "/api/v1/runs",
+        json={
+            "workflow_id": str(world.workflow_id),
+            "recipe_version_id": str(world.recipe_version_id),
+            "input_batch_id": str(world.batch_id),
+            "mode": "batch",
+        },
+    )
+
+    assert response.status_code == 409, response.text
+    assert "v1.9" in response.json()["detail"]
+
+    workspace = connected.get("/api/v1/workspace/state")
+
+    assert workspace.status_code == 200, workspace.text
+    assert workspace.json()["extension_out_of_date"] is True
 
 
 # --- a person whose access is off -------------------------------------------
@@ -478,7 +521,6 @@ def test_a_deactivated_person_cannot_approve(
 ) -> None:
     """A decision is refused; nothing about the run the decision belonged to is changed."""
     person = world.person(role="reviewer", deactivated=True)
-
     response = connected.post(
         "/api/v1/approvals",
         json={
@@ -615,6 +657,119 @@ def test_a_malformed_extension_version_is_refused(
     with world.conn.cursor() as cur:
         cur.execute("SELECT count(*) FROM extension_reports WHERE user_id = %s", (person,))
         assert cur.fetchone()[0] == 0
+
+
+# --- a decision may not restart a frozen run ---------------------------------
+
+
+def _paused_run_with_an_open_request(
+    connected: TestClient, world: World, person: uuid.UUID
+) -> tuple[str, str]:
+    """A paused run holding one open approval request, as the runner leaves it.
+
+    Returns ``(run_id, request_id)``. A real approval request has to be there: the route refuses an
+    unknown one with a 404 before it reaches the gate, so a made-up id would test the wrong thing.
+    """
+    world.add_input("a@example.com")
+    run_id = world.create_run()
+    with world.conn.cursor() as cur:
+        cur.execute(
+            "UPDATE runs SET status = 'paused', pause_reason = 'awaiting_approval' WHERE id = %s",
+            (run_id,),
+        )
+        cur.execute(
+            "SELECT id FROM run_records WHERE run_id = %s ORDER BY created_at, id LIMIT 1",
+            (run_id,),
+        )
+        record_id = cur.fetchone()[0]
+        cur.execute(
+            "INSERT INTO approval_requests "
+            "(tenant_id, run_id, run_record_id, step_id, kind, shown) "
+            "VALUES (%s, %s, %s, 'save', 'commit', '{}') RETURNING id",
+            (world.tenant_id, run_id, record_id),
+        )
+        request_id = str(cur.fetchone()[0])
+    return run_id, request_id
+
+
+def test_an_approval_cannot_restart_a_frozen_run(connected: TestClient, world: World) -> None:
+    """The third way to resume a run answers to the same gate, with the same sentence.
+
+    A decision that resumes a run *is* a resume, so a frozen workspace refuses it exactly as it
+    refuses `POST /runs/{id}/resume`: 409 with the ticket's own words, and nothing written. The
+    request is still open, so the person decides it again once an admin lets runs start again.
+    """
+    reviewer = world.person(role="reviewer")
+    run_id, request_id = _paused_run_with_an_open_request(connected, world, reviewer)
+    freeze_runs(world.conn, world.tenant_id)
+
+    response = connected.post(
+        "/api/v1/approvals",
+        json={
+            "request_id": request_id,
+            "decision": "approved",
+            "decided_by": str(reviewer),
+        },
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == RUNS_FROZEN_DETAIL
+    with world.conn.cursor() as cur:
+        cur.execute("SELECT status FROM runs WHERE id = %s", (run_id,))
+        assert cur.fetchone()[0] == "paused", "a frozen run was restarted by an approval"
+        cur.execute("SELECT count(*) FROM approvals WHERE request_id = %s", (request_id,))
+        assert cur.fetchone()[0] == 0, "nothing was written"
+        cur.execute(
+            "SELECT resolved_by_approval_id IS NULL FROM approval_requests WHERE id = %s",
+            (request_id,),
+        )
+        assert cur.fetchone()[0] is True, "the request is still open for the person to decide"
+
+
+def test_an_approval_may_restart_a_run_when_nothing_is_frozen(
+    connected: TestClient, world: World
+) -> None:
+    """The gate is the freeze, not the decision: unfrozen, the decision restarts the run."""
+    reviewer = world.person(role="reviewer")
+    run_id, request_id = _paused_run_with_an_open_request(connected, world, reviewer)
+
+    response = connected.post(
+        "/api/v1/approvals",
+        json={
+            "request_id": request_id,
+            "decision": "approved",
+            "decided_by": str(reviewer),
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    assert response.json()["resumed"] is True
+    with world.conn.cursor() as cur:
+        cur.execute("SELECT status FROM runs WHERE id = %s", (run_id,))
+        assert cur.fetchone()[0] in ("queued", "running")
+
+
+def test_an_admin_token_that_is_not_ascii_closes_the_surface(
+    monkeypatch: MonkeyPatch, connected: TestClient, world: World
+) -> None:
+    """A misconfigured token is a refusal with a sentence, never a traceback.
+
+    ``secrets.compare_digest`` raises on a non-ASCII ``str``, so a configured token carrying an
+    accent would turn every admin request into a 500. It is answered as the misconfiguration it is.
+    An HTTP header can only carry ASCII, so this sends an ASCII one: the configured value is what is
+    being judged, and it is judged before any comparison happens.
+    """
+    monkeypatch.setenv(ADMIN_TOKEN_ENV_VAR, "cl\u00e9-secr\u00e8te")
+
+    response = connected.post(
+        "/api/v1/admin/freeze",
+        json={"tenant_id": str(world.tenant_id)},
+        headers={"X-ProcessLens-Admin-Token": "cle-secrete"},
+    )
+
+    assert response.status_code == 503, response.text
+    assert ADMIN_TOKEN_ENV_VAR in response.json()["detail"]
+    assert world.audit_rows() == []
 
 
 def test_only_the_extension_may_report_a_version(

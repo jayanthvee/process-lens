@@ -25,7 +25,7 @@ from packages.ledger import UserRow, get_extension_report, get_tenant_admin_stat
 
 from .db import connection
 from .operator import configured_operator_id, require_operator_user
-from .versions import is_below
+from .versions import floor_is_met
 
 router = APIRouter(prefix="/api/v1", tags=["workspace"])
 
@@ -86,7 +86,7 @@ def workspace_state(
         runs_frozen=state.runs_frozen_at is not None,
         min_extension_version=minimum,
         extension_version=reported,
-        extension_out_of_date=is_below(reported, minimum),
+        extension_out_of_date=not floor_is_met(reported, minimum),
     )
 
 

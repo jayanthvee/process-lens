@@ -16,7 +16,7 @@ from pydantic import BaseModel
 
 from packages.ledger import StateConflict, get_request, record_approval, resume_run
 
-from .admin import require_active_person
+from .admin import require_active_person, runs_gate
 from .db import connection
 
 router = APIRouter(prefix="/api/v1", tags=["approvals"])
@@ -45,6 +45,12 @@ def record_approval_endpoint(payload: Annotated[ApprovalRequest, Body()]) -> App
 
     PL-026: a person whose access has been turned off cannot approve anything (403). Their runs keep
     the state they are in -- the decision is refused, nothing about the ledger is changed.
+
+    Resuming the run is a resume, so it answers to the same gate `POST /runs/{id}/resume` does. A
+    decision is still recorded while the workspace is frozen -- it is a person's answer about the
+    values they were shown, and refusing to store it would lose it -- but the run is not restarted
+    onto a frozen workspace, and `resumed` comes back false. Unfreezing does not resume it either:
+    the person resumes the run, exactly as the ticket says.
     """
     with connection() as conn:
         require_active_person(conn, payload.decided_by)
@@ -53,6 +59,7 @@ def record_approval_endpoint(payload: Annotated[ApprovalRequest, Body()]) -> App
             raise HTTPException(
                 status_code=404, detail=f"approval request {payload.request_id} does not exist"
             )
+        runs_gate(conn, request_row.tenant_id)
         try:
             with conn.transaction():
                 approval_id = record_approval(

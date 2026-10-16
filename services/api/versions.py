@@ -68,10 +68,42 @@ def is_below(reported: str | None, minimum: str | None) -> bool:
 
     ``False`` when either side is absent: no report means "not seen yet", which is not the same as
     "out of date", and no floor means any version is acceptable.
+
+    Raises :class:`InvalidVersion` when a value that is present cannot be read. Callers that are
+    holding a value they did not validate themselves want :func:`floor_is_met` instead.
     """
     if reported is None or minimum is None:
         return False
     return compare_versions(reported, minimum) < 0
 
 
-__all__ = ["MAX_PARTS", "InvalidVersion", "compare_versions", "is_below", "parse_version"]
+def floor_is_met(reported: str | None, minimum: str | None) -> bool:
+    """Whether this person's reported version meets the tenant's floor.
+
+    Three cases answer ``True``: no floor is set, there is no report to compare, or the report is at
+    or above the floor. "Not seen yet" is not "out of date", which is what the page's banner says
+    and what the run gate says too.
+
+    A floor this module cannot read answers ``False`` rather than raising. The column is written
+    by the API -- which validates first -- but the admin role holds it, so a value can arrive
+    there anyway, and the two callers of this function are a run route and a page read. A 500 out
+    of either one would be a whole surface going down over one bad column value; refusing the run
+    and naming the value is something an admin can act on, and it fails in the safe direction: a
+    floor nobody can read stops runs rather than waving them through.
+    """
+    if minimum is None or reported is None:
+        return True
+    try:
+        return compare_versions(reported, minimum) >= 0
+    except InvalidVersion:
+        return False
+
+
+__all__ = [
+    "MAX_PARTS",
+    "InvalidVersion",
+    "compare_versions",
+    "floor_is_met",
+    "is_below",
+    "parse_version",
+]

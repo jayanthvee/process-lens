@@ -10,7 +10,13 @@ from __future__ import annotations
 
 import pytest
 
-from services.api.versions import InvalidVersion, compare_versions, is_below, parse_version
+from services.api.versions import (
+    InvalidVersion,
+    compare_versions,
+    floor_is_met,
+    is_below,
+    parse_version,
+)
 
 
 @pytest.mark.parametrize(
@@ -103,3 +109,34 @@ def test_an_absent_report_or_an_absent_floor_is_never_below() -> None:
     assert is_below(None, "99.0.0") is False
     assert is_below("0.0.1", None) is False
     assert is_below(None, None) is False
+
+
+@pytest.mark.parametrize(
+    ("reported", "minimum", "met"),
+    [
+        ("1.10.0", "1.9.2", True),
+        ("1.9.2", "1.10.0", False),
+        ("1.10.0", "1.10.0", True),
+        (None, "99.0.0", True),
+        ("0.0.1", None, True),
+        (None, None, True),
+    ],
+)
+def test_the_floor_is_met_where_the_floor_decision_says_so(
+    reported: str | None, minimum: str | None, met: bool
+) -> None:
+    """The gate's own form of the question answers the opposite way, and agrees."""
+    assert floor_is_met(reported, minimum) is met
+    assert is_below(reported, minimum) is (not met)
+
+
+def test_a_floor_nobody_can_read_is_not_met_rather_than_an_error() -> None:
+    """The column is granted to the admin role, so a value can arrive that the API never wrote.
+
+    A run route and a page read both ask this question. Raising here is a 500 on a whole surface
+    over one column value; answering "not met" refuses the run and names the value, which is what
+    an admin can act on -- and it fails in the safe direction.
+    """
+    assert floor_is_met("1.9.2", "v1.9") is False
+    assert floor_is_met("1.9.2", "") is False
+    assert floor_is_met("later", "1.9.2") is False

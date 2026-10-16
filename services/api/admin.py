@@ -47,7 +47,7 @@ from packages.ledger import (
 
 from .db import connection
 from .operator import operator_user, require_operator_user
-from .versions import InvalidVersion, is_below, parse_version
+from .versions import InvalidVersion, floor_is_met, parse_version
 
 router = APIRouter(prefix="/api/v1", tags=["admin"])
 
@@ -63,6 +63,7 @@ EXTENSION_FLOOR_TEMPLATE = "Update the ProcessLens Chrome extension to version {
 ADMIN_MODULE = "core"
 
 TOKEN_NOT_SET_DETAIL = f"{ADMIN_TOKEN_ENV_VAR} is not set, so the admin API is closed"
+TOKEN_NOT_ASCII_DETAIL = f"{ADMIN_TOKEN_ENV_VAR} must be ASCII, so the admin API is closed"
 TOKEN_REFUSED_DETAIL = "the admin token is wrong"
 
 
@@ -91,10 +92,18 @@ class AdminState(BaseModel):
 
 
 def require_admin_token(request: Request) -> None:
-    """Refuse an admin request without the shared token (a dependency on every admin route)."""
+    """Refuse an admin request without the shared token (a dependency on every admin route).
+
+    ``secrets.compare_digest`` raises on a ``str`` carrying a non-ASCII character, so a configured
+    token that is not ASCII would turn every admin request into a 500 instead of a refusal. It is
+    answered here as the misconfiguration it is: the surface closes with a sentence, and a deploy
+    that set the variable notices at once rather than through tracebacks.
+    """
     configured = os.environ.get(ADMIN_TOKEN_ENV_VAR, "").strip()
     if not configured:
         raise HTTPException(status_code=503, detail=TOKEN_NOT_SET_DETAIL)
+    if not configured.isascii():
+        raise HTTPException(status_code=503, detail=TOKEN_NOT_ASCII_DETAIL)
     presented = ""
     for header in ADMIN_TOKEN_HEADERS:
         value = request.headers.get(header)
@@ -266,12 +275,16 @@ def extension_floor_detail(conn: Connection, minimum: str) -> str | None:
     Nobody to check means no refusal: with no operator configured there is no reported version, and
     a person who has never reported one is not below a floor either -- "not seen yet" is not "out of
     date", which is also what the page's banner says.
+
+    A floor the API cannot read also refuses, naming the value: the database stores what it is told,
+    so a floor written past the API has to be answered for rather than crash the route, and refusing
+    runs is the safe direction until an admin sets the floor again.
     """
     person = operator_user(conn)
     if person is None:
         return None
     report = get_extension_report(conn, person.id)
-    if not is_below(report.version if report else None, minimum):
+    if floor_is_met(report.version if report else None, minimum):
         return None
     return EXTENSION_FLOOR_TEMPLATE.format(version=minimum)
 
