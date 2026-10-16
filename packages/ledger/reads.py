@@ -157,15 +157,18 @@ WHERE t.at >= now() - make_interval(days => %(days)s)
   AND (%(tenant)s::uuid IS NULL OR rr.tenant_id = %(tenant)s)
 """
 
-# The wall clock the window's runs took: an unfinished run is counted up to now, and a run that a
-# worker never claimed falls back to its creation time.
+# The wall clock of the runs that finished inside the window, from start to finish. An open run
+# (queued, running or paused) is left out until it finishes, so a run paused over a weekend for an
+# approval does not wipe out the week's time saved while it waits.
 _WINDOW_RUN_SECONDS = """
 SELECT coalesce(
-         sum(extract(epoch FROM (coalesce(finished_at, now()) - coalesce(started_at, created_at)))),
+         sum(extract(epoch FROM (finished_at - started_at))),
          0
        )::double precision AS seconds
 FROM runs
-WHERE coalesce(started_at, created_at) >= now() - make_interval(days => %(days)s)
+WHERE finished_at IS NOT NULL
+  AND started_at IS NOT NULL
+  AND finished_at >= now() - make_interval(days => %(days)s)
   AND (%(tenant)s::uuid IS NULL OR tenant_id = %(tenant)s)
 """
 

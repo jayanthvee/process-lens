@@ -146,7 +146,8 @@ class SpaStaticFiles(StaticFiles):
         past it on this machine and not on the deployment.
         """
         relative = path.replace("\\", "/").lstrip("/")
-        if relative.startswith(self.API_PREFIX) or Path(relative).suffix:
+        is_api = relative == self.API_PREFIX.rstrip("/") or relative.startswith(self.API_PREFIX)
+        if is_api or Path(relative).suffix:
             return await super().get_response(path, scope)
         try:
             response = await super().get_response(path, scope)

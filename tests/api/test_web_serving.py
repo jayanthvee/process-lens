@@ -50,3 +50,11 @@ def test_an_unknown_api_path_still_404s_as_json(client: TestClient) -> None:
     assert response.status_code == 404, response.text
     assert response.headers["content-type"].startswith("application/json")
     assert ROOT_ELEMENT not in response.text
+
+
+def test_a_bare_api_path_is_not_the_page(client: TestClient) -> None:
+    """`/api` with no trailing slash is an API miss too, never the page."""
+    response = client.get("/api")
+
+    assert response.status_code == 404, response.text
+    assert ROOT_ELEMENT not in response.text

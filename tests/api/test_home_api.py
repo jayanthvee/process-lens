@@ -136,6 +136,45 @@ def test_the_minutes_saved_are_clamped_at_zero(
     assert body["minutes_saved"] == 0
 
 
+def test_an_open_run_does_not_eat_the_time_saved(
+    connected: TestClient, conn: psycopg.Connection, ledger: Ledger
+) -> None:
+    """A run paused for two days, or queued and never claimed, subtracts nothing until it ends."""
+    ledger.seed_records(10, state="verified")
+    paused = ledger.new_run()
+    queued = ledger.new_run()
+    conn.execute(
+        "UPDATE runs SET status = 'paused', created_at = now() - interval '2 days', "
+        "started_at = now() - interval '2 days' WHERE id = %s",
+        (paused.id,),
+    )
+    conn.execute(
+        "UPDATE runs SET created_at = now() - interval '2 days' WHERE id = %s", (queued.id,)
+    )
+
+    body = home_body(connected, ledger)
+
+    assert body["counts"]["done"] == 10
+    assert body["minutes_saved"] == 30
+
+
+def test_a_finished_run_subtracts_its_start_to_finish_time(
+    connected: TestClient, conn: psycopg.Connection, ledger: Ledger
+) -> None:
+    """Ten rows are thirty minutes by hand; a run that took ten minutes saved twenty."""
+    ledger.seed_records(10, state="verified")
+    run = ledger.new_run()
+    conn.execute(
+        "UPDATE runs SET status = 'completed', started_at = now() - interval '10 minutes', "
+        "finished_at = now() WHERE id = %s",
+        (run.id,),
+    )
+
+    body = home_body(connected, ledger)
+
+    assert body["minutes_saved"] == 20
+
+
 def test_the_needs_help_panel_is_the_newest_three_in_order(
     connected: TestClient, ledger: Ledger
 ) -> None:
