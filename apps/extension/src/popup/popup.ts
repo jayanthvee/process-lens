@@ -11,7 +11,7 @@ import type { SessionState } from "../background/command-session";
 import type { RecordedEvent } from "../shared/recipe-types";
 import { createMakeRecipeForm, RECIPE_KEY, ROW_KEY } from "./make-recipe";
 import {
-  engineWordsIn,
+  plainDetail,
   recordingWords,
   runStateWords,
   sessionWords,
@@ -222,7 +222,7 @@ function renderExecutor(status: ExecutorStatus): void {
   const progress = status.total > 0 ? ` (${status.completed}/${status.total})` : "";
   // The worker's own detail is written for an engineer: name the state in plain words, and show
   // the detail only when it is free of the engine's words.
-  const detail = engineWordsIn(status.message).length === 0 ? status.message.trim() : "";
+  const detail = plainDetail(status.message);
   runStateEl.textContent = `${runStateWords(status.state)}${progress}${detail ? ` — ${detail}` : ""}`;
   runStateEl.dataset["state"] = status.state;
   const busy = status.state === "running" || status.state === "paused";

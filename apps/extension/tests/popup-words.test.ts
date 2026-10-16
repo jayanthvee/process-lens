@@ -13,6 +13,7 @@ import { createMakeRecipeForm } from "../src/popup/make-recipe";
 import {
   ENGINE_WORDS,
   engineWordsIn,
+  plainDetail,
   recordingWords,
   runStateWords,
   sessionWords,
@@ -158,18 +159,21 @@ function renderSteps(events: RecordedEvent[]): void {
   );
 }
 
-function mountForm(): void {
+function mountForm(
+  outcome: { ok?: boolean; status?: number; body?: unknown } = {},
+): ReturnType<typeof createMakeRecipeForm> {
   const form = createMakeRecipeForm({
     root: document,
     storage: { get: async () => ({}), set: async () => undefined },
     fetchImpl: (async () => ({
-      ok: true,
-      status: 200,
-      json: async () => ({ recipe: { id: "new-lead" }, warnings: [] }),
+      ok: outcome.ok ?? true,
+      status: outcome.status ?? 200,
+      json: async () => outcome.body ?? { recipe: { id: "new-lead" }, warnings: [] },
     })) as unknown as typeof fetch,
     baseUrl: "http://127.0.0.1:8000",
   });
   form.refresh(plainRecording());
+  return form;
 }
 
 /** Every `url(...)` a stylesheet declares, in order. */
@@ -199,6 +203,52 @@ describe("the popup's words", () => {
     expect(visible).toContain("Do the job once in your browser");
   });
 
+  it("keeps what the compile route sends off the screen when it is written for an engineer", async () => {
+    // These are the sentences the route really sends. A recognised assertion is reported as
+    // `assertion for click-2 taken from the recorded observation`
+    // (packages/compiler/compiler.py), and a refused navigation as
+    // `... whose origin '...' is not in allowed_origins`. Both carry an engine word.
+    const routeWarnings = [
+      "assertion for click-2 taken from the recorded observation",
+      "the check for when this row is already there was inferred",
+    ];
+    const form = mountForm({ body: { recipe: { id: "new-lead", steps: [] }, warnings: routeWarnings } });
+    await form.submit();
+
+    const result = document.getElementById("make-result")?.textContent ?? "";
+    const warnings = document.getElementById("make-warnings")?.textContent ?? "";
+    expect(result).toContain("is ready");
+    expect(engineWordsIn(document.body.textContent ?? "")).toEqual([]);
+    expect(warnings).not.toContain("click-2");
+    // The readable one is still shown, and the one that was not is still accounted for.
+    expect(warnings).toContain("inferred");
+    expect(warnings).toContain("1 more note");
+
+    // And the refusal path: the route's own problems, one of which names a step and a schema key.
+    const refusal = mountForm({
+      ok: false,
+      status: 422,
+      body: {
+        detail: {
+          message: "the recording cannot be compiled",
+          problems: [
+            "navigate step 7 goes to 'https://elsewhere.example/', whose origin is not in allowed_origins",
+            "the commit click has no result to check",
+          ],
+        },
+      },
+    });
+    await refusal.submit();
+
+    const refused = document.getElementById("make-result")?.textContent ?? "";
+    const shown = document.getElementById("make-warnings")?.textContent ?? "";
+    // The count is the true one, even though one of the two cannot be shown.
+    expect(refused).toContain("Could not save this as a task (2 problems).");
+    expect(shown).toContain("the commit click has no result to check");
+    expect(shown).toContain("1 more note");
+    expect(engineWordsIn(document.body.textContent ?? "")).toEqual([]);
+  });
+
   it("has plain sample data, and the guard still catches an engine word", () => {
     const sample = visibleSampleText(plainRecording());
     expect(sample).toContain("Save");
@@ -209,7 +259,26 @@ describe("the popup's words", () => {
       "ledger",
       "parked",
     ]);
-    expect(ENGINE_WORDS.length).toBe(12);
+    // Requirement 7's twelve, plus the phrases DESIGN.md §2 names and the worker really sends.
+    expect(ENGINE_WORDS.length).toBe(14);
+    for (const engine of [
+      "recipe",
+      "ledger",
+      "parked",
+      "record key",
+      "verified",
+      "rung",
+      "idempotency",
+      "v1",
+      "v2",
+      "step_",
+      "fill-",
+      "click-",
+    ]) {
+      expect(ENGINE_WORDS.map((rule) => rule.engine), `${engine} must be enforced`).toContain(
+        engine,
+      );
+    }
   });
 
   it("names a step by its own words and never by its id", () => {
@@ -285,6 +354,26 @@ describe("the popup's words", () => {
     ]) {
       expect(engineWordsIn(words)).toEqual([]);
     }
+  });
+
+  it("keeps the worker's own detail off the screen when it is written for an engineer", () => {
+    // These are the strings the service worker really sends as a session detail: a guard's refusal
+    // and the step-runner's, verbatim (`src/executor/guards.ts`).
+    const guards = [
+      "the page origin https://elsewhere.example.test is not in allowed_origins",
+      'the control "Delete lead" looks destructive ("delete"); set allow_destructive_control on the step to permit it',
+    ];
+    for (const detail of guards) {
+      expect(engineWordsIn(detail), `${detail} must be caught`).not.toEqual([]);
+      expect(plainDetail(detail)).toBe("");
+      expect(engineWordsIn(sessionWords("disconnected", detail))).toEqual([]);
+      // The state still says what happened, in plain words.
+      expect(sessionWords("disconnected", detail)).toBe("Not connected");
+    }
+    // A detail a person can read is still shown.
+    expect(plainDetail("bound to a tab")).toBe("bound to a tab");
+    expect(plainDetail(undefined)).toBe("");
+    expect(plainDetail("   ")).toBe("");
   });
 });
 

@@ -21,8 +21,14 @@ export const UNNAMED_STEP = "A step the recorder could not name";
 
 /**
  * Every word of the engine that a person must never read, and the plain wording each becomes.
- * The same list as PL-023 requirement 7, copied from `apps/web/src/lib/words.ts` so the two
- * cannot drift; whole tokens for `v1`/`v2`, so an ordinary word is not a hit.
+ *
+ * The first twelve are PL-023 requirement 7's list, copied from `apps/web/src/lib/words.ts` so the
+ * two cannot drift; requirement 7 says "any of", so the list is a floor and this one is a
+ * superset. The rest are the phrases DESIGN.md §2 names in the same table but requirement 7's
+ * twelve omit, and they are here because the popup really does receive them: a guard refuses with
+ * "… is not in allowed_origins" and "set allow_destructive_control …" (`src/executor/guards.ts`),
+ * and a session passes that refusal to this module as its detail. Whole tokens for `v1`/`v2`, so an
+ * ordinary word is not a hit.
  */
 export const ENGINE_WORDS: ReadonlyArray<{ engine: string; pattern: RegExp; plain: string }> = [
   { engine: "recipe", pattern: /recipe/i, plain: "task" },
@@ -37,6 +43,13 @@ export const ENGINE_WORDS: ReadonlyArray<{ engine: string; pattern: RegExp; plai
   { engine: "step_", pattern: /step_/i, plain: "one plain sentence" },
   { engine: "fill-", pattern: /fill-/i, plain: "the element's own words" },
   { engine: "click-", pattern: /click-/i, plain: "the element's own words" },
+  // DESIGN.md §2 names these too, and the worker hands them to the popup verbatim.
+  { engine: "allowed origins", pattern: /allowed[\s_-]*origins?/i, plain: "sites this task may use" },
+  {
+    engine: "allow_destructive_control",
+    pattern: /allow[\s_-]*destructive[\s_-]*control/i,
+    plain: "never shown",
+  },
 ];
 
 /** The engine words this text contains, so a caller can name the rule it would break. */
@@ -142,9 +155,57 @@ export function runStateWords(state: ExecutorState): string {
   }
 }
 
+/**
+ * A block of the engine's own sentences, with the ones a person can read kept and the rest counted.
+ *
+ * The compile route answers with sentences written for an engineer, in the same voice as the
+ * worker's detail: `assertion for click-2 taken from the recorded observation`, or `navigate step 7
+ * goes to …, whose origin … is not in allowed_origins`. `#make-warnings` would otherwise print a
+ * step id and a schema key straight onto the screen.
+ *
+ * The sentences it cannot show are not silently dropped: the caller reports how many there were, so
+ * a person still learns that the engine had more to say.
+ */
+export function plainSentences(text: string | null | undefined): { shown: string[]; hidden: number } {
+  const shown: string[] = [];
+  let hidden = 0;
+  for (const line of (text ?? "").split("\n")) {
+    const sentence = line.trim();
+    if (sentence.length === 0) continue;
+    if (engineWordsIn(sentence).length === 0) shown.push(sentence);
+    else hidden += 1;
+  }
+  return { shown, hidden };
+}
+
+/** The one sentence that accounts for the notes this module could not put into words. */
+export function hiddenNote(count: number): string {
+  if (count <= 0) return "";
+  if (count === 1) {
+    return "1 more note about this recording is written for the engine, not for you.";
+  }
+  return `${count} more notes about this recording are written for the engine, not for you.`;
+}
+
+/**
+ * The worker's own detail, when it is free of the engine's words.
+ *
+ * The service worker's detail is written for an engineer: a guard refuses with
+ * "the page origin … is not in allowed_origins" or "set allow_destructive_control on the step to
+ * permit it", and a session reports the raw reason underneath its state. DESIGN.md §2 keeps those
+ * off the screen, so the detail is appended only when it carries none of `ENGINE_WORDS`; the state
+ * itself still says what happened, in plain words, either way.
+ */
+export function plainDetail(detail: string | undefined | null): string {
+  const text = (detail ?? "").trim();
+  if (text.length === 0) return "";
+  return engineWordsIn(text).length === 0 ? text : "";
+}
+
 /** The connection to ProcessLens, with the worker's own detail when it has one. */
 export function sessionWords(state: SessionState, detail?: string): string {
-  const suffix = detail && detail.trim().length > 0 ? ` — ${detail.trim()}` : "";
+  const shown = plainDetail(detail);
+  const suffix = shown.length > 0 ? ` — ${shown}` : "";
   switch (state) {
     case "ready":
       return `Connected to ProcessLens${suffix}`;

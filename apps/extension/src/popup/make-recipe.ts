@@ -7,7 +7,7 @@
 // Every sentence a person reads is spelled out here rather than built from an id:
 // the engine's words (DESIGN.md §2) never reach the screen.
 import type { RecordedEvent, RecordedStep } from "../shared/recipe-types";
-import { UNNAMED_CLICK, UNNAMED_STEP } from "./words";
+import { UNNAMED_CLICK, UNNAMED_STEP, hiddenNote, plainSentences } from "./words";
 
 /** Where the compiled recipe and its sample row live for the Run button. */
 export const RECIPE_KEY = "processlens:executor-recipe";
@@ -526,14 +526,27 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
     renderParkFields();
   });
 
+  /**
+   * A block of the engine's own sentences, kept in the plain ones and counted in the rest.
+   *
+   * The compile route answers in the same engineer's voice the worker does -- `assertion for
+   * click-2 taken from the recorded observation`, `… is not in allowed_origins` -- so every
+   * sentence it sends is measured against `ENGINE_WORDS` before a person can read it. What is
+   * dropped is never silent: the count is said out loud.
+   */
+  function readableBlock(sentences: string[]): string {
+    const { shown, hidden } = plainSentences(sentences.join("\n"));
+    return [...shown, hiddenNote(hidden)].filter((line) => line.length > 0).join("\n");
+  }
+
   function showProblems(problems: string[]): void {
     // A rejection with no problems the route would own up to is still said in words.
     const sentences =
       problems.length > 0 ? problems : ["ProcessLens would not accept this recording."];
+    // The count is the true one, whether or not a sentence is one this page can show.
     const count = sentences.length === 1 ? "1 problem" : `${sentences.length} problems`;
-    // The problems themselves go on their own line, one per line.
     notice(`Could not save this as a task (${count}).`);
-    warningsEl.textContent = sentences.join("\n");
+    warningsEl.textContent = readableBlock(sentences);
   }
 
   function refresh(next: RecordedEvent[]): void {
@@ -561,7 +574,7 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
 
     syncGo();
     syncDuplicate();
-    warningsEl.textContent = recordedWarnings(events).join("\n");
+    warningsEl.textContent = readableBlock(recordedWarnings(events));
     if (events.length === 0) notice(NO_EVENTS);
     else resultEl.textContent = "";
   }
@@ -631,7 +644,7 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
       notice(`Saved as a task: "${name}" is ready. Try one row will use it.`);
       // The recorder's caveats come first: they describe the recording itself, and the
       // route's warnings describe the task the compiler wrote from it.
-      warningsEl.textContent = [...recordedWarnings(events), ...outcome.warnings].join("\n");
+      warningsEl.textContent = readableBlock([...recordedWarnings(events), ...outcome.warnings]);
     } catch (error) {
       showProblems([`ProcessLens could not be reached: ${describe(error)}.`]);
     } finally {

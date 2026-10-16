@@ -149,7 +149,7 @@ describe("the make-recipe form", () => {
     const recipe = { id: "new-lead", steps: [] };
     const { fetchImpl, calls } = fakeFetch({
       recipe,
-      warnings: ["step click-1 has no assert_after"],
+      warnings: ["the check for this row was taken from what the page showed"],
     });
     const storage = fakeStorage();
     const form = mount(fetchImpl, storage);
@@ -162,13 +162,12 @@ describe("the make-recipe form", () => {
     const written = storage.writes[0]!;
     expect(written["processlens:executor-recipe"]).toEqual(recipe);
     expect(written["processlens:executor-row"]).toEqual({ email: "ravi@example.test" });
-    expect(control("make-warnings").textContent).toContain("no assert_after");
+    expect(control("make-warnings").textContent).toContain("taken from what the page showed");
     expect(control("make-result").textContent).toContain("ready");
   });
 
   it("shows the problems and stores nothing when the compiler rejects the recording", async () => {
-    const problem =
-      "commit step click-2 has no assert_after: a commit step must carry a post-condition";
+    const problem = "the commit click has no result to check";
     const { fetchImpl } = fakeFetch(
       { detail: { message: "the recording cannot be compiled", problems: [problem] } },
       { ok: false, status: 422 },
@@ -481,7 +480,7 @@ describe("allowed origins", () => {
   });
 
   it("shows a 422 in plain words", async () => {
-    const problem = "navigate step click-2 is not in allowed_origins";
+    const problem = "this task may not use https://elsewhere.example/";
     const { fetchImpl } = fakeFetch(
       { detail: { message: "the recording cannot be compiled", problems: [problem] } },
       { ok: false, status: 422 },
