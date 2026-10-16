@@ -165,11 +165,17 @@ function mountForm(
   const form = createMakeRecipeForm({
     root: document,
     storage: { get: async () => ({}), set: async () => undefined },
-    fetchImpl: (async () => ({
-      ok: outcome.ok ?? true,
-      status: outcome.status ?? 200,
-      json: async () => outcome.body ?? { recipe: { id: "new-lead" }, warnings: [] },
-    })) as unknown as typeof fetch,
+    // PL-030: the form's submit makes two calls -- compile, then save the task -- so the stub
+    // answers each route its own way. The save succeeds unless the test is about the compile.
+    fetchImpl: (async (input: RequestInfo | URL) => {
+      const saving = String(input).endsWith("/api/v1/tasks");
+      return {
+        ok: saving ? true : (outcome.ok ?? true),
+        status: saving ? 200 : (outcome.status ?? 200),
+        json: async () =>
+          saving ? { workflow_id: "wf-1" } : (outcome.body ?? { recipe: { id: "new-lead" }, warnings: [] }),
+      };
+    }) as unknown as typeof fetch,
     baseUrl: "http://127.0.0.1:8000",
   });
   form.refresh(plainRecording());
@@ -487,9 +493,7 @@ describe("the frozen e2e contract", () => {
     expect(SAVING_NOTE).not.toContain(SAVED_READY);
     expect(SAVING_NOTE).not.toContain(REFUSAL_HEADLINE);
     // And the two sentences really carry them.
-    expect(`Saved as a task: "New lead" ${SAVED_READY}. Try one row will use it.`).toContain(
-      SAVED_READY,
-    );
+    expect(`"New lead" ${SAVED_READY}. Open it in ProcessLens.`).toContain(SAVED_READY);
     expect(`${REFUSAL_HEADLINE} save this as a task (1 problem).`).toContain(REFUSAL_HEADLINE);
   });
 });

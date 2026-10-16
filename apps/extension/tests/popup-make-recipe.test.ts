@@ -53,11 +53,26 @@ interface FetchCall {
 function fakeFetch(
   body: unknown,
   outcome: { ok?: boolean; status?: number } = {},
+  task: { body?: unknown; ok?: boolean; status?: number } = {},
 ): { calls: FetchCall[]; fetchImpl: typeof fetch } {
   const calls: FetchCall[] = [];
+  // PL-030: the form now makes two calls -- compile, then save the task -- so the stub answers
+  // each route its own way. The save defaults to a task ProcessLens accepted.
+  const compile = {
+    ok: outcome.ok ?? true,
+    status: outcome.status ?? 200,
+    body,
+  };
+  const save = {
+    ok: task.ok ?? true,
+    status: task.status ?? 200,
+    body: task.body ?? { workflow_id: "wf-1" },
+  };
   const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    calls.push({ url: String(input), init });
-    return { ok: outcome.ok ?? true, status: outcome.status ?? 200, json: async () => body };
+    const url = String(input);
+    calls.push({ url, init });
+    const route = url.endsWith("/api/v1/tasks") ? save : compile;
+    return { ok: route.ok, status: route.status, json: async () => route.body };
   }) as unknown as typeof fetch;
   return { calls, fetchImpl };
 }
@@ -145,25 +160,92 @@ beforeEach(() => {
 });
 
 describe("the make-recipe form", () => {
-  it("stores the recipe and the recorded values when the hub compiles", async () => {
+  it("saves the task after compiling and shows it is ready with a link (PL-030)", async () => {
     const recipe = { id: "new-lead", steps: [] };
-    const { fetchImpl, calls } = fakeFetch({
-      recipe,
-      warnings: ["the check for this row was taken from what the page showed"],
-    });
+    const { fetchImpl, calls } = fakeFetch(
+      { recipe, warnings: ["the check for this row was taken from what the page showed"] },
+      {},
+      { body: { workflow_id: "wf-abc123" } },
+    );
     const storage = fakeStorage();
     const form = mount(fetchImpl, storage);
 
     form.refresh(leadRecording());
     await form.submit();
 
-    expect(calls).toHaveLength(1);
+    // Compile first, then save the task it produced, on the same ProcessLens address.
+    expect(calls.map((call) => call.url)).toEqual([
+      "http://127.0.0.1:8000/api/v1/recipes/compile",
+      "http://127.0.0.1:8000/api/v1/tasks",
+    ]);
+    const save = calls[1]!;
+    expect(save.init?.method).toBe("POST");
+    expect((save.init?.headers as Record<string, string>)["content-type"]).toBe(
+      "application/json",
+    );
+    expect(JSON.parse(String(save.init?.body))).toEqual({
+      name: "Recorded on crm.example.test",
+      recipe,
+    });
+
+    // The run controls still read these two session keys, exactly as before.
     expect(storage.writes).toHaveLength(1);
-    const written = storage.writes[0]!;
-    expect(written["processlens:executor-recipe"]).toEqual(recipe);
-    expect(written["processlens:executor-row"]).toEqual({ email: "ravi@example.test" });
+    expect(storage.writes[0]!["processlens:executor-recipe"]).toEqual(recipe);
+    expect(storage.writes[0]!["processlens:executor-row"]).toEqual({ email: "ravi@example.test" });
+
+    const result = control("make-result");
+    expect(result.textContent).toContain("Recorded on crm.example.test is ready");
+    expect(result.textContent).toContain("Open it in ProcessLens");
+    const link = result.querySelector("a");
+    expect(link?.getAttribute("href")).toBe("http://127.0.0.1:8000/tasks/wf-abc123");
     expect(control("make-warnings").textContent).toContain("taken from what the page showed");
-    expect(control("make-result").textContent).toContain("ready");
+  });
+
+  it("says it could not save the task when ProcessLens refuses it (PL-030)", async () => {
+    const { fetchImpl, calls } = fakeFetch(
+      { recipe: { id: "new-lead" }, warnings: [] },
+      {},
+      {
+        ok: false,
+        status: 409,
+        body: { detail: "a task named 'Add inquiries' already exists" },
+      },
+    );
+    const storage = fakeStorage();
+    const form = mount(fetchImpl, storage);
+
+    form.refresh(leadRecording());
+    await form.submit();
+
+    expect(calls).toHaveLength(2);
+    const result = control("make-result");
+    expect(result.textContent).toContain("Could not save the task");
+    expect(result.textContent).toContain("already exists");
+    expect(result.textContent).not.toContain("is ready");
+    // A refusal leaves nothing to link to.
+    expect(result.querySelector("a")).toBeNull();
+  });
+
+  it("names the operator problem when the save fails for lack of one (PL-030)", async () => {
+    const { fetchImpl } = fakeFetch(
+      { recipe: { id: "new-lead" }, warnings: [] },
+      {},
+      {
+        ok: false,
+        status: 503,
+        body: {
+          detail: "PROCESSLENS_OPERATOR_ID is not set, so there is no operator id to act as",
+        },
+      },
+    );
+    const form = mount(fetchImpl);
+
+    form.refresh(leadRecording());
+    await form.submit();
+
+    const result = control("make-result");
+    expect(result.textContent).toContain("Could not save the task: ");
+    expect(result.textContent).toContain("PROCESSLENS_OPERATOR_ID is not set");
   });
 
   it("shows the problems and stores nothing when the compiler rejects the recording", async () => {

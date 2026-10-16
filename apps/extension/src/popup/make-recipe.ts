@@ -30,6 +30,15 @@ export const REFUSAL_HEADLINE = "Could not";
 /** Shown while the request is out: it must look like neither an outcome nor a refusal. */
 export const SAVING_NOTE = "Turning your recording into a task…";
 /**
+ * Where a compiled task is saved (PL-030): the dashboard only lists tasks ProcessLens holds, so
+ * a successful compile is followed by this POST on the same ProcessLens address.
+ */
+const SAVE_TASK_PATH = "/api/v1/tasks";
+/** The saved line's link, pointing at the task's page. */
+export const SAVED_OPEN = "Open it in ProcessLens.";
+/** The prefix a failed save shows. The frozen contract needs "Could not"; this says more. */
+export const SAVE_TASK_REFUSAL = "Could not save the task";
+/**
  * Shown under the duplicate checkbox when the recording holds no search at all: no fill of a
  * column's own value was followed by the step that runs a search.
  */
@@ -371,6 +380,17 @@ async function readJson(response: { json(): Promise<unknown> }): Promise<unknown
   }
 }
 
+/** What the tasks route answered: where the saved task lives, or the reasons it refused. */
+export type SaveTaskOutcome =
+  | { ok: true; workflowId: string }
+  | { ok: false; problems: string[] };
+
+/** The body `POST /api/v1/tasks` accepts. */
+export interface SaveTaskBody {
+  name: string;
+  recipe: Record<string, unknown>;
+}
+
 /** Turns the route's error body into sentences a person can read. */
 function problemsFrom(status: number, body: unknown): string[] {
   const detail = (body as { detail?: unknown } | null | undefined)?.detail;
@@ -422,6 +442,37 @@ export async function compileRecording(
       )
     : [];
   return { ok: true, recipe: recipe as Record<string, unknown>, warnings };
+}
+
+/**
+ * Saves the compiled task: `POST /api/v1/tasks` with the name and the recipe (PL-030).
+ *
+ * Compiling stores nothing, so this is the call that makes the task real -- the one that puts it
+ * on the dashboard. An HTTP error becomes a `{ok: false}` outcome; only a network failure is
+ * allowed to throw, exactly like the compile.
+ */
+export async function saveTask(
+  request: SaveTaskBody,
+  deps: { fetchImpl?: typeof fetch; baseUrl: string },
+): Promise<SaveTaskOutcome> {
+  const fetchImpl = deps.fetchImpl ?? fetch;
+  const baseUrl = deps.baseUrl.replace(/\/+$/, "");
+  const response = await fetchImpl(`${baseUrl}${SAVE_TASK_PATH}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(request),
+  });
+
+  const body = await readJson(response);
+  if (!response.ok) return { ok: false, problems: problemsFrom(response.status, body) };
+  const workflowId = (body as { workflow_id?: unknown } | null | undefined)?.workflow_id;
+  if (typeof workflowId !== "string" || workflowId.length === 0) {
+    return {
+      ok: false,
+      problems: [`ProcessLens answered but stored no task (HTTP ${response.status}).`],
+    };
+  }
+  return { ok: true, workflowId };
 }
 
 /** The storage area the form writes the recipe and the row into. */
@@ -582,7 +633,29 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
       problems.length > 0 ? problems : ["ProcessLens would not accept this recording."];
     // The count is the true one, whether or not a sentence is one this page can show.
     const count = sentences.length === 1 ? "1 problem" : `${sentences.length} problems`;
-    notice(`Could not save this as a task (${count}).`);    warningsEl.textContent = readableBlock(sentences);
+    notice(`Could not save this as a task (${count}).`);
+    warningsEl.textContent = readableBlock(sentences);
+  }
+
+  /**
+   * The first plain sentence among the save route's reasons, or one that owns the refusal.
+   *
+   * The tasks route refuses with the compiler's own sentences on a bad recipe and with one line on
+   * anything else; the same filter that guards `#make-warnings` decides what a person reads here.
+   */
+  function plainReason(problems: string[]): string {
+    const { shown } = plainSentences(problems.join("\n"));
+    return shown[0] ?? "ProcessLens would not say what went wrong.";
+  }
+
+  /** The saved task's own line: its name, that it is ready, and the link to its page. */
+  function showSaved(name: string, workflowId: string): void {
+    const link = document.createElement("a");
+    link.href = `${deps.baseUrl.replace(/\/+$/, "")}/tasks/${workflowId}`;
+    link.textContent = SAVED_OPEN;
+    // Built from nodes rather than HTML, so a task name is never markup.
+    resultEl.replaceChildren(`${name} ${SAVED_READY}. `, link);
+    deps.onNotice?.(`${name} ${SAVED_READY}. ${SAVED_OPEN}`);
   }
 
   function refresh(next: RecordedEvent[]): void {
@@ -677,7 +750,17 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
       }
       // The run controls read these two keys, and the row is the sample row the route compiled.
       await deps.storage.set({ [RECIPE_KEY]: outcome.recipe, [ROW_KEY]: request.sample_row });
-      notice(`Saved as a task: "${name}" is ready. Try one row will use it.`);
+      // Compiling stored nothing: this POST is what makes the task real (PL-030). The two session
+      // keys above are already written, so Try one row keeps working whatever happens here.
+      const saved = await saveTask(
+        { name, recipe: outcome.recipe },
+        { fetchImpl: deps.fetchImpl, baseUrl: deps.baseUrl },
+      );
+      if (!saved.ok) {
+        notice(`${SAVE_TASK_REFUSAL}: ${plainReason(saved.problems)}`);
+        return;
+      }
+      showSaved(name, saved.workflowId);
       // The recorder's caveats come first: they describe the recording itself, and the
       // route's warnings describe the task the compiler wrote from it.
       warningsEl.textContent = readableBlock([...recordedWarnings(events), ...outcome.warnings]);
