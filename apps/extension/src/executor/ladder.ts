@@ -610,6 +610,13 @@ export function resolveTargetInPage(query: ResolveQuery): ResolveResult {
       FIELDSET: "group",
       OPTION: "option",
       LABEL: "label",
+      // The table trio, which is what a results table is made of. A search result is a cell, and
+      // rung 1 -- role plus accessible name -- is the rung a recipe should be able to use for one.
+      // Without them a cell is `generic` and the only rung left is a CSS selector into someone
+      // else's markup, which is precisely the durability the ladder exists to avoid.
+      TD: "cell",
+      TH: "columnheader",
+      TR: "row",
       H1: "heading",
       H2: "heading",
       H3: "heading",

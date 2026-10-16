@@ -183,4 +183,15 @@ export interface RecordedEvent {
    * reads beside it.
    */
   reason?: string;
+  /**
+   * Present only on a `fill` no one typed into: the page itself put the value there while the
+   * recording was running (a numeric default, a resolved many2one, a computed field). The value is
+   * still recorded -- it is what the page held -- but it is not an action the person took, and a
+   * recipe must not replay it: typing a computed default back into a field is not part of the task,
+   * and on a page that names such a field in a different language or order it is a wrong step.
+   *
+   * It rides the envelope as a plain fact (the `warning` beside it is the sentence a person reads),
+   * so the compiler drops the fill by reading one boolean instead of matching English prose.
+   */
+  page_set?: boolean;
 }

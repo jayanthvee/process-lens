@@ -88,6 +88,12 @@ const TAG_ROLES: Record<string, string> = {
   DIALOG: "dialog",
   FIELDSET: "group",
   OPTION: "option",
+  // The table trio. A search result is a cell, and `role: "cell"` is how the compiler names one
+  // in a duplicate branch's condition; a recorder that called a cell `generic` would produce a rung
+  // the executor agrees with but a person cannot read, and the two sides must agree exactly.
+  TD: "cell",
+  TH: "columnheader",
+  TR: "row",
   // A LABEL is deliberately absent: `label` is a tag, not a role, and a click on one is
   // recorded against the control it labels (see the recorder's resolveClickTarget), so the
   // recorder never emits `role: "label"`. A label falls back to `generic`.

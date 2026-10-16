@@ -42,6 +42,12 @@ export interface EventInput {
   supersedes?: string | undefined;
   /** Why an event carries no step: the machine-readable reason for an unrecordable change. */
   reason?: string | undefined;
+  /**
+   * True on a `fill` the page produced by itself: the value is real, but nobody typed it. It is
+   * copied whenever it was supplied, because `page_set: false` is the recorder saying "a person did
+   * type this", which is not the same as saying nothing about it.
+   */
+  page_set?: boolean | undefined;
 }
 
 export function makeEvent(input: EventInput): PendingEvent {
@@ -60,6 +66,7 @@ export function makeEvent(input: EventInput): PendingEvent {
   if (input.autocomplete !== undefined) event.autocomplete = input.autocomplete;
   if (input.supersedes !== undefined) event.supersedes = input.supersedes;
   if (input.reason !== undefined) event.reason = input.reason;
+  if (input.page_set !== undefined) event.page_set = input.page_set;
   if (input.step && input.frame && input.frame.length > 0) {
     input.step.frame = input.frame;
   }

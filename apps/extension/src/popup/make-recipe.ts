@@ -29,9 +29,12 @@ export const SAVED_READY = "is ready";
 export const REFUSAL_HEADLINE = "Could not";
 /** Shown while the request is out: it must look like neither an outcome nor a refusal. */
 export const SAVING_NOTE = "Turning your recording into a task…";
-/** Shown under the duplicate checkbox when the recording holds no search for the key. */
+/**
+ * Shown under the duplicate checkbox when the recording holds no search at all: no fill of a
+ * column's own value was followed by the step that runs a search.
+ */
 export const NO_SEARCH_HINT =
-  "I did not see a search for this column, so I cannot check for duplicates.";
+  "I did not see a search in this recording, so I cannot check for duplicates.";
 
 /** One recorded constant value, ready to become a row column. */
 export interface RecordedValue {
@@ -138,6 +141,10 @@ export function recordedValues(events: RecordedEvent[]): RecordedValue[] {
     const step = event?.step ?? null;
     if (!step) continue;
     if (step.id !== undefined && superseded.has(String(step.id))) continue;
+    // A value the page set on its own is not something the person demonstrated, so it is not a
+    // column a row should fill. The form still shows the recorder's sentence about it
+    // (`recordedWarnings`), because a person reviewing the task should know it happened.
+    if (event.page_set === true) continue;
     const value = constantValue(step);
     if (value === null) continue;
     if (seenValues.has(value)) continue;
@@ -212,26 +219,43 @@ function looksLikeSearch(step: RecordedStep | null): boolean {
 }
 
 /**
- * Whether the recording searches for the record key: a `fill` whose constant value equals
- * the record key column's sample value, immediately followed by a click that runs it -- a search
- * control, recognised by `looksLikeSearch` (mirrors the compiler's detection). Returns false when
- * no key column is chosen.
+ * Whether one recorded value was searched for: a fill carrying it, immediately followed by the
+ * step that runs the search. A search bar that applies on Enter -- Odoo's own search view, and most
+ * application search bars -- has no button to click, so Enter counts as running it.
+ */
+function searchesForValue(events: RecordedEvent[], value: string): boolean {
+  for (let index = 0; index < events.length - 1; index += 1) {
+    const step = events[index]?.step ?? null;
+    if (!step || step.action !== "fill") continue;
+    if (constantValue(step) !== value) continue;
+    const next = events[index + 1]?.step ?? null;
+    if (!next) continue;
+    const runs =
+      next.action === "click" || (next.action === "press" && next.key === "Enter");
+    if (runs && (looksLikeSearch(step) || looksLikeSearch(next))) return true;
+  }
+  return false;
+}
+
+/**
+ * Whether the recording searches the destination for a value it can identify a record by.
+ *
+ * The key column is preferred, but it is not the only column that can carry a duplicate check: a
+ * workflow keyed on a lead's name is still searched by email, and the check has to read whatever
+ * the destination was actually searched for. The key column must still be one of the recording's
+ * own columns, or there is nothing to check a row against. Returns false when no key column is
+ * chosen.
  */
 export function searchDetected(events: RecordedEvent[], recordKeyColumn: string): boolean {
   const column = recordKeyColumn.trim();
   if (column.length === 0) return false;
-  const sample = recordedValues(events).find((value) => value.column === column);
-  if (!sample) return false;
-  for (let index = 0; index < events.length - 1; index += 1) {
-    const step = events[index]?.step ?? null;
-    if (!step || step.action !== "fill") continue;
-    if (constantValue(step) !== sample.value) continue;
-    const next = events[index + 1]?.step ?? null;
-    if (next && next.action === "click" && (looksLikeSearch(step) || looksLikeSearch(next))) {
-      return true;
-    }
-  }
-  return false;
+  const values = recordedValues(events);
+  if (!values.some((value) => value.column === column)) return false;
+  const searched = values.find((value) => value.column === column);
+  if (searched && searchesForValue(events, searched.value)) return true;
+  return values.some(
+    (value) => value.column !== column && searchesForValue(events, value.value),
+  );
 }
 
 /**

@@ -36,6 +36,10 @@ class Event:
     chip: bool = False
     autocomplete: bool = False
     supersedes: str | None = None
+    # The recorder witnessed that the page itself put this value in the field: the value is real,
+    # but the person did not type it, so it is not an action a recipe may replay. It rides the
+    # envelope as a boolean so the compiler never has to match the recorder's English sentence.
+    page_set: bool = False
 
 
 @dataclass
@@ -59,6 +63,7 @@ class Candidate:
     chip: bool = False
     autocomplete: bool = False
     supersedes: str | None = None
+    page_set: bool = False
     notes: list[str] = field(default_factory=list)
 
 

@@ -166,6 +166,7 @@ def parse_events(recording: Any) -> tuple[list[Event], list[str]]:
                 observation=dict(observation) if observation is not None else None,
                 chip=raw.get("chip") is True,
                 autocomplete=raw.get("autocomplete") is True,
+                page_set=raw.get("page_set") is True,
                 supersedes=(
                     raw.get("supersedes") if isinstance(raw.get("supersedes"), str) else None
                 ),
