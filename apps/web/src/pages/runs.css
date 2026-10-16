@@ -1,0 +1,164 @@
+/* Runs' own placement. The panels, rows, tables, progress bars, live dot and buttons are already
+   ported into styles/global.css from the approved mock, so nothing here duplicates them. */
+
+.runs,
+.run-detail {
+  display: grid;
+  gap: 30px;
+  align-content: start;
+}
+
+.runs .empty {
+  padding: 8px 20px 20px;
+}
+
+.runs .empty-sentence {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 14.5px;
+}
+
+.runs .empty-action {
+  margin: 14px 0 0;
+}
+
+/* "11 of 20 done" over a thin progress bar: the same bar Home shows, with the words under it. */
+.runs td.progress-cell {
+  font-variant-numeric: tabular-nums;
+}
+
+.runs td.progress-cell .track {
+  display: block;
+  margin-top: 7px;
+  max-width: 180px;
+}
+
+.run-detail .pause-reason {
+  margin: 0;
+  padding: 0 20px 14px;
+  color: var(--ink-2);
+  font-size: 14px;
+}
+
+.run-detail .times {
+  margin: 0;
+  padding: 0 20px 14px;
+  display: flex;
+  gap: 18px;
+  flex-wrap: wrap;
+  color: var(--muted);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.run-detail .actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 0 20px 18px;
+}
+
+/* A refusal sits next to the button that caused it, so a person knows what to do next. */
+.run-detail .run-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.run-detail .refusal {
+  color: var(--help);
+  font-size: 13.5px;
+}
+
+.run-detail .export {
+  margin-left: auto;
+}
+
+.run-detail .panel-note {
+  margin: 0;
+  padding: 12px 20px 20px;
+  color: var(--ink-2);
+  font-size: 14px;
+}
+
+/* The approval decision: the ask, the exact values a person is deciding about, then two buttons. */
+.run-detail .approval {
+  display: grid;
+  gap: 12px;
+  padding: 10px 20px 20px;
+}
+
+.run-detail .approval-ask {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 14px;
+}
+
+.run-detail .approval-values {
+  margin: 0;
+  display: grid;
+  gap: 0;
+  border: 1px solid var(--hair);
+  border-radius: 10px;
+  background: var(--glass-strong);
+}
+
+.run-detail .approval-line {
+  display: grid;
+  grid-template-columns: minmax(0, 12rem) minmax(0, 1fr);
+  gap: 12px;
+  padding: 9px 14px;
+  border-top: 1px solid var(--hair);
+}
+
+.run-detail .approval-line:first-child {
+  border-top: 0;
+}
+
+.run-detail .approval-line dt {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.run-detail .approval-line dd {
+  margin: 0;
+  color: var(--ink);
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+.run-detail .approval .actions {
+  padding: 0;
+}
+
+.run-detail .operator-note {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 13.5px;
+}
+
+.run-detail .operator-problem {
+  color: var(--ink);
+}
+
+.run-detail .saved-fig {
+  justify-self: start;
+  min-width: 200px;
+}
+
+@media (max-width: 780px) {
+  .run-detail .export {
+    margin-left: 0;
+  }
+
+  .run-detail .approval-line {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+  }
+
+  .runs .empty {
+    padding: 4px 16px 18px;
+  }
+}

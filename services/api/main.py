@@ -10,16 +10,21 @@ from __future__ import annotations
 import logging
 import os
 import uuid
+from collections.abc import MutableMapping
 from pathlib import Path
+from typing import Any
 
 import psycopg
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.responses import Response
 
 from .approvals import router as approvals_router
 from .compile import router as compile_router
+from .home import router as home_router
 from .hub import router as hub_router
 from .middleware import FrontDoorMiddleware
 from .recipes import router as recipes_router
@@ -44,6 +49,7 @@ app.include_router(compile_router)
 app.include_router(runs_router)
 app.include_router(approvals_router)
 app.include_router(hub_router)
+app.include_router(home_router)
 
 
 # NOTE: the page's static mount is added at the very END of this module, after every route is
@@ -113,8 +119,49 @@ def operator() -> OperatorResponse:
 # routers, ``/health`` and ``/api/v1/operator`` alike. When the page has not been built there is
 # nothing to mount, and ``/`` answers one line telling the operator how to build it rather than
 # crashing at import or serving a directory that is not there.
+class SpaStaticFiles(StaticFiles):
+    """The built page, with one rule: a client-side route is not a missing file.
+
+    A person can refresh on ``/runs/abc``. No such file exists, so the mount would answer 404 and
+    the page would never load. A path with no file extension therefore answers ``index.html`` and
+    the router inside the page decides what to draw.
+
+    Two things still 404 rather than answering the page, on purpose:
+
+    * a missing *asset* -- ``*.js``, ``*.css``, ``*.png`` and the rest -- so a broken build is
+      visible instead of a page that quietly serves a stylesheet that is not there;
+    * anything under ``/api/``, so a mistyped API path stays the JSON 404 the API itself would
+      send. Handing the page's HTML to an API caller would turn a plain 404 into a 200 whose body
+      no caller can parse.
+    """
+
+    # The prefix the API owns; a miss under it is the API's 404, never the page.
+    API_PREFIX = "api/"
+
+    async def get_response(self, path: str, scope: MutableMapping[str, Any]) -> Response:
+        """Answer the file, or the page for a route, or 404 for a missing asset or API path.
+
+        ``path`` has already been through ``os.path.normpath``, so on Windows its separators are
+        backslashes; they are normalised back before the prefix test, or ``/api/...`` would slip
+        past it on this machine and not on the deployment.
+        """
+        relative = path.replace("\\", "/").lstrip("/")
+        is_api = relative == self.API_PREFIX.rstrip("/") or relative.startswith(self.API_PREFIX)
+        if is_api or Path(relative).suffix:
+            return await super().get_response(path, scope)
+        try:
+            response = await super().get_response(path, scope)
+        except StarletteHTTPException as exc:
+            if exc.status_code != 404:
+                raise
+            return await super().get_response("index.html", scope)
+        if response.status_code == 404:
+            return await super().get_response("index.html", scope)
+        return response
+
+
 if WEB_DIST.is_dir():
-    app.mount("/", StaticFiles(directory=WEB_DIST, html=True), name="web")
+    app.mount("/", SpaStaticFiles(directory=WEB_DIST, html=True), name="web")
 else:
 
     @app.get("/", response_class=PlainTextResponse, include_in_schema=False)

@@ -1,0 +1,106 @@
+/* Needs help's own placement. Every shared primitive -- the panel, the rows, the quiet button and
+   the blur-in entrance -- is already ported into styles/global.css, so nothing here duplicates it. */
+
+.needs-help {
+  display: grid;
+  gap: 30px;
+  align-content: start;
+}
+
+/* The operator problem: the API's own words, said once above the rows. */
+.needs-help .operator-note {
+  margin: 0;
+  padding: 14px 18px;
+  border: 1px solid var(--hair-2);
+  border-radius: 12px;
+  background: var(--glass);
+  color: var(--ink-2);
+  font-size: 14px;
+}
+
+.needs-help .operator-problem {
+  color: var(--ink);
+}
+
+.needs-help .panel-note {
+  margin: 0;
+  padding: 12px 20px 20px;
+  color: var(--ink-2);
+  font-size: 14px;
+}
+
+/* One row's decision: the outcome, then the one action it offers. */
+.needs-help .row-actions {
+  display: grid;
+  gap: 8px;
+  justify-items: end;
+  align-content: center;
+}
+
+.needs-help .row-actions .res {
+  font-size: 13.5px;
+}
+
+.needs-help .record-buttons {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+/* The reason the box exists, in one sentence, beside the box. It spans the whole row, under the
+   row's own line: a sentence in the narrow action column would leave the row half empty and twice
+   as tall. */
+.needs-help .rows li { align-items: center; }
+
+.needs-help .destination-check {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 4px;
+  justify-items: start;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--hair);
+}
+
+.needs-help .destination-check-line {
+  display: inline-flex;
+  gap: 7px;
+  align-items: center;
+  color: var(--ink);
+  font-size: 13.5px;
+  cursor: pointer;
+}
+
+.needs-help .destination-check-why {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  max-width: 62ch;
+}
+
+/* A refusal sits beside the button that caused it, in the API's own words. */
+.needs-help .action-error {
+  color: var(--help);
+  font-size: 13px;
+  max-width: 320px;
+  text-align: right;
+}
+
+.needs-help .rows small {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+@media (max-width: 780px) {
+  .needs-help .row-actions,
+  .needs-help .action-error {
+    justify-items: start;
+    text-align: left;
+  }
+
+  .needs-help .record-buttons {
+    justify-content: flex-start;
+  }
+}

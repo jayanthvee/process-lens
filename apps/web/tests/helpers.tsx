@@ -1,0 +1,114 @@
+/**
+ * Test-only helpers: the router-wrapping render, a fake `fetch`, and the two ways to look at it.
+ *
+ * Every other test file imports these, so a page test never builds its own router or touches the
+ * real network.
+ */
+
+import { act, render, type RenderResult } from "@testing-library/react";
+import type { ReactElement } from "react";
+import { MemoryRouter } from "react-router-dom";
+
+import { App } from "../src/App";
+
+export interface RecordedRequest {
+  method: string;
+  path: string;
+  body: unknown;
+}
+
+export interface StubResponse {
+  status?: number;
+  body: unknown;
+}
+
+export type StubRoutes = Record<string, StubResponse | ((call: RecordedRequest) => StubResponse)>;
+
+export interface FetchStub {
+  /** The paths asked for, in order. */
+  calls: string[];
+  /** Every request, with its method and its parsed body. */
+  requests: RecordedRequest[];
+  /** Put the real `fetch` back. */
+  restore: () => void;
+}
+
+/** A `Response` good enough for the API client: status, ok, and a JSON text body. */
+export function jsonResponse(status: number, body: unknown): Response {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    text: async () => (body === undefined ? "" : JSON.stringify(body)),
+  } as unknown as Response;
+}
+
+function pick(routes: StubRoutes, path: string): StubRoutes[string] | undefined {
+  const exact = routes[path];
+  if (exact !== undefined) return exact;
+  const prefixes = Object.keys(routes)
+    .filter((key) => path.startsWith(key))
+    .sort((left, right) => right.length - left.length);
+  const longest = prefixes[0];
+  return longest === undefined ? undefined : routes[longest];
+}
+
+/**
+ * Replace `fetch` with a stub that answers from `routes`. A key matches the path exactly, or as the
+ * longest prefix of it, so `/api/v1/runs` also answers `/api/v1/runs/abc`. An unmatched path is a
+ * 404 with the API's own detail shape.
+ */
+export function createFetchStub(routes: StubRoutes = {}): FetchStub {
+  const original = globalThis.fetch;
+  const requests: RecordedRequest[] = [];
+  const calls: string[] = [];
+
+  const stub = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const raw =
+      typeof input === "string" ? input : input instanceof URL ? input.toString() : String(input);
+    const path = new URL(raw, "http://localhost").pathname;
+    const method = (init?.method ?? "GET").toUpperCase();
+    const rawBody = init?.body;
+    const body: unknown =
+      typeof rawBody === "string" && rawBody !== "" ? (JSON.parse(rawBody) as unknown) : null;
+    const call: RecordedRequest = { method, path, body };
+    requests.push(call);
+    calls.push(path);
+    const entry = pick(routes, path);
+    const answer = entry === undefined ? { body: { detail: "Not found" } } : entry;
+    const resolved = typeof answer === "function" ? answer(call) : answer;
+    return jsonResponse(resolved.status ?? 200, resolved.body);
+  };
+
+  globalThis.fetch = stub as unknown as typeof fetch;
+  return {
+    calls,
+    requests,
+    restore: () => {
+      globalThis.fetch = original;
+    },
+  };
+}
+
+/** How many times a path was asked for. */
+export function callsTo(stub: FetchStub, path: string): number {
+  return stub.calls.filter((call) => call === path).length;
+}
+
+/** Let the queue of promises and the pending renders finish, so assertions see the settled page. */
+export async function settle(rounds = 3): Promise<void> {
+  for (let round = 0; round < rounds; round += 1) {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
+}
+
+/** Render the whole app, at one path, inside a router. */
+export function renderApp(path = "/"): RenderResult {
+  const element: ReactElement = (
+    <MemoryRouter initialEntries={[path]}>
+      <App />
+    </MemoryRouter>
+  );
+  return render(element);
+}
