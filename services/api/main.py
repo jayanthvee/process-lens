@@ -15,26 +15,29 @@ from pathlib import Path
 from typing import Any
 
 import psycopg
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.responses import PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import Response
 
+from .admin import router as admin_router
 from .approvals import router as approvals_router
 from .batches import router as batches_router
 from .compile import router as compile_router
+from .executor import router as executor_router
 from .home import router as home_router
 from .hub import router as hub_router
 from .middleware import FrontDoorMiddleware
+from .operator import operator_id
 from .recipes import router as recipes_router
 from .runs import router as runs_router
+from .workspace import router as workspace_router
 
 logger = logging.getLogger("processlens.api")
 
 CONNECT_TIMEOUT_SECONDS = 2
-OPERATOR_ENV_VAR = "PROCESSLENS_OPERATOR_ID"
 WEB_DIST = Path(__file__).resolve().parents[2] / "apps" / "web" / "dist"
 BUILD_HINT = (
     "the operator page is not built yet; run: npm --prefix apps/web install "
@@ -50,6 +53,9 @@ app.include_router(compile_router)
 app.include_router(batches_router)
 app.include_router(runs_router)
 app.include_router(approvals_router)
+app.include_router(admin_router)
+app.include_router(executor_router)
+app.include_router(workspace_router)
 app.include_router(hub_router)
 app.include_router(home_router)
 
@@ -100,19 +106,7 @@ def operator() -> OperatorResponse:
     answer is 503 with a sentence the page can show, and the page disables every action that needs
     a person's id. The API never invents one.
     """
-    raw = os.environ.get(OPERATOR_ENV_VAR, "").strip()
-    if not raw:
-        raise HTTPException(
-            status_code=503,
-            detail=f"{OPERATOR_ENV_VAR} is not set, so there is no operator id to act as",
-        )
-    try:
-        return OperatorResponse(operator_id=uuid.UUID(raw))
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=503,
-            detail=f"{OPERATOR_ENV_VAR} is not a UUID",
-        ) from exc
+    return OperatorResponse(operator_id=operator_id())
 
 
 # The page and the API share one origin, so the page fetches relative paths and the front door's

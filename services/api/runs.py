@@ -31,8 +31,9 @@ from packages.ledger import (
     resume_run,
     set_run_status,
 )
-from services.runner.creation import CreationError, create_run
+from services.runner.creation import CreationError, create_run, workflow_tenant
 
+from .admin import require_runs_allowed
 from .db import connection
 
 router = APIRouter(prefix="/api/v1", tags=["runs"])
@@ -166,8 +167,15 @@ def create_run_endpoint(payload: Annotated[CreateRunRequest, Body()]) -> CreateR
 
     Fail closed: an unsupported step, an unknown filter, a missing column, a mismatched workflow, or
     a cross-tenant pin is refused with every problem and nothing is written.
+
+    PL-026: before anything is written, the workspace is asked whether a run may start at all -- the
+    person's access, an admin's freeze, and the tenant's Chrome extension floor. An unknown workflow
+    has no tenant to ask about, so it falls through to the creation's own 422, which names it.
     """
     with connection() as conn:
+        tenant_id = workflow_tenant(conn, payload.workflow_id)
+        if tenant_id is not None:
+            require_runs_allowed(conn, tenant_id)
         try:
             run_id = create_run(
                 conn,
@@ -329,9 +337,14 @@ def pause_run_endpoint(run_id: uuid.UUID) -> RunDetail:
 
 @router.post("/runs/{run_id}/resume", response_model=RunDetail)
 def resume_run_endpoint(run_id: uuid.UUID) -> RunDetail:
-    """Resume a paused run."""
+    """Resume a paused run.
+
+    PL-026: the same gate as starting one -- a person whose access is off, a frozen workspace, or an
+    extension below the floor all refuse here, and unfreezing never resumes a run by itself.
+    """
     with connection() as conn:
         run = _fetch_run(conn, run_id)
+        require_runs_allowed(conn, run.tenant_id)
         if not resume_run(conn, run_id):
             raise HTTPException(status_code=409, detail=f"run {run_id} is {run.status}, not paused")
         conn.commit()

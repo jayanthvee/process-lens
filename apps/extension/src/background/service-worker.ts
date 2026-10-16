@@ -609,6 +609,40 @@ async function checkCommandCondition(
   }
 }
 
+/**
+ * PL-026: tell the API which version this extension is running.
+ *
+ * The service worker calls this every time the command session reaches `ready` -- after the first
+ * pair, after a reconnect, after a restore that outlived a worker restart -- so the API can tell a
+ * person whose extension is older than the floor their admin set. The version is the manifest's
+ * own, read here and nowhere else.
+ *
+ * The hub URL comes from the stored session, which is the same value the socket was opened against
+ * and the one a restored worker still has. A report is a courtesy: a session with no stored URL, a
+ * navigator that cannot fetch, or a refused request leaves the session exactly as it was, because
+ * the run must never depend on this call.
+ */
+async function reportExtensionVersion(): Promise<void> {
+  try {
+    const version = chrome.runtime?.getManifest?.().version;
+    if (typeof version !== "string" || version === "") return;
+    const hubUrl = (await commandStorage().get())?.hubUrl;
+    if (typeof hubUrl !== "string" || hubUrl === "") return;
+    const fetchFn = (globalThis as { fetch?: typeof fetch }).fetch;
+    if (typeof fetchFn !== "function") return;
+    await fetchFn(`${hubUrl.replace(/\/+$/, "")}/api/v1/executor/version`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "X-ProcessLens-Client": "extension",
+      },
+      body: JSON.stringify({ version }),
+    });
+  } catch {
+    // A report that did not land is not a run that cannot continue.
+  }
+}
+
 function getCommandSession(): CommandSession {
   if (commandSession) return commandSession;
   const deps: SessionDeps = {
@@ -640,6 +674,9 @@ function getCommandSession(): CommandSession {
     },
     runStep: runCommandStep,
     checkCondition: checkCommandCondition,
+    // PL-026: the one call the extension makes for the version check. The session decides when
+    // (every time it reaches `ready`); this decides where and as whom.
+    reportVersion: () => void reportExtensionVersion(),
     onState: (state: SessionState) => {
       commandSessionState = state;
       broadcastCommandSession();

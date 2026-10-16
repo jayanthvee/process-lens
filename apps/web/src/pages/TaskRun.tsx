@@ -4,6 +4,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { apiGet, apiPost, apiPostFile, apiPut, errorText } from "../lib/api";
 import { POLL_INTERVAL_MS, useJson } from "../lib/useJson";
 import { isOpenStatus, refusalWords, runStatusWords } from "../lib/words";
+import { runsBlocked, useWorkspaceState } from "../lib/workspace";
 import type {
   BatchCheck,
   BatchUpload,
@@ -57,6 +58,11 @@ function readyWords(ready: number, needLook: number): string {
 export function TaskRun(): JSX.Element {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+
+  // Whether an admin has paused runs, or this person's extension is too old. The buttons below
+  // stand down while that is true; the shell's banner is what says why.
+  const workspace = useWorkspaceState();
+  const blocked = runsBlocked(workspace.data);
 
   // The task carries the two ids the whole flow needs: the task itself and the version it runs.
   const tasks = useJson<TaskRow[]>("/api/v1/tasks");
@@ -416,7 +422,7 @@ export function TaskRun(): JSX.Element {
               <button
                 type="button"
                 className="btn primary run-try"
-                disabled={busy || first === null}
+                disabled={busy || first === null || blocked}
                 onClick={() => void tryIt()}
               >
                 Try it
@@ -429,7 +435,7 @@ export function TaskRun(): JSX.Element {
               <button
                 type="button"
                 className="btn primary run-rest"
-                disabled={busy}
+                disabled={busy || blocked}
                 onClick={() => void runTheRest()}
               >
                 Run the other {rowsLeft} rows

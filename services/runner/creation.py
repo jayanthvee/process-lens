@@ -34,6 +34,7 @@ _NESTED_KEYS = ("then", "else", "steps")
 _SELECT_WORKFLOW = """
 SELECT id, tenant_id, destination_key, archived_at FROM workflows WHERE id = %(id)s
 """
+_SELECT_WORKFLOW_TENANT = "SELECT tenant_id FROM workflows WHERE id = %(id)s"
 _SELECT_RECIPE_VERSION = """
 SELECT id, tenant_id, workflow_id, recipe FROM recipe_versions WHERE id = %(id)s
 """
@@ -103,6 +104,20 @@ def step_problems(document: Mapping[str, Any]) -> list[str]:
     problems: list[str] = []
     _walk_steps(document.get("steps"), "steps", ran_executor=False, problems=problems)
     return problems
+
+
+def workflow_tenant(conn: psycopg.Connection, workflow_id: uuid.UUID) -> uuid.UUID | None:
+    """The tenant a workflow belongs to, or ``None`` when there is no such workflow.
+
+    The API's run gate needs this before creation: an admin's freeze and a tenant's Chrome extension
+    floor are facts about the workflow's tenant, and a run is pinned to a workflow. An unknown
+    workflow has no tenant to ask about, so the caller falls through to creation, which refuses it
+    with the problem it actually has.
+    """
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(_SELECT_WORKFLOW_TENANT, {"id": workflow_id})
+        row = cur.fetchone()
+    return row["tenant_id"] if row is not None else None
 
 
 def _check_consistency(

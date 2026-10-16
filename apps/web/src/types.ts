@@ -139,6 +139,20 @@ export interface ExecutorSession {
   attached: boolean;
 }
 
+/**
+ * `GET /api/v1/workspace/state`: whether this workspace's runs may start at all.
+ *
+ * `extension_out_of_date` is the API's own verdict, so the page never compares versions itself:
+ * the answer is true only when a report exists and it is below `min_extension_version`.
+ */
+export interface WorkspaceState {
+  tenant_id: string;
+  runs_frozen: boolean;
+  min_extension_version: string | null;
+  extension_version: string | null;
+  extension_out_of_date: boolean;
+}
+
 /** `POST /api/v1/batches`: the batch a spreadsheet became, and what is in it. */
 export interface BatchUpload {
   batch_id: string;
