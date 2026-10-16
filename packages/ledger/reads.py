@@ -194,9 +194,10 @@ WHERE rr.state IN ('parked', 'failed')
 ORDER BY entered_at DESC, rr.id DESC
 """
 
-# The runs that are going right now: only ``running``. A queued run has not started, and a paused
-# run is stopped, so neither is shown as "Running now" on Home. ``done`` counts both the rows that
-# were added and the rows that were already there; ``already_there`` isolates the latter.
+# The runs that are going: ``running``, or ``paused`` -- a run waiting for a person's approval is
+# paused, and it must stay in view. A queued run has not started, so it is not shown. ``done``
+# counts both the rows that were added and the rows that were already there; ``already_there``
+# isolates the latter.
 _LIST_RUNNING_RUNS = """
 SELECT ru.id AS run_id,
        coalesce(rv.recipe -> 'meta' ->> 'name', w.name) AS task_name,
@@ -213,7 +214,7 @@ LEFT JOIN LATERAL (
   FROM run_records rr
   WHERE rr.run_id = ru.id
 ) c ON true
-WHERE ru.status = 'running'
+WHERE ru.status IN ('running', 'paused')
   AND (%(tenant)s::uuid IS NULL OR ru.tenant_id = %(tenant)s)
 ORDER BY ru.created_at DESC, ru.id
 """
@@ -295,7 +296,7 @@ def list_needs_help(
 def list_running_runs(
     conn: psycopg.Connection, *, tenant_id: uuid.UUID | None = None
 ) -> list[RunningRunRow]:
-    """The runs that are running right now, newest first, with their progress."""
+    """The runs that are running or paused, newest first, with their progress."""
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(_LIST_RUNNING_RUNS, {"tenant": tenant_id})
         return [_row(RunningRunRow, row) for row in cur.fetchall()]
