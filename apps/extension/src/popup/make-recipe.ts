@@ -1,19 +1,37 @@
-// "Make recipe": the logic behind the popup form that turns the worker's
-// recording into a compiled recipe, plus the small form object itself.
+// "Save as task": the logic behind the popup form that turns the worker's
+// recording into a compiled task, plus the small form object itself.
 //
 // The form is handed its root element, a storage area and a hub URL, so the
 // compile request and the storage contract can be tested without a browser.
+//
+// Every sentence a person reads is spelled out here rather than built from an id:
+// the engine's words (DESIGN.md §2) never reach the screen.
 import type { RecordedEvent, RecordedStep } from "../shared/recipe-types";
+import { UNNAMED_CLICK, UNNAMED_STEP, hiddenNote, plainSentences } from "./words";
 
 /** Where the compiled recipe and its sample row live for the Run button. */
 export const RECIPE_KEY = "processlens:executor-recipe";
 export const ROW_KEY = "processlens:executor-row";
 
 const COMPILE_PATH = "/api/v1/recipes/compile";
-const NO_EVENTS = "No events recorded — stop a recording first.";
+const NO_EVENTS =
+  "Nothing has been recorded yet. Stop teaching first, then save it as a task.";
+
+/**
+ * The two fragments the e2e harness watches for, in one place.
+ *
+ * `tests/e2e/conftest.py`'s `compile_via_popup` waits until `#make-result` carries `is ready` or
+ * `Could not`, and reads "is ready" as the only success. They are constants here so the popup and
+ * the guard that checks them cannot drift apart, and the in-flight sentence is deliberately
+ * neither.
+ */
+export const SAVED_READY = "is ready";
+export const REFUSAL_HEADLINE = "Could not";
+/** Shown while the request is out: it must look like neither an outcome nor a refusal. */
+export const SAVING_NOTE = "Turning your recording into a task…";
 /** Shown under the duplicate checkbox when the recording holds no search for the key. */
 export const NO_SEARCH_HINT =
-  "Record a search for the key first to turn on the duplicate check";
+  "I did not see a search for this column, so I cannot check for duplicates.";
 
 /** One recorded constant value, ready to become a row column. */
 export interface RecordedValue {
@@ -142,16 +160,31 @@ export function recordedValues(events: RecordedEvent[]): RecordedValue[] {
  * The recorder's own caveats about the recording, one sentence per event that carries one.
  * The form shows these so a person sees a step that rests on a positional selector before
  * they compile, rather than after a replay moves the layout out from under it. An
- * `unrecordable` event has no step and still has a warning, so the label falls back to its kind.
+ * `unrecordable` event has no step and still has a warning, so the label falls back to plain words.
  */
 export function recordedWarnings(events: RecordedEvent[]): string[] {
   const warnings: string[] = [];
   for (const event of events) {
     const warning = event?.warning;
     if (!warning) continue;
-    warnings.push(`step ${event.step?.id ?? event.kind}: ${warning}`);
+    warnings.push(`${stepWords(event.step ?? null)}: ${warning}`);
   }
   return warnings;
+}
+
+/**
+ * What to call a step in a sentence: the element's own words, never its id.
+ *
+ * A step the recorder could not name at all is named by what it is ("This click"), and a warning
+ * on an event with no step at all (an `unrecordable`) says so instead of naming an id.
+ */
+function stepWords(step: RecordedStep | null): string {
+  if (!step) return UNNAMED_STEP;
+  const name = humanName(step);
+  if (name) return name;
+  if (step.action === "click") return UNNAMED_CLICK;
+  if (step.action === "press") return "This key";
+  return "This field";
 }
 
 /** Something that looks enough like an email address to identify a record. */
@@ -246,14 +279,15 @@ export function defaultCommitStepId(events: RecordedEvent[]): string | null {
   return last;
 }
 
-/** Every recorded step that can be the commit, labelled for the select. */
+/** Every recorded step that can be the commit, labelled by its own words for the select. */
 export function commitChoices(events: RecordedEvent[]): { id: string; label: string }[] {
   const choices: { id: string; label: string }[] = [];
   for (const event of events) {
     const step = event?.step ?? null;
     if (!step || step.action !== "click" || !step.id) continue;
-    const name = step.name?.trim();
-    choices.push({ id: step.id, label: name && name.length > 0 ? name : step.id });
+    // The value stays the step id -- that is what `commit_step_ids` sends. Only the label a
+    // person reads is plain words, and never the id.
+    choices.push({ id: step.id, label: humanName(step) ?? UNNAMED_CLICK });
   }
   return choices;
 }
@@ -328,7 +362,7 @@ function problemsFrom(status: number, body: unknown): string[] {
   if (typeof detail === "string" && detail.trim().length > 0) return [detail.trim()];
   // FastAPI's validation errors arrive as an array of objects, and any other shape
   // is not ours to interpret: name the status code instead of guessing at it.
-  return [`The hub rejected the recording (HTTP ${status}).`];
+  return [`ProcessLens would not accept this recording (HTTP ${status}).`];
 }
 
 /**
@@ -353,7 +387,10 @@ export async function compileRecording(
   const payload = (body ?? {}) as { recipe?: unknown; warnings?: unknown };
   const recipe = payload.recipe;
   if (!recipe || typeof recipe !== "object") {
-    return { ok: false, problems: [`The hub answered HTTP ${response.status} without a recipe.`] };
+    return {
+      ok: false,
+      problems: [`ProcessLens answered but sent no task back (HTTP ${response.status}).`],
+    };
   }
   const warnings = Array.isArray(payload.warnings)
     ? payload.warnings.filter(
@@ -418,7 +455,7 @@ function parkRow(value: RecordedValue, checked: boolean): HTMLLabelElement {
   box.checked = checked;
   box.dataset.column = value.column;
   const text = document.createElement("span");
-  text.textContent = `Park the record if this is empty: ${value.label}`;
+  text.textContent = `Stop and ask me if this is empty: ${value.label}`;
   row.append(box, text);
   return row;
 }
@@ -427,9 +464,9 @@ function parkRow(value: RecordedValue, checked: boolean): HTMLLabelElement {
 function defaultName(events: RecordedEvent[]): string {
   try {
     const host = new URL(events[0]?.url ?? "").hostname;
-    return host.length > 0 ? `Recorded on ${host}` : "Recorded workflow";
+    return host.length > 0 ? `Recorded on ${host}` : "Recorded task";
   } catch {
-    return "Recorded workflow";
+    return "Recorded task";
   }
 }
 
@@ -438,7 +475,7 @@ function describe(error: unknown): string {
 }
 
 /**
- * The "Make recipe" form over the ids in popup.html: `make-name`, `make-key`,
+ * The "Save as task" form over the ids in popup.html: `make-name`, `make-key`,
  * `make-commit`, `make-duplicate`, `make-duplicate-hint`, `make-origins`,
  * `make-park-fields`, `make-go`, `make-result` and `make-warnings`.
  *
@@ -502,12 +539,26 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
     renderParkFields();
   });
 
+  /**
+   * A block of the engine's own sentences, kept in the plain ones and counted in the rest.
+   *
+   * The compile route answers in the same engineer's voice the worker does -- `assertion for
+   * click-2 taken from the recorded observation`, `… is not in allowed_origins` -- so every
+   * sentence it sends is measured against `ENGINE_WORDS` before a person can read it. What is
+   * dropped is never silent: the count is said out loud.
+   */
+  function readableBlock(sentences: string[]): string {
+    const { shown, hidden } = plainSentences(sentences.join("\n"));
+    return [...shown, hiddenNote(hidden)].filter((line) => line.length > 0).join("\n");
+  }
+
   function showProblems(problems: string[]): void {
-    const sentences = problems.length > 0 ? problems : ["The hub rejected the recording."];
+    // A rejection with no problems the route would own up to is still said in words.
+    const sentences =
+      problems.length > 0 ? problems : ["ProcessLens would not accept this recording."];
+    // The count is the true one, whether or not a sentence is one this page can show.
     const count = sentences.length === 1 ? "1 problem" : `${sentences.length} problems`;
-    // The problems themselves go on their own line, one per line.
-    notice(`Could not make a recipe (${count}).`);
-    warningsEl.textContent = sentences.join("\n");
+    notice(`Could not save this as a task (${count}).`);    warningsEl.textContent = readableBlock(sentences);
   }
 
   function refresh(next: RecordedEvent[]): void {
@@ -535,7 +586,7 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
 
     syncGo();
     syncDuplicate();
-    warningsEl.textContent = recordedWarnings(events).join("\n");
+    warningsEl.textContent = readableBlock(recordedWarnings(events));
     if (events.length === 0) notice(NO_EVENTS);
     else resultEl.textContent = "";
   }
@@ -565,11 +616,13 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
     }
     const name = nameEl.value.trim();
     if (name.length === 0) {
-      showProblems(["Give the workflow a name before making the recipe."]);
+      // The same element carries this as before the restyle: a missing name is reported the way
+      // every other refusal is, so which line a person reads never changed.
+      showProblems(["Give the task a name first."]);
       return;
     }
     if (keyEl.value.length === 0) {
-      notice("Choose a record key column before making the recipe.");
+      notice("Choose which column identifies each row first.");
       return;
     }
 
@@ -587,7 +640,8 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
     busy = true;
     goEl.disabled = true;
     warningsEl.textContent = "";
-    notice("Compiling the recording…");
+    // Anything shown here while the request is in flight must not look like an outcome.
+    notice(SAVING_NOTE);
     try {
       const outcome = await compileRecording(request, {
         fetchImpl: deps.fetchImpl,
@@ -597,14 +651,14 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
         showProblems(outcome.problems);
         return;
       }
-      // Run reads these two keys, and the row is the sample row the route compiled.
+      // The run controls read these two keys, and the row is the sample row the route compiled.
       await deps.storage.set({ [RECIPE_KEY]: outcome.recipe, [ROW_KEY]: request.sample_row });
-      notice(`Recipe "${name}" is ready — Run will use it.`);
+      notice(`Saved as a task: "${name}" is ready. Try one row will use it.`);
       // The recorder's caveats come first: they describe the recording itself, and the
-      // route's warnings describe the recipe the compiler wrote from it.
-      warningsEl.textContent = [...recordedWarnings(events), ...outcome.warnings].join("\n");
+      // route's warnings describe the task the compiler wrote from it.
+      warningsEl.textContent = readableBlock([...recordedWarnings(events), ...outcome.warnings]);
     } catch (error) {
-      showProblems([`The hub could not be reached: ${describe(error)}.`]);
+      showProblems([`ProcessLens could not be reached: ${describe(error)}.`]);
     } finally {
       busy = false;
       syncGo();

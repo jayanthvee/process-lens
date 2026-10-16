@@ -10,6 +10,15 @@ import {
 import type { SessionState } from "../background/command-session";
 import type { RecordedEvent } from "../shared/recipe-types";
 import { createMakeRecipeForm, RECIPE_KEY, ROW_KEY } from "./make-recipe";
+import {
+  plainDetail,
+  recordingWords,
+  runStateWords,
+  sessionWords,
+  stepSentences,
+  STEPS_EMPTY,
+  streamWords,
+} from "./words";
 
 interface RecorderResponse {
   ok: boolean;
@@ -57,6 +66,7 @@ const hubEl = element<HTMLInputElement>("hub");
 const connectButton = element<HTMLButtonElement>("connect");
 const disconnectButton = element<HTMLButtonElement>("disconnect");
 const sessionStateEl = element<HTMLParagraphElement>("session-state");
+const stepsEl = element<HTMLOListElement>("steps");
 
 // The "Make recipe" form: after a Stop it compiles the worker's recording and
 // writes the recipe and its row where Run reads them. It is built once; the hub
@@ -101,12 +111,35 @@ async function send(message: ToWorker): Promise<RecorderResponse> {
   return response ?? { ok: true, status: { ...EMPTY_STATUS }, events: [] };
 }
 
+/**
+ * The live list of recorded steps: one plain sentence per step, and one sentence of its own while
+ * there is nothing recorded. Names come from the element's own words, never from a step id.
+ */
+function renderSteps(events: RecordedEvent[]): void {
+  const sentences = stepSentences(events);
+  if (sentences.length === 0) {
+    const empty = document.createElement("li");
+    empty.className = "steps__empty";
+    empty.textContent = STEPS_EMPTY;
+    stepsEl.replaceChildren(empty);
+    return;
+  }
+  stepsEl.replaceChildren(
+    ...sentences.map((sentence) => {
+      const item = document.createElement("li");
+      item.className = "steps__item";
+      item.textContent = sentence;
+      return item;
+    }),
+  );
+}
+
 function render(status: RecorderStatus): void {
   const recording = status.state === "recording";
-  stateEl.textContent = recording ? "Recording" : "Idle";
+  stateEl.textContent = recordingWords(recording ? "recording" : "idle");
   stateEl.dataset["state"] = status.state;
   countEl.textContent = String(status.count);
-  streamEl.textContent = status.wsUrl ? (status.wsConnected ? "connected" : "configured") : "off";
+  streamEl.textContent = streamWords(status.wsUrl, status.wsConnected);
   startButton.disabled = recording;
   stopButton.disabled = !recording;
   if (document.activeElement !== wsEl) wsEl.value = status.wsUrl;
@@ -116,6 +149,7 @@ async function refresh(): Promise<void> {
   const response = await send({ type: "record:get" });
   render(response.status);
   recordedEvents = response.events ?? [];
+  renderSteps(recordedEvents);
   makeRecipeForm.refresh(recordedEvents);
 }
 
@@ -131,6 +165,7 @@ function mergeEvent(event: RecordedEvent): void {
   const index = recordedEvents.findIndex((candidate) => candidate.seq === event.seq);
   if (index >= 0) recordedEvents[index] = event;
   else recordedEvents.push(event);
+  renderSteps(recordedEvents);
   makeRecipeForm.refresh(recordedEvents);
 }
 
@@ -142,7 +177,7 @@ function download(events: RecordedEvent[]): void {
   link.download = "recording.json";
   link.click();
   URL.revokeObjectURL(url);
-  noteEl.textContent = `Exported ${events.length} event(s).`;
+  noteEl.textContent = `Saved ${events.length} step${events.length === 1 ? "" : "s"} to a file.`;
 }
 
 startButton.addEventListener("click", () => {
@@ -154,6 +189,7 @@ stopButton.addEventListener("click", () => {
     render(response.status);
     // The freshly stopped recording is what the form offers to compile.
     recordedEvents = response.events ?? [];
+    renderSteps(recordedEvents);
     makeRecipeForm.refresh(recordedEvents);
   });
 });
@@ -162,6 +198,7 @@ clearButton.addEventListener("click", () => {
   void send({ type: "record:clear" }).then((response) => {
     render(response.status);
     recordedEvents = response.events ?? [];
+    renderSteps(recordedEvents);
     makeRecipeForm.refresh(recordedEvents);
   });
 });
@@ -183,9 +220,10 @@ exportButton.addEventListener("click", () => {
 
 function renderExecutor(status: ExecutorStatus): void {
   const progress = status.total > 0 ? ` (${status.completed}/${status.total})` : "";
-  runStateEl.textContent = status.state === "idle"
-    ? "Idle"
-    : `${status.state}${progress} — ${status.message}`.trim();
+  // The worker's own detail is written for an engineer: name the state in plain words, and show
+  // the detail only when it is free of the engine's words.
+  const detail = plainDetail(status.message);
+  runStateEl.textContent = `${runStateWords(status.state)}${progress}${detail ? ` — ${detail}` : ""}`;
   runStateEl.dataset["state"] = status.state;
   const busy = status.state === "running" || status.state === "paused";
   runPauseButton.disabled = status.state !== "running";
@@ -204,8 +242,10 @@ async function sendExecutor(
 
 function renderSession(session: SessionInfo | undefined): void {
   const state = session?.state ?? "idle";
-  sessionStateEl.textContent = session?.detail ? `${state} — ${session.detail}` : state;
+  sessionStateEl.textContent = sessionWords(state, session?.detail);
   sessionStateEl.dataset["state"] = state;
+  // A connected session's dot is the one that is "on"; the word carries the meaning either way.
+  sessionStateEl.classList.toggle("status--on", state === "ready" || state === "executing");
   connectButton.disabled = state !== "idle" && state !== "disconnected";
   disconnectButton.disabled = state === "idle";
 }
@@ -232,7 +272,8 @@ async function startExecutor(): Promise<void> {
   const stored = store ? ((await store.get([RECIPE_KEY, ROW_KEY])) as Record<string, unknown>) : {};
   const recipe = stored[RECIPE_KEY];
   if (!recipe) {
-    noteEl.textContent = "No recipe is loaded into this browser session.";
+    noteEl.textContent =
+      "There is no task ready to try yet. Save this recording as a task first.";
     return;
   }
   const response = await sendExecutor({

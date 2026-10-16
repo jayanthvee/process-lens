@@ -1,0 +1,12 @@
+/* The design tokens, copied verbatim from internal/docs/design/home-mock.html.
+   Light only: an internal tool used all day in an office. Gold is the one accent. */
+:root {
+  color-scheme: light;
+  --fog-1: #fdfdfc; --fog-2: #f4f5f3; --fog-3: #e9ebe6;
+  --glass: rgba(255,255,255,.78); --glass-line: rgba(255,255,255,.95); --glass-strong: rgba(255,255,255,.95);
+  --ink: #2a2d2b; --ink-2: #5d6461; --muted: #959c98; --hair: rgba(42,45,43,.07); --hair-2: rgba(42,45,43,.13);
+  --gold: #c8a04a; --gold-deep: #9c7a2c; --gold-soft: #f7f0de; --gold-line: #e8d6aa;
+  --primary-a: #d9b663; --primary-b: #c59a3f; --on-primary: #2b2210;
+  --ok: #3d7a55; --help: #b0532c; --live: #b8892f;
+  --font: "Public Sans", "Helvetica Neue", Arial, sans-serif;
+}
