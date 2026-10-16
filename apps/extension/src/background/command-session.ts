@@ -118,6 +118,12 @@ export interface SessionDeps {
    * Returns false when the tab is gone. Restore never binds the active tab.
    */
   restoreBoundTab: (tabId: number) => Promise<boolean>;
+  /**
+   * PL-026: tell the API which version this extension is running, every time the session reaches
+   * `ready`. The implementation reads the manifest itself, so the session carries no version of its
+   * own; a report that fails changes nothing about the session, which is why this returns nothing.
+   */
+  reportVersion?: () => void;
   onState: (state: SessionState) => void;
 }
 
@@ -192,8 +198,20 @@ export class CommandSession {
   }
 
   private setState(state: SessionState): void {
+    const previous = this.state;
     this.state = state;
     this.deps.onState(state);
+    // PL-026: "each time the command session reaches ready" -- so on the transition into it, not on
+    // every call. A reconnect, a restore and a finished command all arrive here, and all three are
+    // moments the API should hear the version again.
+    if (state === "ready" && previous !== "ready") {
+      try {
+        this.deps.reportVersion?.();
+      } catch {
+        // A report is a courtesy: one that fails must never disturb the state machine that owns
+        // the socket, the bound tab and the commands.
+      }
+    }
   }
 
   /**
