@@ -32,11 +32,28 @@ def test_a_client_side_route_serves_the_page_instead_of_a_404(client: TestClient
     assert ROOT_ELEMENT in response.text
 
 
+def test_a_route_with_a_dot_serves_the_page(client: TestClient) -> None:
+    """A refresh on `/runs/abc.def` loads the app: an unknown suffix is a route, not an asset."""
+    response = client.get("/runs/abc.def")
+
+    assert response.status_code == 200, response.text
+    assert ROOT_ELEMENT in response.text
+
+
 def test_a_missing_asset_still_404s(client: TestClient) -> None:
     """A missing `.js` is a missing file, not a route: a broken build must be visible."""
-    response = client.get("/assets/does-not-exist-0000.js")
+    response = client.get("/assets/missing.js")
 
     assert response.status_code == 404, response.text
+
+
+def test_an_unknown_json_api_path_still_404s_as_json(client: TestClient) -> None:
+    """A miss under `/api/` keeps the API's 404 even when the path looks like an asset."""
+    response = client.get("/api/v1/nope.json")
+
+    assert response.status_code == 404, response.text
+    assert response.headers["content-type"].startswith("application/json")
+    assert ROOT_ELEMENT not in response.text
 
 
 def test_an_unknown_api_path_still_404s_as_json(client: TestClient) -> None:

@@ -175,6 +175,20 @@ def test_a_finished_run_subtracts_its_start_to_finish_time(
     assert body["minutes_saved"] == 20
 
 
+def test_a_queued_run_is_not_listed_as_running(
+    connected: TestClient, conn: psycopg.Connection, ledger: Ledger
+) -> None:
+    """A run that has not started is not "running now": only `status = 'running'` is listed."""
+    queued, _ = ledger.seed_records(1, state="pending")
+    running, _ = ledger.seed_records(2, state="pending")
+    conn.execute("UPDATE runs SET status = 'running' WHERE id = %s", (running.id,))
+
+    body = home_body(connected, ledger)
+
+    assert [live["run_id"] for live in body["running"]] == [str(running.id)]
+    assert str(queued.id) not in [live["run_id"] for live in body["running"]]
+
+
 def test_the_needs_help_panel_is_the_newest_three_in_order(
     connected: TestClient, ledger: Ledger
 ) -> None:

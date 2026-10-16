@@ -23,7 +23,7 @@ export const DESTINATION_CHECK_WHY =
  * The wording of the operator problem lives in `lib/words.ts`, because the run page's decision
  * panel needs the same sentence. Re-exported here so this page's imports stay in one place.
  */
-export { OPERATOR_NOTE, OPERATOR_PROBLEM, operatorNote } from "../lib/words";
+export { OPERATOR_NOTE, operatorNote } from "../lib/words";
 
 export type RecordAction = "requeue" | "dismiss";
 

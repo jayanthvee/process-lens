@@ -13,7 +13,6 @@ import { describe, expect, it } from "vitest";
 
 import {
   DESTINATION_CHECK_LABEL,
-  OPERATOR_PROBLEM,
   actionBody,
   actionGate,
   recordActionPath,
@@ -30,8 +29,9 @@ import {
 
 const OPERATOR_ID = "0f8fad5b-d9cb-469f-a165-70867728950e";
 
-/** The API's own words for a missing operator identity (services/api/main.py). */
-const OPERATOR_503 = "PROCESSLENS_OPERATOR_ID is not set, so there is no operator id to act as";
+/** The words a person reads when the operator endpoint refused (ticket PL-029, fix 3). */
+const OPERATOR_SETUP_NOTE =
+  "Actions are turned off until an operator is set up. Ask your admin.";
 
 /*
  * The 409 the API really sends comes from the ledger itself: `str(exc)` of a `StateConflict` or the
@@ -313,7 +313,7 @@ describe("the operator identity", () => {
     const stub = createFetchStub(
       routes(
         [sampleRow(), sampleRow({ record_id: "record-2", state: "failed", commit_attempted: false })],
-        { "/api/v1/operator": { status: 503, body: { detail: OPERATOR_503 } } },
+        { "/api/v1/operator": { status: 503, body: { detail: "PROCESSLENS_OPERATOR_ID is not set" } } },
       ),
     );
     const view = renderApp("/needs-help");
@@ -324,11 +324,11 @@ describe("the operator identity", () => {
     for (const node of Array.from(buttons)) {
       expect(node.disabled).toBe(true);
     }
-    // It refuses to act, and it says why -- including the API's own words and the variable to set.
+    // It refuses to act, and it says why -- the setup sentence, never the API's own detail text
+    // with the environment variable in it.
     const note = view.container.querySelector<HTMLElement>(".operator-note");
-    expect(note?.textContent).toContain(OPERATOR_PROBLEM);
-    expect(note?.textContent).toContain(OPERATOR_503);
-    expect(note?.textContent).toContain("PROCESSLENS_OPERATOR_ID");
+    expect(note?.textContent).toBe(OPERATOR_SETUP_NOTE);
+    expect(view.container.textContent).not.toContain("PROCESSLENS");
 
     fireEvent.click(button(view.container, ".record-dismiss"));
     await settle();

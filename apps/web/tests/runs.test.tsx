@@ -403,9 +403,12 @@ describe("a run stopped for your decision", () => {
     expect(
       screen.getByRole("button", { name: "No, stop this row" }).hasAttribute("disabled"),
     ).toBe(true);
-    // It refuses to act, and it says why, keeping the API's own words.
-    expect(screen.getByText(/PROCESSLENS_OPERATOR_ID/)).toBeTruthy();
-    expect(screen.getByText(new RegExp(OPERATOR_503))).toBeTruthy();
+    // It refuses to act, and it says why -- the setup sentence, never the API's own detail text
+    // with the environment variable in it.
+    expect(
+      screen.getByText("Actions are turned off until an operator is set up. Ask your admin."),
+    ).toBeTruthy();
+    expect(screen.queryByText(/PROCESSLENS/)).toBeNull();
   });
 
   it("shows no decision panel when the run is not waiting for one", async () => {

@@ -157,23 +157,23 @@ const ALREADY_DEALT_WITH: readonly RegExp[] = [
   /illegal ledger transition/i,
 ];
 
-/** Said once when `GET /api/v1/operator` refuses: the API named nobody, so nobody can act. */
-export const OPERATOR_PROBLEM =
-  "The API has no operator identity, so this screen's actions are off";
-
-/** What to do about it, keeping the API's own variable name in view. */
+/**
+ * Said once when `GET /api/v1/operator` refuses: actions stay off until an operator exists.
+ *
+ * The API's own 503 detail is written for an engineer -- it names `PROCESSLENS_OPERATOR_ID` -- and
+ * a person setting up the page is not one (ticket PL-029, fix 3). The words are fixed here, once,
+ * for both screens that need them, so the wording cannot drift between them.
+ */
 export const OPERATOR_NOTE =
-  "Set PROCESSLENS_OPERATOR_ID and restart the API, then reload this page.";
+  "Actions are turned off until an operator is set up. Ask your admin.";
 
 /**
- * The whole operator problem in one sentence, with the API's own `detail` inside it.
+ * The whole operator problem in one sentence, whatever the API's `detail` said.
  *
- * One function for both screens that need it, so the wording cannot drift between them.
+ * The detail is never shown: the sentence above is what a person can act on.
  */
-export function operatorNote(detail: string | null | undefined): string {
-  const text = (detail ?? "").trim();
-  const said = text === "" ? "" : ` It said: ${text}.`;
-  return `${OPERATOR_PROBLEM}.${said} ${OPERATOR_NOTE}`;
+export function operatorNote(_detail: string | null | undefined): string {
+  return OPERATOR_NOTE;
 }
 
 /**
