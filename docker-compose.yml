@@ -20,7 +20,7 @@ services:
       start_period: 10s
 
   minio:
-    image: cgr.dev/chainguard/minio:latest
+    image: minio/minio:latest
     restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
