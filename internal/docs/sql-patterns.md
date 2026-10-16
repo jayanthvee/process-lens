@@ -327,6 +327,28 @@ audit row that put it in that state; the running set is every run in ``queued``/
 ``paused`` with its per-state counts; and the task list is the latest version of each non-archived
 workflow with its newest run. Their SQL is in the same module, next to these two.
 
+## Create an input batch and its rows
+
+One upload is one batch and one row per spreadsheet row, written together or not at all: the
+caller opens the transaction. ``row_count`` is the number of rows given, and every row is born
+``ready`` with a ``record_key`` (``0001_init``'s check requires one for a ready row) in the person's
+row order, ``raw`` exactly as uploaded and ``clean`` the values a run uses. The check that follows
+an upload moves the rows it cannot accept to ``needs_review`` with a plain reason each
+(``set_row_verdict``), and the mapping a person confirms is stored on the batch
+(``input_batches.column_mapping``) -- never on the recipe. ``packages/ledger/batches.py`` owns these
+statements, including ``get_batch`` and ``list_batch_rows`` (rows come back in ``row_index`` order).
+
+```sql
+INSERT INTO input_batches
+  (tenant_id, workflow_id, file_id, kind, row_count, created_by, column_mapping)
+VALUES ($tenant, $workflow, $file, $kind, $row_count, $created_by, $mapping)
+RETURNING id;
+
+INSERT INTO input_records
+  (tenant_id, batch_id, row_index, raw, clean, record_key, status, issues)
+VALUES ($tenant, $batch, $row_index, $raw, $clean, $record_key, $status, $issues);
+```
+
 ## Rules
 
 - Never `UPDATE` or `DELETE` on `recipe_versions`, `committed_keys`, `step_events`, `ai_calls`, `approvals`, `run_record_transitions`. Triggers will reject it anyway.
