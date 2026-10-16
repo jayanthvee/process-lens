@@ -133,9 +133,34 @@ describe("an observation survives a full-page save", () => {
     await vi.advanceTimersByTimeAsync(ARRIVAL_OBSERVATION_WINDOW_MS * 2);
     arriving.detach();
 
-    expect(reports).toEqual([]);
+    // PL-027: no confirmation is not the same as no evidence. Odoo saves a lead with a full
+    // navigation to the record's own page and shows no confirmation anywhere; without this the
+    // recording's save carried no `assert_after` at all, so the compile refused a workflow that
+    // had just worked. The page the action landed on is what is left, and it is reported.
+    expect(reports).toEqual([{ url_matches: "/saved.html" }]);
     const click = worker.events.find((event) => event.step?.id === "click-1")!;
-    expect(click.observation).toBeUndefined();
+    expect(click.observation).toEqual({ url_matches: "/saved.html" });
+  });
+
+  it("keeps a record id's shape when the arrived page is the only evidence", async () => {
+    const worker = new RecorderSession({ now: () => 1_000 });
+    saveAndLeave(worker);
+
+    const reports: Condition[] = [];
+    const detachArrival = attachRecorder(document, {
+      send: () => undefined,
+      isActive: () => true,
+      url: () => "http://127.0.0.1:8123/odoo/crm/12",
+      arrival: { stepId: worker.pendingTarget()! },
+      onArrivalObservation: (id, observation) => {
+        reports.push(observation);
+        worker.attachObservation(id, observation);
+      },
+    });
+    await vi.advanceTimersByTimeAsync(ARRIVAL_OBSERVATION_WINDOW_MS);
+    detachArrival();
+
+    expect(reports).toEqual([{ url_matches: "/odoo/crm/\\d+" }]);
   });
 
   it("does not report a confirmation that appears after the three-second window", async () => {
@@ -154,7 +179,9 @@ describe("an observation survives a full-page save", () => {
     await flushMutations();
     await vi.advanceTimersByTimeAsync(1000);
 
-    expect(reports).toEqual([]);
+    // The late text is not read. What the window closes with is the page it landed on, which is
+    // the fallback the arrived page always has.
+    expect(reports.filter((report) => "text_visible" in report)).toEqual([]);
     arriving.detach();
   });
 

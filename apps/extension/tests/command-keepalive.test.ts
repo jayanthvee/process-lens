@@ -85,6 +85,9 @@ describe("the command session keepalive", () => {
       runStep: async () => ({ id: "step-1", action: "click", outcome: "done" }),
       checkCondition: async () => ({ ok: true, passed: true }),
       restoreBoundTab: async () => true,
+      // PL-027: the abandon guard's two deps. These tests never arm it; the guard has its own.
+      armAbandonGuard: async () => undefined,
+      disarmAbandonGuard: async () => [],
       onState: (state) => states.push(state),
     };
 

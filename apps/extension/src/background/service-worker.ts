@@ -28,6 +28,10 @@ import { runRecipe, validateRecipe } from "../executor/executor";
 import { FrameContexts } from "../executor/frames";
 import { waitForCondition } from "../executor/assertions";
 import { POLICY_BLOCKED_MESSAGE, checkChallengeOrLogin, classifyAttachError } from "../executor/guards";
+import {
+  armAbandonGuard as armGuard,
+  disarmAbandonGuard as disarmGuard,
+} from "../executor/abandon-guard";
 import { resolverExpression } from "../executor/ladder";
 import type { ExecutorRecipe, StepReport } from "../executor/types";
 import { dispatchCommandStep, prepareCommandStep } from "./command-step";
@@ -674,6 +678,17 @@ function getCommandSession(): CommandSession {
     },
     runStep: runCommandStep,
     checkCondition: checkCommandCondition,
+    // PL-027: the abandon guard runs on the bound tab's debugger, the same one every command uses.
+    armAbandonGuard: async () => {
+      const tabId = commandBoundTabId;
+      if (tabId === null || tabId < 0) throw new Error("no tab is bound to this session");
+      await armGuard(await ensureDebugger(tabId));
+    },
+    disarmAbandonGuard: async () => {
+      const tabId = commandBoundTabId;
+      if (tabId === null || tabId < 0) return [];
+      return disarmGuard(await ensureDebugger(tabId));
+    },
     // PL-026: the one call the extension makes for the version check. The session decides when
     // (every time it reaches `ready`); this decides where and as whom.
     reportVersion: () => void reportExtensionVersion(),

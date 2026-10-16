@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from packages.compiler.assertions import (
@@ -94,10 +96,24 @@ def test_an_observation_wins_over_a_navigation() -> None:
     assert "text_visible" in condition
 
 
-def test_a_multi_segment_path_drops_its_last_segment() -> None:
-    """The last segment often carries a record id that differs per record."""
+def test_a_multi_segment_path_keeps_the_shape_of_the_page_it_landed_on() -> None:
+    """The last segment often carries a record id, and the pattern must not also fit the page the
+    action was sent from: ``/records/`` is satisfied by ``/records/new`` before the save happens, so
+    it would verify a commit that never landed (PL-027, found on Odoo)."""
     condition = condition_from_navigation(
         "https://app.example.com/records/new", "https://app.example.com/records/42"
+    )
+    assert condition is not None
+    assert condition["url_matches"] == "/records/\\d+"
+    assert re.search(condition["url_matches"], "https://app.example.com/records/42")
+    assert not re.search(condition["url_matches"], "https://app.example.com/records/new")
+
+
+def test_two_record_ids_fall_back_to_the_collapsed_path() -> None:
+    """When no path pattern can tell the two pages apart, the collapsed path is what is left, and
+    the compiler says so in a warning rather than pretending the assertion proves the commit."""
+    condition = condition_from_navigation(
+        "https://app.example.com/records/42", "https://app.example.com/records/43"
     )
     assert condition is not None
     assert condition["url_matches"] == "/records/"

@@ -87,6 +87,25 @@ logger = logging.getLogger("processlens.runner")
 # The outcomes of a record that end the canary's run as a failure.
 _FAILURE_STATES = frozenset({"parked", "failed"})
 
+# PL-027: the record outcomes that mean the tab may be holding a half-filled form nothing committed.
+# `verified` is a commit that landed and `skipped` never filled anything, so neither is guarded.
+_ABANDONED_OUTCOMES = frozenset({"parked", "failed", "cancelled", "paused", "awaiting_approval"})
+
+# PL-027: the message a person reads on a step event when the abandon guard refused a request.
+BLOCKED_REQUEST_MESSAGE = "blocked an unsaved change from leaving the page"
+
+# The step id a blocked request is filed under when no step of its own was running: the guard is
+# released either by a navigate (which has an id of its own) or by the run ending, and only the
+# second case has no step to name.
+ABANDON_GUARD_STEP_ID = "abandon-guard"
+
+# PL-027: how long a record may hold the tab while a person decides a commit gate, and how often the
+# wait re-reads the decision. The record is NOT released while it waits: under `first_record` it
+# pauses AT the commit step with the form filled, and approving runs that step -- a restart from
+# step 1 would navigate away and let the destination autosave the half-filled form.
+DEFAULT_GATE_WAIT_SECONDS = 600.0
+GATE_POLL_SECONDS = 0.5
+
 # B2: the reason a commit-attempted record is parked instead of skipped.
 ALREADY_SAVED_REASON = "found in the destination after an earlier save attempt: confirm it is ours"
 
@@ -162,6 +181,7 @@ class RunLoop:
         heartbeat_timeout_seconds: float | None = None,
         lease_check: Callable[[], None] | None = None,
         events: Callable[[], list[tuple[str, str]]] | None = None,
+        gate_wait_seconds: float = DEFAULT_GATE_WAIT_SECONDS,
     ) -> None:
         self.worker_id = worker_id
         self.executor = executor
@@ -170,6 +190,11 @@ class RunLoop:
         self.crash_hooks = crash_hooks
         self.fallback_timeout_ms = fallback_timeout_ms
         self.heartbeat_timeout_seconds = heartbeat_timeout_seconds
+        # PL-027: how long a record may hold the tab while a person decides its commit gate. The
+        # record is held AT the commit step, never released and re-run.
+        self.gate_wait_seconds = gate_wait_seconds
+        # PL-027: how often that wait re-reads the decision, and the state that hold leaves.
+        self.gate_poll_seconds = GATE_POLL_SECONDS
         self.lease_check = lease_check or (lambda: None)
         # R6: the drain the loop reads run-level events through. A test injects any sequence.
         self.events = events
@@ -177,6 +202,12 @@ class RunLoop:
         self._canary: uuid.UUID | None = None
         self._allowed_origins: tuple[str, ...] = ()
         self._deferred_events: list[tuple[str, str]] = []
+        # PL-027: whether the record being processed actually drove the browser. A record parked by
+        # a precheck rule never opened a page, so there is no half-filled form to guard.
+        self._browser_touched = False
+        # PL-027: the last record this run claimed, so the abandon guard can be released against a
+        # record when the run ends with nothing left to name.
+        self._last_record: RecordClaim | None = None
 
     # -- the run -----------------------------------------------------------
 
@@ -226,6 +257,7 @@ class RunLoop:
                 record = claim_record(conn, run.id, self.worker_id, epoch)
             if record is None:
                 break
+            self._last_record = record
 
             try:
                 outcome = self._process_record(conn, record, run, epoch, recipe, meta, rules)
@@ -238,6 +270,13 @@ class RunLoop:
                     # resume can claim it at once instead of finding it owned by a stopped worker.
                     self._hand_back(conn, run)
                     return
+            # PL-027: a record that left the tab without committing may have left a half-filled form
+            # behind, and real apps autosave those when the page unloads. The guard is armed here,
+            # before the next record's navigate can unload the page; that navigate's arrival
+            # releases it, and so does the end of the run. A record a precheck rule parked never
+            # opened a page, so nothing is armed for it.
+            if outcome in _ABANDONED_OUTCOMES and self._browser_touched:
+                self._arm_guard()
             if self._canary == record.id and outcome in _FAILURE_STATES:
                 with conn.transaction():
                     set_run_status(
@@ -254,6 +293,10 @@ class RunLoop:
         # R5: close out exhausted records, then complete only if every record is out.
         with conn.transaction():
             close_out_exhausted(conn, run.id, self.worker_id, epoch)
+        # PL-027: the run is over, so the guard's job is done. Released here with whatever it held
+        # back, so the ledger carries the proof even when no later navigate released it.
+        if self._last_record is not None:
+            self._release_guard(conn, self._last_record, ABANDON_GUARD_STEP_ID)
         remaining = get_run(conn, run.id)
         if remaining is None:
             return
@@ -281,6 +324,62 @@ class RunLoop:
         """Release a paused run (B1). False when it was resumed, so the caller keeps going."""
         with conn.transaction():
             return release_run(conn, run.id, self.worker_id)
+
+    # -- the abandon guard (PL-027) ----------------------------------------
+
+    def _guard(self, action: str) -> list[dict[str, Any]]:
+        """Arm or release the abandon guard, when the executor knows how.
+
+        The scripted fake executor of the unit tests has no guard, and a guard is an extra defence
+        rather than part of a record's outcome: a run must not fail because it could not be armed.
+        """
+        guard = getattr(self.executor, "guard", None)
+        if not callable(guard):
+            return []
+        try:
+            return list(guard(action))
+        except Exception as exc:  # noqa: BLE001 - a defence that fails must not stop the run
+            logger.warning("the abandon guard %s failed: %s", action, exc)
+            return []
+
+    def _arm_guard(self) -> None:
+        """A record has left the tab without committing: hold its unsaved changes in."""
+        self._guard("arm")
+
+    def _record_blocked(
+        self, conn: psycopg.Connection, record: RecordClaim, step_id: str, blocked: Any
+    ) -> None:
+        """One step event per request the abandon guard refused (PL-027).
+
+        This is the proof a parked record did not quietly reach the destination: the page tried to
+        leave its half-filled form and the tab refused. Each refusal is its own row, so a person can
+        see exactly what was held back rather than a count.
+        """
+        if not isinstance(blocked, list) or not blocked:
+            return
+        with conn.transaction():
+            for entry in blocked:
+                request = entry if isinstance(entry, dict) else {"url": str(entry)}
+                record_step_event(
+                    conn,
+                    record=record,
+                    step_id=step_id,
+                    outcome="ok",
+                    observed={
+                        "message": BLOCKED_REQUEST_MESSAGE,
+                        "blocked_request": {
+                            "method": str(request.get("method", "")),
+                            "url": str(request.get("url", "")),
+                        },
+                    },
+                )
+
+    def _release_guard(
+        self, conn: psycopg.Connection, record: RecordClaim, fallback_step_id: str
+    ) -> None:
+        """Release the guard at the end of a run, and record what it held back."""
+        blocked = self._guard("disarm")
+        self._record_blocked(conn, record, fallback_step_id, blocked)
 
     def _handle_refused(
         self,
@@ -338,6 +437,9 @@ class RunLoop:
 
     def _finalise_cancel(self, conn: psycopg.Connection, run: RunClaim, epoch: int) -> None:
         """R4: reconcile the commit window, release the working records, skip the rest, stop."""
+        # PL-027: a cancel can leave the tab holding a half-filled form, and the page will try to
+        # autosave it on the way out. Armed here, before the run stops driving the tab.
+        self._arm_guard()
         with conn.transaction():
             recover_run(conn, run.id, self.worker_id, epoch, reason="run cancelled")
         for record in reconciling_records(conn, run.id):
@@ -345,6 +447,8 @@ class RunLoop:
         with conn.transaction():
             skip_pending_records(conn, run.id, self.worker_id, epoch, reason="run cancelled")
             set_run_status(conn, run.id, "cancelled", worker=self.worker_id, epoch=epoch)
+        if self._last_record is not None:
+            self._release_guard(conn, self._last_record, ABANDON_GUARD_STEP_ID)
 
     # -- one record --------------------------------------------------------
 
@@ -360,6 +464,7 @@ class RunLoop:
     ) -> str:
         row = self._input_row(conn, record)
         variables = _resolve_variables(recipe, row)
+        self._browser_touched = False
 
         for rule in rules:
             if not isinstance(rule, dict):
@@ -386,6 +491,9 @@ class RunLoop:
                 return target
 
         self._transition(conn, record, "claimed", "prechecked", "precheck passed")
+        # Past the precheck, the recipe's own steps run: from here the tab is being driven, so a
+        # record that leaves it has something to leave behind (PL-027).
+        self._browser_touched = True
         box = _Box(state="prechecked")
         terminal = self._run_steps(
             conn, record, run, epoch, recipe.get("steps", []), row, variables, box
@@ -506,9 +614,14 @@ class RunLoop:
                 verdict = self._gate(conn, record, run, box.state, step_id=step["id"], shown=shown)
                 if verdict == "approved":
                     continue
-                if verdict == "rejected":
-                    return "parked"
-                return "awaiting_approval"
+                if verdict == "timeout":
+                    # Nobody decided: the record leaves the tab under the abandon guard, and the
+                    # run stays paused on the request so a person can still decide it.
+                    self._transition(
+                        conn, record, box.state, "parked", "nobody decided the approval gate"
+                    )
+                    box.state = "parked"
+                return "parked"
 
             if action == "end_record":
                 outcome = step.get("outcome")
@@ -640,10 +753,15 @@ class RunLoop:
                 step_id=step["id"],
                 shown=_gate_values(step, row, variables),
             )
-            if verdict == "rejected":
+            if verdict == "timeout":
+                # PL-027: nobody decided, so the record is abandoned rather than committed -- under
+                # the guard, and without its half-filled form reaching the destination.
+                self._transition(
+                    conn, record, "filling", "parked", "nobody decided the commit gate"
+                )
                 return "parked"
-            if verdict == "opened":
-                return "awaiting_approval"
+            if verdict != "approved":
+                return "parked"
 
         with conn.transaction():
             begin_commit(conn, record.id, worker=self.worker_id, epoch=epoch)
@@ -824,6 +942,10 @@ class RunLoop:
                     observed=result.observed,
                     locator_rung=result.rung,
                 )
+            # PL-027: a navigate is what releases the abandon guard, and the requests it refused
+            # are the proof that a record the runner abandoned did not quietly reach the
+            # destination. One step event per refusal, filed under this navigate's own step id.
+            self._record_blocked(conn, record, str(step["id"]), result.observed.get("blocked"))
             return None
 
         # PL-014: a refusal always parks, whatever the recipe's `on_failure` says. A guard is a
@@ -859,7 +981,16 @@ class RunLoop:
         step_id: str,
         shown: dict[str, Any],
     ) -> str:
-        """R3: pass when an approved request covers exactly these values; open one otherwise."""
+        """R3: pass when an approved request covers exactly these values; open one otherwise.
+
+        Returns ``approved``, ``rejected`` or ``timeout`` -- never "opened", because opening a
+        request is no longer the end of this call. Under PL-027 the record HOLDS the tab at its
+        commit step while a person decides, so approving runs the commit that is already set up.
+        Releasing the record instead (which is what the ledger's pause path used to do) sent it back
+        to `pending`, and the next claim re-ran the recipe from its first step: on Odoo that
+        navigate unloads the half-filled form and Odoo autosaves it, so a record reached the
+        destination with no commit step and no approval.
+        """
         for decision in decisions_for_step(conn, record.id, step_id):
             if decision.shown != shown:
                 continue
@@ -888,7 +1019,57 @@ class RunLoop:
                 worker=self.worker_id,
                 epoch=self._epoch,
             )
-        return "opened"
+        return self._await_decision(conn, record, run, state, step_id=step_id, shown=shown)
+
+    def _await_decision(
+        self,
+        conn: psycopg.Connection,
+        record: RecordClaim,
+        run: RunClaim,
+        state: str,
+        *,
+        step_id: str,
+        shown: dict[str, Any],
+    ) -> str:
+        """Hold the record at its commit step until a person decides, or the wait runs out.
+
+        The run is `paused` and still held by this worker, so the approvals API's ``resume_run``
+        moves it back to `running` and the holder carries on -- which is what makes "approve" mean
+        "execute the commit step that is already prepared" rather than "start the record again".
+
+        A wait that runs out is an abandonment, not a decision: the caller parks the record, and the
+        abandon guard keeps its half-filled form from reaching the destination.
+        """
+        deadline = self.clock.time() + self.gate_wait_seconds
+        while True:
+            for decision in decisions_for_step(conn, record.id, step_id):
+                if decision.shown != shown:
+                    continue
+                if decision.decision == "approved":
+                    return "approved"
+                self._transition(
+                    conn,
+                    record,
+                    state,
+                    "parked",
+                    decision.reason or "a reviewer rejected this commit",
+                )
+                return "rejected"
+            current = get_run(conn, run.id)
+            if current is None or current.cancel_requested_at is not None:
+                return "timeout"
+            if self.clock.time() >= deadline:
+                logger.warning(
+                    "run %s record %s: nobody decided the commit gate within %ss",
+                    run.id,
+                    record.record_key,
+                    self.gate_wait_seconds,
+                )
+                return "timeout"
+            # The heartbeat thread keeps the lease alive while the tab is held; this is where a
+            # lease that lapsed anyway stops us, instead of a later command failing mysteriously.
+            self.lease_check()
+            self.clock.pause(self.gate_poll_seconds)
 
     def _reconcile(
         self,

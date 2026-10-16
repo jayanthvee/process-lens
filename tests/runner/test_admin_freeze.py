@@ -72,7 +72,12 @@ def test_a_frozen_tenant_starts_nothing_and_pauses_the_run(
     assert worker.run_once() is True
     assert base.run_status(run_id) == ("paused", "admin_freeze")
     assert set(base.states(run_id).values()) == {"pending"}, "nothing was committed while frozen"
-    assert conn.execute("SELECT count(*) FROM committed_keys").fetchone()[0] == 0
+    assert (
+        conn.execute(
+            "SELECT count(*) FROM committed_keys WHERE tenant_id = %s", (base.tenant_id,)
+        ).fetchone()[0]
+        == 0
+    )
     assert (
         conn.execute(
             "SELECT count(*) FROM step_events e JOIN run_records r ON r.id = e.run_record_id "

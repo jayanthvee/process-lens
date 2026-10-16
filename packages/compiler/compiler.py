@@ -13,6 +13,7 @@ the same recipe, so a compiled recipe can be diffed and reviewed.
 
 from __future__ import annotations
 
+import re
 from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -28,7 +29,7 @@ from .coalesce import coalesce_fills, collapse_presses, collapse_submits
 from .errors import CompileError
 from .model import ACTIONABLE_KINDS, STEP_ACTIONS, Candidate, Event, target_signature
 from .normalize import NAVIGATE_EVENT_KIND, UNRECORDABLE_EVENT_KIND, parse_events
-from .parameterize import parameterize_candidate
+from .parameterize import match_column, parameterize_candidate
 from .validation import assert_valid_recipe
 
 # PL-018 (§3.8, §4.4). Each refusal is one sentence on purpose: it is the headline the Make recipe
@@ -132,6 +133,17 @@ def to_candidates(
         action = step.get("action") or event.kind
         if action not in STEP_ACTIONS:
             warnings.append(f"skipped event {event.seq} with action {action!r}")
+            continue
+
+        # A fill the page itself produced is not something the person demonstrated. It is still a
+        # real value on a real page, so it is skipped by name rather than silently dropped: a
+        # builder reading the warnings learns that a field filled itself and can re-record with a
+        # value they type if the workflow really needs one there.
+        if event.page_set:
+            warnings.append(
+                f"skipped the {action} at event {event.seq}: the page set that value itself, "
+                "the demonstration did not type it"
+            )
             continue
 
         targets = step.get("targets")
@@ -392,6 +404,52 @@ def _is_option_click(candidate: Candidate) -> bool:
     return any(str(rung.get("role", "")).lower() == "option" for rung in candidate.targets or [])
 
 
+def _option_text(candidate: Candidate) -> str:
+    """The text a suggestion click accepted: the option's own accessible name."""
+    for rung in candidate.targets or []:
+        for key in ("name", "text", "value"):
+            text = rung.get(key)
+            if isinstance(text, str) and text.strip():
+                return text.strip()
+    return ""
+
+
+def _fold_option_fills(candidates: list[Candidate]) -> tuple[list[Candidate], list[str]]:
+    """Drop the fill that only restates the suggestion the previous step accepted.
+
+    A suggestion click puts the option's own text into the field, so the value change that follows
+    it is the page's doing, not a second edit. Odoo's many2one records exactly that: ``fill
+    "Priya"``, ``click "Priya Raman"`` (the option), then ``fill "Priya Raman"`` on the input the
+    option filled. The replay has no need of the last one -- the click already put the value there
+    -- and typing it again fights the widget: Odoo's own inline completion had left "Priya Rama" in
+    the field, so the second fill wrote "Priya RamaPriya Raman" and parked the record (PL-027).
+
+    The value is not lost: the fold drops a *step*, and the popup's sample row still carries the
+    column the option rung is templated from (``{{row.salesperson_2}}``), so a row can still name
+    the suggestion to take.
+    """
+    warnings: list[str] = []
+    kept: list[Candidate] = []
+    for candidate in candidates:
+        previous = kept[-1] if kept else None
+        if (
+            previous is not None
+            and candidate.action == "fill"
+            and _is_option_click(previous)
+            and not candidate.chip
+            and isinstance(candidate.value, dict)
+            and candidate.value.get("kind") == "constant"
+            and str(candidate.value.get("value", "")).strip() == _option_text(previous)
+        ):
+            warnings.append(
+                f"folded the fill at event {candidate.seq} into the suggestion accepted at event "
+                f"{previous.seq}: the click already put {_option_text(previous)!r} in the field"
+            )
+            continue
+        kept.append(candidate)
+    return kept, warnings
+
+
 def _refuse_what_cannot_replay(events: list[Event], candidates: list[Candidate]) -> None:
     """Refuse a recording the compiler cannot replay safely (PL-018, §3.8 and §4.4).
 
@@ -448,8 +506,8 @@ def _render_steps(
     return steps
 
 
-def _looks_like_a_search(fill: Candidate, click: Candidate) -> bool:
-    """Whether a fill-then-click pair reads as a search, not any other fill-then-click.
+def _looks_like_a_search(fill: Candidate, runner: Candidate) -> bool:
+    """Whether a fill-then-run pair reads as a search, not any other fill-then-run.
 
     A wizard's ``fill email -> Next`` is a fill immediately followed by a click too, and mistaking
     it for a search would turn on the duplicate branch and silently skip records. The one durable
@@ -457,7 +515,7 @@ def _looks_like_a_search(fill: Candidate, click: Candidate) -> bool:
     "search". Erring the other way is safe -- a search that is not recognised simply gets no branch
     -- so a pair with no such signal is not a search.
     """
-    for candidate in (fill, click):
+    for candidate in (fill, runner):
         for rung in candidate.targets or []:
             if str(rung.get("role", "")).lower() == "searchbox":
                 return True
@@ -471,48 +529,86 @@ def _looks_like_a_search(fill: Candidate, click: Candidate) -> bool:
     return False
 
 
-def detect_record_key_search(candidates: list[Candidate], options: CompileOptions) -> int | None:
-    """The index of the click that runs a search for the record key, or None.
+def _runs_it(candidate: Candidate) -> bool:
+    """Whether this step is the one that *runs* a search, rather than typing into it.
 
-    A search for the record key is a ``fill`` whose recorded value is the record key column's
-    sample value, immediately followed by the click that runs it -- a search control, which
-    :func:`_looks_like_a_search` recognises -- with the create's own commit still to come. The
+    A search is run by clicking its control, or by pressing Enter in its box: a search field that
+    applies on Enter -- Odoo's own search view, and most application search bars -- has no button
+    to click at all, so a press is the only thing in the recording that says "run this".
+    """
+    if candidate.action == "click":
+        return True
+    return candidate.action == "press" and str(candidate.key or "") == "Enter"
+
+
+def detect_duplicate_search(
+    candidates: list[Candidate], options: CompileOptions
+) -> tuple[int, str] | None:
+    """The step that runs a search whose result says whether the record is already there.
+
+    Returns ``(index of the step that runs the search, the column it searched for)``. The column is
+    what the destination was searched by, which is not necessarily the ledger's record key: a
+    workflow may be keyed on a name while the destination is searched by email, and the duplicate
+    branch has to read the page the *search* produced.
+
+    The search is a ``fill`` whose recorded value is one of the sample row's cells, followed by the
+    step that runs it (a click, or Enter), with the create's own commit still to come. The
     "looks like a search" check and the later commit are what separate a search from a create that
-    merely fills the key, or from a wizard's ``fill -> Next``. No search means no branch; the
+    merely fills the value, or from a wizard's ``fill -> Next``. No search means no branch; the
     compiler never invents one.
     """
-    column = options.record_key_column
-    if not column:
+    if not options.duplicate_check or not options.sample_row:
         return None
-    sample = str(options.sample_row.get(column, "")).strip()
-    if not sample:
-        return None
+
+    found: list[tuple[int, str]] = []
     for index, candidate in enumerate(candidates):
         if candidate.action != "fill":
             continue
         value = candidate.value
         if not (isinstance(value, dict) and value.get("kind") == "constant"):
             continue
-        if str(value.get("value", "")).strip() != sample:
+        column = match_column(value.get("value"), options.sample_row)
+        if column is None:
             continue
-        if index + 1 >= len(candidates) or candidates[index + 1].action != "click":
+        if index + 1 >= len(candidates) or not _runs_it(candidates[index + 1]):
             continue
-        click = candidates[index + 1]
-        if not _looks_like_a_search(candidate, click):
+        if not _looks_like_a_search(candidate, candidates[index + 1]):
             continue
         # A create still commits after the search; the search itself is not the create.
         if not any(later.commit for later in candidates[index + 2 :]):
             continue
-        return index + 1
-    return None
+        found.append((index + 1, column))
+
+    if not found:
+        return None
+    # The ledger's own key column wins when the demonstration searched for it, so a recipe keyed on
+    # the email keeps behaving exactly as it did before this generalisation.
+    for run_index, column in found:
+        if column == options.record_key_column:
+            return run_index, column
+    return found[0]
 
 
-def _duplicate_branch(record_key: str) -> dict[str, Any]:
-    """A branch that ends a record ``skipped`` when the search already shows its key."""
+def _duplicate_branch(value_template: str) -> dict[str, Any]:
+    """A branch that ends a record ``skipped`` when the search already shows its value.
+
+    The condition is deliberately *not* a page-wide text search. Odoo renders the query it is
+    searching for back onto the page -- the search view draws a facet holding exactly the value
+    that was typed -- so "that text is visible anywhere" is true for a record that does not exist
+    and the branch would skip the whole batch. What the destination's own answer looks like is a
+    cell in its results table holding the value, which is rung 1 of the ladder and therefore the
+    most durable rung a condition can carry.
+    """
     return {
         "action": "branch",
         "name": "Skip a record if the search finds it",
-        "when": {"text_visible": record_key},
+        "when": {
+            "element_present": {
+                "targets": [
+                    {"by": "role", "role": "cell", "name": value_template},
+                ]
+            }
+        },
         "then": [
             {
                 "id": "end-record-1",
@@ -567,6 +663,8 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
     _refuse_what_cannot_replay(events, candidates)
     candidates, chip_warnings = _fold_chip_fills(candidates)
     warnings.extend(chip_warnings)
+    candidates, option_warnings = _fold_option_fills(candidates)
+    warnings.extend(option_warnings)
     if not candidates:
         raise CompileError("no steps could be built from the recording")
 
@@ -580,18 +678,19 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
 
     meta = _resolve_meta(parameterized, recording_urls, options, warnings)
 
-    # PL-017: a search for the record key is a fill followed by the click that runs it. The search
+    # PL-017: a search for a record's value is a fill followed by the step that runs it. A search
     # button submits its own form, so the recorder collapses it into a commit; it changes nothing in
     # the destination, so it is demoted before any assertion is required of it, and the branch that
     # reads its result goes straight after it.
-    search_click = (
-        detect_record_key_search(candidates, options) if options.duplicate_check else None
-    )
-    if search_click is not None:
-        parameterized[search_click].commit = False
+    search = detect_duplicate_search(candidates, options)
+    if search is not None:
+        search_run, searched_column = search
+        parameterized[search_run].commit = False
         warnings.append(
             "the search step is not a commit step; it reads the destination, it does not change it"
         )
+    else:
+        searched_column = ""
 
     without_assertion: list[str] = []
     for candidate in parameterized:
@@ -622,6 +721,17 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
                 f"assertion for {candidate.recorded_id or candidate.seq} "
                 "inferred from the navigation the recording observed"
             )
+            # A page-pattern assertion is only evidence when the page the step ran on does not
+            # already satisfy it. When it does -- two record ids under one path, say -- say so:
+            # a person reviewing the task should know this commit is proved by "the page moved",
+            # not by "the change landed".
+            pattern = str(candidate.assert_after.get("url_matches", ""))
+            if pattern and candidate.url and re.search(pattern, candidate.url):
+                warnings.append(
+                    f"assertion for {candidate.recorded_id or candidate.seq} is also true on the "
+                    f"page the step ran on ({pattern!r}), so it cannot tell an accepted commit "
+                    "from a refused one; re-record a step whose confirmation is visible"
+                )
     if without_assertion:
         raise CompileError(
             "a commit step must carry an assertion, and none could be inferred",
@@ -629,14 +739,16 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
         )
 
     _check_navigate_origins(parameterized, meta["allowed_origins"])
-    duplicate_branch = _duplicate_branch(meta["record_key"]) if search_click is not None else None
+    duplicate_branch = (
+        _duplicate_branch(f"{{{{row.{searched_column} | lower}}}}") if search is not None else None
+    )
     recipe: dict[str, Any] = {
         "format_version": 1,
         "meta": meta,
         "steps": _render_steps(
             parameterized,
             options,
-            duplicate_branch_after=search_click,
+            duplicate_branch_after=search[0] if search is not None else None,
             duplicate_branch=duplicate_branch,
         ),
     }

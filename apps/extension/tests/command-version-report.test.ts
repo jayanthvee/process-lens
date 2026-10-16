@@ -86,6 +86,9 @@ function makeHarness(): Harness {
       reports.push(reports.length + 1);
       if (failReports.value) throw new Error("the report could not be sent");
     },
+    // PL-027: the abandon guard's two deps. These tests never arm it; the guard has its own.
+    armAbandonGuard: async () => undefined,
+    disarmAbandonGuard: async () => [],
     onState: (state) => states.push(state),
   };
 

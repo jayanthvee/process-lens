@@ -257,6 +257,9 @@ function makeSessionHarness(cdp: CdpTransport): { session: CommandSession; socke
         onFirstInput: opts.sentInput,
       }),
     checkCondition: async (): Promise<CheckAnswer> => ({ ok: true, passed: true }),
+    // PL-027: the abandon guard's two deps. These tests never arm it; the guard has its own.
+    armAbandonGuard: async () => undefined,
+    disarmAbandonGuard: async () => [],
     onState: (_state: SessionState) => undefined,
   };
   const session = new CommandSession(deps);

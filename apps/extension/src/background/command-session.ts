@@ -22,6 +22,7 @@ import {
   type EventKind,
   type OutgoingMessage,
 } from "../shared/command-protocol";
+import type { BlockedRequest } from "../executor/abandon-guard";
 import type { StepReport } from "../executor/types";
 import { ExecutorError } from "../executor/types";
 import { POLICY_BLOCKED_MESSAGE, recheckExpiry } from "../executor/guards";
@@ -113,6 +114,14 @@ export interface SessionDeps {
     timeoutMs: number,
     aborted: () => boolean,
   ) => Promise<CheckAnswer>;
+  /**
+   * Arm the abandon guard on the bound tab (PL-027): refuse every request that is not a read, so a
+   * page that autosaves when it unloads cannot write a record the runner did not commit. The
+   * executor releases it itself, on the next navigate's arrival.
+   */
+  armAbandonGuard: () => Promise<void>;
+  /** Release the abandon guard, and report the requests it refused while it held. */
+  disarmAbandonGuard: () => Promise<BlockedRequest[]>;
   /**
    * Confirm a stored bound tab still exists, and adopt it as the session's bound tab (B2).
    * Returns false when the tab is gone. Restore never binds the active tab.
@@ -531,6 +540,7 @@ export class CommandSession {
       case "prepare":
       case "dispatch":
       case "check":
+      case "guard":
         void this.onCommand(message);
         return;
       default:
@@ -620,11 +630,23 @@ export class CommandSession {
     // never reached the gate (`not_dispatched`) and from an outcome after input (`lost`).
     let gateRefusal: string | null = null;
     try {
+      if (command.type === "guard") {
+        // The guard is not a step: it has no target, sends no input, and its answer is what it
+        // refused. Arming is what a record that leaves the tab without committing needs; disarming
+        // reports what the guard held back, so the runner can write it to the ledger (PL-027).
+        let blocked: BlockedRequest[] = [];
+        if (command.action === "arm") {
+          await this.deps.armAbandonGuard();
+        } else {
+          blocked = await this.deps.disarmAbandonGuard();
+        }
+        if (current()) this.sendResult(command.command_id, "ok", null, { blocked }, null);
+        return;
+      }
       if (command.type === "check") {
         const answer = await this.deps.checkCondition(command.condition, command.timeout_ms, () =>
           this.stopped || withdrawn(),
-        );
-        if (current()) {
+        );        if (current()) {
           if (answer.ok) {
             // C3 (R6): the page is showing a wall the check just found under a clean "no". The
             // event goes out BEFORE the condition reply it explains, only while this command is
@@ -696,6 +718,9 @@ export class CommandSession {
               outcome: report.outcome,
               rung: report.rung ?? null,
               by: report.by ?? null,
+              // What the step saw beyond its own success (PL-027): a navigate that released the
+              // abandon guard reports the requests it refused.
+              ...(report.observed ?? {}),
             },
             null,
           );

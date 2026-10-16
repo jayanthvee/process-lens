@@ -126,6 +126,20 @@ def path_pattern(url: str) -> str | None:
     return f"{head}/" if head else path
 
 
+def path_shape_pattern(url: str) -> str | None:
+    """A path pattern that keeps the observed page's shape, with digit runs generalised.
+
+    ``/odoo/crm/12`` becomes ``/odoo/crm/\\d+``: the pattern still fits every record, and unlike the
+    collapsed :func:`path_pattern` it does *not* fit the page the save was sent from
+    (``/odoo/crm/new``). That difference is the point -- an assertion the page before the action
+    already satisfies cannot tell a committed change from a refused one.
+    """
+    path = urlsplit(url).path
+    if not path:
+        return None
+    return re.sub(r"\d+", r"\\d+", re.escape(path))
+
+
 def condition_from_navigation(
     before_url: str, after_url: str, timeout_ms: int = DEFAULT_ASSERTION_TIMEOUT_MS
 ) -> dict[str, Any] | None:
@@ -133,11 +147,19 @@ def condition_from_navigation(
 
     Only a same-site move counts; crossing to another origin is not something an
     assertion on this page should encode.
+
+    The navigated page's *shape* is tried first (a record id generalised to ``\\d+``), because a
+    shape the step's own page does not match is what makes the assertion evidence. Only when the
+    shape cannot tell the two pages apart -- a move between two record ids, say -- does it fall back
+    to the collapsed path, which at least names where the action landed.
     """
     if not before_url or not after_url or before_url == after_url:
         return None
     if origin_of(before_url) != origin_of(after_url):
         return None
+    shaped = path_shape_pattern(after_url)
+    if shaped and not re.search(shaped, before_url):
+        return {"url_matches": shaped, "timeout_ms": timeout_ms}
     pattern = path_pattern(after_url)
     if not pattern:
         return None

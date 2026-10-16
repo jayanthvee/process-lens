@@ -36,6 +36,7 @@ pythonpath = ["."]
 addopts = "-ra --strict-markers"
 markers = [
   "e2e: an end-to-end test that drives a real browser (needs PROCESSLENS_E2E=1)",
+  "real_apps: an end-to-end test whose target is the real app (Odoo or Twenty), not a fixture site",
 ]
 
 [tool.ruff]

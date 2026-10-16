@@ -111,6 +111,15 @@ export function fakeCdp(
 ): FakeCdp {
   const calls: RecordedCall[] = [];
   const handlers = new Map<string, Set<(params: Record<string, unknown>) => void>>();
+  /**
+   * Where the fake tab is, as its own `location.href`.
+   *
+   * A browser that accepted a navigate is showing the page it was sent to, and the executor reads
+   * that URL back to prove a navigate arrived (PL-027). Modelling it here is what makes the fake a
+   * browser rather than a command logger: a test that wants a tab which did NOT arrive overrides
+   * this with its own `Runtime.evaluate` handler.
+   */
+  let locationHref = typeof globalThis.location?.href === "string" ? globalThis.location.href : "";
   const emit = (event: string, params: Record<string, unknown> = {}): void => {
     for (const listener of handlers.get(event) ?? []) listener(params);
   };
@@ -123,12 +132,19 @@ export function fakeCdp(
     },
     async send(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
       calls.push({ method, params });
+      if (method === "Page.navigate" && typeof params["url"] === "string") {
+        locationHref = params["url"];
+      }
       if (handler) {
         const handled = handler(method, params);
         if (handled !== undefined) return handled;
       }
       if (method === "Runtime.evaluate") {
         const expression = String(params["expression"] ?? "");
+        // The location probe answers from the tab's own URL, exactly as a browser would.
+        if (expression.trim() === "location.href") {
+          return { result: { value: locationHref } };
+        }
         let value: unknown = new Function(`return (${expression})`)();
         // The page-side stability wait returns a promise; `awaitPromise` must be honoured, or
         // the executor would read the unresolved promise as a failed measurement.

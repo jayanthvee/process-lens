@@ -121,6 +121,14 @@ class FakeExecutor:
         self.commands: list[StepCommand] = []
         self.prepared: list[StepCommand] = []
         self.probes: list[tuple[str | None, str | None]] = []
+        # PL-027: the abandon guard's two calls, and what a release reports having refused.
+        self.guard_calls: list[str] = []
+        self.guard_blocked: list[dict[str, str]] = []
+
+    def guard(self, action: str) -> list[dict[str, str]]:
+        """Record the guard call; a release reports whatever the test scripted as refused."""
+        self.guard_calls.append(action)
+        return list(self.guard_blocked) if action == "disarm" else []
 
     def _behavior(self, command: StepCommand) -> str:
         step_id = str(command.step.get("id", ""))
@@ -249,7 +257,11 @@ class CrashHooks:
 
 
 class FrozenClock:
-    """A clock the test moves by hand."""
+    """A clock the test moves by hand.
+
+    ``pause`` advances it instantly, so a wait the run loop makes against this clock costs nothing
+    and ends the moment the test has moved it past the deadline.
+    """
 
     def __init__(self, start: float = 0.0) -> None:
         self._now = start
@@ -259,6 +271,10 @@ class FrozenClock:
 
     def advance(self, seconds: float) -> None:
         self._now += seconds
+
+    def pause(self, seconds: float) -> None:
+        """Let the frozen clock move, without waiting for real time."""
+        self.advance(seconds)
 
 
 class EventDrain:

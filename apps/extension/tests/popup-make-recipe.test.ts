@@ -271,6 +271,18 @@ describe("recorded values", () => {
     ]);
   });
 
+  it("leaves out a value the page set itself", () => {
+    // PL-027: Odoo renders computed defaults (0.00 in Expected Revenue, the resolved salesperson)
+    // into a form as it opens. The recorder witnesses the value and marks it; the form must not
+    // offer a column a person never typed, or the sample row would carry the page's own arithmetic.
+    const events: RecordedEvent[] = [
+      fillEvent(1, "fill-1", "Contact Name", "Ravi"),
+      { ...fillEvent(2, "fill-2", "Expected Revenue", "0.00"), page_set: true },
+    ];
+
+    expect(recordedValues(events).map((value) => value.column)).toEqual(["contact_name"]);
+  });
+
   it("makes every column match the recipe field-name pattern", () => {
     const events = [
       fillEvent(1, "fill-1", "Add recipient", "one@example.test"),
@@ -539,7 +551,7 @@ describe("the duplicate check (PL-017 requirement 4)", () => {
     expect(box.disabled).toBe(true);
     expect(box.checked).toBe(false);
     expect(control("make-duplicate-hint").textContent).toBe(
-      "I did not see a search for this column, so I cannot check for duplicates.",
+      "I did not see a search in this recording, so I cannot check for duplicates.",
     );
 
     await form.submit();
@@ -627,6 +639,40 @@ describe("parkFieldDefaults and searchDetected", () => {
       clickEvent(3, "click-2", "Save"),
     ];
     expect(searchDetected(wizard, "email")).toBe(false);
+  });
+
+  it("counts a search of another column, and a search run with Enter", () => {
+    // PL-027, on Odoo: the workflow is keyed on the lead's name, and the destination is searched
+    // by email with Enter (Odoo's search view has no button). Keying the check on the record-key
+    // column left the checkbox unticked, so the compiled recipe had no duplicate branch and the
+    // batch created a second copy of a lead that was already there.
+    const events: RecordedEvent[] = [
+      {
+        ...fillEvent(1, "fill-1", "Search...", "ana@example.test"),
+        step: {
+          id: "fill-1",
+          action: "fill",
+          targets: [{ by: "role", role: "searchbox", name: "Search..." }],
+          value: { kind: "constant", value: "ana@example.test" },
+        },
+      },
+      {
+        seq: 2,
+        at: STAMP,
+        kind: "press",
+        url: PAGE,
+        step: {
+          id: "press-1",
+          action: "press",
+          targets: [{ by: "role", role: "searchbox", name: "Search..." }],
+          key: "Enter",
+        },
+      },
+      fillEvent(3, "fill-2", "Name", "Ana Silva"),
+      clickEvent(4, "click-1", "Save"),
+    ];
+
+    expect(searchDetected(events, "name")).toBe(true);
   });
 });
 

@@ -136,6 +136,9 @@ function makeHarness(options: HarnessOptions = {}): Harness {
       if (options.checkCondition) return options.checkCondition(condition, timeoutMs, aborted);
       return { ok: true, passed: true };
     },
+    // PL-027: the abandon guard's two deps. These tests never arm it; the guard has its own.
+    armAbandonGuard: async () => undefined,
+    disarmAbandonGuard: async () => [],
     onState: (state) => states.push(state),
   };
 

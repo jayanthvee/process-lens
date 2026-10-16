@@ -310,8 +310,20 @@ class Harness:
             pass
 
     # -- runs ------------------------------------------------------------
-    def make_run(self, rows: list[dict[str, Any]], *, recipe: dict[str, Any] | None = None) -> str:
-        """Seed one tenant/workflow/batch, ingest the recipe, and create the run through the API."""
+    def make_run(
+        self,
+        rows: list[dict[str, Any]],
+        *,
+        recipe: dict[str, Any] | None = None,
+        key_column: str = "email",
+    ) -> str:
+        """Seed one tenant/workflow/batch, ingest the recipe, and create the run through the API.
+
+        ``key_column`` names the row column the ledger's *input record* key is taken from. It is
+        not the recipe's ``record_key`` (the runner renders that from the recipe); it only has to
+        be present on every row, so a batch may carry a row whose email is empty -- that record is
+        the one a precheck rule parks, and it still needs an input key of its own.
+        """
         import psycopg
 
         from packages.ledger import BatchRow, insert_batch
@@ -339,7 +351,11 @@ class Harness:
                         row_index=index,
                         raw=dict(row),
                         clean=dict(row),
-                        record_key=str(row.get("email", f"row-{index:04d}")).lower(),
+                        record_key=(
+                            str(row[key_column]).lower()
+                            if row.get(key_column)
+                            else f"row-{index:04d}"
+                        ),
                     )
                     for index, row in enumerate(rows, start=1)
                 ],
@@ -592,10 +608,22 @@ class Harness:
         attaches that report while the recording is still on. The test therefore waits here, before
         Stop, so the commit step compiles with its ``assert_after`` rather than without one.
         """
+        return self.wait_for_observation_after(0, timeout=timeout)
+
+    def wait_for_observation_after(
+        self, seq: int, *, timeout: float = 20.0
+    ) -> dict[str, Any] | None:
+        """Wait for evidence attached to an action recorded after ``seq``.
+
+        A recording that already carries one observation -- the click that opened a page, often --
+        would satisfy a bare "has any observation" check at once, and a test that stopped there
+        would cut the recording off before the *commit's* own evidence arrived. Naming the action
+        the evidence belongs to is what makes the wait mean what it says.
+        """
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             for event in self.recording_events():
-                if event.get("observation"):
+                if event.get("observation") and int(event.get("seq", 0)) > seq:
                     return event
             time.sleep(0.2)
         return None
@@ -666,6 +694,20 @@ class Harness:
             "warnings": warnings,
         }
 
+    def make_form_columns(self) -> list[dict[str, str]]:
+        """The input columns the popup's Make recipe form is offering, as the person sees them.
+
+        The recorded columns are the form's own answer to "what did this demonstration type?":
+        the golden asserts on them rather than guessing names, and reads the email column back
+        from them so it can tick the matching park box.
+        """
+        return list(
+            self.popup.evaluate(
+                "() => Array.from(document.querySelectorAll('#make-key option'))"
+                ".map((o) => ({ value: o.value, label: (o.textContent || '').trim() }))"
+            )
+        )
+
     def operator_id(self) -> str:
         """A real operator user id, created once in the scratch database.
 
@@ -691,13 +733,22 @@ class Harness:
         return operator
 
     def settle_run(
-        self, run_id: str, *, timeout: float = 240.0, max_seconds: float = 260
+        self,
+        run_id: str,
+        *,
+        timeout: float = 240.0,
+        max_seconds: float = 260,
+        on_approval: Any = None,
     ) -> list[dict[str, Any]]:
         """Start a worker, approve commit gates, and settle the run.
 
         One designed pause is driven here, exactly as the operator page would: a compiled recipe
         carries ``approval_policy: {commit: first_record}``, so the first commit is previewed and
         the run pauses on an open approval request.
+
+        ``on_approval`` is called with each open request before it is approved, so a test can assert
+        what the run looked like while a person was still deciding -- no record written yet, the tab
+        held at the gate (PL-027).
 
         The canary no longer needs a resume (PL-017 requirement 2): the claim query claims by the
         input row, so the first record to reach a commit is row 0, which each golden test orders as
@@ -710,6 +761,8 @@ class Harness:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             for request in self.api_get(f"/api/v1/runs/{run_id}/approvals"):
+                if on_approval is not None:
+                    on_approval(request)
                 self.api_post(
                     "/api/v1/approvals",
                     {
@@ -1323,13 +1376,24 @@ def corpus_harness(
 
 
 @pytest.fixture(autouse=True)
-def _clean_fixture(harness: Harness) -> Iterator[None]:
-    """Every test starts from a clean slate: no open run, empty store, the CRM index page.
+def _clean_fixture(request: pytest.FixtureRequest) -> Iterator[None]:
+    """Every fixture-site test starts from a clean slate: no open run, empty store, CRM index.
 
     The page matters: the extension's guards run before every command against whatever the bound
     tab currently shows, so a page left on the login or challenge view by an earlier test would
     pause the next one. Navigating back to the index is the reset for that axis.
+
+    A ``real_apps`` test drives Odoo or Twenty instead, has no fixture site of its own to clean,
+    and binds the extension to its own tab (``tests/e2e/conftest.py``'s ``odoo_harness`` and
+    ``twenty_harness``). Building the fixture-site harness for it would start a site nobody
+    navigates and run its warm-up batch against the one extension session the real-app test needs,
+    so the whole fixture is asked for lazily and skipped there.
     """
+    if request.node.get_closest_marker("real_apps") is not None:
+        yield
+        return
+
+    harness: Harness = request.getfixturevalue("harness")
     harness.stop_workers()
     _retire_open_runs(harness.dsn)
     harness.reset_fixture()
@@ -1345,4 +1409,185 @@ def _clean_fixture(harness: Harness) -> Iterator[None]:
     harness.stop_workers()
 
 
-__all__ = ["EXISTING_EMAIL", "NEW_EMAILS", "PARKED_EMAIL", "Harness", "simple_recipe"]
+__all__ = [
+    "EXISTING_EMAIL",
+    "NEW_EMAILS",
+    "PARKED_EMAIL",
+    "Harness",
+    "bind_extension_to",
+    "simple_recipe",
+]
+
+
+# ------------------------------------------------------- the real test apps (PL-027)
+#
+# The golden tests record and replay against Odoo 18 and Twenty CRM, the real apps PL-022
+# stands up locally. They reuse everything above -- the built extension, the API and hub, the
+# runner worker, the scratch database -- and differ in one thing: the tab the extension binds,
+# and therefore what a recording sees. `Harness` is deliberately unchanged: the golden drives it
+# exactly as the fixture tests do, so a difference in behaviour is a difference in the app, not
+# in the test's own plumbing.
+#
+# The two apps are reset by `reset.py` before a test runs, which drops Odoo's database; the page
+# therefore logs in again afterwards, which is why the order below is reset -> page -> connect.
+
+
+def bind_extension_to(
+    context: Any, extension_id: str, api_server: dict[str, Any], page: Any
+) -> tuple[Any, str]:
+    """Bind the extension's one command session to ``page`` and return (popup, session id).
+
+    The extension binds the tab that is active when Connect is pressed, so the target tab is
+    brought forward first. The popup is a page of its own: the session keys it holds are shared
+    with every other popup, and the tab it is bound to is not.
+    """
+    popup = context.new_page()
+    popup.goto(f"chrome-extension://{extension_id}/popup/popup.html")
+    popup.evaluate("v => { document.getElementById('hub').value = v; }", api_server["base"])
+    page.bring_to_front()
+    popup.evaluate("document.getElementById('connect').click()")
+    popup.wait_for_function(
+        "() => document.getElementById('session-state')?.dataset.state === 'ready'",
+        timeout=30_000,
+    )
+    stored = popup.evaluate(
+        "async () => (await chrome.storage.session.get('processlens:command-session'))"
+        "['processlens:command-session'] ?? null"
+    )
+    assert stored and stored.get("sessionId"), "the extension did not store a session id"
+    return popup, str(stored["sessionId"])
+
+
+APP_ORIGIN_ENV = "PROCESSLENS_E2E_SKIP_RESET"
+
+
+@pytest.fixture(scope="session")
+def app_env() -> dict[str, Any]:
+    """The test apps' settings (`infra/test-apps/.env`, else the committed `.env.example`)."""
+    from .real_apps import app_env as load
+
+    return load()
+
+
+@pytest.fixture(scope="session")
+def odoo_reset(app_env: dict[str, Any]) -> dict[str, Any]:
+    """Reset Odoo before the Odoo golden runs (PL-027 requirement 4).
+
+    Session-scoped on purpose: the reset drops the database and installs five modules, which is
+    minutes, and one pytest invocation is one run of the golden. Running the golden again is a
+    second invocation, and that one resets again. ``PROCESSLENS_E2E_SKIP_RESET=1`` skips it for a
+    developer who wants to watch the recording alone.
+    """
+    if os.environ.get(APP_ORIGIN_ENV) == "1":
+        return {"target": "odoo", "seconds": 0.0, "summary": "skipped by request"}
+    from .real_apps import reset_app
+
+    return reset_app("odoo")
+
+
+@pytest.fixture(scope="session")
+def twenty_reset(app_env: dict[str, Any]) -> dict[str, Any]:
+    """Reset Twenty before the Twenty golden runs; seconds, not minutes."""
+    if os.environ.get(APP_ORIGIN_ENV) == "1":
+        return {"target": "twenty", "seconds": 0.0, "summary": "skipped by request"}
+    from .real_apps import reset_app
+
+    return reset_app("twenty")
+
+
+@pytest.fixture(scope="session")
+def odoo_app(app_env: dict[str, Any], odoo_reset: dict[str, Any]) -> Any:
+    """The XML-RPC client the Odoo golden seeds and verifies with, after the reset."""
+    from .real_apps import Odoo
+
+    return Odoo(app_env)
+
+
+@pytest.fixture(scope="session")
+def odoo_page(context: Any, odoo_app: Any) -> Iterator[Any]:
+    """A Chromium tab on Odoo, logged in through the real form after the reset."""
+    from .real_apps import login_odoo, odoo_base
+
+    page = context.new_page()
+    login_odoo(page, odoo_app.env, base=odoo_base(odoo_app.env))
+    yield page
+
+
+@pytest.fixture(scope="session")
+def odoo_harness(
+    context: Any,
+    extension_id: str,
+    api_server: dict[str, Any],
+    database_url: str,
+    odoo_app: Any,
+    odoo_page: Any,
+) -> Iterator[Harness]:
+    """A Harness whose extension is bound to the Odoo tab.
+
+    Same shape as ``messy_harness``: the extension holds one command session, so the Odoo tab is
+    brought forward and the session is established against it.
+    """
+    from .real_apps import odoo_base
+
+    base = odoo_base(odoo_app.env)
+    popup, session_id = bind_extension_to(context, extension_id, api_server, odoo_page)
+    port = int(base.rsplit(":", 1)[-1])
+    ready = Harness(
+        api_base=api_server["base"],
+        crm_url=base,
+        partner_url=base,
+        crm_port=port,
+        dsn=database_url,
+        session_id=session_id,
+        extension_id=extension_id,
+        page=odoo_page,
+        popup=popup,
+    )
+    try:
+        yield ready
+    finally:
+        ready.stop_workers()
+
+
+@pytest.fixture(scope="session")
+def twenty_page(
+    context: Any, twenty_reset: dict[str, Any], app_env: dict[str, Any]
+) -> Iterator[Any]:
+    """A Chromium tab on Twenty, logged in through the real form."""
+    from .real_apps import login_twenty, twenty_base
+
+    page = context.new_page()
+    login_twenty(page, app_env, base=twenty_base(app_env))
+    yield page
+
+
+@pytest.fixture(scope="session")
+def twenty_harness(
+    context: Any,
+    extension_id: str,
+    api_server: dict[str, Any],
+    database_url: str,
+    app_env: dict[str, Any],
+    twenty_page: Any,
+) -> Iterator[Harness]:
+    """A Harness whose extension is bound to the Twenty tab."""
+    from .real_apps import twenty_base
+
+    base = twenty_base(app_env)
+    popup, session_id = bind_extension_to(context, extension_id, api_server, twenty_page)
+    port = int(base.rsplit(":", 1)[-1])
+    ready = Harness(
+        api_base=api_server["base"],
+        crm_url=base,
+        partner_url=base,
+        crm_port=port,
+        dsn=database_url,
+        session_id=session_id,
+        extension_id=extension_id,
+        page=twenty_page,
+        popup=popup,
+    )
+    try:
+        yield ready
+    finally:
+        ready.stop_workers()

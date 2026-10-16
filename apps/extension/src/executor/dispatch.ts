@@ -694,6 +694,88 @@ export async function dispatchSelect(
 /** How long to wait for a navigation's load event before giving up. */
 export const DEFAULT_NAVIGATE_TIMEOUT_MS = 8000;
 
+/** How often the arrival check re-reads the tab's URL while it waits. */
+export const NAVIGATE_ARRIVAL_POLL_MS = 100;
+
+/**
+ * How long a same-document reply is given to show up in the URL before a real navigation is asked
+ * for again. A same-document reply means the browser started no document load, so if the URL was
+ * going to move it has already moved; the retry is the point of the wait, not the wait itself.
+ */
+export const SAME_DOCUMENT_GRACE_MS = 1000;
+
+/**
+ * Whether the tab is showing the page the step asked for.
+ *
+ * Origin and path are what identify the page; the query is not compared, because a real page
+ * normalizes its own (Odoo rewrites `view_type` and appends `action`), and a trailing slash is not
+ * either for the same reason. A hash is compared, but only when the request named one -- a step
+ * that pins a fragment is proved, and one that does not is not refused for a fragment the page
+ * added itself.
+ */
+export function isSameDestination(requested: string, actual: string): boolean {
+  let want: URL;
+  let got: URL;
+  try {
+    want = new URL(requested);
+    got = new URL(actual);
+  } catch {
+    return false;
+  }
+  if (want.origin !== got.origin) return false;
+  const strip = (path: string): string => path.replace(/\/+$/, "");
+  if (strip(want.pathname) !== strip(got.pathname)) return false;
+  return want.hash === "" || want.hash === got.hash;
+}
+
+/** The top frame's live URL, or null when it cannot be read just now. */
+async function readLocation(cdp: CdpTransport): Promise<string | null> {
+  try {
+    // A bare expression, exactly as the guards read `location.origin`: the value is a string, not
+    // a function, so a transport that forwards expressions verbatim answers it.
+    const value = await evaluate(cdp, "location.href");
+    return typeof value === "string" && value.length > 0 ? value : null;
+  } catch {
+    // A page mid-navigation tears its execution context down; the next poll reads the new one.
+    return null;
+  }
+}
+
+/** Wait until the tab shows `url`; returns the URL it found, or null on timeout. */
+async function awaitArrival(
+  cdp: CdpTransport,
+  url: string,
+  timeoutMs: number,
+): Promise<string | null> {
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  for (;;) {
+    const seen = await readLocation(cdp);
+    if (seen !== null && isSameDestination(url, seen)) return seen;
+    const left = deadline - Date.now();
+    if (left <= 0) return null;
+    await delay(Math.min(NAVIGATE_ARRIVAL_POLL_MS, left));
+  }
+}
+
+/**
+ * Accept a `beforeunload` dialog raised while this navigate runs.
+ *
+ * The transport is bound to exactly one tab, and that tab is the one this run is driving, so a
+ * dialog arriving here belongs to this run's own navigate. Accepting it is what a person pressing
+ * "Leave" does; without it the renderer stays blocked, every `Runtime.evaluate` fails, and the
+ * navigate looks like a page that never moved. No other dialog type is touched: a run must not
+ * answer a question the person was never asked.
+ */
+function acceptBeforeUnload(cdp: CdpTransport): () => void {
+  if (typeof cdp.on !== "function") return () => undefined;
+  return cdp.on("Page.javascriptDialogOpening", (params) => {
+    if (String(params["type"] ?? "") !== "beforeunload") return;
+    void cdp
+      .send("Page.handleJavaScriptDialog", { accept: true })
+      .catch(() => undefined);
+  });
+}
+
 /**
  * Watch a navigation's own document load, with the events buffered from before
  * the navigation was even sent.
@@ -766,25 +848,27 @@ function startLoadWatcher(cdp: CdpTransport, timeoutMs: number): LoadWatch {
   };
 }
 
+/** What `Page.navigate` answered, kept so a refusal can say what the browser said. */
+interface NavigateReply {
+  frameId: string;
+  loaderId: string;
+}
+
 /**
- * Navigate the tab to a URL and wait for the document to arrive.
+ * Ask the browser to load `url` and wait for its document to arrive.
  *
- * `Page.navigate` reports a refusal in its result rather than rejecting, so the
- * result is inspected: a non-empty `errorText` fails the step. The load watch is
- * armed from before the send, so the document's own load event cannot be missed,
- * and the next step never runs against the document being replaced. A reply with
- * no `loaderId` was a same-document navigation, and there is no load to await.
+ * `Page.navigate` reports a refusal in its result rather than rejecting, so the result is
+ * inspected: a non-empty `errorText` fails the step. The load watch is armed from before the
+ * send, so the document's own load event cannot be missed, and the next step never runs against
+ * the document being replaced. A reply with no `loaderId` was a same-document navigation, and
+ * there is no load to await -- whether the tab actually arrived is decided by the caller, which
+ * reads the URL back rather than trusting this reply.
  */
-export async function dispatchNavigate(
+async function sendNavigate(
   cdp: CdpTransport,
   url: string,
-  timeoutMs: number = DEFAULT_NAVIGATE_TIMEOUT_MS,
-  hooks?: InputHooks,
-): Promise<void> {
-  // `Page.navigate` sends no `Input.*` event, but it is still the step's action: a withdrawn or
-  // expired command must not navigate the person's tab (B3). `onFirstInput` is not fired — nothing
-  // has been typed or clicked, and a navigate is never a commit step.
-  hooks?.beforeInput?.();
+  timeoutMs: number,
+): Promise<NavigateReply> {
   const watch = typeof cdp.on === "function" ? startLoadWatcher(cdp, timeoutMs) : null;
   try {
     const result = (await cdp.send("Page.navigate", { url })) as
@@ -798,8 +882,9 @@ export async function dispatchNavigate(
         "park",
       );
     }
+    const frameId = typeof result?.frameId === "string" ? result.frameId : "";
     const loaderId = typeof result?.loaderId === "string" ? result.loaderId : "";
-    if (loaderId === "" || !watch) return;
+    if (loaderId === "" || !watch) return { frameId, loaderId };
     const loaded = await watch.arm(loaderId);
     if (!loaded) {
       throw new ExecutorError(
@@ -808,7 +893,62 @@ export async function dispatchNavigate(
         "park",
       );
     }
+    return { frameId, loaderId };
   } finally {
     watch?.cancel();
+  }
+}
+
+/**
+ * Navigate the tab to a URL, and prove it arrived.
+ *
+ * A reply from `Page.navigate` is not proof: a same-document reply leaves the previous document in
+ * place, and a step that then runs against the wrong page reports success while doing the wrong
+ * thing (PL-027: the first navigate of every replayed row reported `ok` while the tab still showed
+ * the page the demonstration had left, so the step after it could not resolve its target and the
+ * whole batch parked). The tab's own URL is therefore read back, and the step refuses when it does
+ * not match -- never reporting a success it cannot show.
+ *
+ * A reply with no `loaderId` did not replace the document, so one real navigation is asked for
+ * again inside the step's own deadline before refusing; the URL decides either way.
+ */
+export async function dispatchNavigate(
+  cdp: CdpTransport,
+  url: string,
+  timeoutMs: number = DEFAULT_NAVIGATE_TIMEOUT_MS,
+  hooks?: InputHooks,
+): Promise<void> {
+  // `Page.navigate` sends no `Input.*` event, but it is still the step's action: a withdrawn or
+  // expired command must not navigate the person's tab (B3). `onFirstInput` is not fired — nothing
+  // has been typed or clicked, and a navigate is never a commit step.
+  hooks?.beforeInput?.();
+  const deadline = Date.now() + timeoutMs;
+  const stopDialogs = acceptBeforeUnload(cdp);
+  try {
+    const reply = await sendNavigate(cdp, url, timeoutMs);
+    const sameDocument = reply.loaderId === "";
+    // A reply with a loaderId waited for the new document's own load event, so the tab's URL has
+    // had its chance; the check then gets all the time that is left. A same-document reply replaced
+    // nothing, so the tab may still be showing what the last step left: it gets a short grace, and
+    // the rest of the step's deadline is kept for one real navigation.
+    const left = Math.max(0, deadline - Date.now());
+    const share = sameDocument ? Math.min(SAME_DOCUMENT_GRACE_MS, Math.floor(left / 2)) : left;
+    if ((await awaitArrival(cdp, url, share)) !== null) return;
+
+    if (sameDocument && deadline - Date.now() > 0) {
+      await sendNavigate(cdp, url, deadline - Date.now());
+      if ((await awaitArrival(cdp, url, deadline - Date.now())) !== null) return;
+    }
+
+    const seen = (await readLocation(cdp)) ?? "a page that could not be read";
+    throw new ExecutorError(
+      `the navigate to ${url} did not arrive: the tab is showing ${seen} ` +
+        `(Page.navigate answered frameId ${JSON.stringify(reply.frameId)}, ` +
+        `loaderId ${JSON.stringify(reply.loaderId)}, no error)`,
+      undefined,
+      "park",
+    );
+  } finally {
+    stopDialogs();
   }
 }

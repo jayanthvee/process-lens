@@ -4,6 +4,11 @@
 // resolver and the real condition predicates run here; only the browser input
 // itself is recorded rather than performed.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+  armAbandonGuard,
+  guardArmed,
+  resetAbandonGuard,
+} from "../src/executor/abandon-guard";
 import { RunControl } from "../src/executor/control";
 import { resetTokens, resolveValue, runRecipe, validateRecipe } from "../src/executor/executor";
 import { FrameContexts } from "../src/executor/frames";
@@ -44,6 +49,132 @@ beforeEach(() => {
 afterEach(() => {
   restoreLayout?.();
   restoreLayout = null;
+});
+
+describe("waiting for a page that has not rendered yet", () => {
+  /** How many times a step climbed the ladder: one evaluate per climb. */
+  function climbs(calls: { method: string; params: Record<string, unknown> }[]): number {
+    return calls.filter(
+      (call) =>
+        call.method === "Runtime.evaluate" &&
+        String(call.params["expression"] ?? "").includes('"targets"'),
+    ).length;
+  }
+
+  it("climbs again while the page has nothing to match, and fills when it renders", async () => {
+    // PL-027, on Odoo: the document's `load` event fires while the page is still an HTML shell, so
+    // a step sent straight after a navigate climbed every rung against 68 elements and no inputs,
+    // found nothing, and parked a record the app was about to be able to take.
+    document.body.innerHTML = "<div id='app'></div>";
+    const { cdp, calls } = fakeCdp(undefined, { simulateInput: true });
+
+    // The application mounts a moment after the step starts.
+    setTimeout(() => {
+      document.getElementById("app")!.innerHTML =
+        "<label for='email'>Email</label><input id='email'>";
+    }, 120);
+
+    const summary = await runRecipe(
+      recipe([
+        {
+          id: "fill-1",
+          action: "fill",
+          targets: [{ by: "label", text: "Email" }],
+          value: { kind: "input", column: "email" },
+          timeout_ms: 2000,
+        },
+      ]),
+      { row: { email: "late@example.test" } },
+      { cdp },
+    );
+
+    expect(summary.steps.map((step) => step.outcome)).toEqual(["done"]);
+    expect(calls.filter((call) => call.method === "Input.insertText")).toHaveLength(1);
+    expect(climbs(calls)).toBeGreaterThan(1);
+  });
+
+  it("does not wait when a rung matched more than one element", async () => {
+    // An ambiguous rung is an answer, not a race: waiting would only delay the same refusal.
+    document.body.innerHTML = "<button>Save</button><button>Save</button>";
+    const { cdp, calls } = fakeCdp();
+
+    const summary = await runRecipe(
+      recipe([
+        {
+          id: "click-1",
+          action: "click",
+          targets: [{ by: "role", role: "button", name: "Save" }],
+          timeout_ms: 5000,
+        },
+      ]),
+      { row: {} },
+      { cdp },
+    );
+
+    expect(summary.state).toBe("failed");
+    expect(summary.error).toMatch(/could not be resolved/);
+    expect(climbs(calls)).toBe(1);
+  });
+
+  it("refuses a target the page never shows, once the wait is over", async () => {
+    document.body.innerHTML = "<div id='app'></div>";
+    const { cdp } = fakeCdp();
+
+    const summary = await runRecipe(
+      recipe([
+        {
+          id: "fill-1",
+          action: "fill",
+          targets: [{ by: "label", text: "Nowhere" }],
+          value: { kind: "input", column: "email" },
+          timeout_ms: 400,
+        },
+      ]),
+      { row: { email: "gone@example.test" } },
+      { cdp },
+    );
+
+    // The wait ends the same way a missing element always did: a refusal that names the page it
+    // climbed, so a person can tell "the element is gone" from "the wrong page".
+    expect(summary.state).toBe("failed");
+    expect(summary.error).toMatch(/could not be resolved/);
+    expect(summary.error).toMatch(/page .*; 0 input\(s\)/);
+  });
+});
+
+describe("the abandon guard and a navigate", () => {
+  it("releases the guard when the navigate arrives, and reports what it held back", async () => {
+    // PL-027: the arrival is the moment the abandoned document is gone, so it is the moment the
+    // guard may be released -- and the requests it refused are the evidence a person needs that a
+    // parked record did not quietly reach the destination.
+    resetAbandonGuard();
+    const { cdp, emit } = fakeCdp((method, params) => {
+      // The dirty page's save, sent as it unloads while the guard has the network shut.
+      if (method === "Page.navigate" && params["url"] === "about:blank") {
+        emit("Network.requestWillBeSent", {
+          requestId: "w1",
+          request: { method: "POST", url: "http://localhost:3000/web/save" },
+        });
+      }
+      // A same-document reply: nothing to await, and the tab's URL is the proof of arrival.
+      return method === "Page.navigate" ? { frameId: "F1", loaderId: "" } : undefined;
+    });
+    await armAbandonGuard(cdp);
+    expect(guardArmed()).toBe(true);
+
+    const summary = await runRecipe(
+      recipe([{ id: "navigate-1", action: "navigate", url: `${ORIGIN}/records/new` }]),
+      { row: {} },
+      { cdp },
+    );
+
+    expect(summary.steps.map((step) => step.outcome)).toEqual(["done"]);
+    expect(summary.steps[0]?.observed).toEqual({
+      blocked: [{ method: "POST", url: "http://localhost:3000/web/save" }],
+    });
+    expect(guardArmed()).toBe(false);
+    resetAbandonGuard();
+  });
 });
 
 describe("runRecipe", () => {

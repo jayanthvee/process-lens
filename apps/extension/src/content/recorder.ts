@@ -260,8 +260,14 @@ function trimmedText(el: Element | null, limit = OBSERVATION_TEXT_LIMIT): string
 }
 
 /**
- * The path pattern a navigation landed on, with the leaf record id dropped:
- * `/records/42` becomes `/records/`. A single-segment path is kept whole.
+ * A path pattern for "the page moved".
+ *
+ * A last segment carrying digits is a record id, and it is kept with the digits generalised:
+ * ``/odoo/crm/12`` becomes ``/odoo/crm/\\d+``. Dropping that segment instead (``/odoo/crm/``) makes the
+ * pattern satisfy the page the action was sent from -- Odoo saves a new lead from
+ * ``/odoo/crm/new``, which ``/odoo/crm/`` matches -- so the evidence would prove nothing (PL-027).
+ * A segment with no digits (a slug, a word) is still dropped, because only a shape that fits every
+ * record may stay.
  */
 function navigationPattern(href: string): string | null {
   let url: URL;
@@ -274,6 +280,10 @@ function navigationPattern(href: string): string | null {
   if (!path) return null;
   if (path.endsWith("/")) return path;
   const slash = path.lastIndexOf("/");
+  const leaf = path.slice(slash + 1);
+  if (/\d/.test(leaf)) {
+    return `${path.slice(0, slash + 1)}${leaf.replace(/\d+/g, "\\d+")}`;
+  }
   return slash > 0 ? path.slice(0, slash + 1) : path;
 }
 
@@ -480,6 +490,7 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
       autocomplete?: boolean;
       supersedes?: string;
       reason?: string;
+      page_set?: boolean;
     },
   ): PendingEvent {
     const warning =
@@ -498,6 +509,7 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
       ...(notes.autocomplete !== undefined ? { autocomplete: notes.autocomplete } : {}),
       ...(notes.supersedes !== undefined ? { supersedes: notes.supersedes } : {}),
       ...(notes.reason !== undefined ? { reason: notes.reason } : {}),
+      ...(notes.page_set !== undefined ? { page_set: notes.page_set } : {}),
     });
   }
 
@@ -632,9 +644,10 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
       rememberEmittedFill(fill.element, fill.value);
       lastFillElement = fill.element;
       lastTypedFillId.set(fill.element, step.id);
+      const typed = touched.has(fill.element);
       hooks.send(
         annotatedStepEvent("fill", step, {
-          ...(touched.has(fill.element) ? {} : { warning: PAGE_SET_VALUE_WARNING }),
+          ...(typed ? {} : { warning: PAGE_SET_VALUE_WARNING, page_set: true }),
           ...(isRequiredField(fill.element) ? { required: true } : {}),
         }),
       );
@@ -833,10 +846,13 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
 
     const found = confirmationIn(observation);
     const confirmation = found.text;
-    const navigated =
-      observation.observedUrl && observation.observedUrl !== observation.startUrl
-        ? observation.observedUrl
-        : null;
+    // The URL is read again here, not only from the watch: a save that takes longer than the
+    // window's own cap moves the page *after* the debounce was armed and cleared, and reading the
+    // live URL at the end is what keeps that move from being lost. Without it a slow save records
+    // no evidence at all, and the compile refuses a workflow that worked (PL-027, on Odoo).
+    const current = url();
+    const moved = observation.observedUrl ?? current;
+    const navigated = moved && moved !== observation.startUrl ? moved : null;
     endObservation();
     if (!active()) return;
 
@@ -942,6 +958,24 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
       hooks.onArrivalObservation?.(stepId, { text_visible: text });
     };
 
+    /**
+     * The page the action navigated to, reported when the page itself says nothing.
+     *
+     * Odoo saves a new lead with a full navigation to ``/odoo/crm/12`` and shows no confirmation
+     * anywhere: the record's own page is the evidence. Reporting the URL it landed on is what the
+     * compiler would infer from a navigation it could see, and without it the recording's commit
+     * step carries no `assert_after` at all -- so the compile refuses, and a person is told to
+     * re-record a workflow that worked (PL-027).
+     */
+    const reportMove = (): void => {
+      if (reported || !active()) return;
+      const pattern = navigationPattern(url());
+      if (!pattern) return;
+      reported = true;
+      stop();
+      hooks.onArrivalObservation?.(stepId, { url_matches: pattern });
+    };
+
     const ObserverCtor = doc.defaultView?.MutationObserver;
     if (ObserverCtor) {
       arrivalObserver = new ObserverCtor(() => report());
@@ -954,7 +988,11 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
       });
     }
     // The window the ticket allows: three seconds from load (this script runs at document_idle).
-    arrivalDeadline = setTimeout(stop, ARRIVAL_OBSERVATION_WINDOW_MS);
+    // A confirmation wins if one turns up; otherwise the page the action landed on is the answer.
+    arrivalDeadline = setTimeout(() => {
+      report();
+      reportMove();
+    }, ARRIVAL_OBSERVATION_WINDOW_MS);
     report();
   }
 
