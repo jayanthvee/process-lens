@@ -222,3 +222,59 @@ def test_acceptance_recipe_shape() -> None:
 
     recipe_text = json.dumps(result.recipe)
     assert "?" not in recipe_text
+
+
+def _box_fill(seq: int, value: str) -> dict[str, Any]:
+    return {
+        "seq": seq,
+        "kind": "fill",
+        "url": f"{ORIGIN}/compose",
+        "step": {
+            "action": "fill",
+            "id": f"fill-{seq}",
+            "name": "Fill Recipients",
+            "targets": [{"by": "role", "role": "combobox", "name": "Recipients"}],
+            "value": {"kind": "constant", "value": value},
+        },
+    }
+
+
+def _option_click(seq: int, text: str) -> dict[str, Any]:
+    return {
+        "seq": seq,
+        "kind": "click",
+        "url": f"{ORIGIN}/compose",
+        "step": {
+            "action": "click",
+            "id": f"click-{seq}",
+            "name": f"Click {text}",
+            "targets": [{"by": "role", "role": "option", "name": text}],
+        },
+    }
+
+
+def test_two_picked_entries_in_one_box_are_not_a_retry() -> None:
+    """Two recipients typed into one box, each picked from its suggestions, both stay.
+
+    The retried-fill fold once read the second recipient as a retry of the first and dropped the
+    first pick, so every replayed row chose the box's default recipient (caught by T1's messy e2e).
+    """
+    events = [
+        _box_fill(1, "da"),
+        _option_click(2, "dana@example.test"),
+        _box_fill(3, "ev"),
+        _option_click(4, "eve@example.test"),
+    ]
+    result = compile_recording(
+        events,
+        make_options(
+            sample_row={"first": "dana@example.test", "second": "eve@example.test"},
+            input_fields={"first": {"type": "string"}, "second": {"type": "string"}},
+            record_key_column="first",
+            commit_step_ids=[],
+            duplicate_check=False,
+        ),
+    )
+    clicks = [step for step in result.recipe["steps"] if step.get("action") == "click"]
+    assert len(clicks) == 2, result.recipe["steps"]
+    assert not any("folded the retried fill" in warning for warning in result.warnings)

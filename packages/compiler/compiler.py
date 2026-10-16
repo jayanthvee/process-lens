@@ -624,6 +624,20 @@ def _click_touches_field(
     return matched and not any(label in click_text for label in other_labels)
 
 
+def _fill_text(candidate: Candidate) -> str:
+    """The literal a fill typed, when it is still a literal; empty otherwise."""
+    value = candidate.value
+    if isinstance(value, dict):
+        literal = value.get("value")
+        return literal.strip() if isinstance(literal, str) else ""
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _click_text(click: Candidate) -> str:
+    """Everything a click's name and rungs say about what it pressed."""
+    return (click.name or "") + " " + " ".join(_rung_text(r) for r in click.targets or [])
+
+
 def _fold_retried_fills(candidates: list[Candidate]) -> tuple[list[Candidate], list[str]]:
     """Keep only the last attempt to fill a field before the commit step.
 
@@ -659,6 +673,17 @@ def _fold_retried_fills(candidates: list[Candidate]) -> tuple[list[Candidate], l
                 retry_index = later
                 break
         if retry_index is None:
+            continue
+        # A fill whose suggestion was picked before the next fill is a finished entry, not a
+        # retry: a recipients box takes one address per fill. An option counts as picked when its
+        # text contains what was typed. A hint like Odoo's "Start typing..." does not, so a real
+        # retry still folds.
+        typed = _fill_text(candidate).lower()
+        if typed and any(
+            _is_option_click(candidates[between])
+            and typed in _click_text(candidates[between]).lower()
+            for between in range(index + 1, retry_index)
+        ):
             continue
 
         field_labels: set[str] = set()
