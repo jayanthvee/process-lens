@@ -480,19 +480,26 @@ async def detach_executor_session(
 
 @router.get("/executor/session")
 async def read_executor_session(request: Request) -> dict[str, Any]:
-    """Whether an extension session is attached right now, for the sidebar's status line.
+    """Whether an extension session is attached right now, and which one it is.
 
     Read-only, so nothing here touches a socket, a frame, a token check or the protocol version.
     The answer comes from the hub's own in-memory registry, read under the same lock the rest of the
     hub uses and after the same expiry purge, so a session whose life has run out is not reported as
     attached. The status lives nowhere else: no database row knows about a Chrome tab.
+
+    The id is the demo supervisor's missing piece (PL-030): it starts a runner worker with
+    ``--session <id>``, and this route is the only place the live session's id can be read from
+    outside the extension. When several sessions hold sockets, the most recently opened one wins.
     """
     if not _request_is_local(request):
         raise _forbidden("the executor API answers only on the local interface")
     async with _sessions_lock:
         _purge_expired(time.time())
-        attached = any(row.extension is not None for row in _sessions.values())
-    return {"attached": attached}
+        attached_id = next(
+            (row.session_id for row in reversed(_sessions.values()) if row.extension is not None),
+            None,
+        )
+    return {"attached": attached_id is not None, "session_id": attached_id}
 
 
 @router.websocket("/executor/ws")

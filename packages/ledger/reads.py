@@ -14,6 +14,7 @@ from psycopg.rows import dict_row
 from .models import (
     ApprovalRequestRow,
     NeedsHelpRow,
+    OpenRunRow,
     RecordClaim,
     ResultsRow,
     RunClaim,
@@ -25,6 +26,7 @@ from .models import (
     WeekCountsRow,
     _row,
 )
+from .runs import DEFAULT_HEARTBEAT_TIMEOUT
 
 _RUN_SUMMARY = """
 SELECT run_id, total, verified, skipped, parked, failed, in_progress
@@ -314,6 +316,33 @@ def list_tasks(
         return [_row(TaskListRow, row) for row in cur.fetchall()]
 
 
+# The runs a worker could act on, with whether a live worker holds each: a queued run has none,
+# and a running run's lease is live only while its heartbeat is fresh. The lease rule is the one
+# ``find_stale_run`` applies, so a takeover and this read can never disagree about "live".
+_LIST_OPEN_RUNS = """
+SELECT id AS run_id, status::text AS status,
+       (worker_id IS NOT NULL AND heartbeat_at IS NOT NULL
+        AND heartbeat_at >= now() - (%(timeout)s)::interval) AS worker_live
+FROM runs
+WHERE status IN ('queued', 'running')
+ORDER BY created_at, id
+"""
+
+
+def list_open_runs(
+    conn: psycopg.Connection, *, heartbeat_timeout: str = DEFAULT_HEARTBEAT_TIMEOUT
+) -> list[OpenRunRow]:
+    """Every queued or running run, with whether a live worker holds it right now.
+
+    The demo supervisor reads this every couple of seconds and decides from it, as a pure function,
+    whether to start its one worker. A run whose worker died is still ``running`` until the lease
+    lapses -- this read is what lets the supervisor see that and step in.
+    """
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(_LIST_OPEN_RUNS, {"timeout": heartbeat_timeout})
+        return [_row(OpenRunRow, row) for row in cur.fetchall()]
+
+
 __all__ = [
     "RunClaim",
     "RunListRow",
@@ -321,6 +350,7 @@ __all__ = [
     "WeekCountsRow",
     "list_needs_help",
     "list_open_approvals",
+    "list_open_runs",
     "list_run_records",
     "list_running_runs",
     "list_runs",
