@@ -1,0 +1,72 @@
+/* The Teach page's own placement. The panels, buttons and the blur-in entrance are already ported
+   into styles/global.css, so nothing here duplicates them. */
+
+.teach {
+  display: grid;
+  gap: 30px;
+  align-content: start;
+}
+
+/* The three steps: one plain sentence each, in the order a person does them. */
+.teach ol.plain {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 6px;
+  counter-reset: teachstep;
+}
+
+.teach ol.plain li {
+  counter-increment: teachstep;
+  padding: 12px 20px;
+  border-top: 1px solid var(--hair);
+}
+
+.teach ol.plain li:first-child {
+  border-top: 0;
+}
+
+.teach ol.plain b {
+  font-weight: 500;
+}
+
+.teach ol.plain b::before {
+  content: counter(teachstep) ". ";
+  color: var(--muted);
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+
+.teach ol.plain small {
+  display: block;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.teach .teach-note {
+  margin: 0;
+  padding: 12px 20px 20px;
+  color: var(--ink-2);
+  font-size: 14px;
+}
+
+.teach .teach-got {
+  margin: 0;
+  padding: 14px 20px 0;
+}
+
+.teach a.teach-found {
+  color: var(--ink);
+  font-weight: 500;
+  font-size: 15px;
+  text-decoration: none;
+}
+
+.teach a.teach-found:hover {
+  text-decoration: underline;
+}
+
+@media (max-width: 780px) {
+  .teach ol.plain li {
+    padding: 12px 16px;
+  }
+}

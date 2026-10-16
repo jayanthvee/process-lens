@@ -145,3 +145,46 @@ def test_an_unset_extension_id_accepts_no_extension_origin(
 
     assert response.status_code == 403, response.text
     assert "origin" in response.json()["detail"]
+
+
+def test_the_spreadsheet_upload_may_send_a_form_body(connected: TestClient, ledger: Ledger) -> None:
+    """The one path that takes a file: the upload's multipart body is not refused.
+
+    The assertion is the status the *route* answers, so a 403 out of the content-type check could
+    never pass this: a valid upload answers 201, and a workflow that does not exist answers 404.
+    """
+    response = connected.post(
+        "/api/v1/batches",
+        data={"workflow_id": str(ledger.workflow_id)},
+        files={"file": ("inquiries.csv", b"Email\na@x.com\n", "text/csv")},
+    )
+
+    assert response.status_code == 201, response.text
+    assert response.json()["row_count"] == 1
+    assert response.json()["columns"] == ["Email"]
+
+
+def test_a_form_body_is_still_refused_on_any_other_path(
+    connected: TestClient, ledger: Ledger
+) -> None:
+    """The exception is one path wide: a form body elsewhere is refused as it always was."""
+    run = ledger.new_run()
+
+    response = connected.post(
+        f"/api/v1/runs/{run.id}/pause",
+        data={"anything": "at all"},
+        files={"file": ("x.csv", b"a\n", "text/csv")},
+    )
+
+    assert response.status_code == 403, response.text
+    assert "content-type" in response.json()["detail"]
+
+
+def test_a_json_body_is_still_accepted_everywhere(connected: TestClient, ledger: Ledger) -> None:
+    """The JSON-only rule is unchanged for every request that does not carry a file."""
+    run = ledger.new_run()
+
+    response = connected.post(f"/api/v1/runs/{run.id}/pause", json={})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "paused"

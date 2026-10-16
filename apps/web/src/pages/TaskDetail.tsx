@@ -36,8 +36,8 @@ function totalCount(counts: Record<string, number>): number {
 }
 
 /**
- * One task, read only for now: its steps in plain words and its runs. The editor arrives in a later
- * ticket, so this page shows and changes nothing.
+ * One task: its steps in plain words and its runs. The steps are read only for now -- the editor
+ * arrives in a later ticket -- and the page's one primary action opens the run flow.
  */
 export function TaskDetail(): JSX.Element {
   const { id } = useParams<{ id: string }>();
@@ -78,6 +78,10 @@ export function TaskDetail(): JSX.Element {
           <h1 className="big">{task.name}</h1>
           <p className="lede">{task.app ?? "No site yet"}</p>
         </div>
+        {/* The page's one obvious next action, and its only primary button (DESIGN.md §1). */}
+        <Link className="btn primary task-run-link" to={`/tasks/${task.workflow_id}/run`}>
+          Run this task
+        </Link>
       </section>
 
       <section className="two">

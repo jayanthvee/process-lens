@@ -15,7 +15,7 @@ from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Body, HTTPException, Query
 from fastapi.responses import PlainTextResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from packages.ledger import (
     IllegalTransition,
@@ -45,12 +45,14 @@ RUN_LIST_LIMIT = 50
 
 
 class CreateRunRequest(BaseModel):
-    """The three pins a run needs, and the mode."""
+    """The three pins a run needs, the mode, and how many rows it may take."""
 
     workflow_id: uuid.UUID
     recipe_version_id: uuid.UUID
     input_batch_id: uuid.UUID
     mode: Literal["preview", "batch"] = "batch"
+    # "Try one row" is a preview of exactly one row: the first row that is ready.
+    limit: Annotated[int, Field(ge=1)] | None = None
 
 
 class CreateRunResponse(BaseModel):
@@ -173,6 +175,7 @@ def create_run_endpoint(payload: Annotated[CreateRunRequest, Body()]) -> CreateR
                 recipe_version_id=payload.recipe_version_id,
                 input_batch_id=payload.input_batch_id,
                 mode=payload.mode,
+                limit=payload.limit,
             )
         except CreationError as exc:
             conn.rollback()

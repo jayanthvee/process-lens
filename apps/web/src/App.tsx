@@ -6,7 +6,9 @@ import { NeedsHelp } from "./pages/NeedsHelp";
 import { RunDetail } from "./pages/RunDetail";
 import { Runs } from "./pages/Runs";
 import { TaskDetail } from "./pages/TaskDetail";
+import { TaskRun } from "./pages/TaskRun";
 import { Tasks } from "./pages/Tasks";
+import { Teach } from "./pages/Teach";
 import { Shell } from "./shell/Shell";
 
 /**
@@ -24,9 +26,11 @@ export function App(): JSX.Element {
         <Route path="/needs-help" element={<NeedsHelp />} />
         <Route path="/tasks" element={<Tasks />} />
         <Route path="/tasks/:id" element={<TaskDetail />} />
+        {/* The run flow is its own page, tested by the router before the task page beside it. */}
+        <Route path="/tasks/:id/run" element={<TaskRun />} />
         <Route path="/runs" element={<Runs />} />
         <Route path="/runs/:id" element={<RunDetail />} />
-        <Route path="/teach" element={<ComingSoon />} />
+        <Route path="/teach" element={<Teach />} />
         <Route path="/spreadsheets" element={<ComingSoon />} />
         <Route path="/documents" element={<ComingSoon />} />
         <Route path="/saved-answers" element={<ComingSoon />} />

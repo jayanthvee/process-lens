@@ -11,6 +11,7 @@ const PATHS = [
   "/needs-help",
   "/tasks",
   "/tasks/w-1",
+  "/tasks/w-1/run",
   "/runs",
   "/runs/run-1",
   "/teach",
@@ -24,7 +25,6 @@ const PATHS = [
 
 /** The pages this ticket does not build: each shows the designed empty state. */
 const COMING_SOON = [
-  "/teach",
   "/spreadsheets",
   "/documents",
   "/saved-answers",
