@@ -175,6 +175,17 @@ def test_add_click_gets_assert_after_from_record_key() -> None:
     )
 
 
+def test_an_email_keyed_quick_create_is_checked_by_the_card_name_not_the_email() -> None:
+    """Keyed by email, the save is still checked by the contact: the card never shows the email.
+
+    T1 replayed this fixture on real Odoo keyed by email: the lead was created correctly, but the
+    check waited for the email on the new card, never saw it, and parked the row.
+    """
+    result = compile_fixture(commit_step_ids=["click-15"], record_key_column="email")
+    add_step = next(step for step in result.recipe["steps"] if step.get("name") == "Click Add")
+    assert add_step.get("assert_after", {}).get("text_visible") == "{{row.contact}}"
+
+
 def test_the_fixture_compiles_without_422() -> None:
     """With the Add button marked as the commit step, the recording must compile to a valid
     recipe instead of refusing with "no assert_after"."""

@@ -943,12 +943,13 @@ def _infer_assertion_from_fills(
     prior_candidates: list[Candidate],
     options: CompileOptions,
 ) -> dict[str, Any] | None:
-    """Infer a commit assertion from a fill of the record key or a required column.
+    """Infer a commit assertion from the fills before a commit that showed no evidence.
 
     PL-031: a quick-create save changes no URL and shows no message. The only evidence is the
-    new record's name, so when a commit click has no observation and no navigation, and one of
-    the fills before it was templated from the record key or a required column, use that column's
-    visible text as the assertion. The record key is preferred.
+    new record appearing. A commit qualifies only when one of the fills before it was templated
+    from the record key or a required column; the text it then waits for is the FIRST templated
+    fill of the form, because that is the field a list or kanban card shows as the record's name
+    (Odoo's quick-create card shows the contact, never the email the key may be).
     """
     if candidate.action != "click" or candidate.observation or candidate.after_url:
         return None
@@ -958,22 +959,17 @@ def _infer_assertion_from_fills(
 
     required = _required_columns(options)
     record_key_column = options.record_key_column
-    best_column: str | None = None
-
-    for previous in reversed(prior_candidates):
+    columns: list[str] = []
+    for previous in prior_candidates:
         if previous.action != "fill" or not isinstance(previous.value, dict):
             continue
         column = previous.value.get("column")
-        if not isinstance(column, str):
-            continue
-        if column == record_key_column:
-            best_column = column
-            break
-        if column in required and best_column is None:
-            best_column = column
+        if isinstance(column, str):
+            columns.append(column)
 
-    if best_column is None:
+    if not any(column == record_key_column or column in required for column in columns):
         return None
+    best_column = columns[0]
 
     return {
         "text_visible": f"{{{{row.{best_column}}}}}",
