@@ -4,6 +4,11 @@
 // resolver and the real condition predicates run here; only the browser input
 // itself is recorded rather than performed.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+  armAbandonGuard,
+  guardArmed,
+  resetAbandonGuard,
+} from "../src/executor/abandon-guard";
 import { RunControl } from "../src/executor/control";
 import { resetTokens, resolveValue, runRecipe, validateRecipe } from "../src/executor/executor";
 import { FrameContexts } from "../src/executor/frames";
@@ -134,6 +139,36 @@ describe("waiting for a page that has not rendered yet", () => {
     expect(summary.state).toBe("failed");
     expect(summary.error).toMatch(/could not be resolved/);
     expect(summary.error).toMatch(/page .*; 0 input\(s\)/);
+  });
+});
+
+describe("the abandon guard and a navigate", () => {
+  it("releases the guard when the navigate arrives, and reports what it held back", async () => {
+    // PL-027: the arrival is the moment the abandoned document is gone, so it is the moment the
+    // guard may be released -- and the requests it refused are the evidence a person needs that a
+    // parked record did not quietly reach the destination.
+    resetAbandonGuard();
+    const { cdp, callsTo, emit } = fakeCdp((method) =>
+      // A same-document reply: nothing to await, and the tab's URL is the proof of arrival.
+      method === "Page.navigate" ? { frameId: "F1", loaderId: "" } : undefined,
+    );
+    await armAbandonGuard(cdp);
+    emit("Fetch.requestPaused", {
+      requestId: "w1",
+      request: { method: "POST", url: "http://localhost:3000/web/save" },
+    });
+    await Promise.resolve();
+
+    const summary = await runRecipe(
+      recipe([{ id: "navigate-1", action: "navigate", url: `${ORIGIN}/records/new` }]),
+      { row: {} },
+      { cdp },
+    );
+
+    expect(summary.steps.map((step) => step.outcome)).toEqual(["done"]);
+    expect(callsTo("Fetch.disable")).toHaveLength(1);
+    expect(guardArmed()).toBe(false);
+    resetAbandonGuard();
   });
 });
 

@@ -24,7 +24,7 @@ from .browser_executor import BrowserExecutor, ExecutorUnavailable
 from .clock import Clock, SystemClock
 from .executor import ConditionResult, ConfirmationProbe, Executor, StepCommand, StepResult
 from .reconcile import NoopReconciler, ParkingReconciler, Reconciler
-from .run_loop import RunLoop
+from .run_loop import DEFAULT_GATE_WAIT_SECONDS, RunLoop
 
 Connect = Callable[[str], Any]
 
@@ -132,6 +132,7 @@ class Worker:
         connect: Connect = default_connect,
         events: Callable[[], list[tuple[str, str]]] | None = None,
         reconnect: Callable[[], bool] | None = None,
+        gate_wait_seconds: float = DEFAULT_GATE_WAIT_SECONDS,
     ) -> None:
         self.dsn = dsn
         self.worker_id = worker_id
@@ -149,6 +150,8 @@ class Worker:
         # F5's other half: a worker whose executor dropped re-attaches before it gives up, so a
         # transient disconnect does not stop it for the rest of its life (ticket criterion).
         self.reconnect = reconnect
+        # PL-027: how long a record may hold the tab while a person decides its commit gate.
+        self.gate_wait_seconds = gate_wait_seconds
 
     def run_once(self) -> bool:
         """Claim or take over one run and process it. Returns False when there is nothing to do."""
@@ -205,6 +208,7 @@ class Worker:
                     heartbeat_timeout_seconds=self.heartbeat_timeout_seconds,
                     lease_check=beat.check,
                     events=self.events,
+                    gate_wait_seconds=self.gate_wait_seconds,
                 )
                 loop.process_run(conn, run, epoch)
         return True

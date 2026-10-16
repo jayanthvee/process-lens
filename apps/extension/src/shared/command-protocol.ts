@@ -44,7 +44,7 @@ export type EventKind =
   | "off_origin";
 
 /** The kinds of command the runner sends. */
-export type CommandKind = "prepare" | "dispatch" | "check";
+export type CommandKind = "prepare" | "dispatch" | "check" | "guard";
 
 /** What every command from the runner carries. */
 export interface CommandEnvelope {
@@ -90,7 +90,21 @@ export interface CheckCommandMessage extends CommandEnvelope {
   record_key?: string | null;
 }
 
-export type CommandMessage = StepCommandMessage | CheckCommandMessage;
+/**
+ * A `guard`: hold or release the tab's network layer (PL-027).
+ *
+ * `arm` starts refusing every request that is not a read, so a page that autosaves on unload --
+ * Odoo does -- cannot write a record the runner parked; `disarm` releases it and answers with what
+ * it refused, so the runner can put those in the ledger as step events. The executor releases the
+ * guard itself when the next record's navigate arrives, which is the only other moment it is safe
+ * to let a request through.
+ */
+export interface GuardCommandMessage extends CommandEnvelope {
+  type: "guard";
+  action: "arm" | "disarm";
+}
+
+export type CommandMessage = StepCommandMessage | CheckCommandMessage | GuardCommandMessage;
 
 /** Sent the moment a commit's trusted input event has been dispatched. */
 export interface AckMessage {
@@ -183,7 +197,7 @@ export type OutgoingMessage =
   | PingMessage
   | PongMessage;
 
-const COMMAND_TYPES = new Set(["prepare", "dispatch", "check"]);
+const COMMAND_TYPES = new Set(["prepare", "dispatch", "check", "guard"]);
 const EVENT_KINDS = new Set<EventKind>([
   "detached",
   "tab_closed",
@@ -217,6 +231,10 @@ export function parseIncoming(raw: unknown): { message: IncomingMessage } | { er
     // never look expired, so a stale command would be acted on. Refuse it instead.
     if (typeof record["expires_at"] !== "number" || !Number.isFinite(record["expires_at"])) {
       return { error: "command has a non-numeric expires_at" };
+    }
+    if (type === "guard" && record["action"] !== "arm" && record["action"] !== "disarm") {
+      // Fail-closed: a guard command says what to do, and an unknown action is not a default.
+      return { error: `unknown guard action ${JSON.stringify(record["action"])}` };
     }
     return { message: record as unknown as CommandMessage };
   }

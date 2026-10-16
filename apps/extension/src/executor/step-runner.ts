@@ -11,6 +11,7 @@
 // `performStep` deliberately does not verify `assert_after` ------ the caller owns
 // that, because in command mode the runner sends a separate `check`.
 import type { ValueSource } from "../shared/recipe-types";
+import { disarmAbandonGuard } from "./abandon-guard";
 import type { ConditionContext } from "./assertions";
 import type { CdpTransport } from "./cdp";
 import {
@@ -775,7 +776,17 @@ export async function performStep(
     const url = step.url ?? "";
     assertAllowedOrigin(url, allowedOrigins);
     await dispatchNavigate(deps.cdp, url, stepTimeoutMs(step, deps), hooks);
-    return { id: step.id, action: step.action, outcome: "done" };
+    // The arrival is what releases the abandon guard: the dirty document a previous record left
+    // is gone, so it can no longer send anything, and from here a request the page makes belongs
+    // to the page that is now on screen. The requests the guard refused are reported so the
+    // runner can put them in the ledger (PL-027).
+    const blocked = await disarmAbandonGuard(deps.cdp);
+    return {
+      id: step.id,
+      action: step.action,
+      outcome: "done",
+      ...(blocked.length > 0 ? { observed: { blocked } } : {}),
+    };
   }
 
   if (step.action === "press") {

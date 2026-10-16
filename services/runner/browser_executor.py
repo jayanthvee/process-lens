@@ -50,6 +50,10 @@ DEFAULT_ACK_BUDGET_SECONDS = 5.0
 DEFAULT_COMMAND_TTL_SECONDS = 60.0
 DEFAULT_CONNECT_TIMEOUT_SECONDS = 10.0
 
+# How long the runner waits for the abandon guard to be armed or released (PL-027). Arming it is one
+# CDP command, so this is generous; a guard that cannot be armed is reported, never retried blindly.
+GUARD_TIMEOUT_SECONDS = 15.0
+
 # The statuses the runner understands, and the ones it maps to something narrower.
 _KNOWN_STATUSES = frozenset(
     {"ok", "rejected", "locator_failed", "timeout", "lost", "not_dispatched", "refused"}
@@ -245,6 +249,50 @@ class BrowserExecutor:
             # and must not be displaced by one about the silence.
             self._detach()
         return ConditionResult(passed=False, status="lost")
+
+    # -- the abandon guard (PL-027) ---------------------------------------
+
+    def guard(
+        self, action: str, *, timeout_seconds: float = GUARD_TIMEOUT_SECONDS
+    ) -> list[dict[str, Any]]:
+        """Arm or release the abandon guard on the bound tab.
+
+        Arming is what a record that leaves the tab without reaching `submitting` needs: it makes
+        the tab refuse every request that is not a read, so a page that autosaves when it unloads
+        (Odoo does) cannot write a record no commit step created. Releasing answers with what the
+        guard refused while it held, so the runner can put that in the ledger.
+
+        Fail-safe: a guard this cannot reach leaves an unguarded tab, which is the behaviour that
+        existed before the guard. So the failure is logged and reported as "nothing was blocked"
+        rather than raised -- a transport failure is already handled by the caller's own status
+        checks, and refusing a run because a guard could not arm would be a worse trade.
+        """
+        if self._socket is None:
+            logger.warning(
+                "the abandon guard %s was not sent: the executor is not connected", action
+            )
+            return []
+        try:
+            wire_id = self._send_command(
+                "guard",
+                self._synthetic("guard"),
+                extra={"action": action},
+                ttl=timeout_seconds,
+            )
+        except ExecutorUnavailable:
+            return []
+        kind, message = self._read(self._now() + timeout_seconds, command_id=wire_id)
+        if kind != "result":
+            logger.warning("the abandon guard %s was not answered (%s)", action, kind)
+            return []
+        if message.get("status") != "ok":
+            logger.warning("the abandon guard %s was refused: %s", action, message.get("error"))
+            return []
+        observed = message.get("observed")
+        blocked = observed.get("blocked") if isinstance(observed, dict) else None
+        if not isinstance(blocked, list):
+            return []
+        return [entry for entry in blocked if isinstance(entry, dict)]
 
     def probe_confirmation(
         self,

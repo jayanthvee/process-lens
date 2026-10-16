@@ -736,13 +736,22 @@ class Harness:
         return operator
 
     def settle_run(
-        self, run_id: str, *, timeout: float = 240.0, max_seconds: float = 260
+        self,
+        run_id: str,
+        *,
+        timeout: float = 240.0,
+        max_seconds: float = 260,
+        on_approval: Any = None,
     ) -> list[dict[str, Any]]:
         """Start a worker, approve commit gates, and settle the run.
 
         One designed pause is driven here, exactly as the operator page would: a compiled recipe
         carries ``approval_policy: {commit: first_record}``, so the first commit is previewed and
         the run pauses on an open approval request.
+
+        ``on_approval`` is called with each open request before it is approved, so a test can assert
+        what the run looked like while a person was still deciding -- no record written yet, the tab
+        held at the gate (PL-027).
 
         The canary no longer needs a resume (PL-017 requirement 2): the claim query claims by the
         input row, so the first record to reach a commit is row 0, which each golden test orders as
@@ -755,6 +764,8 @@ class Harness:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             for request in self.api_get(f"/api/v1/runs/{run_id}/approvals"):
+                if on_approval is not None:
+                    on_approval(request)
                 self.api_post(
                     "/api/v1/approvals",
                     {

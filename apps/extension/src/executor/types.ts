@@ -61,6 +61,12 @@ export interface StepReport {
   rung?: number;
   by?: string;
   detail?: string;
+  /**
+   * What the step observed beyond its own success, for the runner's ledger (PL-027). A navigate
+   * puts the requests the abandon guard refused here: the guard is released by that arrival, and
+   * the page that was abandoned is the only thing that could have made them.
+   */
+  observed?: Record<string, unknown>;
 }
 
 export type RunState = "idle" | "running" | "paused" | "aborted" | "done" | "failed";

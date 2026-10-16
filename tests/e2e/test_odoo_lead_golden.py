@@ -46,14 +46,29 @@ EXISTING_NAME = "Golden Existing Lead"
 EXISTING_EMAIL = "golden.existing@example.test"
 EXISTING_COMPANY = "Golden Existing Co"
 
-# The three the batch creates, and the one that parks. Row order is the claim order, so row 0 is
-# a new lead and the canary the ticket asks for is deterministic.
+# The three the batch creates, the one that parks mid-form, the duplicate, and the row with no
+# email. Row order is the claim order, so row 0 is the new lead the ticket names as the canary, and
+# the mid-form park sits before two more rows so a later navigate is what would have unloaded its
+# half-filled form -- which is exactly what the abandon guard has to stop.
 NEW_ROWS = (
     ("Golden New One", "golden.one@example.test", "+1 555 020 0001", "Golden One Co"),
     ("Golden New Two", "golden.two@example.test", "+1 555 020 0002", "Golden Two Co"),
     ("Golden New Three", "golden.three@example.test", "+1 555 020 0003", "Golden Three Co"),
 )
 NO_EMAIL_NAME = "Golden No Email"
+
+# The row that parks in the middle of the form: a salesperson Odoo does not have, so the
+# autocomplete's option never appears and the step that accepts it cannot resolve. On Odoo a form
+# left in this state is autosaved when the page unloads, which is the invariant this golden proves:
+# the record must leave nothing in Odoo.
+BAD_SALESPERSON_NAME = "Golden Bad Salesperson"
+BAD_SALESPERSON_EMAIL = "golden.bad-salesperson@example.test"
+NO_SUCH_SALESPERSON = "Nobody Atall"
+
+# A local name for the mid-form park, kept because it is not one of NEW_ROWS: it is the row that
+# must NOT be created.
+ABANDONED_NAME = BAD_SALESPERSON_NAME
+ABANDONED_EMAIL = BAD_SALESPERSON_EMAIL
 
 
 # --------------------------------------------------------------- the demonstration
@@ -229,11 +244,26 @@ def rows_for(
 
 
 def batch_rows(columns: list[tuple[str, str]]) -> list[dict[str, str]]:
-    """Five rows: three new, the one Odoo already holds, and the one with no email."""
+    """Six rows: three new, one that parks mid-form, the duplicate, and the one with no email."""
     rows = [
         rows_for(columns, name=lead_name, email=lead_email, phone=lead_phone, company=lead_company)
-        for lead_name, lead_email, lead_phone, lead_company in NEW_ROWS
+        for lead_name, lead_email, lead_phone, lead_company in NEW_ROWS[:1]
     ]
+    # The row that abandons the tab mid-form, and then two more rows after it: their navigate is
+    # what would unload its half-filled form.
+    rows.append(
+        rows_for(
+            columns,
+            name=BAD_SALESPERSON_NAME,
+            email=BAD_SALESPERSON_EMAIL,
+            phone="+1 555 025 0001",
+            company="Golden Abandoned Co",
+        )
+    )
+    rows.extend(
+        rows_for(columns, name=lead_name, email=lead_email, phone=lead_phone, company=lead_company)
+        for lead_name, lead_email, lead_phone, lead_company in NEW_ROWS[1:]
+    )
     rows.append(
         rows_for(
             columns,
@@ -252,7 +282,43 @@ def batch_rows(columns: list[tuple[str, str]]) -> list[dict[str, str]]:
             company="Golden No Email Co",
         )
     )
+    # The salesperson an abandoned row asks for does not exist, so the option it needs is never
+    # offered and the record parks with the form half filled. The other columns stay real, so the
+    # park happens as late as the salesperson step.
+    abandoned = rows[1]
+    for label, column in columns:
+        if "salesperson" in label.lower():
+            abandoned[column] = NO_SUCH_SALESPERSON
     return rows
+
+
+def step_events_for(harness, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Every step event of a run, with the record key it belongs to.
+
+    A step event carries what a step observed and whether it failed; neither reaches the API, so a
+    golden that needs to assert on one reads the ledger directly.
+    """
+    import psycopg
+
+    keys = {str(record["id"]): record["record_key"] for record in records}
+    events: list[dict[str, Any]] = []
+    with psycopg.connect(harness.dsn, autocommit=True) as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT run_record_id, step_id, outcome, observed, error FROM step_events "
+            "WHERE run_record_id = ANY(%s::uuid[]) ORDER BY id",
+            (list(keys),),
+        )
+        for row in cur.fetchall():
+            events.append(
+                {
+                    "record_key": keys.get(str(row[0]), "?"),
+                    "step_id": row[1],
+                    "outcome": row[2],
+                    "observed": row[3],
+                    "error": row[4],
+                }
+            )
+    return events
 
 
 def describe(records: list[dict[str, Any]]) -> str:
@@ -362,28 +428,35 @@ def test_odoo_new_lead_golden(odoo_harness, odoo_app) -> None:
     # The compiler's own default: preview the first commit for a person.
     assert recipe["meta"]["approval_policy"] == {"commit": "first_record"}, recipe["meta"]
 
-    # 4. Replay the five rows.
+    # 4. Replay the six rows.
     #
-    # The batch runs with that preview pause turned off, and the reason is a defect this golden
-    # found rather than a convenience: a pause for approval hands the run back, the record goes to
-    # `pending`, and the next claim re-runs its recipe from the first step. On Odoo that re-run's
-    # opening navigate leaves the half-filled form behind, and Odoo saves a dirty form when the page
-    # is left -- so the row is created *without* a commit (`commit_attempted=false`, `attempts=2`),
-    # the re-run's own duplicate check then finds it, and the ledger reports the row `skipped`
-    # although it exists. That is a separate defect from the replay chain this ticket is about, and
-    # it is reported rather than papered over; the pause itself is covered by the fixture golden.
+    # The compiled policy stands: `first_record` previews the first commit for a person. With PL-027
+    # the record HOLDS the tab at that commit step, and approving runs the commit that is already
+    # prepared -- the record is not released and re-run, so nothing about this record reaches Odoo
+    # before the decision.
     rows = batch_rows(columns)
-    run_recipe = dict(recipe)
-    run_recipe["meta"] = {**recipe["meta"], "approval_policy": {"commit": "none"}}
-    run_id = harness.make_run(rows, recipe=run_recipe, key_column=name_column)
-    records = harness.settle_run(run_id, timeout=700, max_seconds=680)
+    run_id = harness.make_run(rows, recipe=recipe, key_column=name_column)
+
+    approvals: list[dict[str, Any]] = []
+
+    def inspect_then_approve(request: dict[str, Any]) -> None:
+        """What a person checks before pressing approve, asserted where it can still be wrong."""
+        approvals.append(request)
+        assert odoo_app.lead_count(NEW_ROWS[0][1]) == 0, (
+            "the gated record reached Odoo before anyone approved it"
+        )
+
+    records = harness.settle_run(
+        run_id, timeout=700, max_seconds=680, on_approval=inspect_then_approve
+    )
     detail = detail_for(harness, records)
+    assert len(approvals) == 1, f"exactly one commit is previewed: {approvals}"
 
     counts = Counter(record["state"] for record in records)
-    assert len(records) == 5, detail
+    assert len(records) == 6, detail
     assert counts["verified"] == 3, detail
     assert counts["skipped"] == 1, detail
-    assert counts["parked"] == 1, detail
+    assert counts["parked"] == 2, detail
     assert counts["failed"] == 0, detail
 
     by_name = {record["record_key"]: record for record in records}
@@ -391,6 +464,7 @@ def test_odoo_new_lead_golden(odoo_harness, odoo_app) -> None:
     assert by_name[EXISTING_NAME.lower()]["reason"] == "duplicate", detail
     assert by_name[NO_EMAIL_NAME.lower()]["state"] == "parked", detail
     assert by_name[NO_EMAIL_NAME.lower()]["reason"] == f"missing {email_column}", detail
+    assert by_name[ABANDONED_NAME.lower()]["state"] == "parked", detail
 
     # 5. Odoo's own truth: each new lead exists exactly once, with every field the demo typed.
     salesperson = odoo_app.salesperson_id("sales1@processlens.test")
@@ -405,8 +479,25 @@ def test_odoo_new_lead_golden(odoo_harness, odoo_app) -> None:
         assert lead["user_id"] and lead["user_id"][0] == salesperson, lead
         assert tag in (lead["tag_ids"] or []), lead
 
-    # The duplicate created nothing new, and the parked row created nothing at all.
+    # The duplicate created nothing new.
     assert odoo_app.lead_count(EXISTING_EMAIL) == 1, detail
     assert odoo_app.count("crm.lead", [("name", "=", NO_EMAIL_NAME)]) == 0, detail
-    for _lead_name, lead_email, _phone, _company in NEW_ROWS:
-        assert odoo_app.lead_count(lead_email) == 1, f"{lead_email!r} exists more than once"
+
+    # 6. The invariant this ticket's second assertion is about: a row that left the tab mid-form
+    # leaves NOTHING in Odoo. Odoo autosaves a dirty form when the page unloads, so without the
+    # abandon guard the next row's navigate would have saved this half-filled lead -- with no commit
+    # step and, under `first_record`, no approval.
+    abandoned = odoo_app.leads_by_email(ABANDONED_EMAIL)
+    assert abandoned == [], (
+        f"an abandoned record reached Odoo: {json.dumps(abandoned, default=str)} ({detail})"
+    )
+    assert odoo_app.count("crm.lead", [("name", "=", ABANDONED_NAME)]) == 0, detail
+
+    # And the guard says so in the ledger: the requests it refused are step events, which is the
+    # difference between "nothing was saved by luck" and "the page tried and was stopped".
+    blocked = [
+        event
+        for event in step_events_for(harness, records)
+        if "blocked an unsaved change" in json.dumps(event)
+    ]
+    assert blocked, f"the guard refused nothing, so nothing proves the form was held back: {detail}"
