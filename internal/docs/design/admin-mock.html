@@ -1,0 +1,252 @@
+<title>ProcessLens Admin Mock</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@300;400;500;600&display=swap">
+<style>
+/* Layout: the main app's shell and rhythm, inverted to a dark fog so an admin always knows where they are.
+   header -> headline + one stop button -> one strip of three figures -> two panels (needs a look | running now).
+   Dark only, by design. Gold stays the one accent; red appears only on "Pause everything". */
+:root {
+  color-scheme: dark;
+  --fog-1: #121614; --fog-2: #191d1b; --fog-3: #232825; --fog-warm: #2a2a22;
+  --glass: rgba(255,255,255,.045); --glass-line: rgba(255,255,255,.08); --glass-strong: rgba(255,255,255,.085);
+  --ink: #e7eae7; --ink-2: #a7aeaa; --muted: #747c78; --hair: rgba(255,255,255,.065); --hair-2: rgba(255,255,255,.12);
+  --gold: #d6b064; --gold-deep: #e2c27c; --gold-soft: rgba(214,176,100,.08); --gold-line: rgba(214,176,100,.28);
+  --primary-a: #d9b663; --primary-b: #c59a3f; --on-primary: #2b2210;
+  --ok: #7cbf94; --help: #e39469; --live: #dcb866; --stop: #e57361;
+  --font: "Public Sans", "Helvetica Neue", Arial, sans-serif;
+}
+
+* { box-sizing: border-box; }
+html, body { min-height: 100%; }
+body {
+  margin: 0; color: var(--ink); font: 14.5px/1.5 var(--font); -webkit-font-smoothing: antialiased;
+  background:
+    radial-gradient(1100px 520px at 12% -12%, var(--fog-3) 0%, transparent 62%),
+    radial-gradient(900px 600px at 100% 0%, var(--fog-warm) 0%, transparent 58%),
+    radial-gradient(1000px 640px at 105% 110%, var(--fog-3) 0%, transparent 60%),
+    linear-gradient(180deg, var(--fog-2), var(--fog-1));
+  background-attachment: fixed; background-color: var(--fog-1);
+}
+:focus-visible { outline: 2px solid var(--ink-2); outline-offset: 2px; border-radius: 6px; }
+svg.i { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+
+.app { display: grid; grid-template-columns: 216px minmax(0, 1fr); min-height: 100vh; }
+
+.side { position: sticky; top: 0; height: 100vh; padding: 16px 12px; display: flex; flex-direction: column; gap: 22px;
+  background: rgba(10,13,12,.55); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); border-right: 1px solid var(--glass-line); }
+.logo { display: flex; align-items: center; gap: 9px; font-weight: 600; font-size: 15px; padding: 2px 8px; }
+.logo svg { width: 21px; height: 21px; }
+.logo small { font-weight: 400; color: var(--muted); font-size: 13px; }
+.nav { display: grid; gap: 2px; }
+.nav a { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: var(--ink-2); text-decoration: none; font-weight: 500; }
+.nav a:hover { background: var(--hair); color: var(--ink); }
+.nav a.on { background: var(--glass-strong); color: var(--ink); box-shadow: inset 0 0 0 1px var(--hair-2); }
+.side-foot { margin-top: auto; display: grid; gap: 2px; }
+
+main { min-width: 0; padding-block: 16px 64px; padding-left: max(clamp(16px, 3vw, 40px), env(safe-area-inset-left, 0px)); padding-right: max(clamp(16px, 3vw, 40px), env(safe-area-inset-right, 0px)); display: grid; gap: 30px; align-content: start; max-width: 1180px; }
+.head { display: flex; align-items: center; gap: 12px; min-height: 44px; flex-wrap: wrap; }
+.head h2 { margin: 0; font-size: 15px; font-weight: 600; }
+.org { margin-left: auto; color: var(--ink-2); font-size: 13.5px; }
+.avatar { width: 32px; height: 32px; border-radius: 50%; background: var(--glass-strong); border: 1px solid var(--hair-2); display: grid; place-items: center; font-size: 12px; font-weight: 600; }
+
+.btn { display: inline-flex; align-items: center; gap: 8px; font: 500 14px var(--font); border-radius: 9px; padding: 9px 14px; cursor: pointer; border: 1px solid transparent; text-decoration: none; white-space: nowrap; transition: transform .15s ease, border-color .15s ease, background-color .15s ease; color: var(--ink); background: none; }
+.btn.quiet { background: var(--glass-strong); border-color: var(--hair-2); padding: 7px 12px; font-size: 13.5px; }
+.btn.quiet:hover { border-color: var(--ink-2); }
+.btn.primary { background: linear-gradient(180deg, var(--primary-a), var(--primary-b)); color: var(--on-primary); box-shadow: inset 0 1px 0 rgba(255,255,255,.3), 0 8px 18px -10px rgba(0,0,0,.6); }
+.btn.primary:hover { transform: translateY(-1px); }
+.btn.stop { color: var(--stop); border-color: color-mix(in srgb, var(--stop) 55%, transparent); }
+.btn.stop:hover { background: color-mix(in srgb, var(--stop) 10%, transparent); border-color: var(--stop); }
+.btn.stop.solid { background: color-mix(in srgb, var(--stop) 16%, transparent); }
+
+.hero { display: flex; justify-content: space-between; align-items: flex-end; gap: 24px; flex-wrap: wrap; }
+.big { margin: 6px 0 0; font-size: clamp(34px, 4.2vw, 52px); font-weight: 300; letter-spacing: -0.04em; line-height: 1.04; text-wrap: balance; }
+.big span { color: var(--muted); }
+.lede { margin: 12px 0 0; color: var(--ink-2); font-size: 15.5px; }
+
+.confirm { display: grid; gap: 12px; padding: 16px 20px; border-radius: 14px; border: 1px solid color-mix(in srgb, var(--stop) 40%, transparent); background: color-mix(in srgb, var(--stop) 7%, transparent); max-width: 760px; }
+.confirm p { margin: 0; color: var(--ink); }
+.confirm .acts { display: flex; gap: 10px; flex-wrap: wrap; }
+
+.frozen { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 12px 16px; border-radius: 12px; border: 1px solid color-mix(in srgb, var(--stop) 40%, transparent); background: color-mix(in srgb, var(--stop) 9%, transparent); }
+.frozen b { font-weight: 600; }
+.frozen span { color: var(--ink-2); }
+.frozen .btn { margin-left: auto; }
+
+.panel { background: var(--glass); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); border: 1px solid var(--glass-line); border-radius: 14px; box-shadow: 0 18px 40px -30px rgba(0,0,0,.8); min-width: 0; }
+.panel-h { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 15px 20px 6px; }
+.panel-h h3 { margin: 0; font-size: 15px; font-weight: 600; }
+.panel-h a { color: var(--ink-2); font-size: 13.5px; text-decoration: none; }
+.panel-h a:hover { color: var(--ink); }
+.two { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 18px; }
+
+/* the three figures share one strip; time saved carries the gold */
+.figs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.fig { padding: 18px 22px 20px; display: grid; gap: 4px; align-content: start; border-left: 1px solid var(--hair); }
+.fig:first-child { border-left: 0; }
+.fig b { font-size: clamp(28px, 3vw, 38px); font-weight: 300; letter-spacing: -0.035em; line-height: 1.05; font-variant-numeric: tabular-nums; }
+.fig span { color: var(--ink-2); font-size: 13.5px; }
+.fig small { color: var(--muted); font-size: 12.5px; }
+.fig.gold { background: linear-gradient(180deg, transparent, var(--gold-soft)); }
+.fig.gold b { color: var(--gold-deep); }
+.budget { height: 4px; border-radius: 4px; background: var(--hair-2); overflow: hidden; margin-top: 6px; }
+.budget i { display: block; height: 100%; border-radius: 4px; background: var(--help); }
+
+.rows { list-style: none; margin: 0; padding: 0 0 6px; }
+.rows li { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 14px; align-items: center; padding: 12px 20px; border-top: 1px solid var(--hair); }
+.rows li:first-child { border-top: 0; }
+.rows b { font-weight: 500; }
+.rows p { margin: 1px 0 0; color: var(--ink-2); font-size: 14px; }
+.rows .meta { display: flex; gap: 12px; justify-content: space-between; color: var(--ink-2); font-size: 13.5px; font-variant-numeric: tabular-nums; margin-top: 8px; }
+
+.res { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; font-weight: 500; }
+.res::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.res.ok { color: var(--ok); } .res.help { color: var(--help); } .res.live { color: var(--live); } .res.idle { color: var(--muted); }
+.res.live::before { animation: pulse 1.8s ease-out infinite; }
+@keyframes pulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--live) 55%, transparent); } 70%, 100% { box-shadow: 0 0 0 6px transparent; } }
+
+.track { height: 6px; border-radius: 6px; background: var(--hair-2); overflow: hidden; margin-top: 8px; }
+.track i { display: block; height: 100%; background: linear-gradient(90deg, var(--primary-a), var(--primary-b)); border-radius: 6px; transition: width .9s cubic-bezier(.3,.1,.2,1); }
+.track.stalled i { background: var(--muted); }
+
+.in { animation: blurin .85s cubic-bezier(.2,.7,.2,1) both; animation-delay: calc(var(--i, 0) * 70ms); }
+@keyframes blurin { from { opacity: 0; filter: blur(10px); transform: translateY(8px); } }
+@media (prefers-reduced-motion: reduce) { .in, .res.live::before { animation: none !important; } .track i { transition: none; } }
+
+@media (max-width: 1040px) { .two { grid-template-columns: minmax(0,1fr); } }
+@media (max-width: 780px) {
+  .app { grid-template-columns: minmax(0,1fr); }
+  .side { position: static; height: auto; flex-direction: row; align-items: center; border-right: 0; border-bottom: 1px solid var(--glass-line); overflow-x: auto; padding-left: max(12px, env(safe-area-inset-left, 0px)); padding-right: max(12px, env(safe-area-inset-right, 0px)); }
+  .side .nav { grid-auto-flow: column; }
+  .side-foot, .org, .logo small { display: none; }
+  .figs { grid-template-columns: minmax(0,1fr); }
+  .fig { border-left: 0; border-top: 1px solid var(--hair); }
+  .fig:first-child { border-top: 0; }
+}
+</style>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-over" viewBox="0 0 16 16"><path d="M2.5 13.5h11"/><path d="M4 11V7.5M8 11V4M12 11V6"/></symbol>
+  <symbol id="i-people" viewBox="0 0 16 16"><circle cx="6" cy="5.5" r="2.3"/><path d="M2 13c.5-2.2 2.1-3.4 4-3.4s3.5 1.2 4 3.4"/><path d="M10.6 3.4a2.2 2.2 0 0 1 0 4.2M11.8 9.9c1.2.4 2 1.4 2.3 3.1"/></symbol>
+  <symbol id="i-hist" viewBox="0 0 16 16"><path d="M2.8 8a5.2 5.2 0 1 0 1.5-3.7"/><path d="M2.5 2.8v2.4h2.4M8 5.2V8l2 1.4"/></symbol>
+  <symbol id="i-tasks" viewBox="0 0 16 16"><rect x="2.5" y="2.5" width="11" height="11" rx="2"/><path d="M5.5 6h5M5.5 8.5h5M5.5 11h3"/></symbol>
+  <symbol id="i-coin" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5"/><path d="M9.8 6.2c-.3-.6-1-1-1.8-1-1 0-1.8.6-1.8 1.4 0 1.9 3.6 1 3.6 2.9 0 .8-.8 1.4-1.8 1.4-.9 0-1.6-.4-1.9-1.1M8 4v1.2M8 10.9V12"/></symbol>
+  <symbol id="i-act" viewBox="0 0 16 16"><path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h7"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 16 16"><circle cx="8" cy="8" r="2"/><path d="M8 2.2v1.6M8 12.2v1.6M2.2 8h1.6M12.2 8h1.6M3.9 3.9l1.1 1.1M11 11l1.1 1.1M3.9 12.1 5 11M11 5l1.1-1.1"/></symbol>
+  <symbol id="i-back" viewBox="0 0 16 16"><path d="M6.5 4 2.5 8l4 4M2.8 8h10.7"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5"/><path d="M6.6 6v4M9.4 6v4"/></symbol>
+</svg>
+
+<div class="app">
+  <aside class="side">
+    <div class="logo"><svg viewBox="0 0 22 22" aria-hidden="true"><circle cx="11" cy="11" r="9" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M5.5 13.5c2-3.4 4-5 5.5-5s3.5 1.6 5.5 5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>ProcessLens <small>Admin</small></div>
+    <nav class="nav">
+      <a class="on" href="#"><svg class="i"><use href="#i-over"/></svg>Overview</a>
+      <a href="#"><svg class="i"><use href="#i-people"/></svg>People</a>
+      <a href="#"><svg class="i"><use href="#i-hist"/></svg>Runs</a>
+      <a href="#"><svg class="i"><use href="#i-tasks"/></svg>Tasks</a>
+      <a href="#"><svg class="i"><use href="#i-coin"/></svg>AI spend</a>
+      <a href="#"><svg class="i"><use href="#i-act"/></svg>Activity</a>
+    </nav>
+    <div class="side-foot">
+      <nav class="nav">
+        <a href="#"><svg class="i"><use href="#i-gear"/></svg>Settings</a>
+        <a href="#"><svg class="i"><use href="#i-back"/></svg>Back to ProcessLens</a>
+      </nav>
+    </div>
+  </aside>
+
+  <main>
+    <div class="head in" style="--i:0">
+      <h2>Overview</h2>
+      <span class="org">Northwind Supply</span>
+      <span class="avatar">JV</span>
+    </div>
+
+    <div class="frozen" id="frozen" hidden>
+      <b>All runs are paused.</b><span>Paused by Jay at <span id="frozen-at">14:02</span>. Nothing new will start.</span>
+      <button class="btn quiet" id="unfreeze" type="button">Let runs start again</button>
+    </div>
+
+    <section class="hero">
+      <div>
+        <h1 class="big in" style="--i:1" id="headline">3 runs going.<br><span>3 things need a look.</span></h1>
+        <p class="lede in" style="--i:2">Example data for the mock. Nothing was entered twice this week.</p>
+      </div>
+      <button class="btn stop in" style="--i:2" id="pause-all" type="button"><svg class="i"><use href="#i-pause"/></svg>Pause everything</button>
+    </section>
+
+    <div class="confirm" id="confirm" hidden>
+      <p>Every run stops at its next safe point. Nothing half-saved is left behind. People can resume their own runs after you let runs start again.</p>
+      <div class="acts">
+        <button class="btn stop solid" id="confirm-yes" type="button">Pause everything</button>
+        <button class="btn quiet" id="confirm-no" type="button">Keep running</button>
+      </div>
+    </div>
+
+    <section class="panel figs in" style="--i:3" aria-label="This week">
+      <div class="fig"><b>1,284</b><span>Rows done this week</span><small>Across 9 people and 6 tasks</small></div>
+      <div class="fig gold"><b>58 h 40 m</b><span>Time saved this week</span><small>vs. about 3 minutes a row by hand</small></div>
+      <div class="fig"><b>$41.20</b><span>AI spend this month</span><small>About 3 cents a row</small></div>
+    </section>
+
+    <section class="two">
+      <div class="panel in" style="--i:4">
+        <div class="panel-h"><h3>Needs a look</h3><a href="#">Activity</a></div>
+        <ul class="rows">
+          <li><div><b>Add vendor bills to Odoo</b><p>Stopped responding 6 minutes ago. Ravi's Chrome may be closed.</p></div><button class="btn quiet" type="button">Open run</button></li>
+          <li><div><b>Update deal stages in Twenty</b><p>Keeps failing. The last 3 runs had more rows not working than done.</p></div><button class="btn quiet" type="button">Open task</button></li>
+          <li><div><b>3 people need to update the Chrome extension</b><p>They're on 1.4.2. New runs need 1.5.0 or newer.</p></div><button class="btn quiet" type="button">See people</button></li>
+        </ul>
+      </div>
+
+      <div class="panel in" style="--i:5">
+        <div class="panel-h"><h3>Running now</h3><a href="#">All runs</a></div>
+        <ul class="rows" id="running">
+          <li><div><b>Add customer inquiries to Odoo CRM</b><p>Priya Nair · started 10:42</p>
+            <div class="track"><i style="width:26%" data-total="500" data-done="128"></i></div>
+            <div class="meta"><span class="res live">Running</span><span class="count">128 of 500 done</span></div></div>
+            <button class="btn quiet" type="button">Pause</button></li>
+          <li><div><b>Import contacts into Twenty</b><p>Jay Vee · started 13:20</p>
+            <div class="track"><i style="width:68%" data-total="60" data-done="41"></i></div>
+            <div class="meta"><span class="res live">Running</span><span class="count">41 of 60 done</span></div></div>
+            <button class="btn quiet" type="button">Pause</button></li>
+          <li><div><b>Add vendor bills to Odoo</b><p>Ravi Iyer · started 09:15</p>
+            <div class="track stalled"><i style="width:44%"></i></div>
+            <div class="meta"><span class="res help">Not responding</span><span>88 of 200 done</span></div></div>
+            <button class="btn quiet" type="button">Pause</button></li>
+        </ul>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var pauseAll = $("pause-all"), confirmBox = $("confirm"), frozen = $("frozen"), headline = $("headline");
+  pauseAll.addEventListener("click", function () { confirmBox.hidden = false; $("confirm-no").focus(); });
+  $("confirm-no").addEventListener("click", function () { confirmBox.hidden = true; pauseAll.focus(); });
+  $("confirm-yes").addEventListener("click", function () {
+    var now = new Date();
+    $("frozen-at").textContent = String(now.getHours()).padStart(2, "0") + ":" + String(now.getMinutes()).padStart(2, "0");
+    confirmBox.hidden = true; frozen.hidden = false; pauseAll.hidden = true;
+    headline.innerHTML = "Runs are paused.<br><span>3 will stop at their next safe point.</span>";
+    document.querySelectorAll("#running .res.live").forEach(function (el) { el.className = "res idle"; el.textContent = "Pausing"; });
+    $("unfreeze").focus();
+  });
+  $("unfreeze").addEventListener("click", function () {
+    frozen.hidden = true; pauseAll.hidden = false;
+    headline.innerHTML = "Runs can start again.<br><span>People resume their own runs.</span>";
+    pauseAll.focus();
+  });
+  // live progress on the two healthy runs
+  setInterval(function () {
+    if (!frozen.hidden) return;
+    document.querySelectorAll("#running .track:not(.stalled) i").forEach(function (bar) {
+      var total = +bar.dataset.total, done = Math.min(total, +bar.dataset.done + 1);
+      bar.dataset.done = done; bar.style.width = (done / total * 100).toFixed(1) + "%";
+      bar.parentNode.parentNode.querySelector(".count").textContent = done + " of " + total + " done";
+    });
+  }, 2500);
+})();
+</script>
