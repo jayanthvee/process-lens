@@ -119,12 +119,14 @@ class SpaStaticFiles(StaticFiles):
     """The built page, with one rule: a client-side route is not a missing file.
 
     A person can refresh on ``/runs/abc``. No such file exists, so the mount would answer 404 and
-    the page would never load. A path with no file extension therefore answers ``index.html`` and
-    the router inside the page decides what to draw.
+    the page would never load. A path whose suffix is not a known asset suffix therefore answers
+    ``index.html`` and the router inside the page decides what to draw. Suffixes are decided by an
+    allowlist, not by "has a dot at all": a route like ``/runs/abc.def`` is a route, not a missing
+    asset, and it must survive a refresh.
 
     Two things still 404 rather than answering the page, on purpose:
 
-    * a missing *asset* -- ``*.js``, ``*.css``, ``*.png`` and the rest -- so a broken build is
+    * a missing *asset* -- a path whose suffix is one of ``ASSET_SUFFIXES`` -- so a broken build is
       visible instead of a page that quietly serves a stylesheet that is not there;
     * anything under ``/api/``, so a mistyped API path stays the JSON 404 the API itself would
       send. Handing the page's HTML to an API caller would turn a plain 404 into a 200 whose body
@@ -133,6 +135,23 @@ class SpaStaticFiles(StaticFiles):
 
     # The prefix the API owns; a miss under it is the API's 404, never the page.
     API_PREFIX = "api/"
+
+    # The suffixes a real built asset can carry. Anything else, dot included, is a route.
+    ASSET_SUFFIXES = {
+        ".js",
+        ".css",
+        ".map",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".svg",
+        ".ico",
+        ".webp",
+        ".woff",
+        ".woff2",
+        ".txt",
+        ".json",
+    }
 
     async def get_response(self, path: str, scope: MutableMapping[str, Any]) -> Response:
         """Answer the file, or the page for a route, or 404 for a missing asset or API path.
@@ -143,7 +162,8 @@ class SpaStaticFiles(StaticFiles):
         """
         relative = path.replace("\\", "/").lstrip("/")
         is_api = relative == self.API_PREFIX.rstrip("/") or relative.startswith(self.API_PREFIX)
-        if is_api or Path(relative).suffix:
+        is_asset = Path(relative).suffix.lower() in self.ASSET_SUFFIXES
+        if is_api or is_asset:
             return await super().get_response(path, scope)
         try:
             response = await super().get_response(path, scope)
