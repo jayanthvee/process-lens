@@ -30,6 +30,12 @@ Four checks, each answering 403 with the check it refused named in ``detail``:
   that cross-origin without a preflight, and this API sends no CORS headers, so the preflight
   fails and the request is never sent. A request with no body is fine, whatever it declares.
 
+  ``POST /api/v1/batches`` is the one exception: a spreadsheet upload is a file, so that path also
+  accepts ``multipart/form-data``. ``multipart/form-data`` is a CORS-safelisted media type, so a
+  cross-site form could send one without a preflight -- but it cannot hide its ``Origin``, and the
+  origin check above refuses every ``Origin`` that is not this API's own. The exception is one path
+  wide for that reason, and every other state-changing request keeps the JSON-only rule.
+
 A non-``http`` scope passes straight through, so ``/api/v1/executor/ws`` and ``/api/v1/runner/ws``
 keep their own, stricter checks: the hub refuses a socket by close code, not by 403.
 """
@@ -44,6 +50,11 @@ from .hub import host_header_is_local, is_loopback, origin_is_extension
 
 STATE_CHANGING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 JSON_MEDIA_TYPE = "application/json"
+# The spreadsheet upload reads a file, so ``POST /api/v1/batches`` is the one route that takes a
+# form body. Every other state-changing request still has to be JSON, which a browser cannot send
+# cross-origin without a preflight.
+FORM_MEDIA_TYPE = "multipart/form-data"
+UPLOAD_PATH = "/api/v1/batches"
 FORBIDDEN_STATUS = 403
 # The two routes a browser page never calls and the extension does, so the two routes where an
 # origin other than this API's own is meaningful: the service worker opens a session, and the popup
@@ -118,6 +129,8 @@ def _content_type_refusal(request: Request, *, body: bool) -> str | None:
         return None
     media_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
     if media_type == JSON_MEDIA_TYPE:
+        return None
+    if media_type == FORM_MEDIA_TYPE and request.url.path.rstrip("/") == UPLOAD_PATH:
         return None
     return CONTENT_TYPE_DETAIL
 

@@ -17,6 +17,7 @@ import psycopg
 from psycopg.rows import dict_row
 
 from packages.compiler.validation import validation_errors
+from packages.ledger import batches as ledger_batches
 from packages.ledger import create as ledger_create
 
 from .templates import TemplateError, render
@@ -35,14 +36,6 @@ SELECT id, tenant_id, destination_key, archived_at FROM workflows WHERE id = %(i
 """
 _SELECT_RECIPE_VERSION = """
 SELECT id, tenant_id, workflow_id, recipe FROM recipe_versions WHERE id = %(id)s
-"""
-_SELECT_BATCH = """
-SELECT id, tenant_id, workflow_id FROM input_batches WHERE id = %(id)s
-"""
-_SELECT_READY_ROWS = """
-SELECT id, row_index, raw, clean FROM input_records
-WHERE batch_id = %(batch)s AND status = 'ready'
-ORDER BY row_index
 """
 
 
@@ -115,7 +108,7 @@ def step_problems(document: Mapping[str, Any]) -> list[str]:
 def _check_consistency(
     workflow: Mapping[str, Any],
     recipe_version: Mapping[str, Any],
-    batch: Mapping[str, Any],
+    batch: ledger_batches.BatchRowInfo,
 ) -> list[str]:
     """S5: the version, the batch and the workflow must belong together, under one tenant."""
     problems: list[str] = []
@@ -124,12 +117,11 @@ def _check_consistency(
             f"recipe version {recipe_version['id']} belongs to workflow "
             f"{recipe_version['workflow_id']}, not {workflow['id']}"
         )
-    if batch["workflow_id"] != workflow["id"]:
+    if batch.workflow_id != workflow["id"]:
         problems.append(
-            f"input batch {batch['id']} belongs to workflow "
-            f"{batch['workflow_id']}, not {workflow['id']}"
+            f"input batch {batch.id} belongs to workflow {batch.workflow_id}, not {workflow['id']}"
         )
-    tenants = {workflow["tenant_id"], recipe_version["tenant_id"], batch["tenant_id"]}
+    tenants = {workflow["tenant_id"], recipe_version["tenant_id"], batch.tenant_id}
     if len(tenants) != 1:
         problems.append("the workflow, recipe version and input batch are not all one tenant")
     return problems
@@ -178,6 +170,26 @@ def _duplicate_key_problems(rendered: list[tuple[Any, int, str, str]]) -> list[s
     ]
 
 
+def _values_as_the_recipe_sees_them(
+    mapping: dict[str, Any], raw: Any, clean: Any
+) -> dict[str, Any]:
+    """One row's values as the recipe sees them: the saved mapping applied to the uploaded row.
+
+    With no mapping the values are the row's ``clean`` values, exactly as before. The mapping is
+    applied from ``raw``, so applying it twice is the same as applying it once.
+    """
+    if not mapping:
+        return clean if isinstance(clean, dict) else {}
+    uploaded = raw if isinstance(raw, dict) else {}
+    values: dict[str, Any] = {}
+    for recipe_column, spreadsheet_column in mapping.items():
+        if not spreadsheet_column:
+            continue
+        value = uploaded.get(spreadsheet_column)
+        values[str(recipe_column)] = "" if value is None else value
+    return values
+
+
 def create_run(
     conn: psycopg.Connection,
     *,
@@ -185,8 +197,16 @@ def create_run(
     recipe_version_id: uuid.UUID,
     input_batch_id: uuid.UUID,
     mode: str = "batch",
+    limit: int | None = None,
 ) -> uuid.UUID:
     """Create a run pinned to one recipe version and one input batch; return its id.
+
+    ``limit`` caps the ready rows the run takes, in the person's row order, so a preview of one row
+    (``mode='preview', limit=1``) runs exactly the first row that is ready.
+
+    When the batch carries the mapping a person confirmed, each ready row's values are the recipe's
+    own columns, so the keys are rendered from them and the runner -- which reads ``clean`` -- sees
+    the recipe's column names. ``raw`` stays exactly as it was uploaded.
 
     Raises :class:`CreationError` with every problem when the run cannot be created.
     """
@@ -200,34 +220,44 @@ def create_run(
         workflow = cur.fetchone()
         cur.execute(_SELECT_RECIPE_VERSION, {"id": recipe_version_id})
         recipe_version = cur.fetchone()
-        cur.execute(_SELECT_BATCH, {"id": input_batch_id})
-        batch = cur.fetchone()
+    batch = ledger_batches.get_batch(conn, input_batch_id)
 
-        if workflow is None:
-            problems.append(f"workflow {workflow_id} does not exist")
-        if recipe_version is None:
-            problems.append(f"recipe version {recipe_version_id} does not exist")
-        if batch is None:
-            problems.append(f"input batch {input_batch_id} does not exist")
-        if problems:
-            raise CreationError(problems)
+    if workflow is None:
+        problems.append(f"workflow {workflow_id} does not exist")
+    if recipe_version is None:
+        problems.append(f"recipe version {recipe_version_id} does not exist")
+    if batch is None:
+        problems.append(f"input batch {input_batch_id} does not exist")
+    if problems:
+        raise CreationError(problems)
 
-        assert workflow is not None and recipe_version is not None and batch is not None
-        problems.extend(_check_consistency(workflow, recipe_version, batch))
-        if problems:
-            raise CreationError(problems)
+    assert workflow is not None and recipe_version is not None and batch is not None
+    problems.extend(_check_consistency(workflow, recipe_version, batch))
+    if problems:
+        raise CreationError(problems)
 
-        document = recipe_version["recipe"] if isinstance(recipe_version["recipe"], dict) else {}
-        problems.extend(validation_errors(document))
-        problems.extend(step_problems(document))
-        if problems:
-            raise CreationError(problems)
+    document = recipe_version["recipe"] if isinstance(recipe_version["recipe"], dict) else {}
+    problems.extend(validation_errors(document))
+    problems.extend(step_problems(document))
+    if problems:
+        raise CreationError(problems)
 
-        cur.execute(_SELECT_READY_ROWS, {"batch": input_batch_id})
-        rows = cur.fetchall()
+    rows = [
+        row for row in ledger_batches.list_batch_rows(conn, input_batch_id) if row.status == "ready"
+    ]
+    if limit is not None:
+        rows = rows[:limit]
+
+    mapping = batch.column_mapping or {}
+    values_by_row: dict[uuid.UUID, dict[str, Any]] = {}
+    keyed_rows: list[dict[str, Any]] = []
+    for row in rows:
+        values = _values_as_the_recipe_sees_them(mapping, row.raw, row.clean)
+        values_by_row[row.id] = values
+        keyed_rows.append({"id": row.id, "row_index": row.row_index, "clean": values})
 
     meta = document.get("meta") if isinstance(document.get("meta"), dict) else {}
-    rendered, key_problems = _render_keys(meta, rows)
+    rendered, key_problems = _render_keys(meta, keyed_rows)
     if key_problems:
         raise CreationError(key_problems)
 
@@ -239,6 +269,11 @@ def create_run(
     tenant_id = workflow["tenant_id"]
 
     with conn.transaction():
+        if mapping:
+            # The runner reads ``clean``, so the recipe's own column names have to land there
+            # inside the same transaction that inserts the run and its records.
+            for row in rows:
+                ledger_batches.set_row_clean(conn, row.id, values_by_row[row.id])
         run_id = ledger_create.insert_run(
             conn,
             tenant_id=tenant_id,

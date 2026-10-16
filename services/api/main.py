@@ -23,6 +23,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import Response
 
 from .approvals import router as approvals_router
+from .batches import router as batches_router
 from .compile import router as compile_router
 from .home import router as home_router
 from .hub import router as hub_router
@@ -46,6 +47,7 @@ app = FastAPI(title="ProcessLens API", version="0.1.0")
 app.add_middleware(FrontDoorMiddleware)
 app.include_router(recipes_router)
 app.include_router(compile_router)
+app.include_router(batches_router)
 app.include_router(runs_router)
 app.include_router(approvals_router)
 app.include_router(hub_router)
