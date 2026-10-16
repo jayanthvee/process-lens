@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { Link, Outlet, useLocation } from "react-router-dom";
 
+import { Banners } from "./Banners";
 import { Header } from "./Header";
 import { Icon, IconSprite } from "./Icons";
 import { Sidebar } from "./Sidebar";
@@ -59,6 +60,7 @@ export function Shell(): JSX.Element {
       <Sidebar />
       <main>
         <Header title={page?.title ?? "ProcessLens"} action={action === undefined ? null : action()} />
+        <Banners />
         <Outlet />
       </main>
     </div>
