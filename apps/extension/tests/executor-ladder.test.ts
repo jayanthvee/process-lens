@@ -18,6 +18,42 @@ beforeEach(() => {
 });
 
 describe("rung 1: role and accessible name", () => {
+  it("reads the implicit role of a table cell, row and header", () => {
+    // PL-027: a search result is a table cell, and Odoo -- like most list views -- gives its
+    // ``<td>``s no explicit role. Without the implicit mapping, rung 1 cannot name a result at all
+    // and the only rung left is a CSS selector into someone else's markup, which is exactly what
+    // the ladder exists to avoid.
+    document.body.innerHTML =
+      "<table><thead><tr><th>Email</th></tr></thead>" +
+      "<tbody><tr><td>ana@example.test</td></tr></tbody></table>";
+
+    const cell = resolveTargetInPage(
+      query([{ by: "role", role: "cell", name: "ana@example.test" }]),
+    );
+    expect(cell.ok).toBe(true);
+    expect(cell.by).toBe("role");
+    expect(marked()?.tagName.toLowerCase()).toBe("td");
+
+    const header = resolveTargetInPage(
+      query([{ by: "role", role: "columnheader", name: "Email" }]),
+    );
+    expect(header.ok).toBe(true);
+    expect(marked()?.tagName.toLowerCase()).toBe("th");
+  });
+
+  it("refuses a cell rung when the search found nothing", () => {
+    // The duplicate branch is built on this rung, so an empty result table must resolve to zero
+    // matches -- a rung that matched something on an empty page would skip a record that is not
+    // there.
+    document.body.innerHTML =
+      "<table><tbody><tr><td>someone.else@example.test</td></tr></tbody></table>";
+    const result = resolveTargetInPage(
+      query([{ by: "role", role: "cell", name: "ana@example.test" }]),
+    );
+    expect(result.ok).toBe(false);
+    expect(result.attempts[0]).toMatchObject({ rung: 1, matches: 0 });
+  });
+
   it("finds a button by its implicit role and visible name", () => {
     document.body.innerHTML = "<button id='save'>Save</button>";
     const result = resolveTargetInPage(query([{ by: "role", role: "button", name: "Save" }]));

@@ -90,7 +90,10 @@ describe("post-action observation", () => {
     expect(recorded.events.map((event) => event.kind)).toEqual(["submit", "observation"]);
     expect(recorded.events[1]).toMatchObject({
       kind: "observation",
-      observation: { url_matches: "/leads/" },
+      // PL-027: the record id keeps its shape. Dropping the segment would leave "/leads/", which
+      // the page the submit was sent from ("/leads/new") already satisfies -- so a refused save
+      // would verify.
+      observation: { url_matches: "/leads/\\d+" },
     });
   });
 

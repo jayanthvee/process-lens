@@ -31,6 +31,18 @@ describe("semantic role", () => {
     expect(semanticRole(document.getElementById("a")!)).toBe("link");
   });
 
+  it("reads the implicit role of a table cell, row and header", () => {
+    // PL-027: the recorder and the executor must agree on what a cell is called, or a compiled
+    // rung can never match. Odoo's results table marks its ``<td>``s with nothing at all.
+    mount(
+      "<table><thead><tr><th>Email</th></tr></thead>" +
+        "<tbody><tr><td>ana@example.test</td></tr></tbody></table>",
+    );
+    expect(semanticRole(document.querySelector("td")!)).toBe("cell");
+    expect(semanticRole(document.querySelector("th")!)).toBe("columnheader");
+    expect(semanticRole(document.querySelector("tr")!)).toBe("row");
+  });
+
   it("reads input types", () => {
     mount("<input id='c' type='checkbox'><input id='e' type='email'>");
     expect(semanticRole(document.getElementById("c")!)).toBe("checkbox");

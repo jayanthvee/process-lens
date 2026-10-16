@@ -125,6 +125,11 @@ describe("the baseline and the diff", () => {
     expect(kinds(recorded.events)).toEqual(["fill", "click"]);
     expect(fillValues(recorded.events)).toEqual([{ kind: "constant", value: "hello" }]);
     expect(recorded.events[0]!.warning).toContain(PAGE_SET_VALUE_WARNING);
+    // PL-027: the fact rides the envelope as a boolean too. The compiler drops a page-set fill by
+    // reading it, instead of matching the English sentence above -- Odoo renders computed defaults
+    // (a zero, a resolved many2one) into its forms, and replaying them would type the page's own
+    // arithmetic back into a field.
+    expect(recorded.events[0]!.page_set).toBe(true);
   });
 
   it("reads an open shadow root and a same-origin frame", () => {

@@ -63,7 +63,14 @@ def test_a_search_for_the_record_key_produces_the_duplicate_branch() -> None:
 
     branch = _branch(steps)
     assert branch is not None
-    assert branch["when"] == {"text_visible": "{{row.email | lower}}"}
+    # PL-027: the condition is the destination's own results table, not page-wide text. On Odoo the
+    # search view renders the query back as a facet, so "this text is visible" is true for a record
+    # that does not exist and the branch would skip every row of the batch.
+    assert branch["when"] == {
+        "element_present": {
+            "targets": [{"by": "role", "role": "cell", "name": "{{row.email | lower}}"}]
+        }
+    }
     assert branch["then"] == [
         {"id": "end-record-1", "action": "end_record", "outcome": "skipped", "reason": "duplicate"}
     ]
