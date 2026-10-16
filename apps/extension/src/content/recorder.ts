@@ -373,6 +373,11 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
    * twice — once as `input`/`focusout` and once as `change` — and this is what says so.
    */
   const recordedTyping = new Map<Element, string>();
+  /**
+   * PL-031: how many input events the recorder saw for the value currently being entered on each
+   * element. Zero means the value arrived without typing, which tells the compiler the page set it.
+   */
+  const keystrokes = new Map<Element, number>();
   const url = hooks.url ?? (() => doc.location?.href ?? "");
   const stamp = hooks.now ?? (() => new Date().toISOString());
   const frame = computeFramePath(doc.defaultView ?? window);
@@ -491,6 +496,7 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
       supersedes?: string;
       reason?: string;
       page_set?: boolean;
+      keystrokes?: number;
     },
   ): PendingEvent {
     const warning =
@@ -510,6 +516,7 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
       ...(notes.supersedes !== undefined ? { supersedes: notes.supersedes } : {}),
       ...(notes.reason !== undefined ? { reason: notes.reason } : {}),
       ...(notes.page_set !== undefined ? { page_set: notes.page_set } : {}),
+      ...(notes.keystrokes !== undefined ? { keystrokes: notes.keystrokes } : {}),
     });
   }
 
@@ -645,10 +652,13 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
       lastFillElement = fill.element;
       lastTypedFillId.set(fill.element, step.id);
       const typed = touched.has(fill.element);
+      const count = typed ? (keystrokes.get(fill.element) ?? 0) : 0;
+      keystrokes.delete(fill.element);
       hooks.send(
         annotatedStepEvent("fill", step, {
           ...(typed ? {} : { warning: PAGE_SET_VALUE_WARNING, page_set: true }),
           ...(isRequiredField(fill.element) ? { required: true } : {}),
+          keystrokes: count,
         }),
       );
     }
@@ -1070,12 +1080,19 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
     // Remember what this element's value was recorded as, so the `change` that follows the very
     // same typing is not recorded a second time as the same action (see the combobox branch).
     recordedTyping.set(el, value);
+    const count = keystrokes.get(el) ?? 0;
+    keystrokes.delete(el);
     const step = fillStep(el, value);
     lastEmitted.set(el, value);
     rememberEmittedFill(el, value);
     lastFillElement = el;
     lastTypedFillId.set(el, step.id);
-    emitStep("fill", step, isRequiredField(el));
+    hooks.send(
+      annotatedStepEvent("fill", step, {
+        required: isRequiredField(el),
+        keystrokes: count,
+      }),
+    );
   }
 
   function onClick(event: Event): void {
@@ -1144,6 +1161,7 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
     recordedTyping.delete(el);
     touched.add(el);
     pending.set(el, typedValueOf(el));
+    keystrokes.set(el, (keystrokes.get(el) ?? 0) + 1);
   }
 
   function onChange(event: Event): void {
@@ -1190,12 +1208,14 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
       if (!value) return;
       if (typed) {
         recordedTyping.set(el, value);
+        const count = keystrokes.get(el) ?? 0;
+        keystrokes.delete(el);
         const step = fillStep(el, value);
         lastEmitted.set(el, value);
         rememberEmittedFill(el, value);
         lastFillElement = el;
         lastTypedFillId.set(el, step.id);
-        emitStep("fill", step);
+        hooks.send(annotatedStepEvent("fill", step, { keystrokes: count }));
         return;
       }
       lastEmitted.set(el, value);
@@ -1269,6 +1289,7 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
     endObservation();
     pending.clear();
     recordedTyping.clear();
+    keystrokes.clear();
     baseline = null;
     lastEmitted.clear();
     emittedFillValues.clear();

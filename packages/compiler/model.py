@@ -40,6 +40,12 @@ class Event:
     # but the person did not type it, so it is not an action a recipe may replay. It rides the
     # envelope as a boolean so the compiler never has to match the recorder's English sentence.
     page_set: bool = False
+    # PL-031: how many input events the recorder saw for this fill. Zero means the value arrived
+    # without typing, which is one signal that the page set the value itself.
+    keystrokes: int | None = None
+    # PL-031: the ISO timestamp the recorder stamped on the event, used to detect fills that
+    # arrived in a burst without keystrokes information.
+    at: str = ""
 
 
 @dataclass

@@ -95,6 +95,22 @@ describe("accessible name", () => {
     mount("<input id='s' type='submit' value='Create'>");
     expect(accessibleName(document.getElementById("s")!)).toBe("Create");
   });
+
+  it("drops an Odoo <sup>?</sup> help marker from the label", () => {
+    mount("<label for='c'>Contact<sup>?</sup></label><input id='c'>");
+    expect(labelText(document.getElementById("c")!)).toBe("Contact");
+    expect(accessibleName(document.getElementById("c")!)).toBe("Contact");
+  });
+
+  it("drops an Odoo <sub>?</sub> help marker from aria-labelledby", () => {
+    mount("<span id='l'>Email<sub>?</sub></span><input id='e' aria-labelledby='l'>");
+    expect(accessibleName(document.getElementById("e")!)).toBe("Email");
+  });
+
+  it("keeps a '?' that is not a lone help marker", () => {
+    mount("<label for='q'>What is your name?</label><input id='q'>");
+    expect(labelText(document.getElementById("q")!)).toBe("What is your name?");
+  });
 });
 
 describe("labels", () => {

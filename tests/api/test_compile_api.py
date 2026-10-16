@@ -84,18 +84,47 @@ def test_a_recorded_demonstration_compiles_to_a_problem_free_recipe(
     assert recipe_problems(body["recipe"]) == []
 
 
-def test_a_save_with_no_observation_names_assert_after(
+def test_an_unobserved_save_infers_text_from_the_record_key(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A commit step with nothing to assert is a 422, and the problem names ``assert_after``.
-
-    No database is involved: the refusal comes from the compiler, before anything could be stored.
+    """An explicit commit with no observation can be inferred from a previous fill of the record
+    key, so the recipe compiles and names the inferred assertion.
     """
     monkeypatch.setenv("PROCESSLENS_EXTENSION_ID", EXTENSION_ID)
 
     response = client.post(
         "/api/v1/recipes/compile",
         json=request_body(an_unobserved_save(), commit_step_ids=["click-2"]),
+        headers={"origin": EXTENSION_ORIGIN},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    commit = next(step for step in body["recipe"]["steps"] if step.get("commit"))
+    assert commit["assert_after"] == {"text_visible": "{{row.email}}", "timeout_ms": 8000}
+    assert any(
+        "checked by the new record's name appearing" in warning for warning in body["warnings"]
+    )
+
+
+def test_an_unobserved_save_with_no_inferrable_fill_is_still_422(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A commit step with nothing to assert and no fill of the record key or a required column
+    before it is still a 422 naming assert_after.
+    """
+    monkeypatch.setenv("PROCESSLENS_EXTENSION_ID", EXTENSION_ID)
+
+    recording = [
+        action_event(
+            1, "fill", "fill", INTEREST_TARGETS, value="Data course", name="Fill Interest"
+        ),
+        action_event(2, "click", "click", SAVE_TARGETS, name="Click Save"),
+        action_event(3, "submit", "click", SAVE_TARGETS),
+    ]
+    response = client.post(
+        "/api/v1/recipes/compile",
+        json=request_body(recording, commit_step_ids=["click-2"]),
         headers={"origin": EXTENSION_ORIGIN},
     )
 

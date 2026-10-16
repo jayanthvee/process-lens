@@ -56,6 +56,11 @@ export interface FillStep extends StepCommon {
    * left alone.
    */
   autocomplete?: boolean;
+  /**
+   * PL-031: how many input events the recorder saw while this value was being entered. Zero means
+   * the value arrived without typing, which is a signal that the page set the value itself.
+   */
+  keystrokes?: number;
 }
 
 export interface SelectStep extends StepCommon {
@@ -194,4 +199,10 @@ export interface RecordedEvent {
    * so the compiler drops the fill by reading one boolean instead of matching English prose.
    */
   page_set?: boolean;
+  /**
+   * PL-031: how many input events the recorder saw for this fill. Zero means the value arrived
+   * without typing, which helps the compiler distinguish a page-set value from one the person
+   * typed. Absent on recordings made before this field was added.
+   */
+  keystrokes?: number;
 }
