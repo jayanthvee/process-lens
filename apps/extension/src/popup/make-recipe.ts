@@ -16,6 +16,19 @@ export const ROW_KEY = "processlens:executor-row";
 const COMPILE_PATH = "/api/v1/recipes/compile";
 const NO_EVENTS =
   "Nothing has been recorded yet. Stop teaching first, then save it as a task.";
+
+/**
+ * The two fragments the e2e harness watches for, in one place.
+ *
+ * `tests/e2e/conftest.py`'s `compile_via_popup` waits until `#make-result` carries `is ready` or
+ * `Could not`, and reads "is ready" as the only success. They are constants here so the popup and
+ * the guard that checks them cannot drift apart, and the in-flight sentence is deliberately
+ * neither.
+ */
+export const SAVED_READY = "is ready";
+export const REFUSAL_HEADLINE = "Could not";
+/** Shown while the request is out: it must look like neither an outcome nor a refusal. */
+export const SAVING_NOTE = "Turning your recording into a task…";
 /** Shown under the duplicate checkbox when the recording holds no search for the key. */
 export const NO_SEARCH_HINT =
   "I did not see a search for this column, so I cannot check for duplicates.";
@@ -545,8 +558,7 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
       problems.length > 0 ? problems : ["ProcessLens would not accept this recording."];
     // The count is the true one, whether or not a sentence is one this page can show.
     const count = sentences.length === 1 ? "1 problem" : `${sentences.length} problems`;
-    notice(`Could not save this as a task (${count}).`);
-    warningsEl.textContent = readableBlock(sentences);
+    notice(`Could not save this as a task (${count}).`);    warningsEl.textContent = readableBlock(sentences);
   }
 
   function refresh(next: RecordedEvent[]): void {
@@ -629,7 +641,7 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
     goEl.disabled = true;
     warningsEl.textContent = "";
     // Anything shown here while the request is in flight must not look like an outcome.
-    notice("Turning your recording into a task…");
+    notice(SAVING_NOTE);
     try {
       const outcome = await compileRecording(request, {
         fetchImpl: deps.fetchImpl,

@@ -9,7 +9,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it } from "vitest";
-import { createMakeRecipeForm } from "../src/popup/make-recipe";
+import { createMakeRecipeForm, REFUSAL_HEADLINE, SAVED_READY, SAVING_NOTE } from "../src/popup/make-recipe";
 import {
   ENGINE_WORDS,
   engineWordsIn,
@@ -443,17 +443,53 @@ describe("the bundled font", () => {
 });
 
 describe("the frozen e2e contract", () => {
-  it("still has every id the harness selects by", () => {
+  it("still has every id the harness selects by, exactly once", () => {
+    // Parsed, not searched: a duplicated id would still `toContain` the string while
+    // `getElementById` silently returned the first one, which is how the harness selects.
+    const document_ = new DOMParser().parseFromString(POPUP_HTML, "text/html");
+    const ids = Array.from(document_.querySelectorAll("[id]"), (node) => node.id);
+    expect(ids.length).toBeGreaterThan(0);
     for (const id of FROZEN_E2E_IDS) {
-      expect(POPUP_HTML, `#${id} is missing from popup.html`).toContain(`id="${id}"`);
+      const matches = ids.filter((candidate) => candidate === id);
+      expect(matches, `#${id} must be in popup.html exactly once`).toHaveLength(1);
+    }
+    // And a control survives only if it is still inside the panel the harness reads.
+    const body = new DOMParser().parseFromString(POPUP_HTML, "text/html").body;
+    for (const id of ["make-name", "make-key", "make-park-fields", "make-go", "make-result"]) {
+      const node = body.querySelector(`#${id}`);
+      expect(node, `#${id} must be a real element`).not.toBeNull();
+      expect(body.querySelector("#make-recipe")?.contains(node ?? null), `#${id} is inside the form`).toBe(
+        true,
+      );
     }
   });
 
-  it("keeps the two make elements apart, and the form's own words", () => {
-    expect(POPUP_HTML).toContain('id="make-result"');
-    expect(POPUP_HTML).toContain('id="make-warnings"');
-    // These strings drive the harness's wait: a success is "is ready", a failure "Could not".
-    expect('Saved as a task: "New lead" is ready. Try one row will use it.').toContain("is ready");
-    expect("Could not save this as a task (1 problem).").toContain("Could not");
+  it("keeps the elements the harness reads apart, with the kinds it needs", () => {
+    const body = new DOMParser().parseFromString(POPUP_HTML, "text/html").body;
+    // `fill` needs a real input; `select_option` needs a real select; `click` needs a button.
+    expect(body.querySelector("#make-name")?.tagName).toBe("INPUT");
+    expect(body.querySelector("#make-key")?.tagName).toBe("SELECT");
+    expect(body.querySelector("#make-go")?.tagName).toBe("BUTTON");
+    for (const id of ["start", "stop", "clear", "connect"]) {
+      expect(body.querySelector(`#${id}`)?.tagName, `#${id} is a button`).toBe("BUTTON");
+    }
+    expect(body.querySelector("#hub")?.tagName).toBe("INPUT");
+    // The two notes are separate elements: the harness reads each one's own text.
+    expect(body.querySelector("#make-result")?.isSameNode(body.querySelector("#make-warnings"))).toBe(
+      false,
+    );
+  });
+
+  it("carries the two strings the harness's wait watches for", () => {
+    // A success is "is ready", a failure "Could not" — and nothing in flight may look like either.
+    expect(SAVED_READY).toBe("is ready");
+    expect(REFUSAL_HEADLINE).toBe("Could not");
+    expect(SAVING_NOTE).not.toContain(SAVED_READY);
+    expect(SAVING_NOTE).not.toContain(REFUSAL_HEADLINE);
+    // And the two sentences really carry them.
+    expect(`Saved as a task: "New lead" ${SAVED_READY}. Try one row will use it.`).toContain(
+      SAVED_READY,
+    );
+    expect(`${REFUSAL_HEADLINE} save this as a task (1 problem).`).toContain(REFUSAL_HEADLINE);
   });
 });
