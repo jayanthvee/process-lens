@@ -318,24 +318,31 @@ describe("chip lists", () => {
 });
 
 describe("the snapshot's cost", () => {
-  it("snapshots a visible 1000-field page and prints how long it took", () => {
-    const fields = Array.from(
-      { length: 1000 },
-      (_unused, index) => `<label for='f${index}'>Field ${index}</label><input id='f${index}' value='v${index}'>`,
-    );
-    document.body.innerHTML = fields.join("");
+  it(
+    "snapshots a visible 1000-field page and prints how long it took",
+    () => {
+      const fields = Array.from(
+        { length: 1000 },
+        (_unused, index) => `<label for='f${index}'>Field ${index}</label><input id='f${index}' value='v${index}'>`,
+      );
+      document.body.innerHTML = fields.join("");
 
-    const started = Date.now();
-    const snapshot = collectSnapshot(document);
-    const elapsed = Date.now() - started;
-    // The plan's budget is < 16 ms on the test machine; the number is reported either way.
-    console.log(`[PL-018] snapshot of 1000 fields: ${elapsed} ms`);
+      const started = Date.now();
+      const snapshot = collectSnapshot(document);
+      const elapsed = Date.now() - started;
+      // The plan's budget is < 16 ms on the test machine; the number is reported either way.
+      console.log(`[PL-018] snapshot of 1000 fields: ${elapsed} ms`);
 
-    expect(snapshot.truncated).toBe(false);
-    expect(snapshot.entries.size).toBe(1000);
+      expect(snapshot.truncated).toBe(false);
+      expect(snapshot.entries.size).toBe(1000);
 
-    const recorded = harness();
-    recorded.checkpoint(); // the baseline over 1000 fields emits nothing
-    expect(recorded.events).toHaveLength(0);
-  });
+      const recorded = harness();
+      recorded.checkpoint(); // the baseline over 1000 fields emits nothing
+      expect(recorded.events).toHaveLength(0);
+    },
+    // This case builds and snapshots 1000 fields twice. It is a scale check, not a behaviour one,
+    // so it gets a budget that survives a loaded machine: the default five seconds is the whole
+    // suite's per-test limit, and running the files in parallel can spend it on layout alone.
+    30_000,
+  );
 });

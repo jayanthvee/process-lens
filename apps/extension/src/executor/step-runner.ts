@@ -313,6 +313,73 @@ async function resolveStep(
 }
 
 /**
+ * How much of a step's own timeout the ladder may spend waiting for the page to be ready, as a
+ * share of that timeout, held between a floor and a ceiling.
+ *
+ * A page's `load` event is not the moment its application exists. Odoo's `/odoo/crm` answers with
+ * an HTML shell of a few dozen elements and boots its web client afterwards, so a step sent right
+ * after a navigate climbed three rungs against 68 elements and no inputs at all, found nothing, and
+ * parked the record (PL-027). Waiting is the honest answer: the element is not absent, the page is
+ * not ready. The wait is bounded by the step's own timeout -- the runner waits on the wire for
+ * exactly that long -- so it cannot outlive the runner's patience, and a target that is really gone
+ * is still refused, only after the wait.
+ */
+export const READY_WAIT_SHARE = 0.6;
+export const READY_WAIT_MIN_MS = 250;
+export const READY_WAIT_MAX_MS = 6000;
+export const READY_WAIT_POLL_MS = 250;
+
+/** The timeout a step that names none of its own is assumed to have, for the ready wait. */
+const READY_WAIT_DEFAULT_MS = 8000;
+
+/** How long this step may spend waiting for the page to be ready for it. */
+function readyWaitMs(step: ExecutorStep): number {
+  const own =
+    typeof step.timeout_ms === "number" && step.timeout_ms > 0
+      ? step.timeout_ms
+      : READY_WAIT_DEFAULT_MS;
+  const share = Math.floor(own * READY_WAIT_SHARE);
+  return Math.min(READY_WAIT_MAX_MS, Math.max(READY_WAIT_MIN_MS, share));
+}
+
+/**
+ * Whether a failed climb found nothing at all, which is what "the page is not ready yet" looks
+ * like. A rung that matched something and refused it -- two elements for one role, a hidden or a
+ * disabled control -- is an answer, not a race, so it is never waited on.
+ */
+function nothingMatched(result: ResolveResult): boolean {
+  const attempts = (result as { attempts?: unknown }).attempts;
+  if (!Array.isArray(attempts) || attempts.length === 0) return false;
+  return attempts.every((entry) => Number((entry as { found?: unknown }).found ?? 0) === 0);
+}
+
+/**
+ * Climb the ladder, and climb it again while the page has nothing to match at all.
+ *
+ * The climb itself is `resolveStep`; this is only the patience around it. It is used for a step's
+ * own target ladder and never for the ladder built to read an autocomplete's suggestions -- that one
+ * polls its own listbox and would otherwise double the waiting.
+ */
+async function resolveWhenReady(
+  cdp: CdpTransport,
+  step: ExecutorStep,
+  deps: StepRunDeps,
+  contextId: number | undefined,
+  ladder?: ResolveRung[],
+  preset?: ResolvedTarget,
+): Promise<{ result: ResolveResult; token: string }> {
+  if (preset) return resolveStep(cdp, step, deps, contextId, ladder, preset);
+  const deadline = Date.now() + readyWaitMs(step);
+  for (;;) {
+    const attempt = await resolveStep(cdp, step, deps, contextId, ladder);
+    if (attempt.result.ok || !nothingMatched(attempt.result) || Date.now() >= deadline) {
+      return attempt;
+    }
+    await delay(Math.min(READY_WAIT_POLL_MS, Math.max(1, deadline - Date.now())));
+  }
+}
+
+/**
  * Resolve and hit-test one step's target, and attach the marker. Sends no input:
  * this is the `prepare` half of a step, so the runner can learn where a click
  * would land before it authorises the click.
@@ -326,9 +393,9 @@ export async function resolveStepTarget(
     if ((step.targets ?? []).length === 0) {
       return { ok: false, error: `step ${step.id} has no target ladder` };
     }
-    const { result, token } = await resolveStep(deps.cdp, step, deps, contextId);
+    const { result, token } = await resolveWhenReady(deps.cdp, step, deps, contextId);
     if (!result.ok) {
-      return { ok: false, error: result.error ?? "no rung matched" };
+      return { ok: false, error: `${result.error ?? "no rung matched"}${attemptTrail(result)}` };
     }
     // A click lands at a measured box center, so its target is hit-tested here.
     // A fill or a select acts on the element itself and needs no box; measuring
@@ -360,6 +427,30 @@ export async function resolveStepTarget(
 function nameOf(result: ResolveResult): string {
   const name = (result as { name?: unknown }).name;
   return typeof name === "string" ? name : "";
+}
+
+/**
+ * Which rung was tried, how many usable elements it found, and why it was refused.
+ *
+ * A park that says only "no rung resolved" leaves a person with a working page and a task that
+ * cannot run it, and nothing to look at: the rung trail is the difference between "the element is
+ * gone" (0 matches on every rung) and "the ladder is ambiguous here" (a rung that matched twice).
+ */
+function attemptTrail(result: ResolveResult): string {
+  const attempts = (result as { attempts?: unknown }).attempts;
+  if (!Array.isArray(attempts) || attempts.length === 0) return "";
+  const trail = attempts
+    .map((entry) => {
+      const rung = (entry as { rung?: unknown }).rung ?? "?";
+      const by = String((entry as { by?: unknown }).by ?? "?");
+      const matches = (entry as { matches?: unknown }).matches ?? 0;
+      const found = (entry as { found?: unknown }).found;
+      const reason = (entry as { reason?: unknown }).reason;
+      const seen = typeof found === "number" ? `${found} matched, ${matches} usable` : `${matches} usable`;
+      return `rung ${rung} (${by}): ${seen}${reason ? ` - ${reason}` : ""}`;
+    })
+    .join("; ");
+  return ` [${trail}]`;
 }
 
 /**
@@ -690,10 +781,10 @@ export async function performStep(
   if (step.action === "press") {
     // A press acts on the focused element itself, not on a box: no `measureTarget`, exactly like a
     // fill or a select. The ladder still proves the element is the one the step named.
-    const { result, token } = await resolveStep(deps.cdp, step, deps, contextId, undefined, preset);
+    const { result, token } = await resolveWhenReady(deps.cdp, step, deps, contextId, undefined, preset);
     if (!result.ok) {
       throw new ExecutorError(
-        `the press target for step ${step.id} could not be resolved: ${result.error ?? "no rung matched"}`,
+        `the press target for step ${step.id} could not be resolved: ${result.error ?? "no rung matched"}${attemptTrail(result)}`,
         step.id,
         "park",
       );
@@ -712,10 +803,10 @@ export async function performStep(
         "park",
       );
     }
-    const { result, token } = await resolveStep(deps.cdp, step, deps, contextId, undefined, preset);
+    const { result, token } = await resolveWhenReady(deps.cdp, step, deps, contextId, undefined, preset);
     if (!result.ok) {
       throw new ExecutorError(
-        `the fill target for step ${step.id} could not be resolved: ${result.error ?? "no rung matched"}`,
+        `the fill target for step ${step.id} could not be resolved: ${result.error ?? "no rung matched"}${attemptTrail(result)}`,
         step.id,
         "park",
       );
@@ -745,10 +836,10 @@ export async function performStep(
         "park",
       );
     }
-    const { result, token } = await resolveStep(deps.cdp, step, deps, contextId, undefined, preset);
+    const { result, token } = await resolveWhenReady(deps.cdp, step, deps, contextId, undefined, preset);
     if (!result.ok) {
       throw new ExecutorError(
-        `the select target for step ${step.id} could not be resolved: ${result.error ?? "no rung matched"}`,
+        `the select target for step ${step.id} could not be resolved: ${result.error ?? "no rung matched"}${attemptTrail(result)}`,
         step.id,
         "park",
       );
@@ -798,29 +889,53 @@ export async function performStep(
   }
 
   // click
-  const { result, token } = await resolveStep(deps.cdp, step, deps, contextId, undefined, preset);
-  if (!result.ok) {
-    throw new ExecutorError(
-      `the click target for step ${step.id} could not be resolved: ${result.error ?? "no rung matched"}`,
-      step.id,
-      "park",
+  //
+  // A click is measured and hit-tested before it is pressed, and a real page can re-render the
+  // element out from under the marker in between: Odoo's many2one autocomplete replaces its whole
+  // option list when the search it typed comes back, so the option the ladder stamped was gone by
+  // the time the box was measured (PL-027). Nothing has been pressed when that happens -- the
+  // measure is before the press -- so climbing the ladder again is safe, and it is what a ladder is
+  // for. The step's own deadline bounds the retries, and a click that landed is never repeated: only
+  // the pre-press "the marked element is no longer in the document" is ever retried.
+  const clickDeadline = Date.now() + stepTimeoutMs(step, deps);
+  for (let attempt = 0; ; attempt += 1) {
+    const { result, token } = await resolveWhenReady(
+      deps.cdp,
+      step,
+      deps,
+      contextId,
+      undefined,
+      attempt === 0 ? preset : undefined,
     );
-  }
-  // The destructive-control invariant is checked HERE, at the last moment before the click, using
-  // the accessible name of the element the ladder actually matched. That covers both the command
-  // mode (whose handler checks it earlier, on the same name) and the local test run, and it cannot
-  // be bypassed by a recipe that points at a bare CSS selector.
-  if (!step.allow_destructive_control) {
-    const blocked = destructiveMatch(nameOf(result));
-    if (blocked) {
+    if (!result.ok) {
       throw new ExecutorError(
-        `refusing to click a destructive control ("${blocked}"): set allow_destructive_control on step ${step.id} to permit it`,
+        `the click target for step ${step.id} could not be resolved: ${result.error ?? "no rung matched"}${attemptTrail(result)}`,
         step.id,
         "park",
       );
     }
+    // The destructive-control invariant is checked HERE, at the last moment before the click, using
+    // the accessible name of the element the ladder actually matched. That covers both the command
+    // mode (whose handler checks it earlier, on the same name) and the local test run, and it cannot
+    // be bypassed by a recipe that points at a bare CSS selector.
+    if (!step.allow_destructive_control) {
+      const blocked = destructiveMatch(nameOf(result));
+      if (blocked) {
+        throw new ExecutorError(
+          `refusing to click a destructive control ("${blocked}"): set allow_destructive_control on step ${step.id} to permit it`,
+          step.id,
+          "park",
+        );
+      }
+    }
+    // The step's own deadline bounds how long the target may take to stop moving (PL-017b).
+    try {
+      await dispatchClick(deps.cdp, token, contextId, hooks, Math.max(1, clickDeadline - Date.now()));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!message.includes("no longer in the document") || Date.now() >= clickDeadline) throw error;
+      continue; // the page re-rendered under the marker; nothing was pressed, so climb again
+    }
+    return { id: step.id, action: step.action, outcome: "done", rung: result.rung, by: result.by };
   }
-  // The step's own deadline bounds how long the target may take to stop moving (PL-017b).
-  await dispatchClick(deps.cdp, token, contextId, hooks, stepTimeoutMs(step, deps));
-  return { id: step.id, action: step.action, outcome: "done", rung: result.rung, by: result.by };
 }

@@ -42,6 +42,8 @@ export interface RungAttempt {
   rung: number;
   by: string;
   matches: number;
+  /** How many the rung matched before visibility and enabledness were applied. */
+  found?: number;
   reason?: string;
 }
 
@@ -777,8 +779,21 @@ export function resolveTargetInPage(query: ResolveQuery): ResolveResult {
     y: 0,
     tag: "",
     attempts,
-    error: reason,
+    // The page the ladder climbed, and how much of it there is. A step that cannot resolve its
+    // target on a page the person can see is a question about *which* page, and a count is the
+    // cheapest way to tell "the element is gone" from "the document is not the one expected"
+    // (PL-027: the trail showed three rungs with no match, and this is what says why).
+    error: `${reason} [page ${locate()}; ${doc.querySelectorAll("input").length} input(s), ${doc.querySelectorAll("*").length} element(s)]`,
   });
+
+  /** The top-level URL the ladder is climbing in, as the page itself reports it. */
+  const locate = (): string => {
+    try {
+      return String(doc.location?.href ?? "unknown");
+    } catch {
+      return "unreadable";
+    }
+  };
 
   const requested = (query.targets ?? []) as ResolveRung[];
   if (requested.length === 0) return fail("the step has no target ladder");
@@ -895,6 +910,10 @@ export function resolveTargetInPage(query: ResolveQuery): ResolveResult {
       rung: rungNumber,
       by,
       matches: usable.length,
+      // How many the rung *matched*, before visibility and enabledness: a rung that found the
+      // element and refused it is a different problem from one that found nothing, and the two
+      // look identical in the count above.
+      found: candidates.length,
       reason: usable.length === 0 ? "no visible, enabled match" : "more than one match",
     });
   }
