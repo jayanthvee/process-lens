@@ -563,6 +563,17 @@ def check_batch(
         rows = list_batch_rows(conn, batch_id)
         columns = _columns_of(rows)
         document = _document(version)
+        if recorded is None:
+            # PL-028: the recipe carries the values the task was taught with, so the value match
+            # works without the caller passing them again. A field with no example contributes
+            # nothing, and a sample_row the caller passed always wins.
+            recorded = {
+                column: spec["example"]
+                for column, spec in _fields(document).items()
+                if isinstance(spec, dict)
+                and isinstance(spec.get("example"), str)
+                and spec["example"].strip()
+            }
         row_one = rows[0].raw if rows else {}
         # The mapping a person saved is the one that counts: the check's own guess is only a
         # starting point, and the verdicts below -- which decide which rows a run is built from --
