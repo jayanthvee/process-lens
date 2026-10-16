@@ -180,7 +180,8 @@ describe("the make-recipe form", () => {
     await form.submit();
 
     expect(control("make-warnings").textContent).toContain(problem);
-    expect(control("make-result").textContent).toContain("Could not make a recipe");
+    expect(control("make-result").textContent).toContain("Could not save this as a task");
+    expect(control("make-result").textContent).not.toContain("recipe");
     expect(storage.writes).toHaveLength(0);
   });
 
@@ -228,7 +229,7 @@ describe("the make-recipe form", () => {
     form.refresh([]);
 
     expect(control<HTMLButtonElement>("make-go").disabled).toBe(true);
-    expect(control("make-result").textContent).toContain("No events recorded");
+    expect(control("make-result").textContent).toContain("Nothing has been recorded yet");
   });
 
   it("names the status code when the error body is not one it knows", async () => {
@@ -421,7 +422,9 @@ describe("the default record key", () => {
 
     await form.submit();
     expect(calls).toHaveLength(0);
-    expect(control("make-result").textContent).toContain("record key");
+    expect(control("make-result").textContent).toContain(
+      "Choose which column identifies each row first.",
+    );
 
     key.value = "interest";
     key.dispatchEvent(new Event("change"));
@@ -537,7 +540,7 @@ describe("the duplicate check (PL-017 requirement 4)", () => {
     expect(box.disabled).toBe(true);
     expect(box.checked).toBe(false);
     expect(control("make-duplicate-hint").textContent).toBe(
-      "Record a search for the key first to turn on the duplicate check",
+      "I did not see a search for this column, so I cannot check for duplicates.",
     );
 
     await form.submit();
@@ -706,8 +709,9 @@ describe("an accepted suggestion (PL-018)", () => {
     // A recording of clicks alone offers no sample-row value, and the null step never crashes.
     expect(recordedValues(events)).toEqual([]);
     expect(commitChoices(events).map((choice) => choice.id)).toEqual(["click-2"]);
+    expect(commitChoices(events).map((choice) => choice.label)).toEqual(["Send"]);
     expect(recordedWarnings(events)).toEqual([
-      "step unrecordable: a recipient was removed without a remove button; the recording cannot replay it",
+      "A step the recorder could not name: a recipient was removed without a remove button; the recording cannot replay it",
     ]);
 
     const { fetchImpl } = fakeFetch({});

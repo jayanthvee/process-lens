@@ -142,10 +142,10 @@ describe("a click whose durable rungs are all gone (requirement 9)", () => {
 });
 
 describe("recordedWarnings", () => {
-  it("returns one sentence naming the step for an event that carries a warning", () => {
-    expect(recordedWarnings([warnedEvent()])).toEqual([
-      `step click-1: ${POSITIONAL_ONLY_WARNING}`,
-    ]);
+  it("returns one sentence naming the step in its own words, never its id", () => {
+    const warnings = recordedWarnings([warnedEvent()]);
+    expect(warnings).toEqual([`Click Remove: ${POSITIONAL_ONLY_WARNING}`]);
+    expect(warnings.join(" ")).not.toContain("click-1");
   });
 
   it("returns an empty list for a recording with no warnings", () => {
@@ -167,6 +167,7 @@ describe("the make-recipe form", () => {
 
     const warnings = control("make-warnings").textContent ?? "";
     expect(warnings).toContain("only a positional selector remains");
-    expect(warnings).toContain("click-1");
+    expect(warnings).toContain("Click Remove");
+    expect(warnings).not.toContain("click-1");
   });
 });

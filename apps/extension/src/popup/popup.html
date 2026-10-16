@@ -3,35 +3,86 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>ProcessLens Recorder</title>
+    <title>Teach a task</title>
+    <link rel="stylesheet" href="tokens.css" />
     <link rel="stylesheet" href="popup.css" />
   </head>
   <body>
     <main class="panel">
       <header class="panel__header">
-        <h1 class="panel__title">ProcessLens Recorder</h1>
-        <p class="panel__state" id="state" role="status">Idle</p>
+        <h1 class="panel__title">Teach a task</h1>
+        <p class="panel__state" id="state" role="status">Not recording</p>
       </header>
+      <p class="panel__lead">
+        Do the job once in your browser. ProcessLens watches, then you save it as a task.
+      </p>
+
+      <p class="status" id="session-state" role="status">Not connected</p>
 
       <div class="panel__actions">
-        <button id="start" type="button" class="button button--primary">Start</button>
-        <button id="stop" type="button" class="button">Stop</button>
-        <button id="clear" type="button" class="button">Clear</button>
+        <button id="start" type="button" class="button button--primary">Start teaching</button>
+        <button id="stop" type="button" class="button button--quiet">Stop</button>
+        <button id="clear" type="button" class="button button--quiet">Clear the steps</button>
       </div>
+
+      <ol class="steps" id="steps">
+        <li class="steps__empty">The steps you take will appear here.</li>
+      </ol>
+
+      <section class="panel__form" id="make-recipe" aria-label="Save as task">
+        <h2 class="panel__title">Save as task</h2>
+        <label class="field" for="make-name">
+          <span class="field__label">What should this task be called?</span>
+          <input
+            id="make-name"
+            class="field__input"
+            type="text"
+            placeholder="New lead"
+            autocomplete="off"
+            spellcheck="false"
+          />
+        </label>
+        <label class="field" for="make-key">
+          <span class="field__label">Which column identifies each row?</span>
+          <select id="make-key" class="field__input"></select>
+        </label>
+        <label class="field" for="make-commit">
+          <span class="field__label">Which click finishes the row?</span>
+          <select id="make-commit" class="field__input"></select>
+        </label>
+        <label class="field__choice" for="make-duplicate">
+          <input id="make-duplicate" type="checkbox" />
+          <span class="field__label">If this row is already there, skip it</span>
+        </label>
+        <p class="panel__note" id="make-duplicate-hint" role="status"></p>
+        <fieldset id="make-origins" class="field field--origins">
+          <legend class="field__label">Sites this task may use</legend>
+        </fieldset>
+        <fieldset id="make-park-fields" class="field field--origins">
+          <legend class="field__label">Stop and ask me if one of these is empty</legend>
+        </fieldset>
+        <button id="make-go" type="button" class="button button--primary" disabled>
+          Save as task
+        </button>
+        <p class="panel__note" id="make-result" role="status"></p>
+        <p class="panel__note panel__note--warning" id="make-warnings" role="status"></p>
+      </section>
+
+      <h2 class="panel__title">Other controls</h2>
 
       <dl class="panel__stats">
         <div class="stat">
-          <dt>Captured</dt>
+          <dt>Steps recorded</dt>
           <dd id="count">0</dd>
         </div>
         <div class="stat">
-          <dt>Stream</dt>
-          <dd id="stream">off</dd>
+          <dt>Streaming</dt>
+          <dd id="stream">Off</dd>
         </div>
       </dl>
 
       <label class="field" for="ws">
-        <span class="field__label">Stream to WebSocket (optional)</span>
+        <span class="field__label">Send the steps to a server as you go (optional)</span>
         <input
           id="ws"
           class="field__input"
@@ -43,59 +94,22 @@
         />
       </label>
 
-      <button id="export" type="button" class="button">Download events (JSON)</button>
+      <button id="export" type="button" class="button button--quiet">Save a copy of the steps</button>
       <p class="panel__note" id="note" role="status"></p>
 
-      <section class="panel__form" id="make-recipe" aria-label="Make recipe">
-        <h2 class="panel__title">Make recipe</h2>
-        <label class="field" for="make-name">
-          <span class="field__label">Workflow name</span>
-          <input
-            id="make-name"
-            class="field__input"
-            type="text"
-            placeholder="New lead"
-            autocomplete="off"
-            spellcheck="false"
-          />
-        </label>
-        <label class="field" for="make-key">
-          <span class="field__label">Record key</span>
-          <select id="make-key" class="field__input"></select>
-        </label>
-        <label class="field" for="make-commit">
-          <span class="field__label">Commit step</span>
-          <select id="make-commit" class="field__input"></select>
-        </label>
-        <label class="field__choice" for="make-duplicate">
-          <input id="make-duplicate" type="checkbox" />
-          <span class="field__label">Skip a record if the search finds it</span>
-        </label>
-        <p class="panel__note" id="make-duplicate-hint" role="status"></p>
-        <fieldset id="make-origins" class="field field--origins">
-          <legend class="field__label">Allowed origins</legend>
-        </fieldset>
-        <fieldset id="make-park-fields" class="field field--origins">
-          <legend class="field__label">Park fields</legend>
-        </fieldset>
-        <button id="make-go" type="button" class="button button--primary" disabled>
-          Make recipe
-        </button>
-        <p class="panel__note" id="make-result" role="status"></p>
-        <p class="panel__note panel__note--warning" id="make-warnings" role="status"></p>
+      <section class="panel__actions" aria-label="Try one row">
+        <button id="run-start" type="button" class="button button--quiet">Try one row</button>
+        <button id="run-pause" type="button" class="button button--quiet">Pause</button>
+        <button id="run-resume" type="button" class="button button--quiet">Resume</button>
+        <button id="run-abort" type="button" class="button button--quiet">Stop</button>
       </section>
-
-      <section class="panel__actions" aria-label="Local test run">
-        <button id="run-start" type="button" class="button button--primary">Run</button>
-        <button id="run-pause" type="button" class="button">Pause</button>
-        <button id="run-resume" type="button" class="button">Resume</button>
-        <button id="run-abort" type="button" class="button">Abort</button>
-      </section>
-      <p class="panel__note">Local test run — does not write to the ledger.</p>
-      <p class="panel__note" id="run-state" role="status">Idle</p>
+      <p class="panel__note">
+        This tries one row in your browser. It does not change anything else.
+      </p>
+      <p class="panel__note" id="run-state" role="status">Nothing is running</p>
 
       <label class="field" for="hub">
-        <span class="field__label">Hub</span>
+        <span class="field__label">ProcessLens address</span>
         <input
           id="hub"
           class="field__input"
@@ -107,10 +121,9 @@
         />
       </label>
       <div class="panel__actions">
-        <button id="connect" type="button" class="button button--primary">Connect</button>
-        <button id="disconnect" type="button" class="button">Disconnect</button>
+        <button id="connect" type="button" class="button button--quiet">Connect</button>
+        <button id="disconnect" type="button" class="button button--quiet">Disconnect</button>
       </div>
-      <p class="panel__note" id="session-state" role="status">idle</p>
     </main>
     <script type="module" src="popup.js"></script>
   </body>
