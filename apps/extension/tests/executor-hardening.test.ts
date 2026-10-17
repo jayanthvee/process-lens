@@ -80,6 +80,40 @@ function installSubframe(): () => void {
   };
 }
 
+/**
+ * Make this document a SAME-ORIGIN subframe (PL-018b): `window.frameElement` is an iframe host at
+ * (100, 50) with a 2 px / 3 px border, inside a parent page whose own hit test answers `parentHit`.
+ */
+function installSameOriginFrame(parentHit: "host" | { tagName: string }): () => void {
+  const target = window as unknown as Record<string, unknown>;
+  const host = {
+    getBoundingClientRect: () => ({ left: 100, top: 50, width: 400, height: 300 }),
+    clientLeft: 2,
+    clientTop: 3,
+  };
+  const parent: Record<string, unknown> = {
+    getComputedStyle: () => ({ paddingLeft: "0px", paddingTop: "0px" }),
+    document: { elementFromPoint: () => (parentHit === "host" ? host : parentHit) },
+  };
+  parent["top"] = parent;
+  const saved = ["top", "parent", "frameElement"].map(
+    (key) => [key, Object.getOwnPropertyDescriptor(target, key)] as const,
+  );
+  for (const [key, value] of [
+    ["top", parent],
+    ["parent", parent],
+    ["frameElement", host],
+  ] as const) {
+    Object.defineProperty(target, key, { configurable: true, writable: true, value });
+  }
+  return () => {
+    for (const [key, own] of saved) {
+      if (own) Object.defineProperty(target, key, own);
+      else delete target[key];
+    }
+  };
+}
+
 /** A transport whose CDP event feed the test drives by hand. */
 function eventTransport(navigateReply: Record<string, unknown> = {}): {
   cdp: CdpTransport;
@@ -199,7 +233,7 @@ describe("the click hit test", () => {
     expect(mouseTypes).not.toContain("mouseReleased");
   });
 
-  it("a click inside an iframe is refused", async () => {
+  it("a click inside a cross-origin iframe is refused", async () => {
     stamp("<button id='save'>Save</button>", { by: "css", selector: "#save" }, "c1");
     restoreStubs = installSubframe();
     // The measurement must have seen a subframe, or the rest proves nothing.
@@ -210,8 +244,37 @@ describe("the click hit test", () => {
 
     expect(error).toBeInstanceOf(ExecutorError);
     expect((error as ExecutorError).disposition).toBe("park");
-    expect((error as ExecutorError).message).toMatch(/inside a frame/);
+    expect((error as ExecutorError).message).toMatch(/inside a cross-origin frame/);
     expect(callsTo("Input.dispatchMouseEvent")).toHaveLength(0);
+  });
+
+  it("a click inside a same-origin iframe lands at the frame's offset on the page", async () => {
+    stamp("<button id='save'>Save</button>", { by: "css", selector: "#save" }, "c1");
+    const rect = (marked("c1") as Element).getBoundingClientRect();
+    restoreStubs = installSameOriginFrame("host");
+    const { cdp, callsTo } = fakeCdp();
+
+    await dispatchClick(cdp, "c1");
+
+    const press = callsTo("Input.dispatchMouseEvent").find(
+      (call) => call.params["type"] === "mousePressed",
+    );
+    // The frame-local center, plus the iframe's box (100, 50) and its border (2, 3).
+    expect(press?.params["x"]).toBe(rect.left + rect.width / 2 + 102);
+    expect(press?.params["y"]).toBe(rect.top + rect.height / 2 + 53);
+  });
+
+  it("an overlay in the parent page over a same-origin iframe is not a hit", async () => {
+    stamp("<button id='save'>Save</button>", { by: "css", selector: "#save" }, "c1");
+    restoreStubs = installSameOriginFrame({ tagName: "DIV" });
+    const { cdp, callsTo } = fakeCdp();
+
+    const error = await dispatchClick(cdp, "c1").catch((thrown) => thrown);
+
+    expect(error).toBeInstanceOf(ExecutorError);
+    expect((error as ExecutorError).message).toMatch(/frame is covered by <div>/);
+    const mouseTypes = callsTo("Input.dispatchMouseEvent").map((call) => call.params["type"]);
+    expect(mouseTypes).not.toContain("mousePressed");
   });
 });
 

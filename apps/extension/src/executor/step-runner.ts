@@ -171,11 +171,16 @@ export function assertAllowedOrigin(url: string, allowed: string[] | undefined):
  * The execution context for a step's frame path. A step that names a frame but
  * whose context the page has not reported is a refusal: running it in the top
  * frame would act on the wrong document.
+ *
+ * PL-018b: a frame that is still loading is waited for, briefly. A step can arrive before the
+ * iframe is attached or before its document has reported a context, so the tree and the context
+ * are re-read every 100 ms for up to `waitMs`. Only then is the step refused.
  */
 export async function frameContextId(
   cdp: CdpTransport,
   step: ExecutorStep,
   frames: FrameContexts | undefined,
+  waitMs: number = FRAME_WAIT_MS,
 ): Promise<number | undefined> {
   if (!step.frame || step.frame.length === 0) return undefined;
   if (!frames) {
@@ -185,21 +190,28 @@ export async function frameContextId(
       "park",
     );
   }
-  const tree = await readFrameTree(cdp);
-  const node = tree ? selectFrame(tree, step.frame) : null;
-  if (!node) {
-    throw new ExecutorError(`the step's frame path did not resolve`, step.id, "park");
+  const started = Date.now();
+  for (;;) {
+    const tree = await readFrameTree(cdp);
+    const node = tree ? selectFrame(tree, step.frame) : null;
+    const contextId = node ? frames.contextIdFor(node.frameId) : undefined;
+    if (node && contextId !== undefined) return contextId;
+    if (Date.now() - started >= waitMs) {
+      if (!node) {
+        throw new ExecutorError(`the step's frame path did not resolve`, step.id, "park");
+      }
+      throw new ExecutorError(
+        `step ${step.id} targets frame ${node.frameId}, whose execution context the page has not reported`,
+        step.id,
+        "park",
+      );
+    }
+    await new Promise<void>((done) => setTimeout(done, 100));
   }
-  const contextId = frames.contextIdFor(node.frameId);
-  if (contextId === undefined) {
-    throw new ExecutorError(
-      `step ${step.id} targets frame ${node.frameId}, whose execution context the page has not reported`,
-      step.id,
-      "park",
-    );
-  }
-  return contextId;
 }
+
+/** How long a step waits for its frame to appear and report a context (PL-018b). */
+export const FRAME_WAIT_MS = 3000;
 
 /** The condition-evaluation context for a run's dependencies. */
 export function assertionContext(deps: StepRunDeps): ConditionContext {

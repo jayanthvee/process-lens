@@ -404,6 +404,8 @@ function commandStorage(): SessionDeps["storage"] {
  */
 let commandCdpToken: CdpTransport | null = null;
 let commandCdpTabId: number | null = null;
+/** The bound tab's frame contexts, re-learnt on every fresh attach (PL-018b). */
+let commandFrames = new FrameContexts();
 /** The browser-detach listener for the bound tab, or null when no session holds the debugger. */
 let commandDetachWatch: { tabId: number; stop: () => void } | null = null;
 
@@ -457,7 +459,14 @@ async function ensureDebugger(tabId: number): Promise<CdpTransport> {
   // The debugger is ours from here on, so a browser-side detach is worth learning about at once.
   watchCommandDebugger(tabId);
   const cdp = chromeDebuggerTransport(tabId);
-  // Enabling an already-enabled domain is idempotent, so this is safe in both cases.
+  // PL-018b: listen for execution contexts BEFORE enabling Runtime. `Runtime.enable` reports every
+  // existing context, but only on the call that turns reporting on. A debugger that a restarted
+  // service worker found already attached has Runtime on already, so it is turned off first, and
+  // the enable then reports the top frame and every iframe again.
+  commandFrames.stop();
+  commandFrames = new FrameContexts();
+  commandFrames.listen(cdp);
+  await cdp.send("Runtime.disable").catch(() => undefined);
   await cdp.send("Runtime.enable");
   await cdp.send("Page.enable");
   commandCdpTabId = tabId;
@@ -507,6 +516,7 @@ async function runCommandStep(
       allowedOrigins: opts.allowedOrigins,
       beforeInput: opts.beforeInput,
       onFirstInput: opts.sentInput,
+      frames: commandFrames,
     };
     return opts.phase === "prepare"
       ? await prepareCommandStep(step, body)
