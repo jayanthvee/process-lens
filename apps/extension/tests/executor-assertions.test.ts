@@ -62,6 +62,68 @@ describe("text_count_increases (PL-032)", () => {
   });
 });
 
+describe("text checks read same-origin iframes (PL-018b)", () => {
+  const framed = (html: string): HTMLIFrameElement => {
+    const frame = document.createElement("iframe");
+    document.body.appendChild(frame);
+    (frame.contentDocument as Document).body.innerHTML = html;
+    return frame;
+  };
+
+  it("text_visible finds a confirmation inside a same-origin iframe", () => {
+    document.body.innerHTML = "<p>Outer page</p>";
+    framed("<p>Note saved</p>");
+    expect(run(conditionExpression({ text_visible: "Note saved" }, ctx))).toBe(true);
+  });
+
+  it("text_absent fails when the error is only inside a same-origin iframe", () => {
+    document.body.innerHTML = "<p>Outer page</p>";
+    framed("<p>Could not save: Error</p>");
+    expect(run(conditionExpression({ text_absent: "Error" }, ctx))).toBe(false);
+  });
+});
+
+describe("text checks read open shadow roots (PL-018c)", () => {
+  // jsdom supports `attachShadow`, so the checks are evaluated against the same
+  // expression string the executor sends to the page.
+  const shadowHost = (html: string, parent: ParentNode = document.body): HTMLElement => {
+    const host = document.createElement("div");
+    parent.append(host);
+    const root = host.attachShadow({ mode: "open" });
+    root.innerHTML = html;
+    return host;
+  };
+
+  it("text_visible finds text inside an open shadow root, and inside a nested one", () => {
+    const nested = shadowHost("<div></div>");
+    shadowHost("<p>Outer confirmed</p>", nested.shadowRoot as ShadowRoot);
+    expect(run(conditionExpression({ text_visible: "Outer confirmed" }, ctx))).toBe(true);
+  });
+
+  it("text_absent fails when the error text is only inside a shadow root", () => {
+    // The safety case: a page showing an error inside a web component must never read as
+    // "no error shown".
+    shadowHost("<p>Duplicate record: Error</p>");
+    expect(run(conditionExpression({ text_absent: "Error" }, ctx))).toBe(false);
+  });
+
+  it("text_count_increases counts an occurrence added inside a shadow root after the baseline", () => {
+    delete (window as unknown as { __processLensCounts?: unknown }).__processLensCounts;
+    const expression = conditionExpression({ text_count_increases: "Nadia Rahman" }, ctx);
+    shadowHost("<p>Nadia Rahman</p>");
+    expect(run(expression)).toBe(false);
+    const second = shadowHost("");
+    (second.shadowRoot as ShadowRoot).innerHTML = "<p>Nadia Rahman</p>";
+    expect(run(expression)).toBe(true);
+  });
+
+  it("text in a style or template inside a shadow root is not counted", () => {
+    shadowHost("<style>.hint { color: red; /* SHADOW-ONLY-TEXT */ }</style><template>TEMPLATE-ONLY</template>");
+    expect(run(conditionExpression({ text_visible: "SHADOW-ONLY-TEXT" }, ctx))).toBe(false);
+    expect(run(conditionExpression({ text_visible: "TEMPLATE-ONLY" }, ctx))).toBe(false);
+  });
+});
+
 describe("condition predicates", () => {
   it("text_visible is true when the page shows the text", () => {
     document.body.textContent = "Record created";

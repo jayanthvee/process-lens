@@ -548,12 +548,12 @@ export async function dispatchClick(
     let box: MeasureResult;
     for (;;) {
       box = await settleTarget(cdp, token, Math.max(1, remaining()), contextId);
-      // The click is dispatched at the top document's coordinates. An element inside a subframe
-      // cannot be clicked from here without landing on whatever the top document shows at those
-      // coordinates, so the step is parked instead.
+      // The click is dispatched in top-viewport coordinates. A same-origin frame's box arrives
+      // already translated (PL-018b); a cross-origin frame's offset can't be read, so a click
+      // there would land somewhere unrelated and the step is parked instead.
       if (box.topFrame !== true) {
         throw new ExecutorError(
-          "refusing to click: the target is inside a frame, so a click at its coordinates would land on the top document instead",
+          "refusing to click: the target is inside a cross-origin frame, so its position on the page is unknown",
           undefined,
           "park",
         );
