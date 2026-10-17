@@ -29,10 +29,10 @@
   margin: 14px 0 0;
 }
 
-/* One card per app, and never more than two side by side (DESIGN.md §5). */
+/* One panel per app, stacked in one column: DESIGN.md §4 bans card grids. */
 .app-cards {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: 18px;
   align-items: start;
 }
