@@ -616,6 +616,19 @@ def _click_touches_field(
         return True
     if _is_option_click(click):
         return True
+    # Pressing a real control is an action of its own, never fiddling with a field -- whatever
+    # its text shares with the field's label ("Add" next to "Add recipient").
+    first = _first_rung(click.targets)
+    if first and str(first.get("role", "")).lower() in {
+        "button",
+        "link",
+        "menuitem",
+        "tab",
+        "checkbox",
+        "radio",
+        "switch",
+    }:
+        return False
     click_text = (
         (click.name or "") + " " + " ".join(_rung_text(rung) for rung in click.targets or [])
     )
@@ -674,24 +687,33 @@ def _fold_retried_fills(candidates: list[Candidate]) -> tuple[list[Candidate], l
                 break
         if retry_index is None:
             continue
-        # A fill whose suggestion was picked before the next fill is a finished entry, not a
-        # retry: a recipients box takes one address per fill. An option counts as picked when its
-        # text contains what was typed. A hint like Odoo's "Start typing..." does not, so a real
-        # retry still folds.
-        typed = _fill_text(candidate).lower()
-        if typed and any(
-            _is_option_click(candidates[between])
-            and typed in _click_text(candidates[between]).lower()
-            for between in range(index + 1, retry_index)
-        ):
-            continue
-
         field_labels: set[str] = set()
         for rung in candidate.targets or []:
             for key in ("name", "text", "value"):
                 text = rung.get(key)
                 if isinstance(text, str) and text.strip():
                     field_labels.add(text.strip())
+        # Two fills of one field are a retry only when nothing between them did anything but
+        # fiddle with that field. A button pressed between them (a recipients box's "Add") or a
+        # suggestion picked for what was typed (its text contains the typed value) means the
+        # first entry was finished, and a second entry follows. Odoo's "Start typing..." hint does
+        # not contain the typed value, so a real retry still folds.
+        typed = _fill_text(candidate).lower()
+        between_clicks = [
+            candidates[between]
+            for between in range(index + 1, retry_index)
+            if candidates[between].action == "click"
+        ]
+        finished = any(
+            (typed and _is_option_click(click) and typed in _click_text(click).lower())
+            or not _click_touches_field(click, candidate.targets, field_labels, all_input_labels)
+            for click in between_clicks
+        )
+        if finished or any(
+            candidates[between].action not in ("click", "fill")
+            for between in range(index + 1, retry_index)
+        ):
+            continue
 
         dropped.add(index)
         for between in range(index + 1, retry_index):

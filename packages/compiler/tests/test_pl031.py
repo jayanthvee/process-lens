@@ -278,3 +278,47 @@ def test_two_picked_entries_in_one_box_are_not_a_retry() -> None:
     clicks = [step for step in result.recipe["steps"] if step.get("action") == "click"]
     assert len(clicks) == 2, result.recipe["steps"]
     assert not any("folded the retried fill" in warning for warning in result.warnings)
+
+
+def test_an_entry_finished_with_a_button_is_not_a_retry() -> None:
+    """bob -> Add -> carol -> Add: two entries, not a retry, even though "Add" shares the label.
+
+    The fold once matched the button's text plus its test id ("Add recipient-add") against the
+    field's label "Add recipient", read the Add press as fiddling with the field, and dropped bob.
+    """
+
+    def add_click(seq: int) -> dict[str, Any]:
+        return {
+            "seq": seq,
+            "kind": "click",
+            "url": f"{ORIGIN}/compose",
+            "step": {
+                "action": "click",
+                "id": f"click-{seq}",
+                "name": "Click Add",
+                "targets": [
+                    {"by": "role", "role": "button", "name": "Add"},
+                    {"by": "testid", "value": "recipient-add"},
+                ],
+            },
+        }
+
+    events = [
+        _box_fill(1, "bob@example.test"),
+        add_click(2),
+        _box_fill(3, "carol@example.test"),
+        add_click(4),
+    ]
+    result = compile_recording(
+        events,
+        make_options(
+            sample_row={"first": "bob@example.test", "second": "carol@example.test"},
+            input_fields={"first": {"type": "string"}, "second": {"type": "string"}},
+            record_key_column="first",
+            commit_step_ids=[],
+            duplicate_check=False,
+        ),
+    )
+    fills = [step for step in result.recipe["steps"] if step.get("action") == "fill"]
+    assert len(fills) == 2, result.recipe["steps"]
+    assert not any("folded the retried fill" in warning for warning in result.warnings)
