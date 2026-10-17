@@ -223,6 +223,24 @@ class TaskListRow:
 
 
 @dataclass(frozen=True)
+class AppTaskRow:
+    """One saved task that may use an app's site."""
+
+    id: uuid.UUID
+    name: str
+
+
+@dataclass(frozen=True)
+class AppRow:
+    """One site a saved task may use: the tasks that may use it, and their newest run."""
+
+    origin: str
+    tasks: list[AppTaskRow]
+    last_run_at: datetime | None
+    last_run_status: str | None
+
+
+@dataclass(frozen=True)
 class TenantAdminState:
     """A tenant's admin switches: the freeze, who set it, and the extension floor."""
 
