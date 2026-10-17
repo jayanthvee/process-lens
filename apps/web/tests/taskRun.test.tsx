@@ -453,6 +453,26 @@ describe("the run flow", () => {
     expect(callsTo(fetchStub, "/api/v1/runs/run-preview")).toBe(afterFinish);
   });
 
+  it("says Waiting for Chrome when the row is queued and no Chrome session is attached", async () => {
+    harness({ "/api/v1/runs/run-preview": { body: runDetail("queued") } });
+    const view = renderApp("/tasks/wf-1/run");
+    await pump();
+    await addFile(view);
+    await act(async () => {
+      fireEvent.click(button("Continue"));
+    });
+    await pump();
+    await act(async () => {
+      fireEvent.click(button("Try it"));
+    });
+    await pump();
+
+    expect(
+      screen.getByText("Waiting for Chrome: open the ProcessLens extension and it will connect"),
+    ).toBeTruthy();
+    expect(screen.queryByText("Queued")).toBeNull();
+  });
+
   it("says so when the task is not there, rather than showing a blank page", async () => {
     harness({ "/api/v1/tasks": { body: [] } });
     renderApp("/tasks/wf-1/run");

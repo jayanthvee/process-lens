@@ -50,6 +50,21 @@ export const ENGINE_WORDS: ReadonlyArray<{ engine: string; pattern: RegExp; plai
     pattern: /allow[\s_-]*destructive[\s_-]*control/i,
     plain: "never shown",
   },
+  // PL-031's compiler warnings, in the voice the compile route really sends. None of them is a
+  // sentence a person can act on, so they stay off the save result and reach support under
+  // More → "Notes for support".
+  { engine: "skipped the fill", pattern: /skipped the fill/i, plain: "not shown" },
+  { engine: "bound a literal", pattern: /bound a literal/i, plain: "not shown" },
+  { engine: "templated", pattern: /templated/i, plain: "not shown" },
+  {
+    engine: "derived the input schema",
+    pattern: /derived the input schema/i,
+    plain: "not shown",
+  },
+  { engine: "dropped container click", pattern: /dropped container click/i, plain: "not shown" },
+  { engine: "folded the retried fill", pattern: /folded the retried fill/i, plain: "not shown" },
+  { engine: "assertion for", pattern: /assertion for/i, plain: "not shown" },
+  { engine: "this save is checked", pattern: /this save is checked/i, plain: "not shown" },
 ];
 
 /** The engine words this text contains, so a caller can name the rule it would break. */
@@ -178,15 +193,6 @@ export function plainSentences(text: string | null | undefined): { shown: string
   return { shown, hidden };
 }
 
-/** The one sentence that accounts for the notes this module could not put into words. */
-export function hiddenNote(count: number): string {
-  if (count <= 0) return "";
-  if (count === 1) {
-    return "1 more note about this recording is written for the engine, not for you.";
-  }
-  return `${count} more notes about this recording are written for the engine, not for you.`;
-}
-
 /**
  * The worker's own detail, when it is free of the engine's words.
  *
@@ -215,8 +221,36 @@ export function sessionWords(state: SessionState, detail?: string): string {
     case "connecting":
       return `Connecting to ProcessLens${suffix}`;
     default:
-      return `Not connected${suffix}`;
+      // PL-033 requirement 4: the one sentence a person can act on when the popup opens and
+      // nobody is home.
+      return `ProcessLens isn't running${suffix}`;
   }
+}
+
+/** The step count as the Teach card shows it: "15 steps recorded". */
+export function stepCountWords(count: number): string {
+  return `${count} step${count === 1 ? "" : "s"} recorded`;
+}
+
+/** The sentence under the save result when the recording holds no search to check against. */
+export const DUPLICATES_BLOCKED =
+  "I couldn't check for duplicates because you didn't search first.";
+
+/** The save result's plain notes: at most two sentences, and nothing about the engine. */
+export function plainSaveNotes(input: {
+  duplicatesBlocked: boolean;
+  parkLabels: string[];
+}): string[] {
+  const notes: string[] = [];
+  if (input.duplicatesBlocked) notes.push(DUPLICATES_BLOCKED);
+  const labels = input.parkLabels.filter((label) => label.trim().length > 0);
+  if (labels.length === 1) {
+    notes.push(`Stops and asks when ${labels[0]} is empty.`);
+  } else if (labels.length > 1) {
+    const list = `${labels.slice(0, -1).join(", ")} or ${labels[labels.length - 1]}`;
+    notes.push(`Stops and asks when ${list} is empty.`);
+  }
+  return notes.slice(0, 2);
 }
 
 /** The streaming state: off, ready to send, or sending. */

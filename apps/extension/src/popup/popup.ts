@@ -10,11 +10,13 @@ import {
 import type { SessionState } from "../background/command-session";
 import type { RecordedEvent } from "../shared/recipe-types";
 import { createMakeRecipeForm, RECIPE_KEY, ROW_KEY } from "./make-recipe";
+import { applyStep, autoConnect, currentStep, openTaskTab } from "./flow";
 import {
   plainDetail,
   recordingWords,
   runStateWords,
   sessionWords,
+  stepCountWords,
   stepSentences,
   STEPS_EMPTY,
   streamWords,
@@ -72,12 +74,18 @@ const stepsEl = element<HTMLOListElement>("steps");
 // writes the recipe and its row where Run reads them. It is built once; the hub
 // URL is re-read on every submit, so the field below takes effect without a rebuild.
 const makeGoButton = element<HTMLButtonElement>("make-go");
+// The flow's last step: the saved task's page, opened in a real tab (PL-033 requirement 2).
+const openTaskButton = element<HTMLButtonElement>("open-task");
 const makeRecipeDeps = {
   root: document,
   storage: sessionStorageAdapter(),
   baseUrl: DEFAULT_HUB_URL,
   onNotice: (message: string) => {
     noteEl.textContent = message;
+  },
+  onSaved: (taskUrl: string) => {
+    savedTaskUrl = taskUrl;
+    syncFlow();
   },
 };
 const makeRecipeForm = createMakeRecipeForm(makeRecipeDeps);
@@ -105,6 +113,26 @@ function sessionStorageAdapter(): {
 
 /** The recording as the worker last reported it, kept current from `record:appended`. */
 let recordedEvents: RecordedEvent[] = [];
+/** Whether the recorder is running right now, as the last status reported it. */
+let recordingNow = false;
+/** The saved task's page on the dashboard, set once a save has gone through (PL-033). */
+let savedTaskUrl: string | null = null;
+
+/**
+ * Put the three cards in the state the person's progress calls for: Teach while teaching, Save
+ * once there is a recording, Open in ProcessLens once a task has been saved. Only the current
+ * step's button is gold (PL-033 requirement 1).
+ */
+function syncFlow(): void {
+  applyStep(
+    document,
+    currentStep({
+      recording: recordingNow,
+      hasEvents: recordedEvents.length > 0,
+      savedTaskUrl,
+    }),
+  );
+}
 
 async function send(message: ToWorker): Promise<RecorderResponse> {
   const response = (await chrome.runtime.sendMessage(message)) as RecorderResponse | undefined;
@@ -136,13 +164,15 @@ function renderSteps(events: RecordedEvent[]): void {
 
 function render(status: RecorderStatus): void {
   const recording = status.state === "recording";
+  recordingNow = recording;
   stateEl.textContent = recordingWords(recording ? "recording" : "idle");
   stateEl.dataset["state"] = status.state;
-  countEl.textContent = String(status.count);
+  countEl.textContent = stepCountWords(status.count);
   streamEl.textContent = streamWords(status.wsUrl, status.wsConnected);
   startButton.disabled = recording;
   stopButton.disabled = !recording;
   if (document.activeElement !== wsEl) wsEl.value = status.wsUrl;
+  syncFlow();
 }
 
 async function refresh(): Promise<void> {
@@ -151,6 +181,7 @@ async function refresh(): Promise<void> {
   recordedEvents = response.events ?? [];
   renderSteps(recordedEvents);
   makeRecipeForm.refresh(recordedEvents);
+  syncFlow();
 }
 
 /**
@@ -208,6 +239,12 @@ makeGoButton.addEventListener("click", () => {
   void makeRecipeForm.submit();
 });
 
+openTaskButton.addEventListener("click", () => {
+  if (savedTaskUrl === null) return;
+  // A plain `<a href>` does nothing in an extension popup; the tab API is the way out.
+  openTaskTab(chrome.tabs, savedTaskUrl);
+});
+
 wsEl.addEventListener("change", () => {
   void send({ type: "record:set-ws", wsUrl: wsEl.value.trim() }).then((response) =>
     render(response.status),
@@ -242,6 +279,7 @@ async function sendExecutor(
 
 function renderSession(session: SessionInfo | undefined): void {
   const state = session?.state ?? "idle";
+  sessionNow = state;
   sessionStateEl.textContent = sessionWords(state, session?.detail);
   sessionStateEl.dataset["state"] = state;
   // A connected session's dot is the one that is "on"; the word carries the meaning either way.
@@ -250,9 +288,28 @@ function renderSession(session: SessionInfo | undefined): void {
   disconnectButton.disabled = state === "idle";
 }
 
+/** Where the hub session is, as this page last saw it, so auto-connect asks nobody twice. */
+let sessionNow: SessionState = "idle";
+
 async function refreshSession(): Promise<void> {
   const response = await sendExecutor({ type: "executor:session" });
   renderSession(response.session);
+}
+
+/**
+ * Connect by itself when the popup opens, if no session is there (PL-033 requirement 4). The
+ * address is the one in the ProcessLens address field, which defaults to `http://127.0.0.1:8000`.
+ */
+async function connectOnOpen(): Promise<void> {
+  const connected = await autoConnect({
+    sessionState: async () => sessionNow,
+    connect: async (hubUrl) => {
+      const response = await sendExecutor({ type: "executor:connect", hubUrl });
+      if (response.error) noteEl.textContent = response.error;
+    },
+    hubUrl: () => hubEl.value.trim() || DEFAULT_HUB_URL,
+  });
+  if (connected) await refreshSession();
 }
 
 connectButton.addEventListener("click", () => {
@@ -319,4 +376,6 @@ chrome.runtime.onMessage.addListener((message: unknown) => {
 renderExecutor({ ...EMPTY_EXECUTOR_STATUS });
 renderSession({ state: "idle" });
 void refresh();
-void refreshSession();
+// Connect first, then say so: the person opens the popup and reads either "Connected to
+// ProcessLens" or "ProcessLens isn't running", without pressing anything.
+void refreshSession().then(connectOnOpen);

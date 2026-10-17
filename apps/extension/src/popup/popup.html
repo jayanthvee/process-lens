@@ -11,119 +11,139 @@
     <main class="panel">
       <header class="panel__header">
         <h1 class="panel__title">Teach a task</h1>
-        <p class="panel__state" id="state" role="status">Not recording</p>
       </header>
-      <p class="panel__lead">
-        Do the job once in your browser. ProcessLens watches, then you save it as a task.
-      </p>
 
-      <p class="status" id="session-state" role="status">Not connected</p>
+      <section class="step-card is-current" data-step="teach" aria-label="Teach">
+        <h2 class="panel__title">1. Teach</h2>
+        <p class="panel__state" id="state" role="status">Not recording</p>
+        <p class="panel__lead">
+          Do the job once in your browser. ProcessLens watches, then you save it as a task.
+        </p>
+        <p class="status" id="session-state" role="status">ProcessLens isn't running</p>
+        <div class="panel__actions">
+          <button id="start" type="button" class="button button--primary button--flow">Start teaching</button>
+          <button id="stop" type="button" class="button button--quiet">Stop</button>
+          <button id="clear" type="button" class="button button--quiet">Clear the steps</button>
+        </div>
+        <p class="step-count" id="count">0 steps recorded</p>
+        <ol class="steps" id="steps">
+          <li class="steps__empty">The steps you take will appear here.</li>
+        </ol>
+      </section>
 
-      <div class="panel__actions">
-        <button id="start" type="button" class="button button--primary">Start teaching</button>
-        <button id="stop" type="button" class="button button--quiet">Stop</button>
-        <button id="clear" type="button" class="button button--quiet">Clear the steps</button>
-      </div>
+      <section class="step-card" data-step="save" aria-label="Save">
+        <h2 class="panel__title">2. Save</h2>
+        <section class="panel__form" id="make-recipe" aria-label="Save as task">
+          <label class="field" for="make-name">
+            <span class="field__label">What should this task be called?</span>
+            <input
+              id="make-name"
+              class="field__input"
+              type="text"
+              placeholder="New lead"
+              autocomplete="off"
+              spellcheck="false"
+            />
+          </label>
+          <label class="field" for="make-key">
+            <span class="field__label">Which column identifies each row?</span>
+            <select id="make-key" class="field__input"></select>
+          </label>
+          <label class="field__choice" for="make-duplicate">
+            <input id="make-duplicate" type="checkbox" />
+            <span class="field__label">If this row is already there, skip it</span>
+          </label>
+          <p class="panel__note" id="make-duplicate-hint" role="status"></p>
+          <fieldset id="make-origins" class="field field--origins">
+            <legend class="field__label">Sites this task may use</legend>
+          </fieldset>
+          <fieldset id="make-park-fields" class="field field--origins">
+            <legend class="field__label">Stop and ask me if one of these is empty</legend>
+          </fieldset>
+          <button id="make-go" type="button" class="button button--primary button--flow" disabled>
+            Save as task
+          </button>
+          <p class="panel__note" id="make-result" role="status"></p>
+          <p class="panel__note" id="make-plain" role="status"></p>
+        </section>
+      </section>
 
-      <ol class="steps" id="steps">
-        <li class="steps__empty">The steps you take will appear here.</li>
-      </ol>
+      <section class="step-card" data-step="open" aria-label="Open in ProcessLens" hidden>
+        <h2 class="panel__title">3. Open in ProcessLens</h2>
+        <p class="panel__lead">
+          Your task is on the dashboard. Open it to try one row and then run the rest.
+        </p>
+        <div class="panel__actions">
+          <button id="open-task" type="button" class="button button--primary button--flow">
+            Open in ProcessLens
+          </button>
+        </div>
+      </section>
 
-      <section class="panel__form" id="make-recipe" aria-label="Save as task">
-        <h2 class="panel__title">Save as task</h2>
-        <label class="field" for="make-name">
-          <span class="field__label">What should this task be called?</span>
-          <input
-            id="make-name"
-            class="field__input"
-            type="text"
-            placeholder="New lead"
-            autocomplete="off"
-            spellcheck="false"
-          />
-        </label>
-        <label class="field" for="make-key">
-          <span class="field__label">Which column identifies each row?</span>
-          <select id="make-key" class="field__input"></select>
-        </label>
+      <details class="more" id="more">
+        <summary>More</summary>
+
         <label class="field" for="make-commit">
           <span class="field__label">Which click finishes the row?</span>
           <select id="make-commit" class="field__input"></select>
         </label>
-        <label class="field__choice" for="make-duplicate">
-          <input id="make-duplicate" type="checkbox" />
-          <span class="field__label">If this row is already there, skip it</span>
+
+        <section class="panel__actions" aria-label="Try one row">
+          <button id="run-start" type="button" class="button button--quiet">Try one row</button>
+          <button id="run-pause" type="button" class="button button--quiet">Pause</button>
+          <button id="run-resume" type="button" class="button button--quiet">Resume</button>
+          <button id="run-abort" type="button" class="button button--quiet">Stop</button>
+        </section>
+        <p class="panel__note">
+          This tries one row in your browser. It does not change anything else.
+        </p>
+        <p class="panel__note" id="run-state" role="status">Nothing is running</p>
+
+        <button id="export" type="button" class="button button--quiet">Save a copy of the steps</button>
+
+        <dl class="panel__stats">
+          <div class="stat">
+            <dt>Streaming</dt>
+            <dd id="stream">Off</dd>
+          </div>
+        </dl>
+        <label class="field" for="ws">
+          <span class="field__label">Send the steps to a server as you go (optional)</span>
+          <input
+            id="ws"
+            class="field__input"
+            type="url"
+            inputmode="url"
+            placeholder="ws://localhost:8000/record"
+            autocomplete="off"
+            spellcheck="false"
+          />
         </label>
-        <p class="panel__note" id="make-duplicate-hint" role="status"></p>
-        <fieldset id="make-origins" class="field field--origins">
-          <legend class="field__label">Sites this task may use</legend>
-        </fieldset>
-        <fieldset id="make-park-fields" class="field field--origins">
-          <legend class="field__label">Stop and ask me if one of these is empty</legend>
-        </fieldset>
-        <button id="make-go" type="button" class="button button--primary" disabled>
-          Save as task
-        </button>
-        <p class="panel__note" id="make-result" role="status"></p>
-        <p class="panel__note panel__note--warning" id="make-warnings" role="status"></p>
-      </section>
 
-      <h2 class="panel__title">Other controls</h2>
+        <p class="panel__note" id="note" role="status"></p>
 
-      <dl class="panel__stats">
-        <div class="stat">
-          <dt>Steps recorded</dt>
-          <dd id="count">0</dd>
+        <label class="field" for="hub">
+          <span class="field__label">ProcessLens address</span>
+          <input
+            id="hub"
+            class="field__input"
+            type="url"
+            inputmode="url"
+            value="http://127.0.0.1:8000"
+            autocomplete="off"
+            spellcheck="false"
+          />
+        </label>
+        <div class="panel__actions">
+          <button id="connect" type="button" class="button button--quiet">Connect</button>
+          <button id="disconnect" type="button" class="button button--quiet">Disconnect</button>
         </div>
-        <div class="stat">
-          <dt>Streaming</dt>
-          <dd id="stream">Off</dd>
-        </div>
-      </dl>
 
-      <label class="field" for="ws">
-        <span class="field__label">Send the steps to a server as you go (optional)</span>
-        <input
-          id="ws"
-          class="field__input"
-          type="url"
-          inputmode="url"
-          placeholder="ws://localhost:8000/record"
-          autocomplete="off"
-          spellcheck="false"
-        />
-      </label>
-
-      <button id="export" type="button" class="button button--quiet">Save a copy of the steps</button>
-      <p class="panel__note" id="note" role="status"></p>
-
-      <section class="panel__actions" aria-label="Try one row">
-        <button id="run-start" type="button" class="button button--quiet">Try one row</button>
-        <button id="run-pause" type="button" class="button button--quiet">Pause</button>
-        <button id="run-resume" type="button" class="button button--quiet">Resume</button>
-        <button id="run-abort" type="button" class="button button--quiet">Stop</button>
-      </section>
-      <p class="panel__note">
-        This tries one row in your browser. It does not change anything else.
-      </p>
-      <p class="panel__note" id="run-state" role="status">Nothing is running</p>
-
-      <label class="field" for="hub">
-        <span class="field__label">ProcessLens address</span>
-        <input
-          id="hub"
-          class="field__input"
-          type="url"
-          inputmode="url"
-          value="http://127.0.0.1:8000"
-          autocomplete="off"
-          spellcheck="false"
-        />
-      </label>
-      <div class="panel__actions">
-        <button id="connect" type="button" class="button button--quiet">Connect</button>
-        <button id="disconnect" type="button" class="button button--quiet">Disconnect</button>
-      </div>
+        <details class="more" id="support-notes">
+          <summary>Notes for support</summary>
+          <p class="panel__note panel__note--warning" id="make-warnings" role="status"></p>
+        </details>
+      </details>
     </main>
     <script type="module" src="popup.js"></script>
   </body>

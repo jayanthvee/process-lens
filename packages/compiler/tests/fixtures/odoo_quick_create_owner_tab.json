@@ -1,0 +1,461 @@
+[
+  {
+    "at": "2026-10-17T05:20:12.769Z",
+    "kind": "click",
+    "seq": 1,
+    "step": {
+      "action": "click",
+      "id": "click-1",
+      "name": "Click New",
+      "targets": [
+        {
+          "by": "role",
+          "name": "New",
+          "role": "button"
+        },
+        {
+          "by": "css",
+          "selector": "button.btn.o-kanban-button-new"
+        },
+        {
+          "by": "text_fuzzy",
+          "value": "New"
+        }
+      ]
+    },
+    "url": "http://localhost:8069/odoo/crm"
+  },
+  {
+    "at": "2026-10-17T05:20:13.959Z",
+    "keystrokes": 0,
+    "kind": "fill",
+    "page_set": true,
+    "seq": 2,
+    "step": {
+      "action": "fill",
+      "clear_first": true,
+      "id": "fill-1",
+      "name": "Fill Expected Revenue",
+      "targets": [
+        {
+          "by": "role",
+          "name": "Expected Revenue",
+          "role": "textbox"
+        },
+        {
+          "by": "label",
+          "text": "Expected Revenue"
+        },
+        {
+          "by": "css",
+          "selector": "#expected_revenue_0"
+        }
+      ],
+      "value": {
+        "kind": "constant",
+        "value": "0.00"
+      }
+    },
+    "url": "http://localhost:8069/odoo/crm",
+    "warning": "this field changed without any typing: the page set it"
+  },
+  {
+    "at": "2026-10-17T05:20:14.030Z",
+    "kind": "click",
+    "seq": 3,
+    "step": {
+      "action": "click",
+      "id": "click-2",
+      "name": "Click Contact",
+      "targets": [
+        {
+          "by": "role",
+          "name": "Contact",
+          "role": "combobox"
+        },
+        {
+          "by": "label",
+          "text": "Contact"
+        },
+        {
+          "by": "css",
+          "selector": "#partner_id_0"
+        }
+      ]
+    },
+    "url": "http://localhost:8069/odoo/crm"
+  },
+  {
+    "at": "2026-10-17T05:20:16.476Z",
+    "kind": "click",
+    "seq": 4,
+    "step": {
+      "action": "click",
+      "id": "click-3",
+      "name": "Click Start typing...",
+      "targets": [
+        {
+          "by": "role",
+          "name": "Start typing...",
+          "role": "option"
+        },
+        {
+          "by": "css",
+          "selector": "#partner_id_0_0_9"
+        },
+        {
+          "by": "text_fuzzy",
+          "value": "Start typing..."
+        }
+      ]
+    },
+    "url": "http://localhost:8069/odoo/crm"
+  },
+  {
+    "at": "2026-10-17T05:20:22.187Z",
+    "keystrokes": 4,
+    "kind": "fill",
+    "seq": 5,
+    "step": {
+      "action": "fill",
+      "clear_first": true,
+      "id": "fill-2",
+      "name": "Fill Contact",
+      "targets": [
+        {
+          "by": "role",
+          "name": "Contact",
+          "role": "combobox"
+        },
+        {
+          "by": "label",
+          "text": "Contact"
+        },
+        {
+          "by": "css",
+          "selector": "#partner_id_0"
+        }
+      ],
+      "value": {
+        "kind": "constant",
+        "value": "Probe Owner Two"
+      }
+    },
+    "url": "http://localhost:8069/odoo/crm"
+  },
+  {
+    "at": "2026-10-17T05:20:22.191Z",
+    "kind": "press",
+    "seq": 6,
+    "step": {
+      "action": "press",
+      "id": "press-1",
+      "key": "Tab",
+      "name": "Press Tab",
+      "targets": [
+        {
+          "by": "role",
+          "name": "Contact",
+          "role": "combobox"
+        },
+        {
+          "by": "label",
+          "text": "Contact"
+        },
+        {
+          "by": "css",
+          "selector": "#partner_id_0"
+        }
+      ]
+    },
+    "url": "http://localhost:8069/odoo/crm"
+  },
+  {
+    "at": "2026-10-17T05:20:22.644Z",
+    "kind": "press",
+    "seq": 7,
+    "step": {
+      "action": "press",
+      "id": "press-2",
+      "key": "Tab",
+      "name": "Press Tab",
+      "targets": [
+        {
+          "by": "role",
+          "name": "CRMSalesReportingConfiguration4My CompanyAdministratorprocesslens_test New Generate LeadsPipelineMy PipelineNew0ContactOpportunityEmailPhoneExpected Revenue$ 0.00$ Add Edit testGolden Existing LeadQua",
+          "role": "generic"
+        },
+        {
+          "by": "css",
+          "selector": "body.o_web_client"
+        },
+        {
+          "by": "text_fuzzy",
+          "value": "CRMSalesReportingConfiguration4My CompanyAdministratorprocesslens_test New Generate LeadsPipelineMy PipelineNew0Contact?OpportunityEmailPhoneExpected Revenue$ 0.00$ Add Edit testGolden Existing LeadQu"
+        }
+      ]
+    },
+    "url": "http://localhost:8069/odoo/crm"
+  },
+  {
+    "at": "2026-10-17T05:20:23.705Z",
+    "keystrokes": 0,
+    "kind": "fill",
+    "page_set": true,
+    "seq": 8,
+    "step": {
+      "action": "fill",
+      "clear_first": true,
+      "id": "fill-3",
+      "name": "Fill Opportunity",
+      "targets": [
+        {
+          "by": "role",
+          "name": "Opportunity",
+          "role": "textbox"
+        },
+        {
+          "by": "label",
+          "text": "Opportunity"
+        },
+        {
+          "by": "css",
+          "selector": "#name_0"
+        },
+        {
+          "by": "text_fuzzy",
+          "value": "e.g. Product Pricing"
+        }
+      ],
+      "value": {
+        "kind": "constant",
+        "value": "Probe Owner Two's opportunity"
+      }
+    },
+    "url": "http://localhost:8069/odoo/crm",
+    "warning": "this field changed without any typing: the page set it"
+  },
+  {
+    "at": "2026-10-17T05:20:23.706Z",
+    "kind": "press",
+    "seq": 9,
+    "step": {
+      "action": "press",
+      "id": "press-3",
+      "key": "Tab",
+      "name": "Press Tab",
+      "targets": [
+        {
+          "by": "role",
+          "name": "Opportunity",
+          "role": "textbox"
+        },
+        {
+          "by": "label",
+          "text": "Opportunity"
+        },
+        {
+          "by": "css",
+          "selector": "#name_0"
+        },
+        {
+          "by": "text_fuzzy",
+          "value": "e.g. Product Pricing"
+        }
+      ]
+    },
+    "url": "http://localhost:8069/odoo/crm"
+  },
+  {
+    "at": "2026-10-17T05:20:33.242Z",
+    "keystrokes": 33,
+    "kind": "fill",
+    "seq": 10,
+    "step": {
+      "action": "fill",
+      "clear_first": true,
+      "id": "fill-4",
+      "name": "Fill Email",
+      "targets": [
+        {
+          "by": "role",
+          "name": "Email",
+          "role": "textbox"
+        },
+        {
+          "by": "label",
+          "text": "Email"
+        },
+        {
+          "by": "css",
+          "selector": "#email_from_0"
+        },
+        {
+          "by": "text_fuzzy",
+          "value": "e.g. \"email@address.com\""
+        }
+      ],
+      "value": {
+        "kind": "constant",
+        "value": "probe.two@example.test"
+      }
+    },
+    "url": "http://localhost:8069/odoo/crm"
+  },
+  {
+    "at": "2026-10-17T05:20:33.242Z",
+    "kind": "press",
+    "seq": 11,
+    "step": {
+      "action": "press",
+      "id": "press-4",
+      "key": "Tab",
+      "name": "Press Tab",
+      "targets": [
+        {
+          "by": "role",
+          "name": "Email",
+          "role": "textbox"
+        },
+        {
+          "by": "label",
+          "text": "Email"
+        },
+        {
+          "by": "css",
+          "selector": "#email_from_0"
+        },
+        {
+          "by": "text_fuzzy",
+          "value": "e.g. \"email@address.com\""
+        }
+      ]
+    },
+    "url": "http://localhost:8069/odoo/crm"
+  },
+  {
+    "at": "2026-10-17T05:20:39.894Z",
+    "keystrokes": 12,
+    "kind": "fill",
+    "seq": 12,
+    "step": {
+      "action": "fill",
+      "clear_first": true,
+      "id": "fill-5",
+      "name": "Fill Phone",
+      "targets": [
+        {
+          "by": "role",
+          "name": "Phone",
+          "role": "textbox"
+        },
+        {
+          "by": "label",
+          "text": "Phone"
+        },
+        {
+          "by": "css",
+          "selector": "#phone_0"
+        },
+        {
+          "by": "text_fuzzy",
+          "value": "e.g. \"0123456789\""
+        }
+      ],
+      "value": {
+        "kind": "constant",
+        "value": "5550000099"
+      }
+    },
+    "url": "http://localhost:8069/odoo/crm"
+  },
+  {
+    "at": "2026-10-17T05:20:39.896Z",
+    "kind": "press",
+    "seq": 13,
+    "step": {
+      "action": "press",
+      "id": "press-5",
+      "key": "Tab",
+      "name": "Press Tab",
+      "targets": [
+        {
+          "by": "role",
+          "name": "Phone",
+          "role": "textbox"
+        },
+        {
+          "by": "label",
+          "text": "Phone"
+        },
+        {
+          "by": "css",
+          "selector": "#phone_0"
+        },
+        {
+          "by": "text_fuzzy",
+          "value": "e.g. \"0123456789\""
+        }
+      ]
+    },
+    "url": "http://localhost:8069/odoo/crm"
+  },
+  {
+    "at": "2026-10-17T05:20:43.464Z",
+    "keystrokes": 3,
+    "kind": "fill",
+    "seq": 14,
+    "step": {
+      "action": "fill",
+      "clear_first": true,
+      "id": "fill-6",
+      "name": "Fill Expected Revenue",
+      "targets": [
+        {
+          "by": "role",
+          "name": "Expected Revenue",
+          "role": "textbox"
+        },
+        {
+          "by": "label",
+          "text": "Expected Revenue"
+        },
+        {
+          "by": "css",
+          "selector": "#expected_revenue_0"
+        }
+      ],
+      "value": {
+        "kind": "constant",
+        "value": "500"
+      }
+    },
+    "url": "http://localhost:8069/odoo/crm"
+  },
+  {
+    "at": "2026-10-17T05:20:43.528Z",
+    "kind": "click",
+    "seq": 15,
+    "step": {
+      "action": "click",
+      "id": "click-4",
+      "name": "Click Add",
+      "targets": [
+        {
+          "by": "role",
+          "name": "Add",
+          "role": "button"
+        },
+        {
+          "by": "css",
+          "selector": "button.btn.o_kanban_add"
+        },
+        {
+          "by": "text_fuzzy",
+          "value": "Add"
+        }
+      ]
+    },
+    "url": "http://localhost:8069/odoo/crm"
+  }
+]

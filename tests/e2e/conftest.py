@@ -1184,6 +1184,9 @@ def harness(
     page.goto(fixture_site["crm_url"] + "/")
     popup = context.new_page()
     popup.goto(f"chrome-extension://{extension_id}/popup/popup.html")
+    # PL-033 put Connect, the address and Try one row under a closed "More"; open it, as a
+    # person would, so the controls the harness drives are visible.
+    popup.evaluate("() => document.querySelectorAll('details').forEach((d) => { d.open = true; })")
 
     # The active tab at Connect time is the one the extension binds, so the CRM tab is
     # brought forward and the popup's hub is set without focusing anything.
@@ -1264,6 +1267,9 @@ def messy_harness(
     # or a later lead test drives the popup against the messy session.
     popup = context.new_page()
     popup.goto(f"chrome-extension://{extension_id}/popup/popup.html")
+    # PL-033 put Connect, the address and Try one row under a closed "More"; open it, as a
+    # person would, so the controls the harness drives are visible.
+    popup.evaluate("() => document.querySelectorAll('details').forEach((d) => { d.open = true; })")
     popup.evaluate("v => { document.getElementById('hub').value = v; }", api_server["base"])
     page.bring_to_front()
     popup.evaluate("document.getElementById('connect').click()")
@@ -1351,6 +1357,9 @@ def corpus_harness(
     page.goto(corpus_site["crm_url"] + "/")
     popup = context.new_page()
     popup.goto(f"chrome-extension://{extension_id}/popup/popup.html")
+    # PL-033 put Connect, the address and Try one row under a closed "More"; open it, as a
+    # person would, so the controls the harness drives are visible.
+    popup.evaluate("() => document.querySelectorAll('details').forEach((d) => { d.open = true; })")
     popup.evaluate("v => { document.getElementById('hub').value = v; }", api_server["base"])
     page.bring_to_front()
     popup.evaluate("document.getElementById('connect').click()")
@@ -1461,6 +1470,9 @@ def bind_extension_to(
     """
     popup = context.new_page()
     popup.goto(f"chrome-extension://{extension_id}/popup/popup.html")
+    # PL-033 put Connect, the address and Try one row under a closed "More"; open it, as a
+    # person would, so the controls the harness drives are visible.
+    popup.evaluate("() => document.querySelectorAll('details').forEach((d) => { d.open = true; })")
     popup.evaluate("v => { document.getElementById('hub').value = v; }", api_server["base"])
     page.bring_to_front()
     popup.evaluate("document.getElementById('connect').click()")

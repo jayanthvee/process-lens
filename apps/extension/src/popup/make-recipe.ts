@@ -7,7 +7,8 @@
 // Every sentence a person reads is spelled out here rather than built from an id:
 // the engine's words (DESIGN.md §2) never reach the screen.
 import type { RecordedEvent, RecordedStep } from "../shared/recipe-types";
-import { UNNAMED_CLICK, UNNAMED_STEP, hiddenNote, plainSentences } from "./words";
+import { DUPLICATES_BLOCKED, UNNAMED_CLICK, UNNAMED_STEP, plainSaveNotes, plainSentences } from "./words";
+import { taskUrl } from "./flow";
 
 /** Where the compiled recipe and its sample row live for the Run button. */
 export const RECIPE_KEY = "processlens:executor-recipe";
@@ -34,16 +35,14 @@ export const SAVING_NOTE = "Turning your recording into a task…";
  * a successful compile is followed by this POST on the same ProcessLens address.
  */
 const SAVE_TASK_PATH = "/api/v1/tasks";
-/** The saved line's link, pointing at the task's page. */
-export const SAVED_OPEN = "Open it in ProcessLens.";
+/** The saved line's button text: the task's page opens in a real tab (PL-033 requirement 2). */
+export const SAVED_OPEN = "Open in ProcessLens";
 /** The prefix a failed save shows. The frozen contract needs "Could not"; this says more. */
 export const SAVE_TASK_REFUSAL = "Could not save the task";
-/**
- * Shown under the duplicate checkbox when the recording holds no search at all: no fill of a
- * column's own value was followed by the step that runs a search.
- */
-export const NO_SEARCH_HINT =
-  "I did not see a search in this recording, so I cannot check for duplicates.";
+/** Shown under the duplicate checkbox when the recording holds no search at all: no fill of a
+ *  column's own value was followed by the step that runs a search. PL-033 requirement 3's own
+ *  words, so the save result says what is missing and what it costs. */
+export const NO_SEARCH_HINT = DUPLICATES_BLOCKED;
 
 /** One recorded constant value, ready to become a row column. */
 export interface RecordedValue {
@@ -487,6 +486,8 @@ export interface MakeRecipeFormDeps {
   fetchImpl?: typeof fetch;
   baseUrl: string;
   onNotice?: (message: string) => void;
+  /** PL-033: the saved task's address on the dashboard, for the Open in ProcessLens step. */
+  onSaved?: (taskUrl: string) => void;
 }
 
 export interface MakeRecipeForm {
@@ -494,8 +495,10 @@ export interface MakeRecipeForm {
   submit(): Promise<void>;
 }
 
-function control<T extends Element>(scope: ParentNode, id: string): T {
-  const found = scope.querySelector<T>(`#${id}`);
+function control<T extends Element>(root: ParentNode, scope: ParentNode, id: string): T {
+  // A control the three-step flow moved out of the form's own section (the commit select under
+  // More, the support notes) is still the form's to drive, so the page is searched too.
+  const found = scope.querySelector<T>(`#${id}`) ?? root.querySelector<T>(`#${id}`);
   if (!found) throw new Error(`the make-recipe form is missing #${id}`);
   return found;
 }
@@ -559,16 +562,19 @@ function describe(error: unknown): string {
  */
 export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
   const scope = deps.root.querySelector<HTMLElement>("#make-recipe") ?? deps.root;
-  const nameEl = control<HTMLInputElement>(scope, "make-name");
-  const keyEl = control<HTMLSelectElement>(scope, "make-key");
-  const commitEl = control<HTMLSelectElement>(scope, "make-commit");
-  const duplicateEl = control<HTMLInputElement>(scope, "make-duplicate");
-  const duplicateHintEl = control<HTMLParagraphElement>(scope, "make-duplicate-hint");
-  const originsEl = control<HTMLFieldSetElement>(scope, "make-origins");
-  const parkEl = control<HTMLFieldSetElement>(scope, "make-park-fields");
-  const goEl = control<HTMLButtonElement>(scope, "make-go");
-  const resultEl = control<HTMLParagraphElement>(scope, "make-result");
-  const warningsEl = control<HTMLParagraphElement>(scope, "make-warnings");
+  const nameEl = control<HTMLInputElement>(deps.root, scope, "make-name");
+  const keyEl = control<HTMLSelectElement>(deps.root, scope, "make-key");
+  const commitEl = control<HTMLSelectElement>(deps.root, scope, "make-commit");
+  const duplicateEl = control<HTMLInputElement>(deps.root, scope, "make-duplicate");
+  const duplicateHintEl = control<HTMLParagraphElement>(deps.root, scope, "make-duplicate-hint");
+  const originsEl = control<HTMLFieldSetElement>(deps.root, scope, "make-origins");
+  const parkEl = control<HTMLFieldSetElement>(deps.root, scope, "make-park-fields");
+  const goEl = control<HTMLButtonElement>(deps.root, scope, "make-go");
+  const resultEl = control<HTMLParagraphElement>(deps.root, scope, "make-result");
+  const warningsEl = control<HTMLParagraphElement>(deps.root, scope, "make-warnings");
+  // The two plain sentences under the save result; a page without the element (an older markup)
+  // simply shows none.
+  const plainEl = deps.root.querySelector<HTMLParagraphElement>("#make-plain");
 
   let events: RecordedEvent[] = [];
   let busy = false;
@@ -607,24 +613,41 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
     parkEl.replaceChildren(...(parkLegend ? [parkLegend] : []), ...parkRows);
   }
 
-  // A key the person picks re-evaluates the park ticks, the duplicate check and the button.
+  /**
+   * The two plain sentences under the save result (PL-033 requirement 3): whether duplicates can
+   * be checked, and what stops to ask. Nothing about the engine, nothing about values the page
+   * set itself, and never more than two sentences.
+   */
+  function renderPlainNotes(): void {
+    if (!plainEl) return;
+    const values = recordedValues(events);
+    const labels = parkFieldDefaults(events, keyEl.value).map(
+      (column) => values.find((value) => value.column === column)?.label ?? column,
+    );
+    const notes = plainSaveNotes({
+      duplicatesBlocked: events.length > 0 && !searchDetected(events, keyEl.value),
+      parkLabels: labels,
+    });
+    plainEl.textContent = notes.join(" ");
+  }
+
+  // A key the person picks re-evaluates the park ticks, the duplicate check, the plain notes and
+  // the button.
   keyEl.addEventListener("change", () => {
     syncGo();
     syncDuplicate();
     renderParkFields();
+    renderPlainNotes();
   });
 
   /**
-   * A block of the engine's own sentences, kept in the plain ones and counted in the rest.
+   * A block of the engine's own sentences, kept for support exactly as the engine wrote them.
    *
-   * The compile route answers in the same engineer's voice the worker does -- `assertion for
-   * click-2 taken from the recorded observation`, `… is not in allowed_origins` -- so every
-   * sentence it sends is measured against `ENGINE_WORDS` before a person can read it. What is
-   * dropped is never silent: the count is said out loud.
+   * PL-033: the person reads the save result and at most two plain sentences under it; these lines
+   * are the rest, reachable under More → "Notes for support".
    */
-  function readableBlock(sentences: string[]): string {
-    const { shown, hidden } = plainSentences(sentences.join("\n"));
-    return [...shown, hiddenNote(hidden)].filter((line) => line.length > 0).join("\n");
+  function supportBlock(sentences: string[]): string {
+    return sentences.filter((line) => line.trim().length > 0).join("\n");
   }
 
   function showProblems(problems: string[]): void {
@@ -634,7 +657,9 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
     // The count is the true one, whether or not a sentence is one this page can show.
     const count = sentences.length === 1 ? "1 problem" : `${sentences.length} problems`;
     notice(`Could not save this as a task (${count}).`);
-    warningsEl.textContent = readableBlock(sentences);
+    // PL-033: the refusal's own sentences are for support. The person reads the headline and the
+    // two plain notes; everything else stays reachable under More → "Notes for support".
+    warningsEl.textContent = sentences.join("\n");
   }
 
   /**
@@ -648,14 +673,15 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
     return shown[0] ?? "ProcessLens would not say what went wrong.";
   }
 
-  /** The saved task's own line: its name, that it is ready, and the link to its page. */
+  /**
+   * The saved task's own line: its name, that it is ready, and the flow's next step. There is no
+   * link here on purpose: a plain `<a href>` does nothing in an extension popup, so the Open in
+   * ProcessLens card calls `chrome.tabs.create` with the address instead (PL-033 requirement 2).
+   */
   function showSaved(name: string, workflowId: string): void {
-    const link = document.createElement("a");
-    link.href = `${deps.baseUrl.replace(/\/+$/, "")}/tasks/${workflowId}`;
-    link.textContent = SAVED_OPEN;
-    // Built from nodes rather than HTML, so a task name is never markup.
-    resultEl.replaceChildren(`${name} ${SAVED_READY}. `, link);
-    deps.onNotice?.(`${name} ${SAVED_READY}. ${SAVED_OPEN}`);
+    resultEl.textContent = `${name} ${SAVED_READY}.`;
+    deps.onNotice?.(`${name} ${SAVED_READY}.`);
+    deps.onSaved?.(taskUrl(deps.baseUrl, workflowId));
   }
 
   function refresh(next: RecordedEvent[]): void {
@@ -683,7 +709,8 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
 
     syncGo();
     syncDuplicate();
-    warningsEl.textContent = readableBlock(recordedWarnings(events));
+    renderPlainNotes();
+    warningsEl.textContent = supportBlock(recordedWarnings(events));
     if (events.length === 0) notice(NO_EVENTS);
     else resultEl.textContent = "";
   }
@@ -762,8 +789,9 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
       }
       showSaved(name, saved.workflowId);
       // The recorder's caveats come first: they describe the recording itself, and the
-      // route's warnings describe the task the compiler wrote from it.
-      warningsEl.textContent = readableBlock([...recordedWarnings(events), ...outcome.warnings]);
+      // route's warnings describe the task the compiler wrote from it. Both are for support
+      // now; the person reads the save result and the two plain notes (PL-033 requirement 3).
+      warningsEl.textContent = supportBlock([...recordedWarnings(events), ...outcome.warnings]);
     } catch (error) {
       showProblems([`ProcessLens could not be reached: ${describe(error)}.`]);
     } finally {

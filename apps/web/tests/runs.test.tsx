@@ -160,6 +160,21 @@ describe("one run", () => {
     expect(buttonNames()).toEqual(["Pause", "Resume", "Cancel"]);
   });
 
+  it("says Waiting for Chrome when a queued run has no Chrome session", async () => {
+    stub = createFetchStub({
+      ...SHELL,
+      "/api/v1/runs/run-1/records": { body: [] },
+      "/api/v1/runs/run-1": { body: runDetail({ status: "queued" }) },
+    });
+    renderApp("/runs/run-1");
+    await settle();
+
+    expect(
+      screen.getByText("Waiting for Chrome: open the ProcessLens extension and it will connect"),
+    ).toBeTruthy();
+    expect(screen.queryByText("Queued")).toBeNull();
+  });
+
   it("offers nothing once the run is finished", async () => {
     stub = createFetchStub({
       ...SHELL,
