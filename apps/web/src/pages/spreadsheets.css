@@ -53,6 +53,11 @@
   color: var(--ink-2);
 }
 
+/* The file is a row header, so the global last-row rule (which targets td) misses it. */
+.sheet-table tbody tr:last-child th {
+  border-bottom: 0;
+}
+
 @media (max-width: 780px) {
   .spreadsheets .empty {
     padding: 4px 16px 18px;
