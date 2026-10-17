@@ -734,6 +734,88 @@ def _fold_retried_fills(candidates: list[Candidate]) -> tuple[list[Candidate], l
     return [item for i, item in enumerate(candidates) if i not in dropped], warnings
 
 
+_TAB_KEYS = {"tab", "shift+tab"}
+
+
+def _is_combobox(candidate: Candidate) -> bool:
+    first = _first_rung(candidate.targets)
+    return bool(first) and str(first.get("role", "")).lower() == "combobox"
+
+
+def _settle_suggestion_boxes(
+    candidates: list[Candidate],
+) -> tuple[list[Candidate], list[str]]:
+    """Make a suggestion box replay the way a person used it.
+
+    PL-032, from the owner's second Odoo recording:
+
+    * An option clicked before anything was typed since the last pick is the box's own hint
+      (Odoo's "Start typing..."): it chooses nothing, and on replay it may not exist. Dropped.
+    * Typing into a suggestion box and pressing Tab lets the app pick for you. On replay the Tab
+      lands before the suggestions have loaded, so nothing is picked and Odoo empties the field.
+      The Tab becomes a click on ``Create "<value>"``, which the create-option expansion then turns
+      into "the exact name, else Create".
+    * A Tab whose target is not a control (a whole-page container) only moved focus. Dropped.
+    """
+    warnings: list[str] = []
+    settled: list[Candidate] = []
+    typed_in_box = False
+    for index, candidate in enumerate(candidates):
+        if candidate.action == "fill":
+            # Any typing can open suggestions: Odoo's salesperson box is a plain textbox.
+            typed_in_box = True
+            settled.append(candidate)
+            continue
+        if candidate.action == "click" and _is_option_click(candidate):
+            if not typed_in_box:
+                warnings.append(
+                    f"dropped the hint option at event {candidate.seq}: nothing had been typed"
+                )
+                continue
+            typed_in_box = False
+            settled.append(candidate)
+            continue
+        if candidate.action == "press" and str(candidate.key or "").lower() in _TAB_KEYS:
+            previous = settled[-1] if settled else None
+            following = next(
+                (
+                    c
+                    for c in candidates[index + 1 :]
+                    if not (c.action == "press" and str(c.key or "").lower() in _TAB_KEYS)
+                ),
+                None,
+            )
+            typed = _fill_text(previous) if previous is not None else ""
+            if (
+                previous is not None
+                and previous.action == "fill"
+                and _is_combobox(previous)
+                and typed
+                and not (following is not None and _is_option_click(following))
+            ):
+                settled.append(
+                    replace(
+                        candidate,
+                        action="click",
+                        key=None,
+                        name=f'Click Create "{typed}"',
+                        targets=[{"by": "role", "role": "option", "name": f'Create "{typed}"'}],
+                        recorded_id=f"pick-{candidate.seq}",
+                    )
+                )
+                typed_in_box = False
+                warnings.append(
+                    f"the Tab at event {candidate.seq} picked a suggestion; it replays as a pick"
+                )
+                continue
+            first = _first_rung(candidate.targets)
+            if first is None or str(first.get("role", "")).lower() in ("", "generic"):
+                warnings.append(f"dropped the Tab at event {candidate.seq}: it only moved focus")
+                continue
+        settled.append(candidate)
+    return settled, warnings
+
+
 def _expand_create_option(candidates: list[Candidate]) -> list[Candidate]:
     """Turn a Create "<value>" option click into a ladder that accepts the record first.
 
@@ -1018,8 +1100,10 @@ def _infer_assertion_from_fills(
         return None
     best_column = columns[0]
 
+    # PL-032: the name is already on screen in the form being filled, so "it is visible" proves
+    # nothing; "it appears once more than before the click" is the new card itself.
     return {
-        "text_visible": f"{{{{row.{best_column}}}}}",
+        "text_count_increases": f"{{{{row.{best_column}}}}}",
         "timeout_ms": options.assertion_timeout_ms,
     }
 
@@ -1052,6 +1136,8 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
     warnings.extend(container_warnings)
     candidates, retried_warnings = _fold_retried_fills(candidates)
     warnings.extend(retried_warnings)
+    candidates, box_warnings = _settle_suggestion_boxes(candidates)
+    warnings.extend(box_warnings)
     if not candidates:
         raise CompileError("no steps could be built from the recording")
 

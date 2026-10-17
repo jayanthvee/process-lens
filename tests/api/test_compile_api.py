@@ -101,7 +101,7 @@ def test_an_unobserved_save_infers_text_from_the_record_key(
     assert response.status_code == 200, response.text
     body = response.json()
     commit = next(step for step in body["recipe"]["steps"] if step.get("commit"))
-    assert commit["assert_after"] == {"text_visible": "{{row.email}}", "timeout_ms": 8000}
+    assert commit["assert_after"] == {"text_count_increases": "{{row.email}}", "timeout_ms": 8000}
     assert any(
         "checked by the new record's name appearing" in warning for warning in body["warnings"]
     )

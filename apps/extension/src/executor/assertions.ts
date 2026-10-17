@@ -65,6 +65,33 @@ export function conditionExpression(condition: Condition, ctx: ConditionContext)
       record["text_absent"],
     )}); })()`;
   }
+  if ("text_count_increases" in record) {
+    const wanted = record["text_count_increases"];
+    if (typeof wanted !== "string" || wanted.trim() === "") {
+      throw new Error(
+        `text_count_increases needs a non-empty string, got ${JSON.stringify(wanted)}`,
+      );
+    }
+    // PL-032: the runner checks a commit's assertion just before the save (it must be false) and
+    // again after it. The first evaluation in this document remembers how often the text appears;
+    // the condition holds once it appears more often than that. The baseline lives on the page, so
+    // a save that reloads the document loses it and the check fails closed -- it never passes
+    // without a baseline taken before the click. A pass forgets the baseline, so the next record
+    // starts from a fresh count.
+    return `(() => {
+      const needle = ${normal(wanted)};
+      const text = (document.body ? document.body.innerText || document.body.textContent || "" : "").replace(/\\s+/g, " ").trim();
+      let count = 0;
+      for (let at = text.indexOf(needle); at !== -1; at = text.indexOf(needle, at + needle.length)) count += 1;
+      const store = (window.__processLensCounts = window.__processLensCounts || {});
+      if (!(needle in store)) { store[needle] = count; return false; }
+      // The lowest count seen is the baseline: a suggestion list that still showed the name when
+      // the first check ran must not raise it, or the new item could never be counted.
+      if (count < store[needle]) { store[needle] = count; return false; }
+      if (count > store[needle]) { delete store[needle]; return true; }
+      return false;
+    })()`;
+  }
   if ("url_matches" in record) {
     return `(() => { try { return new RegExp(${JSON.stringify(
       record["url_matches"],

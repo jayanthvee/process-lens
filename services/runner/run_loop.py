@@ -1618,7 +1618,7 @@ def _render_condition(
     if not isinstance(condition, dict):
         return {}
     rendered = dict(condition)
-    for key in ("text_visible", "text_absent", "url_matches"):
+    for key in ("text_visible", "text_absent", "text_count_increases", "url_matches"):
         value = rendered.get(key)
         if isinstance(value, str) and is_template(value):
             rendered[key] = render(value, row=row, variables=variables)

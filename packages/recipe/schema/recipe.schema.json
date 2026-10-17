@@ -506,6 +506,10 @@
       "properties": {
         "text_visible": { "$ref": "#/$defs/template" },
         "text_absent": { "$ref": "#/$defs/template" },
+        "text_count_increases": {
+          "$ref": "#/$defs/template",
+          "description": "The text appears more times after the step than when the page was checked just before it: a new item appeared where the same text was already on screen, such as a quick-create card whose name the form still shows."
+        },
         "url_matches": {
           "type": "string",
           "minLength": 1,
@@ -530,6 +534,7 @@
       "anyOf": [
         { "required": ["text_visible"] },
         { "required": ["text_absent"] },
+        { "required": ["text_count_increases"] },
         { "required": ["url_matches"] },
         { "required": ["element_present"] },
         { "required": ["element_absent"] },

@@ -167,7 +167,7 @@ def test_add_click_gets_assert_after_from_record_key() -> None:
     )
     assert add_step.get("commit") is True
     assert add_step.get("assert_after") == {
-        "text_visible": "{{row.contact}}",
+        "text_count_increases": "{{row.contact}}",
         "timeout_ms": 8000,
     }
     assert any(
@@ -183,7 +183,7 @@ def test_an_email_keyed_quick_create_is_checked_by_the_card_name_not_the_email()
     """
     result = compile_fixture(commit_step_ids=["click-15"], record_key_column="email")
     add_step = next(step for step in result.recipe["steps"] if step.get("name") == "Click Add")
-    assert add_step.get("assert_after", {}).get("text_visible") == "{{row.contact}}"
+    assert add_step.get("assert_after", {}).get("text_count_increases") == "{{row.contact}}"
 
 
 def test_the_fixture_compiles_without_422() -> None:
@@ -218,7 +218,7 @@ def test_acceptance_recipe_shape() -> None:
         assert steps[index]["name"] == name, steps[index]
 
     assert steps[-1].get("commit") is True
-    assert steps[-1].get("assert_after", {}).get("text_visible") == "{{row.contact}}"
+    assert steps[-1].get("assert_after", {}).get("text_count_increases") == "{{row.contact}}"
 
     recipe_text = json.dumps(result.recipe)
     assert "?" not in recipe_text
@@ -322,3 +322,55 @@ def test_an_entry_finished_with_a_button_is_not_a_retry() -> None:
     fills = [step for step in result.recipe["steps"] if step.get("action") == "fill"]
     assert len(fills) == 2, result.recipe["steps"]
     assert not any("folded the retried fill" in warning for warning in result.warnings)
+
+
+# --- PL-032: the owner's second recording (contact typed, then Tab) --------------------------
+
+TAB_FIXTURE = Path(__file__).parent / "fixtures" / "odoo_quick_create_owner_tab.json"
+TAB_SAMPLE = {
+    "contact": "Probe Owner Two",
+    "email": "probe.two@example.test",
+    "phone": "5550000099",
+    "expected_revenue": "500",
+}
+
+
+def compile_tab_fixture(**overrides: Any) -> Any:
+    events = json.loads(TAB_FIXTURE.read_text(encoding="utf-8"))
+    return compile_recording(
+        events,
+        make_options(
+            sample_row=dict(TAB_SAMPLE),
+            input_fields={column: {"type": "string"} for column in TAB_SAMPLE},
+            record_key_column="email",
+            commit_step_ids=["click-4"],
+            **overrides,
+        ),
+    )
+
+
+def test_the_tab_after_the_contact_replays_as_a_pick() -> None:
+    """Contact typed, then Tab: the replay picks the exact name, else Create, never just Tab."""
+    steps = compile_tab_fixture().recipe["steps"]
+    picks = [
+        step
+        for step in steps
+        if step.get("action") == "click"
+        and any(rung.get("role") == "option" for rung in step.get("targets", []))
+    ]
+    assert len(picks) == 1, steps
+    names = [rung.get("name") for rung in picks[0]["targets"]]
+    assert names[:2] == ["{{row.contact}}", 'Create "{{row.contact}}"'], names
+
+
+def test_the_hint_option_and_the_page_wide_tab_are_gone() -> None:
+    steps = compile_tab_fixture().recipe["steps"]
+    text = json.dumps(steps)
+    assert "Start typing" not in text
+    assert "CRMSalesReporting" not in text
+
+
+def test_the_tab_fixture_save_is_checked_by_a_new_card() -> None:
+    steps = compile_tab_fixture().recipe["steps"]
+    add = next(step for step in steps if step.get("name") == "Click Add")
+    assert add["assert_after"]["text_count_increases"] == "{{row.contact}}"
