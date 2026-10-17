@@ -13,6 +13,8 @@ from psycopg.rows import dict_row
 
 from .models import (
     ApprovalRequestRow,
+    AppRow,
+    AppTaskRow,
     NeedsHelpRow,
     OpenRunRow,
     RecordClaim,
@@ -316,6 +318,74 @@ def list_tasks(
         return [_row(TaskListRow, row) for row in cur.fetchall()]
 
 
+# One row per site a saved task may use. The tasks are the same ones ``_LIST_TASKS`` names -- the
+# latest version of each non-archived workflow, named as its recipe is -- but grouped by origin
+# instead of by task, and sorted by name inside each site. ``last_run`` is the newest run of *any*
+# task that may use the site, so a site says when it was last worked on, not when one task was.
+_LIST_APPS = """
+WITH saved AS (
+  SELECT w.id AS workflow_id, w.tenant_id,
+         coalesce(rv.recipe -> 'meta' ->> 'name', w.name) AS name,
+         w.allowed_origins
+  FROM workflows w
+  JOIN recipe_versions rv ON rv.workflow_id = w.id
+  WHERE w.archived_at IS NULL
+    AND rv.version = (
+      SELECT max(v.version) FROM recipe_versions v WHERE v.workflow_id = w.id
+    )
+    AND (%(tenant)s::uuid IS NULL OR w.tenant_id = %(tenant)s)
+),
+per_origin AS (
+  SELECT DISTINCT s.tenant_id, site.origin, s.workflow_id, s.name
+  FROM saved s
+  CROSS JOIN LATERAL unnest(s.allowed_origins) AS site(origin)
+  WHERE site.origin IS NOT NULL AND site.origin <> ''
+),
+last_run AS (
+  SELECT per_origin.origin AS site, ru.created_at, ru.status,
+         row_number() OVER (
+           PARTITION BY per_origin.origin ORDER BY ru.created_at DESC, ru.id
+         ) AS place
+  FROM runs ru
+  JOIN per_origin ON per_origin.workflow_id = ru.workflow_id
+    AND per_origin.tenant_id = ru.tenant_id
+)
+SELECT per_origin.origin AS origin,
+       jsonb_agg(
+         jsonb_build_object('id', per_origin.workflow_id, 'name', per_origin.name)
+         ORDER BY per_origin.name, per_origin.workflow_id
+       ) AS tasks,
+       last_run.created_at AS last_run_at,
+       last_run.status::text AS last_run_status
+FROM per_origin
+LEFT JOIN last_run ON last_run.site = per_origin.origin AND last_run.place = 1
+GROUP BY per_origin.origin, last_run.created_at, last_run.status
+ORDER BY per_origin.origin
+"""
+
+
+def list_apps(conn: psycopg.Connection, *, tenant_id: uuid.UUID | None = None) -> list[AppRow]:
+    """One row per site the tenant's saved tasks may use, with its tasks and its newest run.
+
+    An archived workflow is not a task any more, so its sites are left out with it. A task that may
+    use two sites appears on both, because the site is what the Apps page lists.
+    """
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(_LIST_APPS, {"tenant": tenant_id})
+        rows = cur.fetchall()
+    return [
+        AppRow(
+            origin=row["origin"],
+            tasks=[
+                AppTaskRow(id=uuid.UUID(task["id"]), name=task["name"]) for task in row["tasks"]
+            ],
+            last_run_at=row["last_run_at"],
+            last_run_status=row["last_run_status"],
+        )
+        for row in rows
+    ]
+
+
 # The runs a worker could act on, with whether a live worker holds each: a queued run has none,
 # and a running run's lease is live only while its heartbeat is fresh. The lease rule is the one
 # ``find_stale_run`` applies, so a takeover and this read can never disagree about "live".
@@ -344,10 +414,13 @@ def list_open_runs(
 
 
 __all__ = [
+    "AppRow",
+    "AppTaskRow",
     "RunClaim",
     "RunListRow",
     "TaskListRow",
     "WeekCountsRow",
+    "list_apps",
     "list_needs_help",
     "list_open_approvals",
     "list_open_runs",

@@ -49,6 +49,8 @@ from .lease import require_lease
 from .models import (
     ApprovalDecision,
     ApprovalRequestRow,
+    AppRow,
+    AppTaskRow,
     ExtensionReportRow,
     JobClaim,
     NeedsHelpRow,
@@ -68,6 +70,7 @@ from .models import (
     WeekCountsRow,
 )
 from .reads import (
+    list_apps,
     list_needs_help,
     list_open_approvals,
     list_open_runs,
@@ -122,6 +125,8 @@ __all__ = [
     "WORKING_STATES",
     "ApprovalDecision",
     "ApprovalRequestRow",
+    "AppRow",
+    "AppTaskRow",
     "BatchRow",
     "BatchRowInfo",
     "ExtensionReportRow",
@@ -168,6 +173,7 @@ __all__ = [
     "get_user",
     "heartbeat",
     "insert_batch",
+    "list_apps",
     "list_batch_rows",
     "list_needs_help",
     "list_open_approvals",

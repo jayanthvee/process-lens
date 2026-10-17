@@ -24,6 +24,7 @@ from starlette.responses import Response
 
 from .admin import router as admin_router
 from .approvals import router as approvals_router
+from .apps import router as apps_router
 from .batches import router as batches_router
 from .compile import router as compile_router
 from .executor import router as executor_router
@@ -60,6 +61,7 @@ app.include_router(executor_router)
 app.include_router(workspace_router)
 app.include_router(hub_router)
 app.include_router(home_router)
+app.include_router(apps_router)
 
 
 # NOTE: the page's static mount is added at the very END of this module, after every route is
