@@ -225,3 +225,26 @@ describe("a required field (requirement 5)", () => {
     }
   });
 });
+
+describe("a step inside a same-origin iframe (PL-018b)", () => {
+  it("carries the top page's URL, not the frame's own", () => {
+    const frame = document.createElement("iframe");
+    document.body.appendChild(frame);
+    const inner = frame.contentDocument as Document;
+    inner.body.innerHTML = "<button type='button'>Save note</button>";
+    const events: PendingEvent[] = [];
+    const detach = attachRecorder(inner, {
+      send: (event) => events.push(event),
+      isActive: () => true,
+      now: () => "2026-10-17T00:00:00.000Z",
+    });
+
+    (inner.querySelector("button") as HTMLButtonElement).click();
+    detach();
+
+    expect(events.length).toBeGreaterThan(0);
+    for (const event of events) {
+      expect((event as { url?: string }).url).toBe(window.location.href);
+    }
+  });
+});

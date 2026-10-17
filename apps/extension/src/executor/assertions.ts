@@ -54,6 +54,10 @@ export const PAGE_TEXT_SOURCE = `(() => {
   const parts = [];
   const skip = new Set(["STYLE", "SCRIPT", "TEMPLATE"]);
   const seen = new Set();
+  // An element that is not rendered (\`hidden\`, \`display: none\`) reports its whole text content as
+  // \`innerText\`, so a hidden "Saved" status would read as showing. \`checkVisibility\` is Chrome's
+  // answer; where it is missing (jsdom) the element counts as rendered, as before.
+  const rendered = (el) => typeof el.checkVisibility !== "function" || el.checkVisibility();
   // PL-018b: a document's text, then that of every same-origin iframe inside it (in its light tree
   // or in a shadow root). A cross-origin frame's document can't be read and is skipped. Reading
   // every frame, not only the step's own, is safe here because a commit's check is probed BEFORE
@@ -76,10 +80,12 @@ export const PAGE_TEXT_SOURCE = `(() => {
     collect(doc);
     for (const shadow of roots) {
       for (const el of Array.from(shadow.children)) {
-        if (!skip.has(el.tagName)) parts.push(el.innerText || el.textContent || "");
+        if (skip.has(el.tagName) || !rendered(el)) continue;
+        parts.push(el.innerText || el.textContent || "");
       }
     }
     for (const frame of frames) {
+      if (!rendered(frame)) continue;
       let inner = null;
       try {
         inner = frame.contentDocument;

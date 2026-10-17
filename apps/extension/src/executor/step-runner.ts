@@ -198,7 +198,13 @@ export async function frameContextId(
     if (node && contextId !== undefined) return contextId;
     if (Date.now() - started >= waitMs) {
       if (!node) {
-        throw new ExecutorError(`the step's frame path did not resolve`, step.id, "park");
+        // Say what was looked for and what the page has, so a park can be read without a debugger.
+        const children = (tree?.children ?? []).map((child) => child.url || "(no url)");
+        throw new ExecutorError(
+          `the step's frame path did not resolve (wanted ${JSON.stringify(step.frame)}; the page ${tree ? `${tree.url} has ${children.length} frame(s): ${children.join(", ")}` : "has no frame tree"})`,
+          step.id,
+          "park",
+        );
       }
       throw new ExecutorError(
         `step ${step.id} targets frame ${node.frameId}, whose execution context the page has not reported`,
