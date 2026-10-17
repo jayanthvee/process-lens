@@ -43,10 +43,14 @@ import uuid
 from collections.abc import Sequence
 from pathlib import Path
 
-import psycopg
+# Run as `python scripts/demo.py`, Python puts scripts/ on the path, not the repository, so the
+# project's own packages would not import without this.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from db.migrate import apply_migrations, database_url
-from packages.ledger import OpenRunRow, list_open_runs
+import psycopg  # noqa: E402
+
+from db.migrate import apply_migrations, database_url  # noqa: E402
+from packages.ledger import OpenRunRow, list_open_runs  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = REPO_ROOT / ".data"
