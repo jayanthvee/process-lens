@@ -139,6 +139,22 @@ export interface ExecutorSession {
   attached: boolean;
 }
 
+/** One task on `GET /api/v1/apps`: the task's id, which opens it, and its name. */
+export interface AppTask {
+  id: string;
+  name: string;
+}
+
+/** One row of `GET /api/v1/apps`: a site a task may use, and the newest run of any of them. */
+export interface AppRow {
+  name: string;
+  host: string;
+  origin: string;
+  tasks: AppTask[];
+  last_run_at: string | null;
+  last_run_status: string | null;
+}
+
 /**
  * `GET /api/v1/workspace/state`: whether this workspace's runs may start at all.
  *
