@@ -47,6 +47,16 @@ describe("rowOutcome", () => {
 });
 
 describe("runStatusWords", () => {
+  it("says Waiting for Chrome when a run is queued and no Chrome session is attached", () => {
+    expect(runStatusWords("queued", false)).toEqual({
+      label: "Waiting for Chrome: open the ProcessLens extension and it will connect",
+      tone: "idle",
+    });
+    // With Chrome attached, or while the session is not known yet, the plain status stands.
+    expect(runStatusWords("queued", true)).toEqual({ label: "Queued", tone: "idle" });
+    expect(runStatusWords("queued")).toEqual({ label: "Queued", tone: "idle" });
+    expect(runStatusWords("queued", undefined)).toEqual({ label: "Queued", tone: "idle" });
+  });
   it("maps every run status to the design's words", () => {
     expect(runStatusWords("queued")).toEqual({ label: "Queued", tone: "idle" });
     expect(runStatusWords("running")).toEqual({ label: "Running", tone: "live" });

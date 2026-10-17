@@ -75,13 +75,17 @@ describe("a step without a name", () => {
     expect(stepWords(step).title).toBe("Click the button");
   });
 
-  it("presses the key the step names", () => {
+  it("presses the key the step names, in the place the target labels", () => {
     const step = {
       action: "press",
       key: "Enter",
       targets: [{ by: "role", role: "button", name: "Search" }],
     };
-    expect(stepWords(step).title).toBe("Press Enter");
+    expect(stepWords(step).title).toBe("Press Enter in Search");
+  });
+
+  it("presses just the key when the target has no label a person wrote", () => {
+    expect(stepWords({ action: "press", key: "Tab" }).title).toBe("Press Tab");
   });
 
   it("says what each remaining action does", () => {
@@ -115,6 +119,43 @@ describe("a step without a name", () => {
 
   it("still says something for a step it has never seen", () => {
     expect(stepWords({ action: "something_new" }).title).toBe("Do the next thing");
+  });
+});
+
+describe("readable step names (PL-033 requirement 5)", () => {
+  it("drops the action word the recorder prefixes, so a fill reads like a person wrote it", () => {
+    expect(stepWords({ action: "fill", name: "fill Contact" }).title).toBe("Type the contact");
+  });
+
+  it("still says Click Add when the recorder named the click after its own action", () => {
+    expect(stepWords({ action: "click", name: "click Add" }).title).toBe("Click Add");
+  });
+
+  it("names a press by its key and its target's label", () => {
+    const step = {
+      action: "press",
+      key: "Tab",
+      targets: [{ by: "role", role: "textbox", name: "Phone" }],
+    };
+    expect(stepWords(step).title).toBe("Press Tab in Phone");
+  });
+
+  it("shows a step whose name is longer than 40 characters as its action and first label", () => {
+    const long = "Type the full legal name of the company exactly as it appears on the invoice";
+    expect(
+      stepWords({
+        action: "fill",
+        name: long,
+        targets: [{ by: "role", role: "textbox", name: "Contact" }],
+      }).title,
+    ).toBe("Type the contact");
+    expect(
+      stepWords({
+        action: "click",
+        name: `${long}, then check it`,
+        targets: [{ by: "label", text: "Add" }],
+      }).title,
+    ).toBe("Click Add");
   });
 });
 

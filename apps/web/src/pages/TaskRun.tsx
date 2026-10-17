@@ -8,6 +8,7 @@ import { runsBlocked, useWorkspaceState } from "../lib/workspace";
 import type {
   BatchCheck,
   BatchUpload,
+  ExecutorSession,
   MappingEntry,
   RunCreated,
   RunDetail as RunDetailPayload,
@@ -107,10 +108,12 @@ export function TaskRun(): JSX.Element {
 
   // The preview run, followed live until it is no longer open. `useJson` polls on its own, and the
   // interval is switched off the moment the run stops being open -- a finished run is never asked
-  // about again (PL-015's rule, carried forward).
+  // about again (PL-015's rule, carried forward). The Chrome session is asked on the same clock,
+  // so a queued run says "Waiting for Chrome" only while the extension really is away.
   const [pollMs, setPollMs] = useState<number | null>(null);
   const runPath = runId === null ? null : `/api/v1/runs/${runId}`;
   const run = useJson<RunDetailPayload>(runPath, pollMs);
+  const session = useJson<ExecutorSession>("/api/v1/executor/session", pollMs);
   useEffect(() => {
     const next = isOpenStatus(run.data?.status ?? null) ? POLL_INTERVAL_MS : null;
     setPollMs((current) => (current === next ? current : next));
@@ -214,7 +217,8 @@ export function TaskRun(): JSX.Element {
     );
   }
 
-  const outcome = run.data === null ? null : runStatusWords(run.data.status);
+  const outcome =
+    run.data === null ? null : runStatusWords(run.data.status, session.data?.attached);
 
   return (
     <div className="task-run">

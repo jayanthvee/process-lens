@@ -15,7 +15,7 @@ import {
   runActions,
   runStatusWords,
 } from "../lib/words";
-import type { OperatorInfo, RecordRow, RunDetail as RunDetailPayload } from "../types";
+import type { ExecutorSession, OperatorInfo, RecordRow, RunDetail as RunDetailPayload } from "../types";
 import "./runs.css";
 
 type RunAction = "pause" | "resume" | "cancel";
@@ -71,6 +71,9 @@ export function RunDetail(): JSX.Element {
   const [pollMs, setPollMs] = useState<number | null>(null);
   const run = useJson<RunDetailPayload>(runPath, pollMs);
   const records = useJson<RecordRow[]>(recordsPath, pollMs);
+  // Whether Chrome is attached right now: a queued run with no session is waiting for the person
+  // to open the extension, not for the engine (PL-033 requirement 4).
+  const session = useJson<ExecutorSession>("/api/v1/executor/session", pollMs);
 
   const detail = run.data;
   const rows = records.data ?? [];
@@ -138,7 +141,7 @@ export function RunDetail(): JSX.Element {
     );
   }
 
-  const status = runStatusWords(detail.status);
+  const status = runStatusWords(detail.status, session.data?.attached);
   const buttons = runActions(detail.status);
   // Every count comes from the API, and a run with no records counts as nothing at all.
   const counts = (detail.counts ?? {}) as Record<string, number>;

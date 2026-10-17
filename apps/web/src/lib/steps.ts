@@ -49,9 +49,38 @@ function isTemplate(value: string): boolean {
   return value.includes("{{");
 }
 
+/**
+ * A step name is a name, not a sentence: longer than this, the step shows its action and its first
+ * label instead (PL-033 requirement 5).
+ */
+const NAME_LIMIT = 40;
+
 /** The step's own name, when the recipe author gave it one. */
 function stepName(step: RecipeStep): string | undefined {
   return text(step.name);
+}
+
+/**
+ * The recorder writes a step's name as "fill Contact" or "click Add" — action word first. The
+ * sentence already says what the action is ("Type the contact", "Click Add"), so the prefix is
+ * dropped; a name that does not start with the step's own action is left alone.
+ */
+function plainName(action: string, name: string): string {
+  const clean = name.trim();
+  const prefix = `${action.toLowerCase()} `;
+  return clean.toLowerCase().startsWith(prefix) ? clean.slice(prefix.length).trim() : clean;
+}
+
+/**
+ * The name a sentence may use: the step's own name, without the recorder's action prefix, and only
+ * while it is short enough to be a name at all. A longer name falls back to the action and the
+ * target's first label, which the sentence builder below already turns into one readable line.
+ */
+function usableName(action: string, step: RecipeStep): string | undefined {
+  const raw = stepName(step);
+  if (raw === undefined || raw.length > NAME_LIMIT) return undefined;
+  const stripped = plainName(action, raw);
+  return stripped === "" ? undefined : stripped;
 }
 
 /**
@@ -149,7 +178,7 @@ const AGGREGATE: Record<string, string> = {
 /** One step, in one plain sentence. */
 export function stepWords(step: RecipeStep): StepWords {
   const action = text(step.action) ?? "";
-  const name = stepName(step);
+  const name = usableName(action, step);
   const target = accessibleName(step);
   const object = name ?? target;
 
@@ -171,8 +200,11 @@ export function stepWords(step: RecipeStep): StepWords {
     }
     case "click":
       return { title: phrase("Click", object ?? "the button") };
-    case "press":
-      return { title: phrase("Press", text(step.key) ?? object ?? "the key") };
+    case "press": {
+      // "Press Tab in Phone": the key, and the place the step presses it (PL-033 requirement 5).
+      const key = text(step.key) ?? "the key";
+      return { title: target === undefined ? `Press ${key}` : `Press ${key} in ${target}` };
+    }
     case "upload_file":
       return { title: phrase("Attach", definite(object ?? "file")) };
     case "read_value": {

@@ -49,8 +49,19 @@ export function rowOutcome(state: string): Outcome {
   return ROW_STATES[state] ?? WAITING;
 }
 
+/**
+ * A queued run with no Chrome session is not waiting for the engine, it is waiting for the person
+ * to open the extension (PL-033 requirement 4). `chromeAttached` comes from
+ * `GET /api/v1/executor/session`; while it is not known yet, the plain status stands.
+ */
+export const WAITING_FOR_CHROME =
+  "Waiting for Chrome: open the ProcessLens extension and it will connect";
+
 /** A run's status in plain words. */
-export function runStatusWords(status: string): Outcome {
+export function runStatusWords(status: string, chromeAttached?: boolean): Outcome {
+  if (status === "queued" && chromeAttached === false) {
+    return { label: WAITING_FOR_CHROME, tone: "idle" };
+  }
   return RUN_STATUSES[status] ?? WAITING;
 }
 
