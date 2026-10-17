@@ -114,6 +114,25 @@ def test_saving_a_task_creates_one_workflow_and_one_version(
     )
 
 
+def test_saving_under_an_existing_name_adds_the_next_version(
+    connected: TestClient, conn: object, operator: str
+) -> None:
+    """Teaching a task again keeps its workflow and adds version 2; version 1 is untouched."""
+    body = {"name": "Add inquiries", "recipe": recipe_document()}
+    first = connected.post("/api/v1/tasks", json=body)
+    second = connected.post("/api/v1/tasks", json=body)
+
+    assert first.status_code == 201, first.text
+    assert second.status_code == 201, second.text
+    assert second.json()["workflow_id"] == first.json()["workflow_id"]
+    assert second.json()["recipe_version_id"] != first.json()["recipe_version_id"]
+    versions = conn.execute(  # type: ignore[attr-defined]
+        "SELECT version FROM recipe_versions WHERE workflow_id = %s ORDER BY version",
+        (uuid.UUID(first.json()["workflow_id"]),),
+    ).fetchall()
+    assert [row[0] for row in versions] == [1, 2]
+
+
 def test_a_recipe_without_a_commit_assertion_is_refused_like_recipes_refuses(
     connected: TestClient, conn: object, ledger: Ledger, operator: str
 ) -> None:

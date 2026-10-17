@@ -64,7 +64,8 @@ def create_task(payload: Annotated[CreateTaskRequest, Body()]) -> CreateTaskResp
 
     The operator is who is asking (503 when none is configured, 403 when the id names nobody), and
     the recipe is checked with the same code ``POST /api/v1/recipes`` uses (422 with the same
-    problems, nothing written). A task name the tenant already uses is a 409, not a 500.
+    problems, nothing written). Saving under a name the tenant already uses is teaching that task
+    again: the recipe becomes its next version, and earlier versions stay as they were.
     """
     document = payload.recipe
     with connection() as conn:
@@ -80,6 +81,20 @@ def create_task(payload: Annotated[CreateTaskRequest, Body()]) -> CreateTaskResp
             )
         # Validation passed, so the schema guarantees a non-empty list of scheme://host origins.
         origins = [str(origin) for origin in document["meta"]["allowed_origins"]]
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id FROM workflows WHERE tenant_id = %s AND name = %s "
+                "AND archived_at IS NULL",
+                (person.tenant_id, payload.name),
+            )
+            existing = cur.fetchone()
+        if existing is not None:
+            workflow_id = uuid.UUID(str(existing[0]))
+            stored = store_recipe_version(conn, workflow_id=workflow_id, document=document)
+            conn.commit()
+            if stored is None:  # pragma: no cover - the row was read in this same connection
+                raise HTTPException(status_code=404, detail=f"workflow {workflow_id} is gone")
+            return CreateTaskResponse(workflow_id=workflow_id, recipe_version_id=stored["id"])
         try:
             with conn.transaction():
                 with conn.cursor() as cur:
