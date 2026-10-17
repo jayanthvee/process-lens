@@ -209,7 +209,7 @@ describe("the popup's words", () => {
     expect(visible).toContain("Do the job once in your browser");
   });
 
-  it("keeps what the compile route sends off the screen when it is written for an engineer", async () => {
+  it("keeps the save result to two plain sentences, and the rest for support", async () => {
     // These are the sentences the route really sends. A recognised assertion is reported as
     // `assertion for click-2 taken from the recorded observation`
     // (packages/compiler/compiler.py), and a refused navigation as
@@ -222,13 +222,18 @@ describe("the popup's words", () => {
     await form.submit();
 
     const result = document.getElementById("make-result")?.textContent ?? "";
-    const warnings = document.getElementById("make-warnings")?.textContent ?? "";
+    // Under the save result: at most two plain sentences, and no engine word (PL-033).
+    const plain = document.getElementById("make-plain")?.textContent ?? "";
+    const sentences = plain.split(/(?<=\.)\s+/).filter((sentence) => sentence.length > 0);
+    expect(sentences.length).toBeLessThanOrEqual(2);
+    expect(engineWordsIn(plain)).toEqual([]);
+    // Everything the route sent is still reachable, for support, under More.
+    const support = document.getElementById("make-warnings")?.textContent ?? "";
+    for (const warning of routeWarnings) expect(support).toContain(warning);
     expect(result).toContain("is ready");
-    expect(engineWordsIn(document.body.textContent ?? "")).toEqual([]);
-    expect(warnings).not.toContain("click-2");
-    // The readable one is still shown, and the one that was not is still accounted for.
-    expect(warnings).toContain("inferred");
-    expect(warnings).toContain("1 more note");
+    // Nothing the route wrote leaks into what a person reads.
+    expect(engineWordsIn(result)).toEqual([]);
+    expect(document.querySelector("#make-result a")).toBeNull();
 
     // And the refusal path: the route's own problems, one of which names a step and a schema key.
     const refusal = mountForm({
@@ -248,11 +253,11 @@ describe("the popup's words", () => {
 
     const refused = document.getElementById("make-result")?.textContent ?? "";
     const shown = document.getElementById("make-warnings")?.textContent ?? "";
-    // The count is the true one, even though one of the two cannot be shown.
+    // The count is the true one, and the refusal's own sentences are for support.
     expect(refused).toContain("Could not save this as a task (2 problems).");
     expect(shown).toContain("the commit click has no result to check");
-    expect(shown).toContain("1 more note");
-    expect(engineWordsIn(document.body.textContent ?? "")).toEqual([]);
+    expect(shown).toContain("allowed_origins");
+    expect(engineWordsIn(refused)).toEqual([]);
   });
 
   it("has plain sample data, and the guard still catches an engine word", () => {
@@ -265,8 +270,9 @@ describe("the popup's words", () => {
       "ledger",
       "parked",
     ]);
-    // Requirement 7's twelve, plus the phrases DESIGN.md §2 names and the worker really sends.
-    expect(ENGINE_WORDS.length).toBe(14);
+    // Requirement 7's twelve, plus the phrases DESIGN.md §2 names and the worker really sends,
+    // plus PL-033's eight compiler warnings.
+    expect(ENGINE_WORDS.length).toBe(22);
     for (const engine of [
       "recipe",
       "ledger",
@@ -345,8 +351,8 @@ describe("the popup's words", () => {
       (["idle", "running", "paused", "aborted", "done", "failed"] as const).map(runStateWords),
     ).toEqual(["Nothing is running", "Running", "Paused", "Stopped", "Finished", "Didn't work"]);
     expect(sessionWords("ready")).toBe("Connected to ProcessLens");
-    expect(sessionWords("idle")).toBe("Not connected");
-    expect(sessionWords("disconnected")).toBe("Not connected");
+    expect(sessionWords("idle")).toBe("ProcessLens isn't running");
+    expect(sessionWords("disconnected")).toBe("ProcessLens isn't running");
     expect(sessionWords("ready", "bound to a tab")).toBe("Connected to ProcessLens — bound to a tab");
     expect(streamWords("", false)).toBe("Off");
     expect(streamWords("ws://127.0.0.1:8000/record", false)).toBe("Ready to send");
@@ -374,7 +380,7 @@ describe("the popup's words", () => {
       expect(plainDetail(detail)).toBe("");
       expect(engineWordsIn(sessionWords("disconnected", detail))).toEqual([]);
       // The state still says what happened, in plain words.
-      expect(sessionWords("disconnected", detail)).toBe("Not connected");
+      expect(sessionWords("disconnected", detail)).toBe("ProcessLens isn't running");
     }
     // A detail a person can read is still shown.
     expect(plainDetail("bound to a tab")).toBe("bound to a tab");

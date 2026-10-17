@@ -146,12 +146,17 @@ function control<T extends HTMLElement>(id: string): T {
   return found as T;
 }
 
-function mount(fetchImpl: typeof fetch, storage = fakeStorage()): MakeRecipeForm {
+function mount(
+  fetchImpl: typeof fetch,
+  storage = fakeStorage(),
+  savedUrls?: string[],
+): MakeRecipeForm {
   return createMakeRecipeForm({
     root: document,
     storage,
     fetchImpl,
     baseUrl: "http://127.0.0.1:8000",
+    onSaved: (taskUrl) => savedUrls?.push(taskUrl),
   });
 }
 
@@ -160,7 +165,7 @@ beforeEach(() => {
 });
 
 describe("the make-recipe form", () => {
-  it("saves the task after compiling and shows it is ready with a link (PL-030)", async () => {
+  it("saves the task after compiling and hands the Open step the task's address (PL-030, PL-033)", async () => {
     const recipe = { id: "new-lead", steps: [] };
     const { fetchImpl, calls } = fakeFetch(
       { recipe, warnings: ["the check for this row was taken from what the page showed"] },
@@ -168,7 +173,8 @@ describe("the make-recipe form", () => {
       { body: { workflow_id: "wf-abc123" } },
     );
     const storage = fakeStorage();
-    const form = mount(fetchImpl, storage);
+    const savedUrls: string[] = [];
+    const form = mount(fetchImpl, storage, savedUrls);
 
     form.refresh(leadRecording());
     await form.submit();
@@ -195,9 +201,10 @@ describe("the make-recipe form", () => {
 
     const result = control("make-result");
     expect(result.textContent).toContain("Recorded on crm.example.test is ready");
-    expect(result.textContent).toContain("Open it in ProcessLens");
-    const link = result.querySelector("a");
-    expect(link?.getAttribute("href")).toBe("http://127.0.0.1:8000/tasks/wf-abc123");
+    // PL-033: no link in the popup — the Open in ProcessLens step gets the address and calls
+    // chrome.tabs.create with it, because a plain `<a href>` does nothing in a popup.
+    expect(result.querySelector("a")).toBeNull();
+    expect(savedUrls).toEqual(["http://127.0.0.1:8000/tasks/wf-abc123"]);
     expect(control("make-warnings").textContent).toContain("taken from what the page showed");
   });
 
@@ -633,7 +640,7 @@ describe("the duplicate check (PL-017 requirement 4)", () => {
     expect(box.disabled).toBe(true);
     expect(box.checked).toBe(false);
     expect(control("make-duplicate-hint").textContent).toBe(
-      "I did not see a search in this recording, so I cannot check for duplicates.",
+      "I couldn't check for duplicates because you didn't search first.",
     );
 
     await form.submit();
