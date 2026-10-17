@@ -616,12 +616,39 @@ def _click_touches_field(
         return True
     if _is_option_click(click):
         return True
+    # Pressing a real control is an action of its own, never fiddling with a field -- whatever
+    # its text shares with the field's label ("Add" next to "Add recipient").
+    first = _first_rung(click.targets)
+    if first and str(first.get("role", "")).lower() in {
+        "button",
+        "link",
+        "menuitem",
+        "tab",
+        "checkbox",
+        "radio",
+        "switch",
+    }:
+        return False
     click_text = (
         (click.name or "") + " " + " ".join(_rung_text(rung) for rung in click.targets or [])
     )
     matched = [label for label in field_labels if label in click_text]
     other_labels = all_input_labels - field_labels
     return matched and not any(label in click_text for label in other_labels)
+
+
+def _fill_text(candidate: Candidate) -> str:
+    """The literal a fill typed, when it is still a literal; empty otherwise."""
+    value = candidate.value
+    if isinstance(value, dict):
+        literal = value.get("value")
+        return literal.strip() if isinstance(literal, str) else ""
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _click_text(click: Candidate) -> str:
+    """Everything a click's name and rungs say about what it pressed."""
+    return (click.name or "") + " " + " ".join(_rung_text(r) for r in click.targets or [])
 
 
 def _fold_retried_fills(candidates: list[Candidate]) -> tuple[list[Candidate], list[str]]:
@@ -660,13 +687,33 @@ def _fold_retried_fills(candidates: list[Candidate]) -> tuple[list[Candidate], l
                 break
         if retry_index is None:
             continue
-
         field_labels: set[str] = set()
         for rung in candidate.targets or []:
             for key in ("name", "text", "value"):
                 text = rung.get(key)
                 if isinstance(text, str) and text.strip():
                     field_labels.add(text.strip())
+        # Two fills of one field are a retry only when nothing between them did anything but
+        # fiddle with that field. A button pressed between them (a recipients box's "Add") or a
+        # suggestion picked for what was typed (its text contains the typed value) means the
+        # first entry was finished, and a second entry follows. Odoo's "Start typing..." hint does
+        # not contain the typed value, so a real retry still folds.
+        typed = _fill_text(candidate).lower()
+        between_clicks = [
+            candidates[between]
+            for between in range(index + 1, retry_index)
+            if candidates[between].action == "click"
+        ]
+        finished = any(
+            (typed and _is_option_click(click) and typed in _click_text(click).lower())
+            or not _click_touches_field(click, candidate.targets, field_labels, all_input_labels)
+            for click in between_clicks
+        )
+        if finished or any(
+            candidates[between].action not in ("click", "fill")
+            for between in range(index + 1, retry_index)
+        ):
+            continue
 
         dropped.add(index)
         for between in range(index + 1, retry_index):

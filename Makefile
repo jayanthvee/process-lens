@@ -1,6 +1,6 @@
 PYTHON ?= python
 
-.PHONY: up down migrate test lint fmt
+.PHONY: up down migrate demo test lint fmt
 
 ## Start the local services (Postgres 16, MinIO) and wait until they are healthy.
 up:
@@ -13,6 +13,11 @@ down:
 ## Apply db/migrations in order. Re-running applies nothing.
 migrate:
 	$(PYTHON) -m db.migrate
+
+## Run ProcessLens locally for a person: migrations, API, and a supervisor that starts workers.
+## Forward flags with ARGS, e.g. `make demo ARGS=--extension-id <id>`.
+demo:
+	$(PYTHON) scripts/demo.py $(ARGS)
 
 ## Run the test suite.
 test:

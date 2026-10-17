@@ -1057,6 +1057,21 @@ def extension_id(context: Any) -> str:
     return str(url).split("/")[2]
 
 
+def _session_operator(database_url: str) -> str:
+    """One owner user under its own tenant, for the API this session starts."""
+    import psycopg
+
+    with psycopg.connect(database_url, autocommit=True) as conn, conn.cursor() as cur:
+        cur.execute("INSERT INTO tenants (name) VALUES ('e2e popup operator') RETURNING id")
+        tenant = cur.fetchone()[0]
+        cur.execute(
+            "INSERT INTO users (tenant_id, email, name, role) "
+            "VALUES (%s, %s, 'E2E Popup Operator', 'owner') RETURNING id",
+            (tenant, f"popup-{uuid.uuid4().hex[:8]}@e2e.test"),
+        )
+        return str(cur.fetchone()[0])
+
+
 @pytest.fixture(scope="session")
 def api_server(database_url: str, extension_id: str) -> Iterator[dict[str, Any]]:
     """The API and hub under uvicorn on an ephemeral port, with the extension id pinned."""
@@ -1065,6 +1080,9 @@ def api_server(database_url: str, extension_id: str) -> Iterator[dict[str, Any]]
     env["DATABASE_URL"] = database_url
     env["PROCESSLENS_EXTENSION_ID"] = extension_id
     env["PROCESSLENS_RUNNER_SECRET"] = RUNNER_SECRET
+    # PL-030: the popup's Save as task stores the task under the configured operator, so the API
+    # needs one, or every compile_via_popup would read the failed save as a refusal.
+    env["PROCESSLENS_OPERATOR_ID"] = _session_operator(database_url)
     env["PYTHONPATH"] = str(REPO_ROOT)
     process = subprocess.Popen(
         [

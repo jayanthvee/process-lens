@@ -43,11 +43,11 @@ def _session(session_id: str = "session-1", expires_at: float = 1e12) -> Session
 
 
 def test_no_session_at_all_means_not_attached(client: TestClient) -> None:
-    """With nothing open, the sidebar says Chrome is not connected."""
+    """With nothing open, the sidebar says Chrome is not connected, and names no session."""
     response = client.get(SESSION_STATE_PATH)
 
     assert response.status_code == 200, response.text
-    assert response.json() == {"attached": False}
+    assert response.json() == {"attached": False, "session_id": None}
 
 
 def test_an_open_session_that_has_not_dialled_in_is_not_attached(
@@ -62,7 +62,7 @@ def test_an_open_session_that_has_not_dialled_in_is_not_attached(
     )
     assert created.status_code == 201, created.text
 
-    assert client.get(SESSION_STATE_PATH).json() == {"attached": False}
+    assert client.get(SESSION_STATE_PATH).json() == {"attached": False, "session_id": None}
 
 
 def test_a_session_with_the_extension_socket_attached_is_attached(client: TestClient) -> None:
@@ -74,7 +74,7 @@ def test_a_session_with_the_extension_socket_attached_is_attached(client: TestCl
     response = client.get(SESSION_STATE_PATH)
 
     assert response.status_code == 200, response.text
-    assert response.json() == {"attached": True}
+    assert response.json() == {"attached": True, "session_id": "session-1"}
 
 
 def test_an_expired_session_is_not_reported_as_attached(client: TestClient) -> None:
@@ -82,4 +82,4 @@ def test_an_expired_session_is_not_reported_as_attached(client: TestClient) -> N
     row = _session(expires_at=0.0)
     hub._sessions[row.session_id] = row
 
-    assert client.get(SESSION_STATE_PATH).json() == {"attached": False}
+    assert client.get(SESSION_STATE_PATH).json() == {"attached": False, "session_id": None}

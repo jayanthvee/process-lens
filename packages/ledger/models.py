@@ -129,6 +129,15 @@ class RunSummaryRow:
 
 
 @dataclass(frozen=True)
+class OpenRunRow:
+    """One run a worker could act on, and whether a live worker holds it right now."""
+
+    run_id: uuid.UUID
+    status: str
+    worker_live: bool
+
+
+@dataclass(frozen=True)
 class RunListRow:
     """One row of the runs list."""
 

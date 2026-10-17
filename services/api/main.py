@@ -33,6 +33,7 @@ from .middleware import FrontDoorMiddleware
 from .operator import operator_id
 from .recipes import router as recipes_router
 from .runs import router as runs_router
+from .tasks import router as tasks_router
 from .workspace import router as workspace_router
 
 logger = logging.getLogger("processlens.api")
@@ -49,6 +50,7 @@ app = FastAPI(title="ProcessLens API", version="0.1.0")
 # keep their own, stricter checks on top.
 app.add_middleware(FrontDoorMiddleware)
 app.include_router(recipes_router)
+app.include_router(tasks_router)
 app.include_router(compile_router)
 app.include_router(batches_router)
 app.include_router(runs_router)
