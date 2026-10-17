@@ -108,10 +108,6 @@ def test_the_admin_role_writes_exactly_its_own_columns(
         conn.execute(
             "UPDATE users SET role = 'reviewer', deactivated_at = now() WHERE id = %s", (user,)
         )
-        conn.execute(
-            "UPDATE tenants SET min_extension_version = '1.9.0' WHERE id = %s",
-            (ledger.tenant_id,),
-        )
         # The identity column needs no sequence grant of its own.
         audit_id = conn.execute(
             "INSERT INTO admin_audit (tenant_id, actor_user_id, module, action, target) "
@@ -124,13 +120,33 @@ def test_the_admin_role_writes_exactly_its_own_columns(
     assert isinstance(audit_id, int) and audit_id > 0
     assert _one(conn, "SELECT role::text FROM users WHERE id = %s", (user,)) == "reviewer"
     assert _one(conn, "SELECT deactivated_at IS NOT NULL FROM users WHERE id = %s", (user,)) is True
+
+
+def test_the_admin_role_cannot_set_the_extension_floor(
+    conn: psycopg.Connection, ledger: Ledger
+) -> None:
+    """PL-034: the panel sets ``min_extension_version`` through the API (ADM-001), not directly.
+
+    The API connects as the database owner, so its own write is unaffected; the role the admin
+    panel's login inherits keeps only the columns nothing else writes.
+    """
+    _as_admin(conn)
+    try:
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            conn.execute(
+                "UPDATE tenants SET min_extension_version = '1.9.0' WHERE id = %s",
+                (ledger.tenant_id,),
+            )
+    finally:
+        _reset_role(conn)
+
     assert (
         _one(
             conn,
             "SELECT min_extension_version FROM tenants WHERE id = %s",
             (ledger.tenant_id,),
         )
-        == "1.9.0"
+        is None
     )
 
 

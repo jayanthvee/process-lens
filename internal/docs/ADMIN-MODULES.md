@@ -55,11 +55,13 @@ Then one `GRANT INSERT` or `GRANT UPDATE (column, ...)` per table and per column
 ```sql
 GRANT INSERT ON admin_audit TO processlens_admin;
 GRANT UPDATE (role, deactivated_at) ON users TO processlens_admin;
-GRANT UPDATE (min_extension_version) ON tenants TO processlens_admin;
 ```
 
-That is the whole list for `core`: one table it writes whole (an audit row), and two sets of columns
-on tables that already existed.
+That is the whole list for `core`: one table it writes whole (an audit row), and one set of columns
+on a table that already existed. `0006` also granted `UPDATE (min_extension_version) ON tenants`,
+and `0008_admin_grant_tidy.sql` took it back: the panel sets the extension floor through the API
+(ADM-001), so the role's own column grant was a second write path, and there should be one.
+A migration may revoke, too, when a write moves behind the API.
 
 **4. The role itself**, created once per cluster and conditionally:
 
@@ -79,9 +81,10 @@ role and does not create it again.
 
 - **`SELECT` on every table it creates.** A module that cannot read its own table cannot tell a person
   anything, and the panel's reads are its own (its queries run as the role, not through the API).
-- **It grants only the columns its own module writes.** `0006` asks for two columns on `users` and one
-  on `tenants` because that is what `core` changes. A later module asks for its own columns and no
-  other, so a reader can tell from the grants alone what each module is able to change.
+- **It grants only the columns its own module writes.** `0006` asked for two columns on `users` and
+  one on `tenants` because that is what `core` changed; `0008` revoked the tenants one when the
+  write moved to the API. A later module asks for its own columns and no other, so a reader can
+  tell from the grants alone what each module is able to change.
 
 And the floor, which never moves: `processlens_admin` must never be able to write `runs`,
 `run_records`, `committed_keys` or `jobs`. Those carry the ledger and the queue, and only the API and
