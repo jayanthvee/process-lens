@@ -62,6 +62,27 @@ describe("text_count_increases (PL-032)", () => {
   });
 });
 
+describe("text checks read same-origin iframes (PL-018b)", () => {
+  const framed = (html: string): HTMLIFrameElement => {
+    const frame = document.createElement("iframe");
+    document.body.appendChild(frame);
+    (frame.contentDocument as Document).body.innerHTML = html;
+    return frame;
+  };
+
+  it("text_visible finds a confirmation inside a same-origin iframe", () => {
+    document.body.innerHTML = "<p>Outer page</p>";
+    framed("<p>Note saved</p>");
+    expect(run(conditionExpression({ text_visible: "Note saved" }, ctx))).toBe(true);
+  });
+
+  it("text_absent fails when the error is only inside a same-origin iframe", () => {
+    document.body.innerHTML = "<p>Outer page</p>";
+    framed("<p>Could not save: Error</p>");
+    expect(run(conditionExpression({ text_absent: "Error" }, ctx))).toBe(false);
+  });
+});
+
 describe("text checks read open shadow roots (PL-018c)", () => {
   // jsdom supports `attachShadow`, so the checks are evaluated against the same
   // expression string the executor sends to the page.

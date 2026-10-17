@@ -52,23 +52,44 @@ function selectorOf(condition: Condition, key: string): unknown {
  */
 export const PAGE_TEXT_SOURCE = `(() => {
   const parts = [];
-  if (document.body) parts.push(document.body.innerText || document.body.textContent || "");
-  const roots = [];
-  const collect = (root) => {
-    for (const el of Array.from(root.querySelectorAll("*"))) {
-      if (el.shadowRoot) {
-        roots.push(el.shadowRoot);
-        collect(el.shadowRoot);
+  const skip = new Set(["STYLE", "SCRIPT", "TEMPLATE"]);
+  const seen = new Set();
+  // PL-018b: a document's text, then that of every same-origin iframe inside it (in its light tree
+  // or in a shadow root). A cross-origin frame's document can't be read and is skipped. Reading
+  // every frame, not only the step's own, is safe here because a commit's check is probed BEFORE
+  // the commit: a confirmation already showing in any frame parks the row instead of verifying it.
+  const readDocument = (doc) => {
+    if (!doc || seen.has(doc)) return;
+    seen.add(doc);
+    if (doc.body) parts.push(doc.body.innerText || doc.body.textContent || "");
+    const roots = [];
+    const frames = [];
+    const collect = (root) => {
+      for (const el of Array.from(root.querySelectorAll("*"))) {
+        if (el.tagName === "IFRAME" || el.tagName === "FRAME") frames.push(el);
+        if (el.shadowRoot) {
+          roots.push(el.shadowRoot);
+          collect(el.shadowRoot);
+        }
+      }
+    };
+    collect(doc);
+    for (const shadow of roots) {
+      for (const el of Array.from(shadow.children)) {
+        if (!skip.has(el.tagName)) parts.push(el.innerText || el.textContent || "");
       }
     }
-  };
-  collect(document);
-  const skip = new Set(["STYLE", "SCRIPT", "TEMPLATE"]);
-  for (const shadow of roots) {
-    for (const el of Array.from(shadow.children)) {
-      if (!skip.has(el.tagName)) parts.push(el.innerText || el.textContent || "");
+    for (const frame of frames) {
+      let inner = null;
+      try {
+        inner = frame.contentDocument;
+      } catch (error) {
+        inner = null;
+      }
+      readDocument(inner);
     }
-  }
+  };
+  readDocument(document);
   return parts.join(" ").replace(/\\s+/g, " ").trim();
 })()`;
 
