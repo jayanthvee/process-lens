@@ -21,6 +21,47 @@ beforeEach(() => {
   window.history.replaceState({}, "", "/records/new");
 });
 
+describe("text_count_increases (PL-032)", () => {
+  const card = (name: string): void => {
+    const el = document.createElement("div");
+    el.textContent = name;
+    document.body.append(el);
+  };
+  beforeEach(() => {
+    delete (window as unknown as { __processLensCounts?: unknown }).__processLensCounts;
+  });
+
+  it("is false before the save and true once the name appears one more time", () => {
+    card("Nadia Rahman");
+    const expression = conditionExpression({ text_count_increases: "Nadia Rahman" }, ctx);
+    expect(run(expression)).toBe(false);
+    expect(run(expression)).toBe(false);
+    card("Nadia Rahman");
+    expect(run(expression)).toBe(true);
+  });
+
+  it("takes the lowest count before the save, so a closing suggestion list cannot hide the card", () => {
+    card("Nadia Rahman");
+    card('Create "Nadia Rahman"');
+    const expression = conditionExpression({ text_count_increases: "Nadia Rahman" }, ctx);
+    expect(run(expression)).toBe(false);
+    document.body.innerHTML = "";
+    expect(run(expression)).toBe(false);
+    card("Nadia Rahman");
+    expect(run(expression)).toBe(true);
+  });
+
+  it("never passes on its first look: without a count from before the click there is no proof", () => {
+    card("Nadia Rahman");
+    card("Nadia Rahman");
+    expect(run(conditionExpression({ text_count_increases: "Nadia Rahman" }, ctx))).toBe(false);
+  });
+
+  it("refuses an empty needle", () => {
+    expect(() => conditionExpression({ text_count_increases: " " }, ctx)).toThrow(/non-empty/);
+  });
+});
+
 describe("condition predicates", () => {
   it("text_visible is true when the page shows the text", () => {
     document.body.textContent = "Record created";

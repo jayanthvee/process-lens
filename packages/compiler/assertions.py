@@ -36,6 +36,7 @@ from urllib.parse import urlsplit
 OBSERVATION_KEYS = (
     "text_visible",
     "text_absent",
+    "text_count_increases",
     "url_matches",
     "element_present",
     "element_absent",

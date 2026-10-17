@@ -147,6 +147,7 @@ function conditionWords(condition: unknown): string {
   const keys = Object.keys(condition as Record<string, unknown>);
   if (keys.includes("text_visible")) return "the page shows what we expect";
   if (keys.includes("text_absent")) return "the old text is gone";
+  if (keys.includes("text_count_increases")) return "the new item appears";
   if (keys.includes("url_matches")) return "the page has the right address";
   if (keys.includes("element_present")) return "the page is ready";
   if (keys.includes("element_absent")) return "the page has moved on";
