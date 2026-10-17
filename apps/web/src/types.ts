@@ -156,6 +156,24 @@ export interface AppRow {
 }
 
 /**
+ * One row of `GET /api/v1/spreadsheets`: an uploaded batch, its task, and the runs that used it.
+ *
+ * `file_name` is "Pasted rows" when there is no file. `runs` is how many runs used the batch, and
+ * `last_run_id` is the newest of them, or `null` when nothing has run on it yet.
+ */
+export interface SpreadsheetRow {
+  id: string;
+  file_name: string;
+  task_id: string;
+  task_name: string;
+  row_count: number;
+  uploaded_at: string;
+  uploaded_by: string | null;
+  runs: number;
+  last_run_id: string | null;
+}
+
+/**
  * `GET /api/v1/workspace/state`: whether this workspace's runs may start at all.
  *
  * `extension_out_of_date` is the API's own verdict, so the page never compares versions itself:
