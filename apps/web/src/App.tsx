@@ -1,5 +1,6 @@
 import { Route, Routes } from "react-router-dom";
 
+import { Apps } from "./pages/Apps";
 import { ComingSoon } from "./pages/ComingSoon";
 import { Home } from "./pages/Home";
 import { NeedsHelp } from "./pages/NeedsHelp";
@@ -34,7 +35,7 @@ export function App(): JSX.Element {
         <Route path="/spreadsheets" element={<ComingSoon />} />
         <Route path="/documents" element={<ComingSoon />} />
         <Route path="/saved-answers" element={<ComingSoon />} />
-        <Route path="/apps" element={<ComingSoon />} />
+        <Route path="/apps" element={<Apps />} />
         <Route path="/settings" element={<ComingSoon />} />
         <Route path="/help" element={<ComingSoon />} />
         <Route path="*" element={<ComingSoon />} />

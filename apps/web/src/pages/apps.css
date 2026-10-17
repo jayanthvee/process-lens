@@ -1,0 +1,106 @@
+/* Apps' own placement. The panels, the empty states and the buttons are already ported into
+   styles/global.css and shell/Shell's own sheet, so nothing here duplicates them, and every
+   value below is an existing token: no new font, no new colour. */
+
+.apps {
+  display: grid;
+  gap: 30px;
+  align-content: start;
+}
+
+/* The one line of Chrome status at the top of the page. */
+.apps .apps-chrome {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 14px;
+}
+
+.apps .empty {
+  padding: 8px 20px 20px;
+}
+
+.apps .empty-sentence {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 14.5px;
+}
+
+.apps .empty-action {
+  margin: 14px 0 0;
+}
+
+/* One card per app, and never more than two side by side (DESIGN.md §5). */
+.app-cards {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+  align-items: start;
+}
+
+.app-card {
+  display: grid;
+  gap: 10px;
+  align-content: start;
+  padding: 16px 20px 18px;
+}
+
+.app-card .app-h {
+  display: grid;
+  gap: 1px;
+}
+
+.app-card .app-h h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+/* The host is the app's address, not its name: muted, and it breaks rather than widening the
+   page on a phone. */
+.app-card .app-h small {
+  color: var(--muted);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.app-card .app-used-by {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.app-card .app-tasks {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.app-card .app-tasks a {
+  color: var(--ink);
+  font-weight: 500;
+  text-decoration: none;
+}
+
+.app-card .app-tasks a:hover {
+  text-decoration: underline;
+}
+
+.app-card .app-run {
+  margin: 4px 0 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--hair);
+  color: var(--ink-2);
+  font-size: 13.5px;
+}
+
+@media (max-width: 780px) {
+  .app-cards {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .apps .empty {
+    padding: 4px 16px 18px;
+  }
+}

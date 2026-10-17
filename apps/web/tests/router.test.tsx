@@ -28,7 +28,6 @@ const COMING_SOON = [
   "/spreadsheets",
   "/documents",
   "/saved-answers",
-  "/apps",
   "/settings",
   "/help",
 ];
@@ -40,6 +39,7 @@ beforeEach(() => {
     "/api/v1/needs-help": { body: [] },
     "/api/v1/executor/session": { body: { attached: false } },
     "/api/v1/tasks": { body: [] },
+    "/api/v1/apps": { body: [] },
   });
 });
 
