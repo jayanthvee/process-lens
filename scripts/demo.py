@@ -472,6 +472,9 @@ def main(argv: list[str] | None = None) -> int:
                 worker = start_worker(dsn, runner_secret, session_id, number=worker_number)
                 worker_run_id = waiting_run
                 last_exit = None
+                started_log = f".data/worker-logs/demo-worker-{worker_number}.log"
+            else:
+                started_log = None
             current = State(
                 session_attached=session_id is not None,
                 waiting_run=waiting_run,
@@ -480,6 +483,8 @@ def main(argv: list[str] | None = None) -> int:
             )
             for line in status_lines(previous, current):
                 print(f"  {line}")
+            if started_log is not None:
+                print(f"    (its log: {started_log})")
             previous = current
             time.sleep(SUPERVISOR_POLL_SECONDS)
     except KeyboardInterrupt:
