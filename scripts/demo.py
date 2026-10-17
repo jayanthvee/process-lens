@@ -20,9 +20,13 @@ What it does, in order:
   way ``tests/e2e/conftest.py``'s ``api_server`` starts it;
 * every 2 seconds, checks for a run a worker could take and for a connected
   extension session, and starts ``python -m services.runner`` -- the harness's
-  own ``start_worker`` command -- when both exist, one worker at a time.
+  own ``start_worker`` command -- when both exist, one worker at a time;
+* says what it is doing, in plain words, each time the state changes: Chrome
+  connecting or going away, a run waiting for Chrome, a runner starting and
+  finishing.
 
-The decision to start is a pure function (``worker_decision``), unit-tested in
+The decision to start is a pure function (``worker_decision``), and the words
+the window says are another one (``status_lines``); both are unit-tested in
 ``tests/demo/test_demo.py`` with no processes and no database. Ctrl+C stops the
 worker and the API.
 """
@@ -41,6 +45,7 @@ import urllib.error
 import urllib.request
 import uuid
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 # Run as `python scripts/demo.py`, Python puts scripts/ on the path, not the repository, so the
@@ -85,6 +90,21 @@ START = "start"
 WAIT = "wait"
 
 
+@dataclass(frozen=True)
+class State:
+    """One tick of the supervisor's view, summarized for ``status_lines``.
+
+    ``waiting_run`` is the id of the run a worker could take, or ``None``;
+    ``worker_running_for`` is the id of the run the worker we started will drive;
+    ``last_exit`` is the previous worker's exit code, reset when a new one starts.
+    """
+
+    session_attached: bool
+    waiting_run: str | None
+    worker_running_for: str | None
+    last_exit: int | None
+
+
 def worker_decision(runs: Sequence[OpenRunRow], session: str | None, *, worker_alive: bool) -> str:
     """Whether the supervisor should start a worker now: ``start`` or ``wait``.
 
@@ -112,6 +132,48 @@ def worker_decision(runs: Sequence[OpenRunRow], session: str | None, *, worker_a
         if row.status == "running" and not row.worker_live:
             return START
     return WAIT
+
+
+def waiting_run_id(runs: Sequence[OpenRunRow]) -> str | None:
+    """The id of the run a worker could take -- the same rows ``worker_decision`` starts on."""
+    for row in runs:
+        if row.status == "queued" or (row.status == "running" and not row.worker_live):
+            return str(row.run_id)
+    return None
+
+
+def status_lines(previous: State, current: State) -> list[str]:
+    """The words the demo window says this tick, given the tick before.
+
+    Only a change produces a sentence, so the window never says the same thing twice: a run that
+    keeps waiting, a session that stays connected and a worker that keeps running are all silence.
+    The waiting line names Chrome, not the session, because Chrome is what the person can fix.
+    """
+    lines: list[str] = []
+
+    if current.session_attached != previous.session_attached:
+        if current.session_attached:
+            lines.append("Chrome is connected.")
+        else:
+            lines.append(
+                "Chrome is not connected: open the ProcessLens extension and press Connect."
+            )
+
+    waiting_now = current.waiting_run is not None and not current.session_attached
+    waiting_before = previous.waiting_run is not None and not previous.session_attached
+    if waiting_now and not waiting_before:
+        lines.append("A run is waiting for Chrome.")
+
+    if current.worker_running_for and current.worker_running_for != previous.worker_running_for:
+        lines.append(f"Started a runner for run {current.worker_running_for[:8]}.")
+
+    if current.last_exit is not None and current.last_exit != previous.last_exit:
+        if current.last_exit == 0:
+            lines.append("The runner finished.")
+        else:
+            lines.append(f"The runner stopped with code {current.last_exit}.")
+
+    return lines
 
 
 # ---------------------------------------------------------------- the demo identity
@@ -388,22 +450,42 @@ def main(argv: list[str] | None = None) -> int:
     )
     worker: subprocess.Popen | None = None
     worker_number = 0
+    worker_run_id: str | None = None
+    last_exit: int | None = None
+    previous = State(
+        session_attached=False, waiting_run=None, worker_running_for=None, last_exit=None
+    )
     try:
         wait_for_health()
         print_steps(extension_id=args.extension_id)
         while True:
             if worker is not None and worker.poll() is not None:
-                print(f"  the worker exited (code {worker.returncode})")
+                last_exit = worker.returncode
                 worker = None
+                worker_run_id = None
             session_id = attached_session()
-            decision = worker_decision(open_runs(dsn), session_id, worker_alive=worker is not None)
-            if decision == START and session_id is not None:
+            runs = open_runs(dsn)
+            waiting_run = waiting_run_id(runs)
+            decision = worker_decision(runs, session_id, worker_alive=worker is not None)
+            if decision == START and session_id is not None and waiting_run is not None:
                 worker_number += 1
                 worker = start_worker(dsn, runner_secret, session_id, number=worker_number)
-                print(
-                    f"  started a worker for the browser session "
-                    f"(log: .data/worker-logs/demo-worker-{worker_number}.log)"
-                )
+                worker_run_id = waiting_run
+                last_exit = None
+                started_log = f".data/worker-logs/demo-worker-{worker_number}.log"
+            else:
+                started_log = None
+            current = State(
+                session_attached=session_id is not None,
+                waiting_run=waiting_run,
+                worker_running_for=worker_run_id,
+                last_exit=last_exit,
+            )
+            for line in status_lines(previous, current):
+                print(f"  {line}")
+            if started_log is not None:
+                print(f"    (its log: {started_log})")
+            previous = current
             time.sleep(SUPERVISOR_POLL_SECONDS)
     except KeyboardInterrupt:
         print()
