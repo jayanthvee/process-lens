@@ -36,6 +36,43 @@ function selectorOf(condition: Condition, key: string): unknown {
 }
 
 /**
+ * PL-018c: a page expression that evaluates to the page's visible text, with whitespace
+ * collapsed exactly as the three text checks have always collapsed it.
+ *
+ * `document.body.innerText` never contains text rendered inside a shadow root, so a
+ * confirmation inside a web component used to read as absent and — worse — `text_absent`
+ * passed on a page that was showing an error inside one. This expression takes the light
+ * DOM as before and then collects every OPEN shadow root (nested ones included) with the
+ * same walk `markerExpression` uses in `executor/page.ts`, appending the `innerText`
+ * (falling back to `textContent`, which is what jsdom offers) of each element child of
+ * the root. `STYLE`, `SCRIPT` and `TEMPLATE` children are skipped: their text is source,
+ * not what the page shows. Closed roots are invisible to page script and are never read;
+ * iframes are out of scope here. The parts are joined with a single space, then the same
+ * `\s+`-collapse and trim is applied to the whole string.
+ */
+export const PAGE_TEXT_SOURCE = `(() => {
+  const parts = [];
+  if (document.body) parts.push(document.body.innerText || document.body.textContent || "");
+  const roots = [];
+  const collect = (root) => {
+    for (const el of Array.from(root.querySelectorAll("*"))) {
+      if (el.shadowRoot) {
+        roots.push(el.shadowRoot);
+        collect(el.shadowRoot);
+      }
+    }
+  };
+  collect(document);
+  const skip = new Set(["STYLE", "SCRIPT", "TEMPLATE"]);
+  for (const shadow of roots) {
+    for (const el of Array.from(shadow.children)) {
+      if (!skip.has(el.tagName)) parts.push(el.innerText || el.textContent || "");
+    }
+  }
+  return parts.join(" ").replace(/\\s+/g, " ").trim();
+})()`;
+
+/**
  * A page expression that evaluates the condition to a boolean.
  *
  * The predicate set is closed: `text_visible`, `text_absent`, `url_matches`,
@@ -56,12 +93,12 @@ export function conditionExpression(condition: Condition, ctx: ConditionContext)
         `text_visible needs a non-empty string, got ${JSON.stringify(wanted)}`,
       );
     }
-    return `(() => { const text = document.body ? document.body.innerText || document.body.textContent || "" : ""; return text.replace(/\\s+/g, " ").trim().includes(${normal(
+    return `(() => { const text = ${PAGE_TEXT_SOURCE}; return text.includes(${normal(
       wanted,
     )}); })()`;
   }
   if ("text_absent" in record) {
-    return `(() => { const text = document.body ? document.body.innerText || document.body.textContent || "" : ""; return !text.replace(/\\s+/g, " ").trim().includes(${normal(
+    return `(() => { const text = ${PAGE_TEXT_SOURCE}; return !text.includes(${normal(
       record["text_absent"],
     )}); })()`;
   }
@@ -80,7 +117,7 @@ export function conditionExpression(condition: Condition, ctx: ConditionContext)
     // starts from a fresh count.
     return `(() => {
       const needle = ${normal(wanted)};
-      const text = (document.body ? document.body.innerText || document.body.textContent || "" : "").replace(/\\s+/g, " ").trim();
+      const text = ${PAGE_TEXT_SOURCE};
       let count = 0;
       for (let at = text.indexOf(needle); at !== -1; at = text.indexOf(needle, at + needle.length)) count += 1;
       const store = (window.__processLensCounts = window.__processLensCounts || {});
