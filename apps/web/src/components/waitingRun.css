@@ -1,0 +1,55 @@
+/* A queued run's own wait, in words: quiet enough to sit inside a card, and it never hides the
+   status the card already shows. */
+
+.waiting-run {
+  margin: 0 20px 4px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--hair-2);
+  background: var(--fog-2);
+  display: grid;
+  gap: 8px;
+}
+
+.waiting-run-sentence {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 14px;
+}
+
+.waiting-run-sentence b {
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.waiting-run-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.waiting-run-note {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.waiting-run-problem {
+  color: var(--help);
+  font-size: 13.5px;
+}
+
+/* The run page's first panel has its own side padding, so the block lines up with the text. */
+.run-detail .waiting-run {
+  margin: 0 20px 16px;
+}
+
+@media (max-width: 780px) {
+  .waiting-run {
+    margin: 0 12px 4px;
+  }
+
+  .run-detail .waiting-run {
+    margin: 0 12px 16px;
+  }
+}

@@ -30,6 +30,7 @@ from pydantic import BaseModel
 from packages.ledger import (
     NeedsHelpRow,
     TaskListRow,
+    keeps_failing_tasks,
     list_needs_help,
     list_running_runs,
     list_tasks,
@@ -97,6 +98,18 @@ class TaskEntry(BaseModel):
     name: str
     app: str | None
     last_run: TaskLastRun | None
+
+
+class KeepsFailing(BaseModel):
+    """The reason a task's last two finished runs both stopped for, in the runner's words."""
+
+    reason: str
+
+
+class TaskListEntry(TaskEntry):
+    """One row of ``GET /api/v1/tasks``: the task, and whether it stopped working (PL-041)."""
+
+    keeps_failing: KeepsFailing | None = None
 
 
 class HomeSummary(BaseModel):
@@ -192,12 +205,31 @@ def needs_help(tenant_id: Annotated[uuid.UUID | None, Query()] = None) -> list[N
     return _needs_help(rows)
 
 
-@router.get("/tasks", response_model=list[TaskEntry])
-def tasks(tenant_id: Annotated[uuid.UUID | None, Query()] = None) -> list[TaskEntry]:
-    """Every saved task, newest first, with the site it may use and its newest run."""
+@router.get("/tasks", response_model=list[TaskListEntry])
+def tasks(tenant_id: Annotated[uuid.UUID | None, Query()] = None) -> list[TaskListEntry]:
+    """Every saved task, newest first, with the site it may use and its newest run.
+
+    PL-041: each row also says whether the task's two most recent finished runs both added nothing
+    and stopped for the same reason -- a saved task never changes, so a task recorded before a fix
+    keeps failing the same way and the list is where a person notices. The Home glance keeps its
+    own five-task shape, so this field is added here and not to ``TaskEntry``.
+    """
     with connection() as conn:
         rows = list_tasks(conn, tenant_id=tenant_id, limit=None)
-    return _tasks(rows)
+        failing = {
+            row.workflow_id: row.reason for row in keeps_failing_tasks(conn, tenant_id=tenant_id)
+        }
+    return [
+        TaskListEntry(
+            **entry.model_dump(),
+            keeps_failing=(
+                KeepsFailing(reason=failing[entry.workflow_id])
+                if entry.workflow_id in failing
+                else None
+            ),
+        )
+        for entry in _tasks(rows)
+    ]
 
 
 __all__ = ["router"]

@@ -400,6 +400,46 @@ def test_resume_on_a_running_run_is_409(connected: TestClient, world: World) -> 
     assert connected.post(f"/api/v1/runs/{run_id}/resume").status_code == 409
 
 
+def test_pausing_a_queued_run_while_another_is_paused_is_409(
+    connected: TestClient, world: World
+) -> None:
+    """PL-039: one paused run per destination, so pausing a second one is a 409, not a 500."""
+    paused = world.create_run()
+    queued = world.create_run()
+    with world.conn.cursor() as cur:
+        cur.execute(
+            "UPDATE runs SET status = 'paused', pause_reason = 'paused_by_operator' WHERE id = %s",
+            (paused,),
+        )
+
+    response = connected.post(f"/api/v1/runs/{queued}/pause")
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == (
+        "Another run of a task on this app is already paused. Finish or cancel that one first."
+    )
+
+
+def test_pausing_a_queued_run_while_another_is_paused_leaves_it_queued(
+    connected: TestClient, world: World
+) -> None:
+    """PL-039: the refused pause writes nothing -- the run is still queued afterwards."""
+    paused = world.create_run()
+    queued = world.create_run()
+    with world.conn.cursor() as cur:
+        cur.execute(
+            "UPDATE runs SET status = 'paused', pause_reason = 'paused_by_operator' WHERE id = %s",
+            (paused,),
+        )
+
+    response = connected.post(f"/api/v1/runs/{queued}/pause")
+
+    assert response.status_code == 409
+    with world.conn.cursor() as cur:
+        cur.execute("SELECT status FROM runs WHERE id = %s", (queued,))
+        assert cur.fetchone()[0] == "queued"
+
+
 def test_results_csv_has_a_ledger_row_per_record_and_the_excluded_rows(
     connected: TestClient, world: World, conn: psycopg.Connection
 ) -> None:

@@ -1,0 +1,34 @@
+/* A task that stopped working: a muted warning, quiet enough to sit in a table row or under a
+   task's name, and never as loud as a refusal. The tokens are the palette's own. */
+
+.keeps-failing {
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+  margin-top: 6px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--gold-soft);
+  border: 1px solid var(--gold-line);
+}
+
+.keeps-failing-sentence {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 13.5px;
+}
+
+/* In the run page's hero the warning belongs to the heading above it, not to the text below. */
+.task-run .hero .keeps-failing {
+  margin-top: 14px;
+}
+
+.keeps-failing .btn.quiet {
+  background: var(--glass-strong);
+}
+
+@media (max-width: 780px) {
+  .keeps-failing {
+    padding: 9px 10px;
+  }
+}
