@@ -33,7 +33,13 @@ import {
   disarmAbandonGuard as disarmGuard,
 } from "../executor/abandon-guard";
 import { resolverExpression } from "../executor/ladder";
-import type { ExecutorRecipe, StepReport } from "../executor/types";
+import { ExecutorError, type ExecutorRecipe, type StepReport } from "../executor/types";
+import {
+  WINDOW_HIDDEN_MESSAGE,
+  ensureVisible,
+  pageIsHidden,
+  type VisibilityDeps,
+} from "../executor/visibility";
 import { dispatchCommandStep, prepareCommandStep } from "./command-step";
 import { RecorderSession, shouldRecordNavigation } from "./recorder-session";
 import {
@@ -517,6 +523,7 @@ async function runCommandStep(
       beforeInput: opts.beforeInput,
       onFirstInput: opts.sentInput,
       frames: commandFrames,
+      ensureVisible: () => ensureVisible(workTabVisibility(cdp, tabId)),
     };
     return opts.phase === "prepare"
       ? await prepareCommandStep(step, body)
@@ -524,12 +531,36 @@ async function runCommandStep(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (classifyAttachError(message) === "policy_blocked") throw new Error(POLICY_BLOCKED_MESSAGE);
+    // PL-040: the window was hidden while the step ran (the target never settled, the form never
+    // drew). The step's own message hides the cause, so it is reported as the run-level event.
+    if (error instanceof ExecutorError && !error.event && commandCdpToken) {
+      if (await pageIsHidden(commandCdpToken)) {
+        throw new ExecutorError(WINDOW_HIDDEN_MESSAGE, error.stepId, "park", "window_hidden");
+      }
+    }
     throw error;
   } finally {
     // The debugger stays attached between commands; a failure that may have torn it down drops the
     // cached transport so the next command re-attaches.
     if (!attached) commandCdpToken = null;
   }
+}
+
+/** PL-040: how the session checks and raises the work tab. */
+function workTabVisibility(cdp: CdpTransport, tabId: number): VisibilityDeps {
+  return {
+    isHidden: () => pageIsHidden(cdp),
+    bringForward: async () => {
+      const tab = await chrome.tabs.update(tabId, { active: true });
+      if (tab?.windowId === undefined) return;
+      const win = await chrome.windows.get(tab.windowId);
+      await chrome.windows.update(
+        tab.windowId,
+        win.state === "minimized" ? { state: "normal", focused: true } : { focused: true },
+      );
+    },
+    sleep: (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)),
+  };
 }
 
 /**

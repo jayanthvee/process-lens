@@ -84,6 +84,7 @@ from .reads import (
     results_rows,
     run_of_record,
     run_summary,
+    verified_preview_run,
     week_counts,
     window_run_seconds,
 )
@@ -187,6 +188,7 @@ __all__ = [
     "list_spreadsheets",
     "list_tasks",
     "list_transitions",
+    "verified_preview_run",
     "mark_submitted_unverified",
     "open_approval_for_run",
     "open_approval_request",
