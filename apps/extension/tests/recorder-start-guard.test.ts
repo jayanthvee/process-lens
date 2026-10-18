@@ -12,6 +12,7 @@ interface GuardDeps {
   activeTab: () => Promise<Tab | undefined>;
   ping: (tabId: number, message: unknown) => Promise<unknown>;
   timeoutMs?: number;
+  senderTabId?: number;
 }
 
 /** Everything the service worker touches at import time, so the module can load in jsdom. */
@@ -105,6 +106,15 @@ describe("the start guard (PL-039)", () => {
       const guard = await startRecordingGuard(deps({ tab: { id: 7, url }, ping }));
       expect(guard).toEqual({ started: false, warning: UNRECORDABLE_PAGE_WARNING });
     }
+    expect(ping).not.toHaveBeenCalled();
+  });
+
+  it("starts when the active tab is the popup itself, opened as a tab (T1 review)", async () => {
+    const ping = vi.fn(async () => {
+      throw new Error("Could not establish connection. Receiving end does not exist.");
+    });
+    const guard = await startRecordingGuard({ ...deps({ ping }), senderTabId: 7 });
+    expect(guard).toEqual({ started: true });
     expect(ping).not.toHaveBeenCalled();
   });
 

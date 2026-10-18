@@ -268,6 +268,11 @@ export interface StartGuardDeps {
   ping: (tabId: number, message: unknown) => Promise<unknown>;
   /** How long to wait for the ping's answer. Defaults to one second. */
   timeoutMs?: number;
+  /**
+   * The tab that sent the start, when the popup is open as a tab of its own rather than as the
+   * toolbar popup. That tab is the extension's own page, so it has no content script to answer.
+   */
+  senderTabId?: number;
 }
 
 /** The guard's verdict: either the recording may start, or the plain words the popup shows. */
@@ -319,6 +324,9 @@ export async function startRecordingGuard(deps: StartGuardDeps): Promise<StartGu
     return { started: false, warning: UNRECORDABLE_PAGE_WARNING };
   }
   if (tab?.id === undefined) return { started: false, warning: REFRESH_PAGE_WARNING };
+  // The popup opened as a tab is itself the active tab; it is not the page being recorded, so it
+  // decides nothing (the e2e harness drives the popup this way).
+  if (deps.senderTabId !== undefined && tab.id === deps.senderTabId) return { started: true };
   if (!(await pingContentScript(deps, tab.id))) {
     return { started: false, warning: REFRESH_PAGE_WARNING };
   }
@@ -966,7 +974,7 @@ async function handle(message: ToWorker, sender?: chrome.runtime.MessageSender):
     case "record:start":
       // PL-039: the ping first. A tab whose content script the extension reload orphaned
       // records nothing, so the start is refused with the refresh warning instead.
-      await startRecordingOnActiveTab(startGuardDeps());
+      await startRecordingOnActiveTab({ ...startGuardDeps(), senderTabId: sendingTabId });
       break;
     case "record:stop":
       stop();
