@@ -25,6 +25,18 @@ export interface RunDetail {
   open_approval: ApprovalRequest | null;
   started_at?: string | null;
   finished_at?: string | null;
+  /**
+   * The run this one is waiting behind: set only while it is queued and another run on the same
+   * app is running or paused (PL-041).
+   */
+  waiting_behind?: WaitingBehind | null;
+}
+
+/** The run ahead of a queued one on the same app, named in plain words. */
+export interface WaitingBehind {
+  run_id: string;
+  task_name: string;
+  status: string;
 }
 
 /** One row of `GET /api/v1/runs/{id}/records`: a row of the spreadsheet, and where it got to. */

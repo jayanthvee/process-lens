@@ -138,6 +138,15 @@ class OpenRunRow:
 
 
 @dataclass(frozen=True)
+class BlockingRunRow:
+    """The run a queued one is waiting behind, with the task's name and the state it is in."""
+
+    run_id: uuid.UUID
+    task_name: str
+    status: str
+
+
+@dataclass(frozen=True)
 class RunListRow:
     """One row of the runs list."""
 

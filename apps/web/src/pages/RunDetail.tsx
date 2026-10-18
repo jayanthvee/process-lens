@@ -3,6 +3,7 @@ import { Link, useParams } from "react-router-dom";
 
 import { ApprovalPanel } from "../components/ApprovalPanel";
 import { DestinationCheck } from "../components/DestinationCheck";
+import { WaitingRun } from "../components/WaitingRun";
 import { apiPost, errorText } from "../lib/api";
 import { POLL_INTERVAL_MS, useJson } from "../lib/useJson";
 import {
@@ -255,6 +256,12 @@ export function RunDetail(): JSX.Element {
             </span>
           ) : null}
         </div>
+        {/* A queued run that is behind another task's run on the same app says so here, first:
+            the status "Queued" was the whole story on screen and it was not the whole story
+            (PL-041). */}
+        {detail.waiting_behind === null || detail.waiting_behind === undefined ? null : (
+          <WaitingRun waiting={detail.waiting_behind} onCancelled={run.reload} />
+        )}
         <div className="run">
           <b>
             {done} of {total} done

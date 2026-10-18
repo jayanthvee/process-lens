@@ -2,6 +2,7 @@ import { type CSSProperties, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 
 import { ApprovalPanel } from "../components/ApprovalPanel";
+import { WaitingRun } from "../components/WaitingRun";
 import { apiGet, apiPost, apiPostFile, apiPut, errorText } from "../lib/api";
 import { POLL_INTERVAL_MS, useJson } from "../lib/useJson";
 import { isOpenStatus, pauseReasonWords, refusalWords, runStatusWords } from "../lib/words";
@@ -421,6 +422,11 @@ export function TaskRun(): JSX.Element {
               <span className={`res ${outcome.tone}`}>{outcome.label}</span>
             )}
           </div>
+          {/* PL-041: the row is queued behind another task's run on this app. The card says which
+              one, and offers the one action that unblocks it, without leaving this page. */}
+          {run.data?.waiting_behind == null ? null : (
+            <WaitingRun waiting={run.data.waiting_behind} onCancelled={run.reload} />
+          )}
           {first === null ? (
             <p className="run-note">No row is ready yet. Fix the rows above, then try again.</p>
           ) : (

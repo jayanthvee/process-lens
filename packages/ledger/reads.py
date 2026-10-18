@@ -15,6 +15,7 @@ from .models import (
     ApprovalRequestRow,
     AppRow,
     AppTaskRow,
+    BlockingRunRow,
     NeedsHelpRow,
     OpenRunRow,
     RecordClaim,
@@ -123,6 +124,40 @@ def results_rows(conn: psycopg.Connection, run_id: uuid.UUID) -> list[ResultsRow
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(_RESULTS, {"run": run_id})
         return [_row(ResultsRow, row) for row in cur.fetchall()]
+
+
+# PL-041: the run a queued one is waiting behind. The database allows one running-or-paused run per
+# tenant and destination (``runs_one_active_per_destination``), so a queued run can be stuck behind
+# another task's run on the same app, and the page has to be able to say which one. The task's name
+# is the recipe's own, with the workflow name as the fallback, exactly as the runs list names it.
+# The run's own row supplies the tenant and the destination, so a client never names either.
+_RUN_BLOCKING = """
+SELECT r.id AS run_id,
+       coalesce(rv.recipe -> 'meta' ->> 'name', w.name) AS task_name,
+       r.status::text AS status
+FROM runs me
+JOIN runs r ON r.tenant_id = me.tenant_id
+  AND r.destination_key = me.destination_key
+  AND r.id <> me.id
+JOIN recipe_versions rv ON rv.id = r.recipe_version_id
+JOIN workflows w ON w.id = r.workflow_id
+WHERE me.id = %(run)s
+  AND me.status = 'queued'
+  AND r.status IN ('running', 'paused')
+ORDER BY r.created_at, r.id
+LIMIT 1
+"""
+
+
+def run_blocking(conn: psycopg.Connection, run_id: uuid.UUID) -> BlockingRunRow | None:
+    """The run a queued run is waiting behind, or ``None`` when nothing is ahead of it.
+
+    A run that is not queued is never waiting: it is the one holding the app.
+    """
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(_RUN_BLOCKING, {"run": run_id})
+        row = cur.fetchone()
+    return _row(BlockingRunRow, row) if row is not None else None
 
 
 def run_of_record(conn: psycopg.Connection, record_id: uuid.UUID) -> uuid.UUID | None:
@@ -497,6 +532,7 @@ def verified_preview_run(
 __all__ = [
     "AppRow",
     "AppTaskRow",
+    "BlockingRunRow",
     "RunClaim",
     "RunListRow",
     "SpreadsheetRow",
@@ -514,6 +550,7 @@ __all__ = [
     "list_transitions",
     "verified_preview_run",
     "results_rows",
+    "run_blocking",
     "run_of_record",
     "run_summary",
     "week_counts",
