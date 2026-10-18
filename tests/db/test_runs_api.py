@@ -408,8 +408,7 @@ def test_pausing_a_queued_run_while_another_is_paused_is_409(
     queued = world.create_run()
     with world.conn.cursor() as cur:
         cur.execute(
-            "UPDATE runs SET status = 'paused', pause_reason = 'paused_by_operator' "
-            "WHERE id = %s",
+            "UPDATE runs SET status = 'paused', pause_reason = 'paused_by_operator' WHERE id = %s",
             (paused,),
         )
 
@@ -429,8 +428,7 @@ def test_pausing_a_queued_run_while_another_is_paused_leaves_it_queued(
     queued = world.create_run()
     with world.conn.cursor() as cur:
         cur.execute(
-            "UPDATE runs SET status = 'paused', pause_reason = 'paused_by_operator' "
-            "WHERE id = %s",
+            "UPDATE runs SET status = 'paused', pause_reason = 'paused_by_operator' WHERE id = %s",
             (paused,),
         )
 
