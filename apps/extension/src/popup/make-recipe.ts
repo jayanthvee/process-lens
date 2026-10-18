@@ -73,6 +73,10 @@ export type CompileOutcome =
   | { ok: true; recipe: Record<string, unknown>; warnings: string[] }
   | { ok: false; problems: string[] };
 
+/** The sentence `recordedWarnings` adds when a recording saves twice (PL-042). */
+export const REPEAT_SAVE_NOTE =
+  "This recording saves twice. ProcessLens kept the first entry and ignored the repeat after it.";
+
 /** The value a step writes, or null when the step writes nothing recorded. */
 function constantValue(step: RecordedStep): string | null {
   if (step.action !== "fill" && step.action !== "select") return null;
@@ -125,6 +129,66 @@ function allocate(base: string, taken: Map<string, number>): string {
 }
 
 /**
+ * A comparable rung of a click's target ladder: the role/name rung when the ladder has one,
+ * else the first css rung, else nothing. Two clicks that name the same control the same way
+ * carry the same signature; PL-042 uses it to spot a repeated save.
+ */
+function targetSignature(step: RecordedStep): string | null {
+  for (const target of step.targets ?? []) {
+    if (target.by === "role") {
+      return `role:${target.role.toLowerCase()}:${target.name.trim().toLowerCase()}`;
+    }
+  }
+  for (const target of step.targets ?? []) {
+    if (target.by === "css") return `css:${target.selector}`;
+  }
+  return null;
+}
+
+/**
+ * The events up to and including the first entry's save click (PL-042).
+ *
+ * A recording saves twice when the click chosen as the save step names the same control as
+ * another click in the recording: the person demonstrated one entry, saved it, and carried on
+ * to record a second entry the row must not hold. Everything after the first save click is
+ * dropped; a recording that saves once comes back unchanged, as does one with no chosen step.
+ */
+export function firstEntryEvents(
+  events: RecordedEvent[],
+  commitStepId: string | null,
+): RecordedEvent[] {
+  if (!commitStepId) return events;
+  const commitEvent = events.find(
+    (event) =>
+      event?.step != null && event.step.id === commitStepId && event.step.action === "click",
+  );
+  const commit = commitEvent?.step ?? null;
+  if (!commit) return events;
+  const signature = targetSignature(commit);
+  if (!signature) return events;
+  let first = -1;
+  let saves = 0;
+  events.forEach((event, index) => {
+    const step = event?.step ?? null;
+    if (!step || step.action !== "click") return;
+    if (targetSignature(step) === signature) {
+      if (first === -1) first = index;
+      saves += 1;
+    }
+  });
+  if (saves < 2 || first === -1) return events;
+  return events.slice(0, first + 1);
+}
+
+/**
+ * The events the popup's readers see: the first entry when the recording saves twice
+ * (PL-042), everything otherwise. The save step is the recording's own default commit.
+ */
+function entryEvents(events: RecordedEvent[]): RecordedEvent[] {
+  return firstEntryEvents(events, defaultCommitStepId(events));
+}
+
+/**
  * Every distinct value the recording typed or chose, in recording order.
  *
  * A `fill`/`select` that carried a non-constant source is skipped: the compiler's
@@ -134,6 +198,8 @@ function allocate(base: string, taken: Map<string, number>): string {
  * column the person wants to see -- the popup and the compiler must not disagree.
  */
 export function recordedValues(events: RecordedEvent[]): RecordedValue[] {
+  // PL-042: a recording that saves twice offers only its first entry's values.
+  events = entryEvents(events);
   const values: RecordedValue[] = [];
   const seenValues = new Set<string>();
   const takenColumns = new Map<string, number>();
@@ -202,14 +268,19 @@ export function recordedValues(events: RecordedEvent[]): RecordedValue[] {
  * The form shows these so a person sees a step that rests on a positional selector before
  * they compile, rather than after a replay moves the layout out from under it. An
  * `unrecordable` event has no step and still has a warning, so the label falls back to plain words.
+ *
+ * PL-042: when the recording saves twice, the repeat after the first save click is ignored
+ * -- and said so, in the same list, so a person is told where the `_2` column went.
  */
 export function recordedWarnings(events: RecordedEvent[]): string[] {
+  const entry = entryEvents(events);
   const warnings: string[] = [];
-  for (const event of events) {
+  for (const event of entry) {
     const warning = event?.warning;
     if (!warning) continue;
     warnings.push(`${stepWords(event.step ?? null)}: ${warning}`);
   }
+  if (entry.length < events.length) warnings.push(REPEAT_SAVE_NOTE);
   return warnings;
 }
 
@@ -281,6 +352,8 @@ function searchesForValue(events: RecordedEvent[], value: string): boolean {
  * chosen.
  */
 export function searchDetected(events: RecordedEvent[], recordKeyColumn: string): boolean {
+  // PL-042: a repeat entry after the first save click is not part of the workflow.
+  events = entryEvents(events);
   const column = recordKeyColumn.trim();
   if (column.length === 0) return false;
   const values = recordedValues(events);
@@ -375,11 +448,14 @@ export function makeRecipeRequest(
     parkFields?: string[];
   },
 ): CompileRequestBody {
+  // PL-042: the recording sent is the first entry when the recording saves twice; the chosen
+  // commit names the save step, falling back to the recording's own default.
+  const entry = firstEntryEvents(events, choice.commitStepId ?? defaultCommitStepId(events));
   const sampleRow: Record<string, string> = {};
-  for (const value of recordedValues(events)) sampleRow[value.column] = value.value;
+  for (const value of recordedValues(entry)) sampleRow[value.column] = value.value;
 
   return {
-    recording: events,
+    recording: entry,
     name: choice.name,
     // This ticket's form has no separate "when to use" field, and the route needs
     // one, so the workflow name doubles as it until a later ticket adds the field.
@@ -388,7 +464,7 @@ export function makeRecipeRequest(
     record_key_column: choice.recordKeyColumn,
     // The form pins the origins the person ticked; a direct caller that names none
     // gets the recording's own origins, exactly as before this field existed.
-    allowed_origins: choice.allowedOrigins ?? recordedOrigins(events),
+    allowed_origins: choice.allowedOrigins ?? recordedOrigins(entry),
     commit_step_ids: choice.commitStepId ? [choice.commitStepId] : [],
     // The route defaults these the same way, so a caller that names neither stays
     // on the compiler's built-in defaults.
