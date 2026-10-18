@@ -854,3 +854,20 @@ describe("an accepted suggestion (PL-018)", () => {
     expect(control("make-warnings").textContent).toContain("cannot replay it");
   });
 });
+
+describe("back-to-back fills of one field (PL-037)", () => {
+  it("offer only the last value, so a half-typed email never becomes a column", () => {
+    const fixture = resolve(
+      dirname(fileURLToPath(import.meta.url)),
+      "../../../packages/compiler/tests/fixtures/odoo_quick_create_owner_pick.json",
+    );
+    const events = JSON.parse(readFileSync(fixture, "utf-8"));
+    const values = recordedValues(events);
+    expect(values.map((value) => value.value)).toEqual([
+      "probe.three@example.test",
+      "5550000033",
+      "400",
+    ]);
+    expect(values.map((value) => value.column)).toEqual(["email", "phone", "expected_revenue"]);
+  });
+});

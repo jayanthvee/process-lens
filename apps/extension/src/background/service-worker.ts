@@ -33,7 +33,13 @@ import {
   disarmAbandonGuard as disarmGuard,
 } from "../executor/abandon-guard";
 import { resolverExpression } from "../executor/ladder";
-import type { ExecutorRecipe, StepReport } from "../executor/types";
+import { ExecutorError, type ExecutorRecipe, type StepReport } from "../executor/types";
+import {
+  WINDOW_HIDDEN_MESSAGE,
+  ensureVisible,
+  pageIsHidden,
+  type VisibilityDeps,
+} from "../executor/visibility";
 import { dispatchCommandStep, prepareCommandStep } from "./command-step";
 import { RecorderSession, shouldRecordNavigation } from "./recorder-session";
 import {
@@ -517,6 +523,7 @@ async function runCommandStep(
       beforeInput: opts.beforeInput,
       onFirstInput: opts.sentInput,
       frames: commandFrames,
+      ensureVisible: () => ensureVisible(workTabVisibility(cdp, tabId)),
     };
     return opts.phase === "prepare"
       ? await prepareCommandStep(step, body)
@@ -524,12 +531,36 @@ async function runCommandStep(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (classifyAttachError(message) === "policy_blocked") throw new Error(POLICY_BLOCKED_MESSAGE);
+    // PL-040: the window was hidden while the step ran (the target never settled, the form never
+    // drew). The step's own message hides the cause, so it is reported as the run-level event.
+    if (error instanceof ExecutorError && !error.event && commandCdpToken) {
+      if (await pageIsHidden(commandCdpToken)) {
+        throw new ExecutorError(WINDOW_HIDDEN_MESSAGE, error.stepId, "park", "window_hidden");
+      }
+    }
     throw error;
   } finally {
     // The debugger stays attached between commands; a failure that may have torn it down drops the
     // cached transport so the next command re-attaches.
     if (!attached) commandCdpToken = null;
   }
+}
+
+/** PL-040: how the session checks and raises the work tab. */
+function workTabVisibility(cdp: CdpTransport, tabId: number): VisibilityDeps {
+  return {
+    isHidden: () => pageIsHidden(cdp),
+    bringForward: async () => {
+      const tab = await chrome.tabs.update(tabId, { active: true });
+      if (tab?.windowId === undefined) return;
+      const win = await chrome.windows.get(tab.windowId);
+      await chrome.windows.update(
+        tab.windowId,
+        win.state === "minimized" ? { state: "normal", focused: true } : { focused: true },
+      );
+    },
+    sleep: (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)),
+  };
 }
 
 /**
@@ -668,9 +699,47 @@ function getCommandSession(): CommandSession {
       const id: ReturnType<typeof setInterval> = setInterval(fn, ms);
       return () => clearInterval(id);
     },
+    // PL-037: the session works in a window of its own. Binding the ACTIVE tab took over whatever
+    // the person was looking at -- the dashboard, or a new-tab page, which is a chrome:// URL the
+    // debugger may not attach to. A background TAB is no better: Chrome stops drawing hidden tabs,
+    // and an app like Odoo never finishes rendering there. A separate visible window keeps drawing
+    // while the person works in their own tabs, and lets them watch the run.
+    // Chrome refuses bounds it thinks are off screen, so the window takes the right half of the
+    // person's own window, then no bounds at all. It never falls back to a tab the person is using.
     bindActiveTab: async () => {
-      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-      const tabId = tabs[0]?.id ?? null;
+      const attempts: chrome.windows.CreateData[] = [];
+      try {
+        const own = await chrome.windows.getLastFocused();
+        if (own?.width && own.height && own.left !== undefined && own.top !== undefined) {
+          const width = Math.max(500, Math.floor(own.width / 2));
+          attempts.push({
+            url: "about:blank",
+            focused: true,
+            type: "normal",
+            left: own.left + own.width - width,
+            top: own.top,
+            width,
+            height: own.height,
+          });
+        }
+      } catch {
+        // no window to measure: the plain window below
+      }
+      attempts.push({ url: "about:blank", focused: true, type: "normal" });
+      let tabId: number | null = null;
+      for (const data of attempts) {
+        try {
+          const win = await chrome.windows.create(data);
+          tabId = win?.tabs?.[0]?.id ?? null;
+          if (tabId !== null) break;
+        } catch (error) {
+          console.warn("ProcessLens: could not open the work window", error);
+        }
+      }
+      if (tabId === null) {
+        const tab = await chrome.tabs.create({ url: "about:blank", active: true });
+        tabId = tab?.id ?? null;
+      }
       commandBoundTabId = tabId;
       return tabId;
     },

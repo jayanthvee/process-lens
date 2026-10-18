@@ -6,6 +6,7 @@ import { Home } from "./pages/Home";
 import { NeedsHelp } from "./pages/NeedsHelp";
 import { RunDetail } from "./pages/RunDetail";
 import { Runs } from "./pages/Runs";
+import { Spreadsheets } from "./pages/Spreadsheets";
 import { TaskDetail } from "./pages/TaskDetail";
 import { TaskRun } from "./pages/TaskRun";
 import { Tasks } from "./pages/Tasks";
@@ -32,7 +33,7 @@ export function App(): JSX.Element {
         <Route path="/runs" element={<Runs />} />
         <Route path="/runs/:id" element={<RunDetail />} />
         <Route path="/teach" element={<Teach />} />
-        <Route path="/spreadsheets" element={<ComingSoon />} />
+        <Route path="/spreadsheets" element={<Spreadsheets />} />
         <Route path="/documents" element={<ComingSoon />} />
         <Route path="/saved-answers" element={<ComingSoon />} />
         <Route path="/apps" element={<Apps />} />

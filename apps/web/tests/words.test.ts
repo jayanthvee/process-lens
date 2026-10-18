@@ -98,10 +98,10 @@ describe("pauseReasonWords", () => {
       "You paused this run. Resume when you are ready.",
     );
     expect(pauseReasonWords("login_required")).toBe(
-      "Log in to the site in the bound tab, then resume.",
+      "Log in to the site in the ProcessLens window, then resume.",
     );
     expect(pauseReasonWords("challenge")).toBe(
-      "Solve the security challenge the site is showing in the bound tab, then resume.",
+      "Solve the security challenge the site is showing in the ProcessLens window, then resume.",
     );
     expect(pauseReasonWords("awaiting_approval")).toBe(
       "An approval request is waiting for your decision, then resume.",
@@ -114,12 +114,29 @@ describe("pauseReasonWords", () => {
     );
   });
 
+  it("PL-040: the runner's own pause reasons read as words, never as codes", () => {
+    expect(pauseReasonWords("window_hidden")).toContain("Press Resume and it will come to the front");
+    expect(pauseReasonWords("executor_disconnected")).toContain("press Connect");
+    expect(pauseReasonWords("canary_failed")).toContain("The first row didn't work");
+    for (const reason of [
+      "window_hidden",
+      "executor_disconnected",
+      "canary_failed",
+      "policy_blocked",
+      "duplicate_detected",
+      "records_not_exit",
+      "internal_error",
+    ]) {
+      expect(pauseReasonWords(reason)).not.toContain("Sort that out");
+    }
+  });
+
   it("accepts the older spelling and the case the API happens to send", () => {
     expect(pauseReasonWords("operator_paused")).toBe(
       "You paused this run. Resume when you are ready.",
     );
     expect(pauseReasonWords("  Login_Required ")).toBe(
-      "Log in to the site in the bound tab, then resume.",
+      "Log in to the site in the ProcessLens window, then resume.",
     );
   });
 

@@ -1,0 +1,72 @@
+/* Spreadsheets' own placement. The panels, the empty states, the table and the buttons are already
+   ported into styles/global.css, so nothing here duplicates them, and every value below is an
+   existing token: no new font, no new colour. */
+
+.spreadsheets {
+  display: grid;
+  gap: 30px;
+  align-content: start;
+}
+
+.spreadsheets .empty {
+  padding: 8px 20px 20px;
+}
+
+.spreadsheets .empty-sentence {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 14.5px;
+}
+
+.spreadsheets .empty-action {
+  margin: 14px 0 0;
+}
+
+.spreadsheets .count {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+/* The file's name is the row's title, so it reads darker and larger than the table's own header
+   cells, and it breaks rather than widening the page on a phone. */
+.sheet-table th[scope="row"] {
+  color: var(--ink);
+  font-size: 14.5px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+/* The task and the run are the ways out of the row, so they read as its links rather than the
+   default blue. */
+.sheet-table td a {
+  color: var(--ink);
+  font-weight: 500;
+  text-decoration: none;
+}
+
+.sheet-table td a:hover {
+  text-decoration: underline;
+}
+
+/* The upload line is context, not the row's title. */
+.sheet-table .sheet-uploaded {
+  color: var(--ink-2);
+}
+
+/* The file is a row header, so the global last-row rule (which targets td) misses it. */
+.sheet-table tbody tr:last-child th {
+  border-bottom: 0;
+}
+
+@media (max-width: 780px) {
+  .spreadsheets .empty {
+    padding: 4px 16px 18px;
+  }
+
+  /* Phone width: the rows count and the upload line are the minor columns, so the file, the task
+     and the run stay and the two context columns go. */
+  .sheet-table .sheet-rows,
+  .sheet-table .sheet-uploaded {
+    display: none;
+  }
+}

@@ -742,6 +742,27 @@ def _is_combobox(candidate: Candidate) -> bool:
     return bool(first) and str(first.get("role", "")).lower() == "combobox"
 
 
+# A suggestion box's own prompt, not a record: "Start typing...", "Search More...".
+_HINT_OPTION = re.compile(
+    r"^(start typing|search more|type to search|no records?)|(\.\.\.|…)$", re.I
+)
+
+
+def _is_hint_option(candidate: Candidate) -> bool:
+    """Whether an option click picks the box's own prompt rather than a record (PL-037).
+
+    PL-032 dropped every option picked before anything was typed, which also dropped a real
+    record picked straight from the open list (the owner chose "Ridgeline Outfitters" that way).
+    Only a prompt is dropped now.
+    """
+    names = [
+        str(rung.get("name") or rung.get("value") or "").strip()
+        for rung in candidate.targets or []
+        if rung.get("by") in ("role", "text_fuzzy")
+    ]
+    return any(_HINT_OPTION.search(name) for name in names if name)
+
+
 def _settle_suggestion_boxes(
     candidates: list[Candidate],
 ) -> tuple[list[Candidate], list[str]]:
@@ -767,9 +788,9 @@ def _settle_suggestion_boxes(
             settled.append(candidate)
             continue
         if candidate.action == "click" and _is_option_click(candidate):
-            if not typed_in_box:
+            if not typed_in_box and _is_hint_option(candidate):
                 warnings.append(
-                    f"dropped the hint option at event {candidate.seq}: nothing had been typed"
+                    f"dropped the hint option at event {candidate.seq}: it is the box's own prompt"
                 )
                 continue
             typed_in_box = False
@@ -1089,21 +1110,39 @@ def _infer_assertion_from_fills(
     required = _required_columns(options)
     record_key_column = options.record_key_column
     columns: list[str] = []
+    # PL-037: the first thing entered in the form, typed or picked. A contact picked straight from
+    # the open list is a record's name the new card shows, just like a typed one.
+    first_entry: str | None = None
     for previous in prior_candidates:
+        if previous.action == "click" and _is_option_click(previous) and first_entry is None:
+            picked = next(
+                (
+                    str(rung.get("name") or "").strip()
+                    for rung in previous.targets or []
+                    if rung.get("by") == "role" and rung.get("role") == "option"
+                ),
+                "",
+            )
+            if picked and not _HINT_OPTION.search(picked):
+                first_entry = picked
+            continue
         if previous.action != "fill" or not isinstance(previous.value, dict):
             continue
         column = previous.value.get("column")
         if isinstance(column, str):
             columns.append(column)
+            if first_entry is None:
+                first_entry = f"{{{{row.{column}}}}}"
 
     if not any(column == record_key_column or column in required for column in columns):
         return None
-    best_column = columns[0]
+    if first_entry is None:
+        return None
 
     # PL-032: the name is already on screen in the form being filled, so "it is visible" proves
     # nothing; "it appears once more than before the click" is the new card itself.
     return {
-        "text_count_increases": f"{{{{row.{best_column}}}}}",
+        "text_count_increases": first_entry,
         "timeout_ms": options.assertion_timeout_ms,
     }
 

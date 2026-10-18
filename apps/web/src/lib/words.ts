@@ -109,8 +109,9 @@ export function plainReason(reason: string | null, state?: string): string {
  * is the older spelling, and both are accepted.
  */
 const PAUSE_REASONS: Record<string, string> = {
-  login_required: "Log in to the site in the bound tab, then resume.",
-  challenge: "Solve the security challenge the site is showing in the bound tab, then resume.",
+  login_required: "Log in to the site in the ProcessLens window, then resume.",
+  challenge:
+    "Solve the security challenge the site is showing in the ProcessLens window, then resume.",
   approval_required: "An approval request is waiting for your decision, then resume.",
   awaiting_approval: "An approval request is waiting for your decision, then resume.",
   paused_by_operator: "You paused this run. Resume when you are ready.",
@@ -121,6 +122,18 @@ const PAUSE_REASONS: Record<string, string> = {
   // The runner's own reason for a run it paused at a step boundary because an admin froze runs
   // (PL-026). Without a sentence here the page would show the raw `admin_freeze` code.
   admin_freeze: "An admin paused all runs. Resume when an admin lets runs start again.",
+  // PL-040: the reasons the runner sets that used to reach the page as "Paused: Canary failed".
+  window_hidden:
+    "The ProcessLens window was hidden behind other windows, so the site stopped drawing. Press Resume and it will come to the front.",
+  executor_disconnected:
+    "Chrome disconnected. Open the ProcessLens extension, press Connect, then resume.",
+  canary_failed:
+    "The first row didn't work, so the other rows are waiting. Check that row below, then resume.",
+  policy_blocked: "Your company's Chrome settings block ProcessLens. Ask your IT team to allow it.",
+  duplicate_detected:
+    "A row looks like it may already be in the site. Check the row below, then resume.",
+  records_not_exit: "A row stopped halfway. Check the rows below, then resume.",
+  internal_error: "Something went wrong on our side. Resume to try again.",
 };
 
 /** A pause reason in one actionable sentence, or `null` when there is none. */

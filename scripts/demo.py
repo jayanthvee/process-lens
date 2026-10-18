@@ -451,6 +451,7 @@ def main(argv: list[str] | None = None) -> int:
     worker: subprocess.Popen | None = None
     worker_number = 0
     worker_run_id: str | None = None
+    worker_session: str | None = None
     last_exit: int | None = None
     previous = State(
         session_attached=False, waiting_run=None, worker_running_for=None, last_exit=None
@@ -464,12 +465,24 @@ def main(argv: list[str] | None = None) -> int:
                 worker = None
                 worker_run_id = None
             session_id = attached_session()
+            # PL-037: a worker talks to the one Chrome session it was started for. When Chrome
+            # reconnects, that session is gone and the worker would pause every run it touches, so
+            # it is stopped and the next tick starts one for the new session.
+            if worker is not None and worker_session is not None and session_id != worker_session:
+                worker.terminate()
+                try:
+                    worker.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    worker.kill()
+                worker = None
+                worker_run_id = None
             runs = open_runs(dsn)
             waiting_run = waiting_run_id(runs)
             decision = worker_decision(runs, session_id, worker_alive=worker is not None)
             if decision == START and session_id is not None and waiting_run is not None:
                 worker_number += 1
                 worker = start_worker(dsn, runner_secret, session_id, number=worker_number)
+                worker_session = session_id
                 worker_run_id = waiting_run
                 last_exit = None
                 started_log = f".data/worker-logs/demo-worker-{worker_number}.log"

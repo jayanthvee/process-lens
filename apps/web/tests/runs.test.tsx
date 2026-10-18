@@ -199,7 +199,7 @@ describe("one run", () => {
     await settle();
 
     expect(
-      screen.getByText("Log in to the site in the bound tab, then resume."),
+      screen.getByText("Log in to the site in the ProcessLens window, then resume."),
     ).toBeTruthy();
     paused.unmount();
     stub.restore();

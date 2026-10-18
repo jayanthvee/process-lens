@@ -19,6 +19,7 @@ from psycopg.rows import dict_row
 from packages.compiler.validation import validation_errors
 from packages.ledger import batches as ledger_batches
 from packages.ledger import create as ledger_create
+from packages.ledger.reads import verified_preview_run
 
 from .templates import TemplateError, render
 
@@ -282,6 +283,16 @@ def create_run(
 
     approval_policy = meta.get("approval_policy") or {"commit": "first_record"}
     tenant_id = workflow["tenant_id"]
+    # PL-040: "Try one row" is a preview, and a preview always stops for approval. The person who
+    # just approved that row and saw it verified then presses "Run the other rows", and asking them
+    # to approve the first of those again is the same question twice. The first-record gate is
+    # waived only when a preview of this batch, on this exact recipe version, has a verified row.
+    if (
+        mode == "batch"
+        and approval_policy.get("commit") == "first_record"
+        and (preview := verified_preview_run(conn, input_batch_id, recipe_version_id)) is not None
+    ):
+        approval_policy = {"commit": "none", "approved_in_preview": str(preview)}
 
     with conn.transaction():
         if mapping:
