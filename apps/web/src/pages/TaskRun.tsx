@@ -89,6 +89,10 @@ export function TaskRun(): JSX.Element {
   // True only while Continue's second check is in flight, so the panel says "Checking…" for the
   // right reason and not while a run is starting.
   const [rechecking, setRechecking] = useState(false);
+  // PL-041: the in-flight flags for the two buttons that start a run. They are refs, not state,
+  // because the second click of a double click arrives before a state update re-renders the page.
+  const tryingIt = useRef(false);
+  const runningRest = useRef(false);
 
   // Step 2 is one request: the API matches the columns and decides which rows are ready.
   const checkPath =
@@ -199,8 +203,16 @@ export function TaskRun(): JSX.Element {
   }
 
   async function tryIt(): Promise<void> {
-    const created = await create("preview");
-    if (created !== null) setRunId(created);
+    // One click, one run (PL-041). `busy` is set by `create`, but a second click can land before
+    // React re-renders and the button turns itself off, so the ref is the guard that holds.
+    if (tryingIt.current) return;
+    tryingIt.current = true;
+    try {
+      const created = await create("preview");
+      if (created !== null) setRunId(created);
+    } finally {
+      tryingIt.current = false;
+    }
   }
 
   async function resumeIt(): Promise<void> {
@@ -218,8 +230,15 @@ export function TaskRun(): JSX.Element {
   }
 
   async function runTheRest(): Promise<void> {
-    const created = await create("batch");
-    if (created !== null) navigate(`/runs/${created}`);
+    // The same guard as Try it: two clicks in one tick must still start one batch run (PL-041).
+    if (runningRest.current) return;
+    runningRest.current = true;
+    try {
+      const created = await create("batch");
+      if (created !== null) navigate(`/runs/${created}`);
+    } finally {
+      runningRest.current = false;
+    }
   }
 
   if (task === null) {

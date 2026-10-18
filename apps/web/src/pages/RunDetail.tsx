@@ -1,4 +1,4 @@
-import { Fragment, type CSSProperties, useEffect, useState } from "react";
+import { Fragment, type CSSProperties, useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import { ApprovalPanel } from "../components/ApprovalPanel";
@@ -114,6 +114,9 @@ export function RunDetail(): JSX.Element {
   const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
   const [batchBusy, setBatchBusy] = useState(false);
   const [batchError, setBatchError] = useState<string | null>(null);
+  // PL-041: the in-flight flag for Try all again. It is a ref because the second click of a double
+  // click arrives before `batchBusy` re-renders the button off.
+  const tryingAll = useRef(false);
 
   const operatorId = operator.data?.operator_id ?? null;
   const operatorProblem = operator.error;
@@ -162,11 +165,13 @@ export function RunDetail(): JSX.Element {
    * already have been saved is never swept up here: it needs its own tick, and the page names it.
    */
   async function tryAllAgain(): Promise<void> {
+    if (tryingAll.current) return;
     const eligible = rows.filter((row) => {
       const gate = gateFor(row);
       return gate.shown && !gate.disabled;
     });
     if (eligible.length === 0) return;
+    tryingAll.current = true;
     setBatchBusy(true);
     setBatchError(null);
     try {
@@ -180,6 +185,7 @@ export function RunDetail(): JSX.Element {
     } catch (failure) {
       setBatchError(refusalWords(errorText(failure)));
     } finally {
+      tryingAll.current = false;
       setBatchBusy(false);
       // Even a refusal part-way through leaves some rows re-queued, so reload either way.
       records.reload();
