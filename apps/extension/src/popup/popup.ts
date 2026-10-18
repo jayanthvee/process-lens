@@ -1,20 +1,16 @@
 // The popup: the start/stop/clear controls, the live count, and the export.
 // It holds no recording state itself — every action goes to the service worker.
 import {
-  EMPTY_EXECUTOR_STATUS,
   EMPTY_STATUS,
-  type ExecutorStatus,
   type RecorderStatus,
   type ToWorker,
 } from "../shared/messages";
 import type { SessionState } from "../background/command-session";
 import type { RecordedEvent } from "../shared/recipe-types";
-import { createMakeRecipeForm, RECIPE_KEY, ROW_KEY } from "./make-recipe";
+import { createMakeRecipeForm } from "./make-recipe";
 import { applyStep, autoConnect, currentStep, openTaskTab } from "./flow";
 import {
-  plainDetail,
   recordingWords,
-  runStateWords,
   sessionWords,
   stepCountWords,
   stepSentences,
@@ -51,16 +47,6 @@ const startButton = element<HTMLButtonElement>("start");
 const stopButton = element<HTMLButtonElement>("stop");
 const clearButton = element<HTMLButtonElement>("clear");
 const exportButton = element<HTMLButtonElement>("export");
-
-// The attended-execution controls. The run itself lives in the service worker;
-// this popup only sends the start/pause/resume/abort messages and shows where the
-// run is. The recipe and its input row are loaded into the browser session by
-// whoever prepared the run, under the keys read below.
-const runStartButton = element<HTMLButtonElement>("run-start");
-const runPauseButton = element<HTMLButtonElement>("run-pause");
-const runResumeButton = element<HTMLButtonElement>("run-resume");
-const runAbortButton = element<HTMLButtonElement>("run-abort");
-const runStateEl = element<HTMLParagraphElement>("run-state");
 
 // The hub session controls: a hub URL, connect and disconnect, and the state the
 // worker reports. The session itself lives in the service worker.
@@ -255,24 +241,11 @@ exportButton.addEventListener("click", () => {
   void send({ type: "record:get" }).then((response) => download(response.events));
 });
 
-function renderExecutor(status: ExecutorStatus): void {
-  const progress = status.total > 0 ? ` (${status.completed}/${status.total})` : "";
-  // The worker's own detail is written for an engineer: name the state in plain words, and show
-  // the detail only when it is free of the engine's words.
-  const detail = plainDetail(status.message);
-  runStateEl.textContent = `${runStateWords(status.state)}${progress}${detail ? ` — ${detail}` : ""}`;
-  runStateEl.dataset["state"] = status.state;
-  const busy = status.state === "running" || status.state === "paused";
-  runPauseButton.disabled = status.state !== "running";
-  runResumeButton.disabled = status.state !== "paused";
-  runAbortButton.disabled = !busy;
-}
-
 async function sendExecutor(
   message: ToWorker,
-): Promise<{ ok?: boolean; error?: string; status?: ExecutorStatus; session?: SessionInfo }> {
+): Promise<{ ok?: boolean; error?: string; session?: SessionInfo }> {
   const response = (await chrome.runtime.sendMessage(message)) as
-    | { ok?: boolean; error?: string; status?: ExecutorStatus; session?: SessionInfo }
+    | { ok?: boolean; error?: string; session?: SessionInfo }
     | undefined;
   return response ?? {};
 }
@@ -324,56 +297,21 @@ disconnectButton.addEventListener("click", () => {
   void sendExecutor({ type: "executor:disconnect" }).then((response) => renderSession(response.session));
 });
 
-async function startExecutor(): Promise<void> {
-  const store = chrome.storage?.session;
-  const stored = store ? ((await store.get([RECIPE_KEY, ROW_KEY])) as Record<string, unknown>) : {};
-  const recipe = stored[RECIPE_KEY];
-  if (!recipe) {
-    noteEl.textContent =
-      "There is no task ready to try yet. Save this recording as a task first.";
-    return;
-  }
-  const response = await sendExecutor({
-    type: "executor:start",
-    recipe,
-    row: (stored[ROW_KEY] as Record<string, unknown>) ?? {},
-  });
-  if (response.status) renderExecutor(response.status);
-  if (response.error) noteEl.textContent = response.error;
-}
-
-runStartButton.addEventListener("click", () => {
-  void startExecutor();
-});
-runPauseButton.addEventListener("click", () => {
-  void sendExecutor({ type: "executor:pause" });
-});
-runResumeButton.addEventListener("click", () => {
-  void sendExecutor({ type: "executor:resume" });
-});
-runAbortButton.addEventListener("click", () => {
-  void sendExecutor({ type: "executor:abort" });
-});
-
 chrome.runtime.onMessage.addListener((message: unknown) => {
   const incoming = message as {
     type?: string;
-    status?: RecorderStatus | ExecutorStatus;
+    status?: RecorderStatus;
     state?: SessionState;
     detail?: string;
     event?: RecordedEvent;
   };
   if (incoming?.type === "record:state" && incoming.status) render(incoming.status as RecorderStatus);
   if (incoming?.type === "record:appended" && incoming.event) mergeEvent(incoming.event);
-  if (incoming?.type === "executor:state" && incoming.status) {
-    renderExecutor(incoming.status as ExecutorStatus);
-  }
   if (incoming?.type === "executor:session-state" && incoming.state) {
     renderSession({ state: incoming.state, detail: incoming.detail });
   }
 });
 
-renderExecutor({ ...EMPTY_EXECUTOR_STATUS });
 renderSession({ state: "idle" });
 void refresh();
 // Connect first, then say so: the person opens the popup and reads either "Connected to

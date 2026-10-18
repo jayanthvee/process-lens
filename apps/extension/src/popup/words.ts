@@ -7,7 +7,6 @@
  * it never pulls the service worker, the recorder or the executor into a page.
  */
 import type { RecordedEvent, RecordedStep } from "../shared/recipe-types";
-import type { ExecutorState } from "../shared/messages";
 import type { SessionState } from "../background/command-session";
 
 /** The empty live list's one sentence, shown in `#steps` until something is recorded. */
@@ -150,24 +149,6 @@ export function stepSentences(events: RecordedEvent[]): string[] {
 /** The recorder's state as a person reads it. */
 export function recordingWords(state: "idle" | "recording"): string {
   return state === "recording" ? "Recording" : "Not recording";
-}
-
-/** The attended run's state as a person reads it. */
-export function runStateWords(state: ExecutorState): string {
-  switch (state) {
-    case "running":
-      return "Running";
-    case "paused":
-      return "Paused";
-    case "aborted":
-      return "Stopped";
-    case "done":
-      return "Finished";
-    case "failed":
-      return "Didn't work";
-    default:
-      return "Nothing is running";
-  }
 }
 
 /**

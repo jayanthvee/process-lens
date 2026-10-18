@@ -15,7 +15,6 @@ import {
   engineWordsIn,
   plainDetail,
   recordingWords,
-  runStateWords,
   sessionWords,
   STEPS_EMPTY,
   stepSentence,
@@ -60,11 +59,6 @@ const FROZEN_E2E_IDS = [
   "note",
   "count",
   "stream",
-  "run-start",
-  "run-pause",
-  "run-resume",
-  "run-abort",
-  "run-state",
   "steps",
 ];
 
@@ -347,9 +341,6 @@ describe("the popup's words", () => {
   it("says every state in plain words", () => {
     expect(recordingWords("idle")).toBe("Not recording");
     expect(recordingWords("recording")).toBe("Recording");
-    expect(
-      (["idle", "running", "paused", "aborted", "done", "failed"] as const).map(runStateWords),
-    ).toEqual(["Nothing is running", "Running", "Paused", "Stopped", "Finished", "Didn't work"]);
     expect(sessionWords("ready")).toBe("Connected to ProcessLens");
     expect(sessionWords("idle")).toBe("ProcessLens isn't running");
     expect(sessionWords("disconnected")).toBe("ProcessLens isn't running");
@@ -464,6 +455,10 @@ describe("the frozen e2e contract", () => {
     for (const id of FROZEN_E2E_IDS) {
       const matches = ids.filter((candidate) => candidate === id);
       expect(matches, `#${id} must be in popup.html exactly once`).toHaveLength(1);
+    }
+    // PL-043: the popup's old run controls are gone, and the harness no longer selects them.
+    for (const id of ["run-start", "run-pause", "run-resume", "run-abort", "run-state"]) {
+      expect(ids, `#${id} must not be in popup.html`).not.toContain(id);
     }
     // And a control survives only if it is still inside the panel the harness reads.
     const body = new DOMParser().parseFromString(POPUP_HTML, "text/html").body;

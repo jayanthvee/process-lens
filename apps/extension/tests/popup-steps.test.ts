@@ -163,12 +163,6 @@ describe("More", () => {
     for (const id of [
       // "Which click finishes the row?" — the last click is preselected, so it lives here.
       "make-commit",
-      // Try one row, Pause, Resume, Stop.
-      "run-start",
-      "run-pause",
-      "run-resume",
-      "run-abort",
-      "run-state",
       // Save a copy of the steps, the streaming field.
       "export",
       "ws",
@@ -187,10 +181,17 @@ describe("More", () => {
     }
   });
 
-  it("has no Try one row of its own in the three steps", () => {
-    const runStart = document.getElementById("run-start");
-    expect(runStart, "the control survives under More").not.toBeNull();
-    expect(runStart?.closest(".step-card"), "but it is not a step of the flow").toBeNull();
+  it("has no run buttons of its own: the dashboard's Try one row is the only one", () => {
+    // PL-043: the old Try one row / Pause / Resume / Stop controls ran a task from inside the
+    // popup, which the dashboard's "3. Try one row" replaced. None of them is left.
+    for (const id of ["run-start", "run-pause", "run-resume", "run-abort", "run-state"]) {
+      expect(document.getElementById(id), `#${id} must be gone`).toBeNull();
+      expect(POPUP_BODY, `#${id} must not survive in the markup`).not.toContain(`id="${id}"`);
+    }
+    // And the copy that explained them goes with them.
+    expect(POPUP_BODY).not.toMatch(/Try one row/);
+    // The commit select stays: the Save form still uses it.
+    expect(document.getElementById("make-commit"), "#make-commit is the form's").not.toBeNull();
   });
 
   it("keeps the support notes reachable but shut", () => {
