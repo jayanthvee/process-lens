@@ -56,7 +56,21 @@ def coalesce_fills(events: list[Event]) -> tuple[list[Event], list[str]]:
                 step["value"] = {**step["value"], "value": value}
             else:
                 step["value"] = value
-            folded[-1] = replace(previous, step=step, seq=event.seq)
+            # PL-037: the merged step is the LATER entry. When the page filled a field and the
+            # person then typed over it (Odoo copies a picked contact's email, and the owner typed
+            # their own), the earlier fill's "page set it" flag must not erase the typing.
+            keystrokes = (
+                (previous.keystrokes or 0) + (event.keystrokes or 0)
+                if previous.keystrokes is not None or event.keystrokes is not None
+                else None
+            )
+            folded[-1] = replace(
+                previous,
+                step=step,
+                seq=event.seq,
+                page_set=event.page_set,
+                keystrokes=keystrokes,
+            )
             merged += 1
             continue
         folded.append(event)
