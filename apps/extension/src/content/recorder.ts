@@ -1373,8 +1373,15 @@ function bootstrap(): void {
     });
   };
 
-  ext.runtime.onMessage.addListener((message: unknown) => {
+  ext.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
     const incoming = message as { type?: string; status?: { state?: string; count?: number } };
+    // PL-039: the worker's "are you listening?" before it starts a recording here. A reload of
+    // the extension orphans the content script in every open tab, and the reload's replacement
+    // answers for the page. The answer goes out synchronously, so no async channel is held open.
+    if (incoming?.type === "record:ping") {
+      sendResponse({ ok: true });
+      return undefined;
+    }
     if (incoming?.type === "record:state") {
       const status = incoming.status;
       // A new recording, or a clear, restarts the ids; a stop and an ongoing recording do not.
@@ -1382,6 +1389,7 @@ function bootstrap(): void {
       previousStatus = status;
       recording = status?.state === "recording";
     }
+    return undefined;
   });
 
   void ext.runtime

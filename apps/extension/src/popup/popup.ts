@@ -99,6 +99,11 @@ function sessionStorageAdapter(): {
 let recordedEvents: RecordedEvent[] = [];
 /** Whether the recorder is running right now, as the last status reported it. */
 let recordingNow = false;
+/**
+ * PL-039: why the last start did not happen, in the worker's own words, or null. It shows in
+ * place of the steps until the next start clears it.
+ */
+let statusWarning: string | null = null;
 /** The saved task's page on the dashboard, set once a save has gone through (PL-033). */
 let savedTaskUrl: string | null = null;
 
@@ -129,7 +134,11 @@ async function send(message: ToWorker): Promise<RecorderResponse> {
  * hidden while the recording is still running.
  */
 function renderSteps(): void {
-  renderStepList(stepsEl, recordedEvents, { recording: recordingNow, onRemove: removeStep });
+  renderStepList(stepsEl, recordedEvents, {
+    recording: recordingNow,
+    onRemove: removeStep,
+    warning: statusWarning,
+  });
 }
 
 /**
@@ -148,6 +157,7 @@ function removeStep(seq: number): void {
 function render(status: RecorderStatus): void {
   const recording = status.state === "recording";
   recordingNow = recording;
+  statusWarning = status.warning ?? null;
   stateEl.textContent = recordingWords(recording ? "recording" : "idle");
   stateEl.dataset["state"] = status.state;
   countEl.textContent = stepCountWords(status.count);
@@ -197,7 +207,13 @@ function download(events: RecordedEvent[]): void {
 }
 
 startButton.addEventListener("click", () => {
-  void send({ type: "record:start" }).then((response) => render(response.status));
+  // The popup's own window is the one the person is looking at, so its active tab is the page.
+  void chrome.tabs
+    .query({ active: true, currentWindow: true })
+    .then((tabs) => tabs[0]?.id)
+    .catch(() => undefined)
+    .then((tabId) => send({ type: "record:start", ...(tabId !== undefined ? { tabId } : {}) }))
+    .then((response) => render(response.status));
 });
 
 stopButton.addEventListener("click", () => {

@@ -326,6 +326,14 @@ body {
   list-style: none;
 }
 
+/* PL-039: why recording could not start, in place of the steps. The warning's colour. */
+.steps__warning {
+  padding: 8px 0;
+  color: var(--help);
+  font-size: 13.5px;
+  list-style: none;
+}
+
 /* Save as task: one frosted panel holding the form and its one gold button. */
 .panel__form {
   display: flex;

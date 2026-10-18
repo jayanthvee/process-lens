@@ -114,6 +114,8 @@ export interface StepListOptions {
   recording: boolean;
   /** What a click on a step's × should do; nothing when the popup has nowhere to send it. */
   onRemove?: (seq: number) => void;
+  /** Why the last start did not happen (PL-039); shown in place of the steps when set. */
+  warning?: string | null;
 }
 
 /**
@@ -128,6 +130,14 @@ export function renderStepList(
   events: readonly RecordedEvent[],
   options: StepListOptions,
 ): void {
+  const warning = options.warning ?? null;
+  if (warning !== null && warning.trim().length > 0) {
+    const item = document.createElement("li");
+    item.className = "steps__warning";
+    item.textContent = warning;
+    list.replaceChildren(item);
+    return;
+  }
   const lines = stepLines(events);
   if (lines.length === 0) {
     const empty = document.createElement("li");

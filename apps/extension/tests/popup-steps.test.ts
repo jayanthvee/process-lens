@@ -13,6 +13,7 @@ import {
   autoConnect,
   currentStep,
   openTaskTab,
+  renderStepList,
   taskUrl,
   type PopupStep,
 } from "../src/popup/flow";
@@ -20,6 +21,8 @@ import { createMakeRecipeForm } from "../src/popup/make-recipe";
 import {
   DUPLICATES_BLOCKED,
   ENGINE_WORDS,
+  REFRESH_PAGE_WARNING,
+  UNRECORDABLE_PAGE_WARNING,
   engineWordsIn,
   plainSaveNotes,
   sessionWords,
@@ -258,6 +261,37 @@ describe("plain words under the save result", () => {
     // Everything the compiler sent is still there, for support, under More.
     const support = document.getElementById("make-warnings")?.textContent ?? "";
     for (const warning of PL031_WARNINGS) expect(support).toContain(warning);
+  });
+});
+
+describe("the refresh warning (PL-039)", () => {
+  it("renders the recorder's warning in place of the steps", () => {
+    const steps = document.getElementById("steps") as HTMLOListElement;
+    renderStepList(steps, [{ at: "2026-10-18T00:00:00Z", kind: "click", url: "https://crm.example.test/", seq: 1, step: { id: "click-1", action: "click", name: "Click Save", targets: [{ by: "role", role: "button", name: "Save" }] } }] as never, { recording: false, warning: REFRESH_PAGE_WARNING });
+    expect(steps.querySelector("li.steps__warning")?.textContent).toBe(REFRESH_PAGE_WARNING);
+    expect(steps.querySelector(".steps__item")).toBeNull();
+  });
+
+  it("keeps the steps when there is no warning", () => {
+    const steps = document.getElementById("steps") as HTMLOListElement;
+    renderStepList(steps, [{ at: "2026-10-18T00:00:00Z", kind: "click", url: "https://crm.example.test/", seq: 1, step: { id: "click-1", action: "click", name: "Click Save", targets: [{ by: "role", role: "button", name: "Save" }] } }] as never, { recording: false, warning: null });
+    expect(steps.querySelector(".steps__item")).not.toBeNull();
+    expect(steps.querySelector(".steps__warning")).toBeNull();
+  });
+
+  it("keeps the empty line when there is nothing recorded and no warning", () => {
+    const steps = document.getElementById("steps") as HTMLOListElement;
+    renderStepList(steps, [], { recording: false, warning: null });
+    expect(steps.querySelector("li.steps__empty")?.textContent).toBeTruthy();
+  });
+
+  it("knows both lines the worker can send", () => {
+    expect(REFRESH_PAGE_WARNING).toBe(
+      "Refresh this page (press F5), then start recording again. ProcessLens was updated and can't see this page yet.",
+    );
+    expect(UNRECORDABLE_PAGE_WARNING).toBe(
+      "ProcessLens can't record on this page. Open your app's page first.",
+    );
   });
 });
 

@@ -12,6 +12,17 @@ import type { SessionState } from "../background/command-session";
 /** The empty live list's one sentence, shown in `#steps` until something is recorded. */
 export const STEPS_EMPTY = "The steps you take will appear here.";
 
+/**
+ * PL-039: the page's content script never answered the ping, so the recording was not started.
+ * Reloading the extension orphans the content script in every open tab; a refresh re-attaches it.
+ */
+export const REFRESH_PAGE_WARNING =
+  "Refresh this page (press F5), then start recording again. ProcessLens was updated and can't see this page yet.";
+
+/** PL-039: the page is one a recording is never allowed on, so there is nothing to refresh for. */
+export const UNRECORDABLE_PAGE_WARNING =
+  "ProcessLens can't record on this page. Open your app's page first.";
+
 /** A click with no name of its own: never its step id. */
 export const UNNAMED_CLICK = "This click";
 
