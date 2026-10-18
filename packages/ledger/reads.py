@@ -23,6 +23,7 @@ from .models import (
     RunListRow,
     RunningRunRow,
     RunSummaryRow,
+    SpreadsheetRow,
     TaskListRow,
     TransitionRow,
     WeekCountsRow,
@@ -386,6 +387,62 @@ def list_apps(conn: psycopg.Connection, *, tenant_id: uuid.UUID | None = None) -
     ]
 
 
+# One row per uploaded spreadsheet: a csv, xlsx or manual batch -- never a documents batch, which
+# belongs to the Documents page. A batch with no file is rows a person pasted, so it says so. The
+# task is named the way ``_LIST_TASKS`` names it (the latest recipe's own name, with the workflow
+# name as the fallback), and the runs are counted and the newest kept so the page can link the
+# batch to the run that used it. No ``input_records`` is read: the page lists the upload, not its
+# rows.
+_LIST_SPREADSHEETS = """
+SELECT b.id,
+       coalesce(f.original_name, 'Pasted rows') AS file_name,
+       b.workflow_id AS task_id,
+       coalesce(latest.recipe -> 'meta' ->> 'name', w.name) AS task_name,
+       b.row_count,
+       b.created_at AS uploaded_at,
+       u.name AS uploaded_by,
+       rc.runs,
+       rc.last_run_id
+FROM input_batches b
+JOIN workflows w ON w.id = b.workflow_id
+LEFT JOIN files f ON f.id = b.file_id
+LEFT JOIN users u ON u.id = b.created_by
+LEFT JOIN LATERAL (
+  SELECT rv.recipe
+  FROM recipe_versions rv
+  WHERE rv.workflow_id = b.workflow_id
+  ORDER BY rv.version DESC
+  LIMIT 1
+) latest ON true
+LEFT JOIN LATERAL (
+  SELECT count(ru.id) AS runs,
+         (SELECT ru2.id FROM runs ru2
+          WHERE ru2.input_batch_id = b.id
+          ORDER BY ru2.created_at DESC, ru2.id
+          LIMIT 1) AS last_run_id
+  FROM runs ru
+  WHERE ru.input_batch_id = b.id
+) rc ON true
+WHERE b.kind IN ('csv', 'xlsx', 'manual')
+  AND (%(tenant)s::uuid IS NULL OR b.tenant_id = %(tenant)s)
+ORDER BY b.created_at DESC, b.id
+"""
+
+
+def list_spreadsheets(
+    conn: psycopg.Connection, *, tenant_id: uuid.UUID | None = None
+) -> list[SpreadsheetRow]:
+    """Every uploaded spreadsheet, newest first, with its task and the runs that used it.
+
+    Only ``csv``, ``xlsx`` and ``manual`` batches are spreadsheets; ``documents`` belong to the
+    Documents page. A batch with no file is named "Pasted rows", and a batch nothing has run on
+    has ``runs = 0`` and ``last_run_id = None``.
+    """
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(_LIST_SPREADSHEETS, {"tenant": tenant_id})
+        return [_row(SpreadsheetRow, row) for row in cur.fetchall()]
+
+
 # The runs a worker could act on, with whether a live worker holds each: a queued run has none,
 # and a running run's lease is live only while its heartbeat is fresh. The lease rule is the one
 # ``find_stale_run`` applies, so a takeover and this read can never disagree about "live".
@@ -418,6 +475,7 @@ __all__ = [
     "AppTaskRow",
     "RunClaim",
     "RunListRow",
+    "SpreadsheetRow",
     "TaskListRow",
     "WeekCountsRow",
     "list_apps",
@@ -427,6 +485,7 @@ __all__ = [
     "list_run_records",
     "list_running_runs",
     "list_runs",
+    "list_spreadsheets",
     "list_tasks",
     "list_transitions",
     "results_rows",

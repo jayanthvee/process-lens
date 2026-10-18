@@ -25,7 +25,6 @@ const PATHS = [
 
 /** The pages this ticket does not build: each shows the designed empty state. */
 const COMING_SOON = [
-  "/spreadsheets",
   "/documents",
   "/saved-answers",
   "/settings",
@@ -40,6 +39,7 @@ beforeEach(() => {
     "/api/v1/executor/session": { body: { attached: false } },
     "/api/v1/tasks": { body: [] },
     "/api/v1/apps": { body: [] },
+    "/api/v1/spreadsheets": { body: [] },
   });
 });
 
