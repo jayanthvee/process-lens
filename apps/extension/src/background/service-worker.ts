@@ -41,7 +41,7 @@ import {
   type VisibilityDeps,
 } from "../executor/visibility";
 import { dispatchCommandStep, prepareCommandStep } from "./command-step";
-import { RecorderSession, shouldRecordNavigation } from "./recorder-session";
+import { canRemoveStep, RecorderSession, shouldRecordNavigation } from "./recorder-session";
 import {
   CommandSession,
   type CheckAnswer,
@@ -887,6 +887,15 @@ async function handle(message: ToWorker, sender?: chrome.runtime.MessageSender):
         void chrome.runtime
           .sendMessage({ type: "record:appended", event, status: snapshot() })
           .catch(() => undefined);
+      }
+      break;
+    case "record:remove":
+      // Only a stopped recording offers its steps for deletion: while it runs the list is still
+      // being built, so the request is refused silently. The response below carries the recording
+      // as it now stands, which is what the popup redraws itself from.
+      if (canRemoveStep(status.state)) {
+        const removed = session.remove(message.seq);
+        if (removed) status = { ...status, count: session.count };
       }
       break;
     case "record:leaving":

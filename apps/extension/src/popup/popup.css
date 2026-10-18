@@ -286,6 +286,9 @@ body {
 }
 
 .steps__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   padding: 9px 0;
   border-top: 1px solid var(--hair);
   font-size: 14px;
@@ -293,6 +296,28 @@ body {
 }
 
 .steps__item:first-child { border-top: 0; }
+
+.steps__text { flex: 1 1 auto; min-width: 0; }
+
+/* A step's remove button: quiet until the person looks for it, and hidden while recording. */
+.steps__remove {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.steps__remove:hover { color: var(--ink); background: var(--fog-3); }
+.steps__remove:focus-visible { outline: 2px solid var(--gold); outline-offset: 1px; }
+.steps__remove[hidden] { display: none; }
 
 .steps__empty {
   padding: 8px 0;

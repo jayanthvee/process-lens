@@ -8,13 +8,11 @@ import {
 import type { SessionState } from "../background/command-session";
 import type { RecordedEvent } from "../shared/recipe-types";
 import { createMakeRecipeForm } from "./make-recipe";
-import { applyStep, autoConnect, currentStep, openTaskTab } from "./flow";
+import { applyStep, autoConnect, currentStep, openTaskTab, renderStepList } from "./flow";
 import {
   recordingWords,
   sessionWords,
   stepCountWords,
-  stepSentences,
-  STEPS_EMPTY,
   streamWords,
 } from "./words";
 
@@ -127,25 +125,24 @@ async function send(message: ToWorker): Promise<RecorderResponse> {
 
 /**
  * The live list of recorded steps: one plain sentence per step, and one sentence of its own while
- * there is nothing recorded. Names come from the element's own words, never from a step id.
+ * there is nothing recorded. Each line's × asks the worker to delete that step (PL-043); it is
+ * hidden while the recording is still running.
  */
-function renderSteps(events: RecordedEvent[]): void {
-  const sentences = stepSentences(events);
-  if (sentences.length === 0) {
-    const empty = document.createElement("li");
-    empty.className = "steps__empty";
-    empty.textContent = STEPS_EMPTY;
-    stepsEl.replaceChildren(empty);
-    return;
-  }
-  stepsEl.replaceChildren(
-    ...sentences.map((sentence) => {
-      const item = document.createElement("li");
-      item.className = "steps__item";
-      item.textContent = sentence;
-      return item;
-    }),
-  );
+function renderSteps(): void {
+  renderStepList(stepsEl, recordedEvents, { recording: recordingNow, onRemove: removeStep });
+}
+
+/**
+ * Delete one recorded step, and redraw from the recording the worker answers with: the list, the
+ * count and the save form's columns all follow from that one answer.
+ */
+function removeStep(seq: number): void {
+  void send({ type: "record:remove", seq }).then((response) => {
+    render(response.status);
+    recordedEvents = response.events ?? [];
+    renderSteps();
+    makeRecipeForm.refresh(recordedEvents);
+  });
 }
 
 function render(status: RecorderStatus): void {
@@ -158,6 +155,8 @@ function render(status: RecorderStatus): void {
   startButton.disabled = recording;
   stopButton.disabled = !recording;
   if (document.activeElement !== wsEl) wsEl.value = status.wsUrl;
+  // The × is shown only once the recording has stopped, so the list follows the state too.
+  renderSteps();
   syncFlow();
 }
 
@@ -165,7 +164,7 @@ async function refresh(): Promise<void> {
   const response = await send({ type: "record:get" });
   render(response.status);
   recordedEvents = response.events ?? [];
-  renderSteps(recordedEvents);
+  renderSteps();
   makeRecipeForm.refresh(recordedEvents);
   syncFlow();
 }
@@ -182,7 +181,7 @@ function mergeEvent(event: RecordedEvent): void {
   const index = recordedEvents.findIndex((candidate) => candidate.seq === event.seq);
   if (index >= 0) recordedEvents[index] = event;
   else recordedEvents.push(event);
-  renderSteps(recordedEvents);
+  renderSteps();
   makeRecipeForm.refresh(recordedEvents);
 }
 
@@ -206,7 +205,7 @@ stopButton.addEventListener("click", () => {
     render(response.status);
     // The freshly stopped recording is what the form offers to compile.
     recordedEvents = response.events ?? [];
-    renderSteps(recordedEvents);
+    renderSteps();
     makeRecipeForm.refresh(recordedEvents);
   });
 });
@@ -215,7 +214,7 @@ clearButton.addEventListener("click", () => {
   void send({ type: "record:clear" }).then((response) => {
     render(response.status);
     recordedEvents = response.events ?? [];
-    renderSteps(recordedEvents);
+    renderSteps();
     makeRecipeForm.refresh(recordedEvents);
   });
 });

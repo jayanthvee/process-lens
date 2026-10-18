@@ -10,6 +10,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createMakeRecipeForm, REFUSAL_HEADLINE, SAVED_READY, SAVING_NOTE } from "../src/popup/make-recipe";
+import { renderStepList } from "../src/popup/flow";
 import {
   ENGINE_WORDS,
   engineWordsIn,
@@ -135,22 +136,7 @@ function visibleSampleText(events: RecordedEvent[]): string {
 function renderSteps(events: RecordedEvent[]): void {
   const list = document.getElementById("steps");
   if (!list) throw new Error("the popup markup is missing #steps");
-  const sentences = stepSentences(events);
-  if (sentences.length === 0) {
-    const empty = document.createElement("li");
-    empty.className = "steps__empty";
-    empty.textContent = STEPS_EMPTY;
-    list.replaceChildren(empty);
-    return;
-  }
-  list.replaceChildren(
-    ...sentences.map((sentence) => {
-      const item = document.createElement("li");
-      item.className = "steps__item";
-      item.textContent = sentence;
-      return item;
-    }),
-  );
+  renderStepList(list, events, { recording: false });
 }
 
 function mountForm(
@@ -329,12 +315,14 @@ describe("the popup's words", () => {
     expect(POPUP_BODY).toContain(STEPS_EMPTY);
 
     renderSteps(plainRecording());
-    const items = Array.from(document.querySelectorAll("#steps .steps__item"));
+    const items = Array.from(document.querySelectorAll("#steps .steps__text"));
     expect(items.map((item) => item.textContent)).toEqual([
       "Clicked New lead",
       "Typed the email",
       "Clicked Save",
     ]);
+    // Each line carries its remove button, hidden until the recording stops (PL-043).
+    expect(document.querySelectorAll("#steps .steps__remove")).toHaveLength(3);
     expect(document.querySelector("#steps .steps__empty")).toBeNull();
   });
 

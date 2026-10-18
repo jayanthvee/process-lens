@@ -3,6 +3,8 @@
 // The markup holds one card per step, in order. Only the current step's button is gold: the other
 // cards' primary buttons are demoted to quiet ones while the person is on a different step. The
 // module is chrome-free and DOM-only, so the tests can drive it directly.
+import type { RecordedEvent } from "../shared/recipe-types";
+import { STEPS_EMPTY, stepSentence } from "./words";
 
 /** The three steps of the popup, in the order a person walks them. */
 export type PopupStep = "teach" | "save" | "open";
@@ -78,4 +80,79 @@ export async function autoConnect(deps: AutoConnectDeps): Promise<boolean> {
   if (state !== "idle" && state !== "disconnected") return false;
   await deps.connect(deps.hubUrl());
   return true;
+}
+
+/** The remove button's only label: it must say what it does on its own. */
+export const REMOVE_STEP_LABEL = "Remove this step";
+
+/** One line of the live step list: the event it stands for, and its one plain sentence. */
+export interface StepLine {
+  seq: number;
+  sentence: string;
+}
+
+/**
+ * The step lines the live list shows: one per recorded interaction, in order.
+ *
+ * An `observation` is evidence about the action before it and an `unrecordable` is the opposite of
+ * a step, so neither gets a line of its own; a `navigate` does, because the person moved the page.
+ * The seq is the event's own, so a line can be deleted from the recording it belongs to.
+ */
+export function stepLines(events: readonly RecordedEvent[]): StepLine[] {
+  const lines: StepLine[] = [];
+  for (const event of events) {
+    if (!event) continue;
+    if (!event.step && event.kind !== "navigate") continue;
+    lines.push({ seq: event.seq, sentence: stepSentence(event.step ?? null, event.kind) });
+  }
+  return lines;
+}
+
+/** What the live step list needs to draw itself. */
+export interface StepListOptions {
+  /** True while the recorder runs: a step's × is hidden until Stop. */
+  recording: boolean;
+  /** What a click on a step's × should do; nothing when the popup has nowhere to send it. */
+  onRemove?: (seq: number) => void;
+}
+
+/**
+ * Draw the live list of recorded steps into `list`.
+ *
+ * Each line carries a quiet × that removes that step (PL-043). While the recording is still
+ * running the × is hidden: the list is being built, and the worker refuses a removal either way.
+ * The sentence is the element's own words, never a step id.
+ */
+export function renderStepList(
+  list: HTMLElement,
+  events: readonly RecordedEvent[],
+  options: StepListOptions,
+): void {
+  const lines = stepLines(events);
+  if (lines.length === 0) {
+    const empty = document.createElement("li");
+    empty.className = "steps__empty";
+    empty.textContent = STEPS_EMPTY;
+    list.replaceChildren(empty);
+    return;
+  }
+  list.replaceChildren(...lines.map((line) => stepItem(line, options)));
+}
+
+function stepItem(line: StepLine, options: StepListOptions): HTMLLIElement {
+  const item = document.createElement("li");
+  item.className = "steps__item";
+  item.dataset["seq"] = String(line.seq);
+  const text = document.createElement("span");
+  text.className = "steps__text";
+  text.textContent = line.sentence;
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "steps__remove";
+  remove.setAttribute("aria-label", REMOVE_STEP_LABEL);
+  remove.textContent = "×";
+  remove.hidden = options.recording;
+  remove.addEventListener("click", () => options.onRemove?.(line.seq));
+  item.append(text, remove);
+  return item;
 }
