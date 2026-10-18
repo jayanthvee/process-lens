@@ -18,7 +18,7 @@ import {
   type StepRunDeps,
 } from "../executor/step-runner";
 import { ExecutorError, type ExecutorStep, type StepReport } from "../executor/types";
-import { WINDOW_HIDDEN_MESSAGE } from "../executor/visibility";
+import { windowHiddenMessage, type VisibilityReport } from "../executor/visibility";
 
 /** What one command step's body needs from its owner. */
 export interface CommandStepOptions {
@@ -30,8 +30,8 @@ export interface CommandStepOptions {
   onFirstInput?: () => void;
   /** The bound tab's frame contexts, so a step inside a same-origin iframe can run (PL-018b). */
   frames?: FrameContexts;
-  /** True when the work page is drawn, after bringing it forward if needed (PL-040). */
-  ensureVisible?: () => Promise<boolean>;
+  /** What happened when the work page was brought forward, if it needed it (PL-040, PL-045). */
+  ensureVisible?: () => Promise<VisibilityReport>;
 }
 
 function stepDeps(opts: CommandStepOptions): StepRunDeps {
@@ -54,9 +54,13 @@ function stepDeps(opts: CommandStepOptions): StepRunDeps {
  */
 async function guardsOnCurrentPage(step: ExecutorStep, opts: CommandStepOptions): Promise<void> {
   // PL-040: a hidden page never draws, so nothing on it can be found or measured. That pauses the
-  // run for a person (the `window_hidden` event) instead of failing the row.
-  if (opts.ensureVisible && !(await opts.ensureVisible())) {
-    throw new ExecutorError(WINDOW_HIDDEN_MESSAGE, step.id, "park", "window_hidden");
+  // run for a person (the `window_hidden` event) instead of failing the row. PL-045: the report
+  // goes into the event's detail, so a miss says why the window would not come forward.
+  if (opts.ensureVisible) {
+    const visibility = await opts.ensureVisible();
+    if (!visibility.visible) {
+      throw new ExecutorError(windowHiddenMessage(visibility), step.id, "park", "window_hidden");
+    }
   }
   const guardContext = { cdp: opts.cdp, step, allowedOrigins: opts.allowedOrigins };
   const origin = await checkOrigin(guardContext);
