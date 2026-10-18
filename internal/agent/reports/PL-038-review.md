@@ -1,6 +1,6 @@
 # PL-038 review (T1): approved, with one addition
 
-**Re-ran after merging `origin/main`** (PL-040's words changes merged cleanly): the web check passed **145 tests**, plus the typecheck and the build.
+**Re-ran after merging `origin/main`** (PL-040's words changes merged cleanly): the web check passed **149 tests**, plus the typecheck and the build.
 
 **Reviewed:**
 - `ApprovalPanel` is a faithful move: same markup, same `decide()`, same operator rule.
