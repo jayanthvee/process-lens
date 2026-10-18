@@ -83,7 +83,9 @@ function yesNo(value: boolean | undefined): string {
  * exists. It names the window and what Chrome said; it never includes a URL or page text.
  */
 export function windowHiddenMessage(report?: VisibilityReport): string {
-  if (!report) return WINDOW_HIDDEN_MESSAGE;
+  // T1: a report from a check that found the page visible (it hid later, mid-step) has no
+  // evidence about the miss, so the plain message is the honest one.
+  if (!report || !report.tried) return WINDOW_HIDDEN_MESSAGE;
   const before = report.before?.state ?? "unknown";
   const after = report.after?.state ?? "unknown";
   const facts = report.after ?? report.before;

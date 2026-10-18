@@ -162,6 +162,12 @@ describe("windowHiddenMessage", () => {
   it("is the plain message when there is no report", () => {
     expect(windowHiddenMessage()).toBe(WINDOW_HIDDEN_MESSAGE);
   });
+
+  it("is the plain message when the check found the page visible and nothing was raised (T1)", () => {
+    expect(windowHiddenMessage({ visible: true, tried: false, waitedMs: 0 })).toBe(
+      WINDOW_HIDDEN_MESSAGE,
+    );
+  });
 });
 
 describe("pageIsHidden", () => {
