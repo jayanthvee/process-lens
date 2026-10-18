@@ -2,6 +2,8 @@ import { type CSSProperties, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 
 import { ApprovalPanel } from "../components/ApprovalPanel";
+import { KeepsFailingWarning } from "../components/KeepsFailingWarning";
+import { WaitingRun } from "../components/WaitingRun";
 import { apiGet, apiPost, apiPostFile, apiPut, errorText } from "../lib/api";
 import { POLL_INTERVAL_MS, useJson } from "../lib/useJson";
 import { isOpenStatus, pauseReasonWords, refusalWords, runStatusWords } from "../lib/words";
@@ -88,6 +90,10 @@ export function TaskRun(): JSX.Element {
   // True only while Continue's second check is in flight, so the panel says "Checking…" for the
   // right reason and not while a run is starting.
   const [rechecking, setRechecking] = useState(false);
+  // PL-041: the in-flight flags for the two buttons that start a run. They are refs, not state,
+  // because the second click of a double click arrives before a state update re-renders the page.
+  const tryingIt = useRef(false);
+  const runningRest = useRef(false);
 
   // Step 2 is one request: the API matches the columns and decides which rows are ready.
   const checkPath =
@@ -198,8 +204,16 @@ export function TaskRun(): JSX.Element {
   }
 
   async function tryIt(): Promise<void> {
-    const created = await create("preview");
-    if (created !== null) setRunId(created);
+    // One click, one run (PL-041). `busy` is set by `create`, but a second click can land before
+    // React re-renders and the button turns itself off, so the ref is the guard that holds.
+    if (tryingIt.current) return;
+    tryingIt.current = true;
+    try {
+      const created = await create("preview");
+      if (created !== null) setRunId(created);
+    } finally {
+      tryingIt.current = false;
+    }
   }
 
   async function resumeIt(): Promise<void> {
@@ -217,8 +231,15 @@ export function TaskRun(): JSX.Element {
   }
 
   async function runTheRest(): Promise<void> {
-    const created = await create("batch");
-    if (created !== null) navigate(`/runs/${created}`);
+    // The same guard as Try it: two clicks in one tick must still start one batch run (PL-041).
+    if (runningRest.current) return;
+    runningRest.current = true;
+    try {
+      const created = await create("batch");
+      if (created !== null) navigate(`/runs/${created}`);
+    } finally {
+      runningRest.current = false;
+    }
   }
 
   if (task === null) {
@@ -241,6 +262,11 @@ export function TaskRun(): JSX.Element {
         <div>
           <h1 className="big">{task.name}</h1>
           <p className="lede">Your spreadsheet, one step at a time.</p>
+          {/* PL-041: the last two runs both stopped the same way, so this task needs recording
+              again. Said here, before a spreadsheet is added, with the fix beside it. */}
+          {task.keeps_failing == null ? null : (
+            <KeepsFailingWarning keepsFailing={task.keeps_failing} />
+          )}
         </div>
       </section>
 
@@ -421,6 +447,11 @@ export function TaskRun(): JSX.Element {
               <span className={`res ${outcome.tone}`}>{outcome.label}</span>
             )}
           </div>
+          {/* PL-041: the row is queued behind another task's run on this app. The card says which
+              one, and offers the one action that unblocks it, without leaving this page. */}
+          {run.data?.waiting_behind == null ? null : (
+            <WaitingRun waiting={run.data.waiting_behind} onCancelled={run.reload} />
+          )}
           {first === null ? (
             <p className="run-note">No row is ready yet. Fix the rows above, then try again.</p>
           ) : (

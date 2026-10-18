@@ -93,6 +93,19 @@ class RunListEntry(BaseModel):
     counts: dict[str, int]
 
 
+class WaitingBehind(BaseModel):
+    """PL-041: the run ahead of a queued one on the same app.
+
+    The database allows one running-or-paused run per tenant and destination, so a queued run can
+    wait for another task's run. Naming it is the difference between "Queued" forever and a person
+    knowing what to do next.
+    """
+
+    run_id: uuid.UUID
+    task_name: str
+    status: str
+
+
 class RunDetail(BaseModel):
     id: uuid.UUID
     tenant_id: uuid.UUID
@@ -109,6 +122,8 @@ class RunDetail(BaseModel):
     finished_at: datetime | None = None
     counts: RunCounts
     open_approval: OpenApproval | None = None
+    # Set only while this run is queued and another run on the same app is running or paused.
+    waiting_behind: WaitingBehind | None = None
 
 
 class RecordDetail(BaseModel):
@@ -216,11 +231,12 @@ def list_runs_endpoint() -> list[RunListEntry]:
 
 @router.get("/runs/{run_id}", response_model=RunDetail)
 def get_run_endpoint(run_id: uuid.UUID) -> RunDetail:
-    """A run's status, pause reason, counts, and any open approval request with its values."""
+    """A run's status, pause reason, counts, any open approval request, and what it waits behind."""
     with connection() as conn:
         run = _fetch_run(conn, run_id)
         summary = reads.run_summary(conn, run_id)
         approval = open_approval_for_run(conn, run_id)
+        blocking = reads.run_blocking(conn, run_id)
 
     counts = RunCounts(
         total=summary.total if summary else 0,
@@ -253,6 +269,15 @@ def get_run_endpoint(run_id: uuid.UUID) -> RunDetail:
                 created_at=approval.created_at,
             )
             if approval
+            else None
+        ),
+        waiting_behind=(
+            WaitingBehind(
+                run_id=blocking.run_id,
+                task_name=blocking.task_name,
+                status=blocking.status,
+            )
+            if blocking
             else None
         ),
     )

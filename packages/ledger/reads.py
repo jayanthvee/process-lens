@@ -15,6 +15,8 @@ from .models import (
     ApprovalRequestRow,
     AppRow,
     AppTaskRow,
+    BlockingRunRow,
+    KeepsFailingRow,
     NeedsHelpRow,
     OpenRunRow,
     RecordClaim,
@@ -123,6 +125,40 @@ def results_rows(conn: psycopg.Connection, run_id: uuid.UUID) -> list[ResultsRow
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(_RESULTS, {"run": run_id})
         return [_row(ResultsRow, row) for row in cur.fetchall()]
+
+
+# PL-041: the run a queued one is waiting behind. The database allows one running-or-paused run per
+# tenant and destination (``runs_one_active_per_destination``), so a queued run can be stuck behind
+# another task's run on the same app, and the page has to be able to say which one. The task's name
+# is the recipe's own, with the workflow name as the fallback, exactly as the runs list names it.
+# The run's own row supplies the tenant and the destination, so a client never names either.
+_RUN_BLOCKING = """
+SELECT r.id AS run_id,
+       coalesce(rv.recipe -> 'meta' ->> 'name', w.name) AS task_name,
+       r.status::text AS status
+FROM runs me
+JOIN runs r ON r.tenant_id = me.tenant_id
+  AND r.destination_key = me.destination_key
+  AND r.id <> me.id
+JOIN recipe_versions rv ON rv.id = r.recipe_version_id
+JOIN workflows w ON w.id = r.workflow_id
+WHERE me.id = %(run)s
+  AND me.status = 'queued'
+  AND r.status IN ('running', 'paused')
+ORDER BY r.created_at, r.id
+LIMIT 1
+"""
+
+
+def run_blocking(conn: psycopg.Connection, run_id: uuid.UUID) -> BlockingRunRow | None:
+    """The run a queued run is waiting behind, or ``None`` when nothing is ahead of it.
+
+    A run that is not queued is never waiting: it is the one holding the app.
+    """
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(_RUN_BLOCKING, {"run": run_id})
+        row = cur.fetchone()
+    return _row(BlockingRunRow, row) if row is not None else None
 
 
 def run_of_record(conn: psycopg.Connection, record_id: uuid.UUID) -> uuid.UUID | None:
@@ -319,6 +355,61 @@ def list_tasks(
         return [_row(TaskListRow, row) for row in cur.fetchall()]
 
 
+# PL-041: the tasks that stopped working. A saved task never changes, so one recorded before a fix
+# keeps failing the same way; the task list has to be able to say so. The two most recent finished
+# runs of a task are read, each counted for the rows it added and the rows that need a person, and
+# a task is flagged when both added nothing, both have at least one such row, and the two runs
+# share a reason. A run that is still going has not finished, so it neither earns nor clears the
+# warning. ``min`` picks one reason when two runs have several in common, so the answer is stable.
+_KEEPS_FAILING = """
+WITH finished AS (
+  SELECT ru.id AS run_id, ru.workflow_id,
+         row_number() OVER (
+           PARTITION BY ru.workflow_id ORDER BY ru.created_at DESC, ru.id DESC
+         ) AS place
+  FROM runs ru
+  JOIN workflows w ON w.id = ru.workflow_id
+  WHERE ru.status NOT IN ('queued', 'running', 'paused')
+    AND w.archived_at IS NULL
+    AND (%(tenant)s::uuid IS NULL OR ru.tenant_id = %(tenant)s)
+),
+per_run AS (
+  SELECT finished.workflow_id, finished.run_id,
+         count(*) FILTER (WHERE rr.state = 'verified') AS added,
+         count(*) FILTER (WHERE rr.state IN ('parked', 'failed')) AS troubled,
+         array_agg(DISTINCT rr.reason) FILTER (
+           WHERE rr.state IN ('parked', 'failed') AND rr.reason IS NOT NULL
+         ) AS reasons
+  FROM finished
+  LEFT JOIN run_records rr ON rr.run_id = finished.run_id
+  WHERE finished.place <= 2
+  GROUP BY finished.workflow_id, finished.run_id
+)
+SELECT newest.workflow_id, min(shared.reason) AS reason
+FROM per_run newest
+JOIN per_run older ON older.workflow_id = newest.workflow_id
+  AND older.run_id <> newest.run_id
+CROSS JOIN LATERAL unnest(newest.reasons) AS shared(reason)
+WHERE newest.added = 0 AND newest.troubled > 0
+  AND older.added = 0 AND older.troubled > 0
+  AND shared.reason = ANY (older.reasons)
+GROUP BY newest.workflow_id
+"""
+
+
+def keeps_failing_tasks(
+    conn: psycopg.Connection, *, tenant_id: uuid.UUID | None = None
+) -> list[KeepsFailingRow]:
+    """The tasks whose last two finished runs both added nothing and stopped for one reason.
+
+    ``reason`` is the runner's own sentence, the same one the rows themselves carry, so the page
+    can put it into words with ``plainReason`` rather than inventing a second vocabulary.
+    """
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(_KEEPS_FAILING, {"tenant": tenant_id})
+        return [_row(KeepsFailingRow, row) for row in cur.fetchall()]
+
+
 # One row per site a saved task may use. The tasks are the same ones ``_LIST_TASKS`` names -- the
 # latest version of each non-archived workflow, named as its recipe is -- but grouped by origin
 # instead of by task, and sorted by name inside each site. ``last_run`` is the newest run of *any*
@@ -497,11 +588,13 @@ def verified_preview_run(
 __all__ = [
     "AppRow",
     "AppTaskRow",
+    "BlockingRunRow",
     "RunClaim",
     "RunListRow",
     "SpreadsheetRow",
     "TaskListRow",
     "WeekCountsRow",
+    "keeps_failing_tasks",
     "list_apps",
     "list_needs_help",
     "list_open_approvals",
@@ -514,6 +607,7 @@ __all__ = [
     "list_transitions",
     "verified_preview_run",
     "results_rows",
+    "run_blocking",
     "run_of_record",
     "run_summary",
     "week_counts",

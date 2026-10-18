@@ -98,6 +98,22 @@ describe("the spreadsheets page", () => {
     );
   });
 
+  it("offers Run it on a spreadsheet nothing has used, and Run again on one that has", async () => {
+    stub = serve([
+      sheet({ id: "batch-1", task_id: "wf-1" }),
+      sheet({ id: "batch-2", task_id: "wf-2", runs: 2, last_run_id: "run-5" }),
+    ]);
+    renderApp("/spreadsheets");
+    await settle();
+
+    expect(screen.getByRole("link", { name: "Run it" }).getAttribute("href")).toBe(
+      "/tasks/wf-1/run",
+    );
+    expect(screen.getByRole("link", { name: "Run again" }).getAttribute("href")).toBe(
+      "/tasks/wf-2/run",
+    );
+  });
+
   it("shows only the plain words of DESIGN.md §2", async () => {
     stub = serve([sheet({ runs: 2, last_run_id: "run-1" })]);
     const view = renderApp("/spreadsheets");

@@ -138,6 +138,15 @@ class OpenRunRow:
 
 
 @dataclass(frozen=True)
+class BlockingRunRow:
+    """The run a queued one is waiting behind, with the task's name and the state it is in."""
+
+    run_id: uuid.UUID
+    task_name: str
+    status: str
+
+
+@dataclass(frozen=True)
 class RunListRow:
     """One row of the runs list."""
 
@@ -220,6 +229,14 @@ class TaskListRow:
     last_run_status: str | None
     last_run_started_at: datetime | None
     last_run_counts: dict[str, int]
+
+
+@dataclass(frozen=True)
+class KeepsFailingRow:
+    """One task that stopped working: the reason its last two finished runs both gave."""
+
+    workflow_id: uuid.UUID
+    reason: str
 
 
 @dataclass(frozen=True)

@@ -100,6 +100,12 @@ export function Spreadsheets(): JSX.Element {
                   ) : (
                     "Not used yet"
                   )}
+                  {/* PL-041 extra: the next thing a person wants from an upload is to run it,
+                      and the row says which of the two it would be. Quiet: this page's one
+                      primary action is elsewhere (DESIGN.md §1). */}
+                  <Link className="btn quiet sheet-run" to={`/tasks/${sheet.task_id}/run`}>
+                    {sheet.runs > 0 ? "Run again" : "Run it"}
+                  </Link>
                 </td>
               </tr>
             ))}
