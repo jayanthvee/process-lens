@@ -3,9 +3,10 @@
  * preview run that turns into the rest of the batch.
  */
 
-import { act, fireEvent, screen } from "@testing-library/react";
+import { act, fireEvent, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { engineWordsIn } from "../src/lib/words";
 import { POLL_INTERVAL_MS } from "../src/lib/useJson";
 import type { BatchCheck, BatchUpload, RunDetail as RunPayload, TaskRow } from "../src/types";
 import { callsTo, createFetchStub, renderApp, settle, type FetchStub, type RecordedRequest, type StubRoutes } from "./helpers";
@@ -69,7 +70,9 @@ const CHECK: BatchCheck = {
   },
 };
 
-function runDetail(status: string): RunPayload {
+const OPERATOR_ID = "0f8fad5b-d9cb-469f-a165-70867728950e";
+
+function runDetail(status: string, overrides: Partial<RunPayload> = {}): RunPayload {
   return {
     id: "run-preview",
     status,
@@ -78,6 +81,25 @@ function runDetail(status: string): RunPayload {
     open_approval: null,
     started_at: null,
     finished_at: null,
+    ...overrides,
+  };
+}
+
+/** The request the preview row stops at, with the engine internals the API really sends. */
+function sampleApproval() {
+  return {
+    id: "approval-1",
+    run_record_id: "rr-1",
+    step_id: "save-lead",
+    kind: "commit",
+    shown: {
+      step: "save-lead",
+      action: "click",
+      targets: [{ by: "css", selector: "#lead-save" }],
+      value: "New enquiry",
+      record: { email: "priya@example.com", company_name: "Acme" },
+    },
+    created_at: "2026-10-15T09:10:00Z",
   };
 }
 
@@ -479,5 +501,233 @@ describe("the run flow", () => {
     await pump();
 
     expect(screen.getByText("This task could not be found.")).toBeTruthy();
+  });
+});
+
+/**
+ * The owner's rule: every action sits on the screen where the problem shows. A preview row that
+ * stops for approval is answered in the card that says "3. Try one row", never on another page.
+ */
+describe("the preview row stopped for your decision", () => {
+  const SHELL_WITH_OPERATOR = {
+    ...SHELL,
+    "/api/v1/operator": { body: { operator_id: OPERATOR_ID } },
+  };
+
+  /** The three steps up to a preview run, on a stub whose run can stop and then move on. */
+  async function tryOneRow(extra: StubRoutes = {}): Promise<HTMLElement> {
+    harness({
+      ...SHELL_WITH_OPERATOR,
+      ...extra,
+    });
+    const view = renderApp("/tasks/wf-1/run");
+    await pump();
+    await addFile(view);
+    await act(async () => {
+      fireEvent.click(button("Continue"));
+    });
+    await pump();
+    await act(async () => {
+      fireEvent.click(button("Try it"));
+    });
+    await pump();
+    await pump();
+    const card = screen.getByText("3. Try one row").closest("section");
+    expect(card, "the card that tried the row").not.toBeNull();
+    return card as HTMLElement;
+  }
+
+  it("shows the exact values and a yes, and sends the decision as the operator", async () => {
+    let approval: ReturnType<typeof sampleApproval> | null = sampleApproval();
+    const fetchStub = createFetchStub({
+      ...SHELL_WITH_OPERATOR,
+      "/api/v1/tasks": { body: [TASK] },
+      "/api/v1/batches/batch-1/check": { body: CHECK },
+      "/api/v1/batches/batch-1/mapping": { body: { batch_id: "batch-1", mapping: {} } },
+      "/api/v1/batches": { body: UPLOAD },
+      "/api/v1/runs": { body: { run_id: "run-preview", status: "queued" } },
+      "/api/v1/runs/run-preview": () => ({
+        body:
+          approval === null
+            ? runDetail("running")
+            : runDetail("paused", { pause_reason: "awaiting_approval", open_approval: approval }),
+      }),
+      "/api/v1/approvals": () => {
+        approval = null;
+        return {
+          body: {
+            approval_id: "a-1",
+            request_id: "approval-1",
+            decision: "approved",
+            run_id: "run-preview",
+            resumed: true,
+          },
+        };
+      },
+    });
+    stub = fetchStub;
+    const view = renderApp("/tasks/wf-1/run");
+    await pump();
+    await addFile(view);
+    await act(async () => {
+      fireEvent.click(button("Continue"));
+    });
+    await pump();
+    await act(async () => {
+      fireEvent.click(button("Try it"));
+    });
+    await pump();
+    await pump();
+
+    const card = screen.getByText("3. Try one row").closest("section") as HTMLElement;
+    // The decision is in the card itself, with the values it is about to save.
+    const panel = within(card).getByText("Waiting for your decision").closest("section") as HTMLElement;
+    expect(within(panel).getByText("New enquiry")).toBeTruthy();
+    expect(within(panel).getByText("priya@example.com")).toBeTruthy();
+    expect(within(panel).getByText("Acme")).toBeTruthy();
+    expect(within(card).queryByText("Live")).toBeNull();
+    // The engine's own payload carries these, and none of them is a person's business.
+    expect(card.textContent).not.toContain("save-lead");
+    expect(card.textContent).not.toContain("lead-save");
+    expect(card.textContent).not.toContain("targets");
+    expect(engineWordsIn(card.textContent ?? "")).toEqual([]);
+
+    const reloads = callsTo(fetchStub, "/api/v1/runs/run-preview");
+    await act(async () => {
+      fireEvent.click(within(card).getByRole("button", { name: "Go ahead" }));
+    });
+    await pump();
+
+    const sent = fetchStub.requests.filter(
+      (call) => call.method === "POST" && call.path === "/api/v1/approvals",
+    );
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.body).toEqual({
+      request_id: "approval-1",
+      decision: "approved",
+      decided_by: OPERATOR_ID,
+    });
+    expect(callsTo(fetchStub, "/api/v1/runs/run-preview")).toBeGreaterThan(reloads);
+
+    // The card moves on as it does today: live again, with the wait named.
+    expect(within(card).queryByText("Waiting for your decision")).toBeNull();
+    expect(within(card).getByText("Live")).toBeTruthy();
+    expect(within(card).getByText("Adding this row in the ProcessLens window\u2026")).toBeTruthy();
+  });
+
+  it("says no from the card, and sends the no as the operator", async () => {
+    let approval: ReturnType<typeof sampleApproval> | null = sampleApproval();
+    const fetchStub = createFetchStub({
+      ...SHELL_WITH_OPERATOR,
+      "/api/v1/tasks": { body: [TASK] },
+      "/api/v1/batches/batch-1/check": { body: CHECK },
+      "/api/v1/batches/batch-1/mapping": { body: { batch_id: "batch-1", mapping: {} } },
+      "/api/v1/batches": { body: UPLOAD },
+      "/api/v1/runs": { body: { run_id: "run-preview", status: "queued" } },
+      "/api/v1/runs/run-preview": () => ({
+        body:
+          approval === null
+            ? runDetail("completed")
+            : runDetail("paused", { pause_reason: "awaiting_approval", open_approval: approval }),
+      }),
+      "/api/v1/approvals": () => {
+        approval = null;
+        return {
+          body: {
+            approval_id: "a-2",
+            request_id: "approval-1",
+            decision: "rejected",
+            run_id: "run-preview",
+            resumed: true,
+          },
+        };
+      },
+    });
+    stub = fetchStub;
+    const view = renderApp("/tasks/wf-1/run");
+    await pump();
+    await addFile(view);
+    await act(async () => {
+      fireEvent.click(button("Continue"));
+    });
+    await pump();
+    await act(async () => {
+      fireEvent.click(button("Try it"));
+    });
+    await pump();
+    await pump();
+
+    const card = screen.getByText("3. Try one row").closest("section") as HTMLElement;
+    await act(async () => {
+      fireEvent.click(within(card).getByRole("button", { name: "No, stop this row" }));
+    });
+    await pump();
+
+    const sent = fetchStub.requests.filter(
+      (call) => call.method === "POST" && call.path === "/api/v1/approvals",
+    );
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.body).toEqual({
+      request_id: "approval-1",
+      decision: "rejected",
+      decided_by: OPERATOR_ID,
+    });
+  });
+
+  it("names the wait while the row runs and no decision is waiting", async () => {
+    const card = await tryOneRow({
+      "/api/v1/runs/run-preview": { body: runDetail("running") },
+    });
+
+    expect(within(card).getByText("Live")).toBeTruthy();
+    expect(within(card).getByText("Adding this row in the ProcessLens window\u2026")).toBeTruthy();
+    expect(within(card).queryByText("Waiting for your decision")).toBeNull();
+  });
+  it("a row paused for anything but a decision says why and offers Resume in the card", async () => {
+    let paused = true;
+    const fetchStub = createFetchStub({
+      ...SHELL_WITH_OPERATOR,
+      "/api/v1/tasks": { body: [TASK] },
+      "/api/v1/batches/batch-1/check": { body: CHECK },
+      "/api/v1/batches/batch-1/mapping": { body: { batch_id: "batch-1", mapping: {} } },
+      "/api/v1/batches": { body: UPLOAD },
+      "/api/v1/runs": { body: { run_id: "run-preview", status: "queued" } },
+      "/api/v1/runs/run-preview": () => ({
+        body: paused
+          ? runDetail("paused", { pause_reason: "window_hidden" })
+          : runDetail("running"),
+      }),
+      "/api/v1/runs/run-preview/resume": () => {
+        paused = false;
+        return { body: runDetail("running") };
+      },
+    });
+    stub = fetchStub;
+    const view = renderApp("/tasks/wf-1/run");
+    await pump();
+    await addFile(view);
+    await act(async () => {
+      fireEvent.click(button("Continue"));
+    });
+    await pump();
+    await act(async () => {
+      fireEvent.click(button("Try it"));
+    });
+    await pump();
+    await pump();
+
+    const card = screen.getByText("3. Try one row").closest("section") as HTMLElement;
+    expect(within(card).getByText(/The ProcessLens window was hidden/)).toBeTruthy();
+    expect(within(card).queryByText("Adding this row in the ProcessLens window…")).toBeNull();
+    await act(async () => {
+      fireEvent.click(within(card).getByRole("button", { name: "Resume" }));
+    });
+    await pump();
+
+    const sent = fetchStub.requests.filter(
+      (call) => call.method === "POST" && call.path === "/api/v1/runs/run-preview/resume",
+    );
+    expect(sent).toHaveLength(1);
+    expect(within(card).getByText("Adding this row in the ProcessLens window…")).toBeTruthy();
   });
 });

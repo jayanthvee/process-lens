@@ -1,0 +1,31 @@
+/* The destination check: one box, its label, and the reason the box exists in one sentence.
+
+   It belongs to the DestinationCheck component rather than to one page, because a run's rows and
+   the Needs help page show the same tick (PL-038). The class names and the layout are PL-023's,
+   moved here unchanged. */
+
+.destination-check {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 4px;
+  justify-items: start;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--hair);
+}
+
+.destination-check-line {
+  display: inline-flex;
+  gap: 7px;
+  align-items: center;
+  color: var(--ink);
+  font-size: 13.5px;
+  cursor: pointer;
+}
+
+.destination-check-why {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  max-width: 62ch;
+}

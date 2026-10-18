@@ -8,6 +8,8 @@ import { act, fireEvent, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { RecordRow, RunDetail as RunPayload, RunSummary } from "../src/types";
+import { DESTINATION_CHECK_LABEL } from "../src/pages/needsHelpActions";
+import { engineWordsIn } from "../src/lib/words";
 import { POLL_INTERVAL_MS } from "../src/lib/useJson";
 import { callsTo, createFetchStub, renderApp, settle, type FetchStub } from "./helpers";
 
@@ -436,6 +438,199 @@ describe("a run stopped for your decision", () => {
     await settle();
 
     expect(screen.queryByText("Waiting for your decision")).toBeNull();
+  });
+});
+
+describe("a row that needs a person, on the run page", () => {
+  function posts(
+    stub: { requests: { method: string; path: string; body: unknown }[] },
+    path: string,
+  ) {
+    return stub.requests.filter((call) => call.method === "POST" && call.path === path);
+  }
+
+  it("offers Try again on a row that failed, and puts that row back in the queue", async () => {
+    const fetchStub = createFetchStub({
+      ...SHELL,
+      "/api/v1/runs/run-1/records": {
+        body: [
+          record({ id: "rr-2", record_key: "sam@example.com", state: "failed", reason: "missing email" }),
+        ],
+      },
+      "/api/v1/runs/run-1": { body: runDetail({ status: "completed" }) },
+      "/api/v1/records/rr-2/requeue": { body: { record_id: "rr-2", state: "pending" } },
+    });
+    stub = fetchStub;
+    renderApp("/runs/run-1");
+    await settle();
+
+    const beforeRun = callsTo(fetchStub, "/api/v1/runs/run-1");
+    const beforeRecords = callsTo(fetchStub, "/api/v1/runs/run-1/records");
+    expect(screen.getByRole("button", { name: "Dismiss" })).toBeTruthy();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    });
+    await settle();
+
+    const sent = posts(fetchStub, "/api/v1/records/rr-2/requeue");
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.body).toEqual({});
+    // The page reloads what it shows, so the row's new state is the API's answer and not a guess.
+    expect(callsTo(fetchStub, "/api/v1/runs/run-1/records")).toBeGreaterThan(beforeRecords);
+    expect(callsTo(fetchStub, "/api/v1/runs/run-1")).toBeGreaterThan(beforeRun);
+  });
+
+  it("keeps Try again off for a row that may already be saved, until the tick", async () => {
+    const fetchStub = createFetchStub({
+      ...SHELL,
+      "/api/v1/runs/run-1/records": {
+        body: [
+          record({ id: "rr-4", record_key: "Felix", state: "parked", commit_attempted: true }),
+        ],
+      },
+      "/api/v1/runs/run-1": { body: runDetail({ status: "completed" }) },
+      "/api/v1/records/rr-4/requeue": { body: { record_id: "rr-4", state: "pending" } },
+    });
+    stub = fetchStub;
+    const view = renderApp("/runs/run-1");
+    await settle();
+
+    const box = view.container.querySelector<HTMLInputElement>(".destination-check-box");
+    expect(box).not.toBeNull();
+    expect(box?.checked).toBe(false);
+    expect(view.container.querySelector(".destination-check-label")?.textContent).toBe(
+      DESTINATION_CHECK_LABEL,
+    );
+    expect(
+      view.container.querySelector(".destination-check-why")?.textContent?.trim(),
+    ).not.toBe("");
+    const tryAgain = screen.getByRole("button", { name: "Try again" }) as HTMLButtonElement;
+    expect(tryAgain.disabled).toBe(true);
+
+    // Clicking a disabled button sends nothing.
+    fireEvent.click(tryAgain);
+    await settle();
+    expect(posts(fetchStub, "/api/v1/records/rr-4/requeue")).toHaveLength(0);
+
+    await act(async () => {
+      fireEvent.click(box as HTMLInputElement);
+    });
+    await settle();
+    expect(
+      (screen.getByRole("button", { name: "Try again" }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    });
+    await settle();
+    const sent = posts(fetchStub, "/api/v1/records/rr-4/requeue");
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.body).toEqual({ destination_checked_by: OPERATOR_ID });
+  });
+
+  it("shows no actions on a row that is done", async () => {
+    const fetchStub = createFetchStub({
+      ...SHELL,
+      "/api/v1/runs/run-1/records": {
+        body: [record(), record({ id: "rr-3", record_key: "kim@example.com", state: "skipped" })],
+      },
+      "/api/v1/runs/run-1": { body: runDetail({ status: "completed" }) },
+    });
+    stub = fetchStub;
+    const view = renderApp("/runs/run-1");
+    await settle();
+
+    expect(view.container.querySelector(".record-requeue")).toBeNull();
+    expect(view.container.querySelector(".record-dismiss")).toBeNull();
+    expect(view.container.querySelector(".destination-check-box")).toBeNull();
+    expect(screen.queryByRole("button", { name: /Try all/ })).toBeNull();
+  });
+
+  it("tries every row it can again, and names the row that needs a check first", async () => {
+    const fetchStub = createFetchStub({
+      ...SHELL,
+      "/api/v1/runs/run-1/records": {
+        body: [
+          record({ id: "rr-2", record_key: "sam@example.com", state: "failed", reason: "missing email" }),
+          record({ id: "rr-3", record_key: "kim@example.com", state: "parked", reason: "a value is missing" }),
+          record({ id: "rr-4", record_key: "Felix", state: "parked", commit_attempted: true }),
+        ],
+      },
+      "/api/v1/runs/run-1": { body: runDetail({ status: "completed" }) },
+      "/api/v1/records/rr-2/requeue": { body: { record_id: "rr-2", state: "pending" } },
+      "/api/v1/records/rr-3/requeue": { body: { record_id: "rr-3", state: "pending" } },
+      "/api/v1/records/rr-4/requeue": { body: { record_id: "rr-4", state: "pending" } },
+    });
+    stub = fetchStub;
+    renderApp("/runs/run-1");
+    await settle();
+
+    expect(screen.getByText("Felix needs a check first.")).toBeTruthy();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Try all 2 again" }));
+    });
+    await settle();
+
+    expect(posts(fetchStub, "/api/v1/records/rr-2/requeue")).toHaveLength(1);
+    expect(posts(fetchStub, "/api/v1/records/rr-3/requeue")).toHaveLength(1);
+    // A row that may already be saved is never swept up by the batch action.
+    expect(posts(fetchStub, "/api/v1/records/rr-4/requeue")).toHaveLength(0);
+  });
+
+  it("shows the rows in plain words, with no engine word on the page", async () => {
+    const fetchStub = createFetchStub({
+      ...SHELL,
+      "/api/v1/runs/run-1/records": {
+        body: [
+          record({ id: "rr-2", record_key: "sam@example.com", state: "failed", reason: "missing email" }),
+          record({ id: "rr-4", record_key: "Felix", state: "parked", commit_attempted: true }),
+        ],
+      },
+      "/api/v1/runs/run-1": { body: runDetail({ status: "completed" }) },
+    });
+    stub = fetchStub;
+    const view = renderApp("/runs/run-1");
+    await settle();
+
+    expect(engineWordsIn(view.container.textContent ?? "")).toEqual([]);
+  });
+
+  it("shows Running again and starts polling when a finished run is put back to work", async () => {
+    vi.useFakeTimers();
+    let status = "completed";
+    const fetchStub = createFetchStub({
+      ...SHELL,
+      "/api/v1/runs/run-1/records": {
+        body: [record({ id: "rr-2", record_key: "sam@example.com", state: "failed", reason: "missing email" })],
+      },
+      "/api/v1/runs/run-1": () => ({ body: runDetail({ status }) }),
+      "/api/v1/records/rr-2/requeue": () => {
+        status = "running";
+        return { body: { record_id: "rr-2", state: "pending" } };
+      },
+    });
+    stub = fetchStub;
+    renderApp("/runs/run-1");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getByText("Finished")).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getByText("Running again")).toBeTruthy();
+
+    // The poll had stopped for the finished run; the row re-queued, so it must start again.
+    const before = callsTo(fetchStub, "/api/v1/runs/run-1");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+    });
+    expect(callsTo(fetchStub, "/api/v1/runs/run-1")).toBeGreaterThan(before);
   });
 });
 

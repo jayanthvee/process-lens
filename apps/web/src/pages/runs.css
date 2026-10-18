@@ -83,65 +83,43 @@
   font-size: 14px;
 }
 
-/* The approval decision: the ask, the exact values a person is deciding about, then two buttons. */
-.run-detail .approval {
-  display: grid;
+/* The batch action, and the rows it leaves for later, sit above the table they act on. */
+.run-detail .row-batch {
+  display: flex;
+  align-items: center;
   gap: 12px;
-  padding: 10px 20px 20px;
+  flex-wrap: wrap;
+  padding: 4px 20px 14px;
 }
 
-.run-detail .approval-ask {
-  margin: 0;
-  color: var(--ink-2);
-  font-size: 14px;
-}
-
-.run-detail .approval-values {
-  margin: 0;
-  display: grid;
-  gap: 0;
-  border: 1px solid var(--hair);
-  border-radius: 10px;
-  background: var(--glass-strong);
-}
-
-.run-detail .approval-line {
-  display: grid;
-  grid-template-columns: minmax(0, 12rem) minmax(0, 1fr);
-  gap: 12px;
-  padding: 9px 14px;
-  border-top: 1px solid var(--hair);
-}
-
-.run-detail .approval-line:first-child {
-  border-top: 0;
-}
-
-.run-detail .approval-line dt {
+.run-detail .row-batch-note {
   color: var(--muted);
   font-size: 13px;
 }
 
-.run-detail .approval-line dd {
-  margin: 0;
-  color: var(--ink);
-  font-size: 14px;
-  overflow-wrap: anywhere;
+/* One row's two actions, in the last cell: the same order and words Needs help uses. */
+.run-detail td.act .record-buttons {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
-.run-detail .approval .actions {
-  padding: 0;
+.run-detail td.act .refusal {
+  display: block;
+  margin-top: 6px;
 }
 
-.run-detail .operator-note {
-  margin: 0;
-  color: var(--ink-2);
-  font-size: 13.5px;
+/* The destination check is already a line of its own; in a table cell it needs no second rule. */
+.run-detail tr.row-check .destination-check {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
 }
 
-.run-detail .operator-problem {
-  color: var(--ink);
-}
+/* The approval decision's own placement lives with the shared ApprovalPanel component, so the
+   run page and the "Try one row" card cannot drift apart. */
 
 .run-detail .saved-fig {
   justify-self: start;
@@ -153,9 +131,8 @@
     margin-left: 0;
   }
 
-  .run-detail .approval-line {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 2px;
+  .run-detail td.act .record-buttons {
+    justify-content: flex-start;
   }
 
   .runs .empty {
