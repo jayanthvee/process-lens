@@ -41,6 +41,7 @@ export type EventKind =
   | "login_required"
   | "challenge"
   | "policy_blocked"
+  | "window_hidden"
   | "off_origin";
 
 /** The kinds of command the runner sends. */
@@ -204,6 +205,7 @@ const EVENT_KINDS = new Set<EventKind>([
   "login_required",
   "challenge",
   "policy_blocked",
+  "window_hidden",
   "off_origin",
 ]);
 

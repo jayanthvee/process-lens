@@ -18,6 +18,7 @@ import {
   type StepRunDeps,
 } from "../executor/step-runner";
 import { ExecutorError, type ExecutorStep, type StepReport } from "../executor/types";
+import { WINDOW_HIDDEN_MESSAGE } from "../executor/visibility";
 
 /** What one command step's body needs from its owner. */
 export interface CommandStepOptions {
@@ -29,6 +30,8 @@ export interface CommandStepOptions {
   onFirstInput?: () => void;
   /** The bound tab's frame contexts, so a step inside a same-origin iframe can run (PL-018b). */
   frames?: FrameContexts;
+  /** True when the work page is drawn, after bringing it forward if needed (PL-040). */
+  ensureVisible?: () => Promise<boolean>;
 }
 
 function stepDeps(opts: CommandStepOptions): StepRunDeps {
@@ -50,6 +53,11 @@ function stepDeps(opts: CommandStepOptions): StepRunDeps {
  * of pausing the run for a person.
  */
 async function guardsOnCurrentPage(step: ExecutorStep, opts: CommandStepOptions): Promise<void> {
+  // PL-040: a hidden page never draws, so nothing on it can be found or measured. That pauses the
+  // run for a person (the `window_hidden` event) instead of failing the row.
+  if (opts.ensureVisible && !(await opts.ensureVisible())) {
+    throw new ExecutorError(WINDOW_HIDDEN_MESSAGE, step.id, "park", "window_hidden");
+  }
   const guardContext = { cdp: opts.cdp, step, allowedOrigins: opts.allowedOrigins };
   const origin = await checkOrigin(guardContext);
   if (!origin.ok) {
