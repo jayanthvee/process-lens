@@ -241,6 +241,24 @@ class AppRow:
 
 
 @dataclass(frozen=True)
+class SpreadsheetRow:
+    """One uploaded batch: its file, the task it is for, and the runs that used it.
+
+    No row contents: the Spreadsheets page lists the upload, not the values in it.
+    """
+
+    id: uuid.UUID
+    file_name: str
+    task_id: uuid.UUID
+    task_name: str
+    row_count: int
+    uploaded_at: datetime
+    uploaded_by: str | None
+    runs: int
+    last_run_id: uuid.UUID | None
+
+
+@dataclass(frozen=True)
 class TenantAdminState:
     """A tenant's admin switches: the freeze, who set it, and the extension floor."""
 

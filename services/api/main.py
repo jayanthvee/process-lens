@@ -34,6 +34,7 @@ from .middleware import FrontDoorMiddleware
 from .operator import operator_id
 from .recipes import router as recipes_router
 from .runs import router as runs_router
+from .spreadsheets import router as spreadsheets_router
 from .tasks import router as tasks_router
 from .workspace import router as workspace_router
 
@@ -62,6 +63,7 @@ app.include_router(workspace_router)
 app.include_router(hub_router)
 app.include_router(home_router)
 app.include_router(apps_router)
+app.include_router(spreadsheets_router)
 
 
 # NOTE: the page's static mount is added at the very END of this module, after every route is
