@@ -103,6 +103,16 @@
   padding: 16px 20px 20px;
 }
 
+/* A decision the card waits on is part of this card, not a card inside it: the shared approval
+   panel's surface comes off and its heading and values read as the card's next block. */
+.task-run .panel > .panel {
+  background: none;
+  border: 0;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: none;
+}
+
 .task-run .run-first {
   padding: 2px 20px 0;
 }

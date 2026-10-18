@@ -1,6 +1,7 @@
 import { type CSSProperties, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 
+import { ApprovalPanel } from "../components/ApprovalPanel";
 import { apiGet, apiPost, apiPostFile, apiPut, errorText } from "../lib/api";
 import { POLL_INTERVAL_MS, useJson } from "../lib/useJson";
 import { isOpenStatus, refusalWords, runStatusWords } from "../lib/words";
@@ -421,35 +422,46 @@ export function TaskRun(): JSX.Element {
               </dl>
             </div>
           )}
-          <div className="actions">
-            {runId === null ? (
-              <button
-                type="button"
-                className="btn primary run-try"
-                disabled={busy || first === null || blocked}
-                onClick={() => void tryIt()}
-              >
-                Try it
-              </button>
-            ) : runOpen ? (
-              <span className="live">
-                <i /> Live
-              </span>
-            ) : runDone && rowsLeft > 0 ? (
-              <button
-                type="button"
-                className="btn primary run-rest"
-                disabled={busy || blocked}
-                onClick={() => void runTheRest()}
-              >
-                Run the other {rowsLeft} rows
-              </button>
-            ) : runDone ? (
-              <span className="run-count">That was the only row.</span>
-            ) : (
-              <span className="run-count">Starting this row…</span>
-            )}
-          </div>
+          {run.data === null || run.data.open_approval === null ? (
+            <div className="actions">
+              {runId === null ? (
+                <button
+                  type="button"
+                  className="btn primary run-try"
+                  disabled={busy || first === null || blocked}
+                  onClick={() => void tryIt()}
+                >
+                  Try it
+                </button>
+              ) : runOpen ? (
+                <>
+                  <span className="live">
+                    <i /> Live
+                  </span>
+                  {/* The wait named: the row is being added in the bound Chrome window, not
+                      stuck here. A stopped run's decision replaces this row with the panel. */}
+                  <span className="run-count">Adding this row in the ProcessLens window…</span>
+                </>
+              ) : runDone && rowsLeft > 0 ? (
+                <button
+                  type="button"
+                  className="btn primary run-rest"
+                  disabled={busy || blocked}
+                  onClick={() => void runTheRest()}
+                >
+                  Run the other {rowsLeft} rows
+                </button>
+              ) : runDone ? (
+                <span className="run-count">That was the only row.</span>
+              ) : (
+                <span className="run-count">Starting this row…</span>
+              )}
+            </div>
+          ) : (
+            // The run stopped at an approval gate. The decision belongs here, in the card that
+            // started the row, with the same panel the run page shows (PL-038's rule).
+            <ApprovalPanel detail={run.data} onDecided={run.reload} />
+          )}
           {problem === null ? null : (
             <p className="refusal run-problem" role="status">
               {problem}

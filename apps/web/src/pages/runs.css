@@ -83,65 +83,8 @@
   font-size: 14px;
 }
 
-/* The approval decision: the ask, the exact values a person is deciding about, then two buttons. */
-.run-detail .approval {
-  display: grid;
-  gap: 12px;
-  padding: 10px 20px 20px;
-}
-
-.run-detail .approval-ask {
-  margin: 0;
-  color: var(--ink-2);
-  font-size: 14px;
-}
-
-.run-detail .approval-values {
-  margin: 0;
-  display: grid;
-  gap: 0;
-  border: 1px solid var(--hair);
-  border-radius: 10px;
-  background: var(--glass-strong);
-}
-
-.run-detail .approval-line {
-  display: grid;
-  grid-template-columns: minmax(0, 12rem) minmax(0, 1fr);
-  gap: 12px;
-  padding: 9px 14px;
-  border-top: 1px solid var(--hair);
-}
-
-.run-detail .approval-line:first-child {
-  border-top: 0;
-}
-
-.run-detail .approval-line dt {
-  color: var(--muted);
-  font-size: 13px;
-}
-
-.run-detail .approval-line dd {
-  margin: 0;
-  color: var(--ink);
-  font-size: 14px;
-  overflow-wrap: anywhere;
-}
-
-.run-detail .approval .actions {
-  padding: 0;
-}
-
-.run-detail .operator-note {
-  margin: 0;
-  color: var(--ink-2);
-  font-size: 13.5px;
-}
-
-.run-detail .operator-problem {
-  color: var(--ink);
-}
+/* The approval decision's own placement lives with the shared ApprovalPanel component, so the
+   run page and the "Try one row" card cannot drift apart. */
 
 .run-detail .saved-fig {
   justify-self: start;
@@ -151,11 +94,6 @@
 @media (max-width: 780px) {
   .run-detail .export {
     margin-left: 0;
-  }
-
-  .run-detail .approval-line {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 2px;
   }
 
   .runs .empty {
