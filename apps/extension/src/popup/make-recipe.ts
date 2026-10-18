@@ -145,7 +145,33 @@ export function recordedValues(events: RecordedEvent[]): RecordedValue[] {
     if (event?.supersedes) superseded.add(event.supersedes);
   }
 
-  for (const event of events) {
+  // PL-037: when the page fills a field and the person then edits it (Odoo copies a picked
+  // contact's email; the owner typed their own over it), those back-to-back fills of that field
+  // are one entry and only its last value counts. Offering a half-typed value as a column of its
+  // own made it the row's key, and the compile then had no step that fills it. Back-to-back fills
+  // the PAGE did not start stay separate entries, as before.
+  const firstRung = (event: RecordedEvent | undefined): string =>
+    JSON.stringify(event?.step?.targets?.[0] ?? null);
+  const rewritten = new Set<number>();
+  let chainFromPage = false;
+  events.forEach((event, index) => {
+    const previous = events[index - 1];
+    const sameAsPrevious =
+      event?.kind === "fill" && previous?.kind === "fill" && firstRung(event) === firstRung(previous);
+    if (!sameAsPrevious) chainFromPage = event?.kind === "fill" && event.page_set === true;
+    const next = events[index + 1];
+    if (
+      chainFromPage &&
+      event?.kind === "fill" &&
+      next?.kind === "fill" &&
+      firstRung(event) === firstRung(next)
+    ) {
+      rewritten.add(index);
+    }
+  });
+
+  for (const [index, event] of events.entries()) {
+    if (rewritten.has(index)) continue;
     const step = event?.step ?? null;
     if (!step) continue;
     if (step.id !== undefined && superseded.has(String(step.id))) continue;
