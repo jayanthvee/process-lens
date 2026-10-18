@@ -1,10 +1,12 @@
-import { type CSSProperties, useEffect, useState } from "react";
+import { Fragment, type CSSProperties, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import { ApprovalPanel } from "../components/ApprovalPanel";
+import { DestinationCheck } from "../components/DestinationCheck";
 import { apiPost, errorText } from "../lib/api";
 import { POLL_INTERVAL_MS, useJson } from "../lib/useJson";
 import {
+  RUNNING_AGAIN,
   isOpenStatus,
   minutesSavedWords,
   pauseReasonWords,
@@ -15,6 +17,12 @@ import {
   runStatusWords,
 } from "../lib/words";
 import type { ExecutorSession, OperatorInfo, RecordRow, RunDetail as RunDetailPayload } from "../types";
+import {
+  actionGate,
+  recordActionLabel,
+  sendRecordAction,
+  type RecordAction,
+} from "./needsHelpActions";
 import "./runs.css";
 
 type RunAction = "pause" | "resume" | "cancel";
@@ -82,11 +90,101 @@ export function RunDetail(): JSX.Element {
     setPollMs((current) => (current === next ? current : next));
   }, [detail]);
 
+  // A run that finished once. If it is open again, a row was put back in the queue, and the status
+  // says "Running again" instead of pretending this is the first time (PL-038).
+  const [wasFinished, setWasFinished] = useState(false);
+  useEffect(() => {
+    if (detail !== null && typeof detail.status === "string" && !isOpenStatus(detail.status)) {
+      setWasFinished(true);
+    }
+  }, [detail]);
+
   const [busy, setBusy] = useState<RunAction | null>(null);
   const [refusal, setRefusal] = useState<{ action: RunAction; text: string } | null>(null);
   // The operator identity: the approval panel answers a decision as the person the API names, and
   // the row actions below need the same identity before they can put a row back in the queue.
   const operator = useJson<OperatorInfo>("/api/v1/operator");
+
+  // The row actions: the same two Needs help offers, with the same safety tick (PL-038). The ticks
+  // belong to one person's visit: nothing on this page ticks a box itself, and a reload leaves
+  // every box clear.
+  const [confirmed, setConfirmed] = useState<Record<string, boolean>>({});
+  const [rowBusy, setRowBusy] = useState<string | null>(null);
+  const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
+  const [batchBusy, setBatchBusy] = useState(false);
+  const [batchError, setBatchError] = useState<string | null>(null);
+
+  const operatorId = operator.data?.operator_id ?? null;
+  const operatorProblem = operator.error;
+
+  function gateFor(row: RecordRow) {
+    return actionGate({
+      state: row.state,
+      commitAttempted: row.commit_attempted === true,
+      confirmed: confirmed[row.id] === true,
+      operatorId,
+      operatorUnavailable: operatorProblem !== null,
+    });
+  }
+
+  function ticket(rowId: string, checked: boolean): void {
+    setConfirmed((current) => ({ ...current, [rowId]: checked }));
+  }
+
+  async function rowAct(row: RecordRow, action: RecordAction): Promise<void> {
+    const gate = gateFor(row);
+    if (gate.disabled || gate.shown === false || rowBusy !== null || batchBusy) return;
+    setRowBusy(row.id);
+    setRowErrors((current) => {
+      const next = { ...current };
+      delete next[row.id];
+      return next;
+    });
+    try {
+      await sendRecordAction(row.id, action, {
+        commitAttempted: row.commit_attempted === true,
+        confirmed: confirmed[row.id] === true,
+        operatorId,
+      });
+      // The page shows the API's answer, never its own guess at what a row became.
+      records.reload();
+      run.reload();
+    } catch (failure) {
+      setRowErrors((current) => ({ ...current, [row.id]: refusalWords(errorText(failure)) }));
+    } finally {
+      setRowBusy(null);
+    }
+  }
+
+  /**
+   * Put every row this page can try again back in the queue, one request at a time. A row that may
+   * already have been saved is never swept up here: it needs its own tick, and the page names it.
+   */
+  async function tryAllAgain(): Promise<void> {
+    const eligible = rows.filter((row) => {
+      const gate = gateFor(row);
+      return gate.shown && !gate.disabled;
+    });
+    if (eligible.length === 0) return;
+    setBatchBusy(true);
+    setBatchError(null);
+    try {
+      for (const row of eligible) {
+        await sendRecordAction(row.id, "requeue", {
+          commitAttempted: row.commit_attempted === true,
+          confirmed: confirmed[row.id] === true,
+          operatorId,
+        });
+      }
+    } catch (failure) {
+      setBatchError(refusalWords(errorText(failure)));
+    } finally {
+      setBatchBusy(false);
+      // Even a refusal part-way through leaves some rows re-queued, so reload either way.
+      records.reload();
+      run.reload();
+    }
+  }
 
   async function act(action: RunAction): Promise<void> {
     if (id === undefined) return;
@@ -114,7 +212,9 @@ export function RunDetail(): JSX.Element {
     );
   }
 
-  const status = runStatusWords(detail.status, session.data?.attached);
+  const status = wasFinished && isOpenStatus(detail.status)
+    ? RUNNING_AGAIN
+    : runStatusWords(detail.status, session.data?.attached);
   const buttons = runActions(detail.status);
   // Every count comes from the API, and a run with no records counts as nothing at all.
   const counts = (detail.counts ?? {}) as Record<string, number>;
@@ -125,6 +225,16 @@ export function RunDetail(): JSX.Element {
   const started = stamp(detail.started_at);
   const finished = stamp(detail.finished_at);
   const request = detail.open_approval;
+
+  // The rows a person can put back in the queue from here, and the ones that must be checked in
+  // Odoo first. The batch action is offered only for a finished run, and only when it would do
+  // more than one row's work (PL-038).
+  const rowGates = rows.map((row) => ({ row, gate: gateFor(row) }));
+  const tryable = rowGates.filter(({ gate }) => gate.shown && !gate.disabled).map(({ row }) => row);
+  const needCheck = rowGates
+    .filter(({ row, gate }) => gate.shown && gate.needsConfirmation && confirmed[row.id] !== true)
+    .map(({ row }) => row);
+  const showBatch = !open && tryable.length >= 2;
 
   // "About 52 minutes saved": the rows this run finished would have taken about three minutes each
   // by hand, less the wall-clock the run itself took. Only a finished run has both times.
@@ -248,6 +358,28 @@ export function RunDetail(): JSX.Element {
           <h3>What happened to each row</h3>
           <Link to="/needs-help">Needs help</Link>
         </div>
+        {showBatch ? (
+          <div className="row-batch">
+            <button
+              type="button"
+              className="btn quiet run-try-all"
+              disabled={batchBusy || rowBusy !== null}
+              onClick={() => void tryAllAgain()}
+            >
+              Try all {tryable.length} again
+            </button>
+            {needCheck.map((row) => (
+              <span className="row-batch-note" key={row.id}>
+                {row.record_key} needs a check first.
+              </span>
+            ))}
+            {batchError === null ? null : (
+              <span className="refusal" role="status">
+                {batchError}
+              </span>
+            )}
+          </div>
+        ) : null}
         {rows.length === 0 ? (
           <p className="panel-note">
             {records.error ?? "The rows of this run will appear here."}
@@ -259,24 +391,70 @@ export function RunDetail(): JSX.Element {
                 <th>Row</th>
                 <th>Result</th>
                 <th>Reason</th>
+                <th />
               </tr>
             </thead>
             <tbody>
               {rows.map((row) => {
                 const outcome = rowOutcome(row.state);
                 const reason = reasonWords(row, outcome.tone === "help");
+                const gate = gateFor(row);
+                const ticked = confirmed[row.id] === true;
+                const boxId = `checked-odoo-${row.id}`;
                 return (
-                  <tr key={row.id}>
-                    {/* A row's key is the person's or thing's name for that row; it is data, so it
-                        is rendered as text and never as markup. */}
-                    <td>
-                      <b>{row.record_key}</b>
-                    </td>
-                    <td>
-                      <span className={`res ${outcome.tone}`}>{outcome.label}</span>
-                    </td>
-                    <td>{reason ?? "—"}</td>
-                  </tr>
+                  <Fragment key={row.id}>
+                    <tr>
+                      {/* A row's key is the person's or thing's name for that row; it is data, so
+                          it is rendered as text and never as markup. */}
+                      <td>
+                        <b>{row.record_key}</b>
+                      </td>
+                      <td>
+                        <span className={`res ${outcome.tone}`}>{outcome.label}</span>
+                      </td>
+                      <td>{reason ?? "—"}</td>
+                      <td className="act">
+                        {gate.shown === false ? null : (
+                          <span className="record-buttons">
+                            <button
+                              type="button"
+                              className="btn quiet record-requeue"
+                              disabled={gate.disabled || rowBusy !== null || batchBusy}
+                              onClick={() => void rowAct(row, "requeue")}
+                            >
+                              {recordActionLabel("requeue")}
+                            </button>
+                            <button
+                              type="button"
+                              className="btn quiet record-dismiss"
+                              disabled={gate.disabled || rowBusy !== null || batchBusy}
+                              onClick={() => void rowAct(row, "dismiss")}
+                            >
+                              {recordActionLabel("dismiss")}
+                            </button>
+                          </span>
+                        )}
+                        {rowErrors[row.id] === undefined ? null : (
+                          <span className="refusal" role="status">
+                            {rowErrors[row.id]}
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                    {/* The same tick Needs help shows, under the row it belongs to: the commit
+                        window's safety rule is not optional, and it is never one click. */}
+                    {gate.needsConfirmation ? (
+                      <tr className="row-check">
+                        <td colSpan={4}>
+                          <DestinationCheck
+                            id={boxId}
+                            checked={ticked}
+                            onChange={(checked) => ticket(row.id, checked)}
+                          />
+                        </td>
+                      </tr>
+                    ) : null}
+                  </Fragment>
                 );
               })}
             </tbody>

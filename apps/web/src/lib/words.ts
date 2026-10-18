@@ -44,6 +44,12 @@ const RUN_STATUSES: Record<string, Outcome> = {
   failed: DIDNT_WORK,
 };
 
+/**
+ * A run that had finished and then had a row put back in the queue: the API reports it open again,
+ * and the status says why it is open a second time (PL-038).
+ */
+export const RUNNING_AGAIN: Outcome = { label: "Running again", tone: "live" };
+
 /** A row's outcome in plain words. Unknown states fall back to "Waiting". */
 export function rowOutcome(state: string): Outcome {
   return ROW_STATES[state] ?? WAITING;

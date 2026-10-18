@@ -83,6 +83,41 @@
   font-size: 14px;
 }
 
+/* The batch action, and the rows it leaves for later, sit above the table they act on. */
+.run-detail .row-batch {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 4px 20px 14px;
+}
+
+.run-detail .row-batch-note {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+/* One row's two actions, in the last cell: the same order and words Needs help uses. */
+.run-detail td.act .record-buttons {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.run-detail td.act .refusal {
+  display: block;
+  margin-top: 6px;
+}
+
+/* The destination check is already a line of its own; in a table cell it needs no second rule. */
+.run-detail tr.row-check .destination-check {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+
 /* The approval decision's own placement lives with the shared ApprovalPanel component, so the
    run page and the "Try one row" card cannot drift apart. */
 
@@ -94,6 +129,10 @@
 @media (max-width: 780px) {
   .run-detail .export {
     margin-left: 0;
+  }
+
+  .run-detail td.act .record-buttons {
+    justify-content: flex-start;
   }
 
   .runs .empty {

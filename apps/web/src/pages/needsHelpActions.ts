@@ -8,6 +8,7 @@
  * it is never one click (ticket PL-023 requirement 6; the safety rule is unchanged from PL-015).
  */
 
+import { apiPost } from "../lib/api";
 import type { RecordActionBody } from "../types";
 
 /** The exact words the confirmation carries. The ticket fixes them. */
@@ -115,4 +116,19 @@ export function actionBody(input: ActionBodyInput): RecordActionBody {
     body.destination_checked_by = input.operatorId;
   }
   return body;
+}
+
+/**
+ * Send one record action and wait for the API's answer.
+ *
+ * Both screens that offer Try again and Dismiss go through this one call (PL-038), so the path and
+ * the body -- including the destination check that lets a commit-attempted row past the ledger's
+ * duplicate protection -- cannot drift between the Needs help page and a run's rows.
+ */
+export async function sendRecordAction(
+  recordId: string,
+  action: RecordAction,
+  input: ActionBodyInput,
+): Promise<void> {
+  await apiPost(recordActionPath(recordId, action), actionBody(input));
 }

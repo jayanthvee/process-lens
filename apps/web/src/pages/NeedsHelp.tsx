@@ -1,17 +1,15 @@
 import { type CSSProperties, useState } from "react";
 
-import { apiPost, errorText } from "../lib/api";
+import { DestinationCheck } from "../components/DestinationCheck";
+import { errorText } from "../lib/api";
 import { useJson } from "../lib/useJson";
 import { plainReason, refusalWords, rowOutcome } from "../lib/words";
 import type { NeedsHelpRow, OperatorInfo } from "../types";
 import {
-  DESTINATION_CHECK_LABEL,
-  DESTINATION_CHECK_WHY,
-  actionBody,
   actionGate,
   operatorNote,
   recordActionLabel,
-  recordActionPath,
+  sendRecordAction,
   type RecordAction,
 } from "./needsHelpActions";
 import "./needsHelp.css";
@@ -68,14 +66,11 @@ export function NeedsHelp(): JSX.Element {
       return next;
     });
     try {
-      await apiPost(
-        recordActionPath(row.record_id, action),
-        actionBody({
-          commitAttempted: row.commit_attempted === true,
-          confirmed: confirmed[row.record_id] === true,
-          operatorId,
-        }),
-      );
+      await sendRecordAction(row.record_id, action, {
+        commitAttempted: row.commit_attempted === true,
+        confirmed: confirmed[row.record_id] === true,
+        operatorId,
+      });
       help.reload();
     } catch (failure) {
       // The API's own `detail` text, translated so no engine word reaches the person. Nothing is
@@ -159,21 +154,11 @@ export function NeedsHelp(): JSX.Element {
                       the narrow action column: it is a sentence, and squeezing it into the
                       right-hand slot makes the row half empty and twice as tall. */}
                   {gate.needsConfirmation ? (
-                    <div className="destination-check">
-                      <span className="destination-check-line">
-                        <input
-                          id={boxId}
-                          className="destination-check-box"
-                          type="checkbox"
-                          checked={ticked}
-                          onChange={(event) => ticket(row.record_id, event.currentTarget.checked)}
-                        />
-                        <label className="destination-check-label" htmlFor={boxId}>
-                          {DESTINATION_CHECK_LABEL}
-                        </label>
-                      </span>
-                      <p className="destination-check-why">{DESTINATION_CHECK_WHY}</p>
-                    </div>
+                    <DestinationCheck
+                      id={boxId}
+                      checked={ticked}
+                      onChange={(checked) => ticket(row.record_id, checked)}
+                    />
                   ) : null}
                 </li>
               );

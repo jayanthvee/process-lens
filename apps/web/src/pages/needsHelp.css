@@ -49,36 +49,9 @@
   justify-content: flex-end;
 }
 
-/* The reason the box exists, in one sentence, beside the box. It spans the whole row, under the
-   row's own line: a sentence in the narrow action column would leave the row half empty and twice
-   as tall. */
+/* The reason the box exists, in one sentence, beside the box. Its own placement lives with the
+   shared DestinationCheck component, so this page and a run's rows cannot drift apart. */
 .needs-help .rows li { align-items: center; }
-
-.needs-help .destination-check {
-  grid-column: 1 / -1;
-  display: grid;
-  gap: 4px;
-  justify-items: start;
-  margin-top: 10px;
-  padding-top: 10px;
-  border-top: 1px solid var(--hair);
-}
-
-.needs-help .destination-check-line {
-  display: inline-flex;
-  gap: 7px;
-  align-items: center;
-  color: var(--ink);
-  font-size: 13.5px;
-  cursor: pointer;
-}
-
-.needs-help .destination-check-why {
-  margin: 0;
-  color: var(--muted);
-  font-size: 13px;
-  max-width: 62ch;
-}
 
 /* A refusal sits beside the button that caused it, in the API's own words. */
 .needs-help .action-error {
