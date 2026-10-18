@@ -934,6 +934,67 @@ describe("a recording that saves twice (PL-042)", () => {
     expect(firstEntryEvents(quickCreate, null)).toBe(quickCreate);
   });
 
+  it("keeps the first save's confirmation when it trims the repeat (T1)", () => {
+    const observation = {
+      seq: 4,
+      at: STAMP,
+      kind: "observation",
+      url: PAGE,
+      observation: { text_visible: "Saved" },
+    } as unknown as RecordedEvent;
+    const events = [
+      fillEvent(1, "fill-1", "Name", "Ana"),
+      clickEvent(2, "click-2", "Save"),
+      observation,
+      fillEvent(5, "fill-5", "Name", "Bo"),
+      clickEvent(6, "click-6", "Save"),
+    ];
+    const entry = firstEntryEvents(events, "click-6");
+    expect(entry.map((event) => event.seq)).toEqual([1, 2, 4]);
+    const request = makeRecipeRequest(events, {
+      name: "Two saves",
+      recordKeyColumn: "name",
+      commitStepId: "click-6",
+    });
+    expect(request.commit_step_ids).toEqual(["click-2"]);
+  });
+
+  it("does not count a save's own submit as a second save (T1)", () => {
+    const submit = (seq: number, id: string) =>
+      ({ ...clickEvent(seq, id, "Save"), kind: "submit" }) as unknown as RecordedEvent;
+    const observation = (seq: number) =>
+      ({
+        seq,
+        at: STAMP,
+        kind: "observation",
+        url: PAGE,
+        observation: { text_visible: "Saved" },
+      }) as unknown as RecordedEvent;
+    // One save, logged as click + submit + confirmation: nothing is trimmed.
+    const once = [
+      fillEvent(1, "fill-1", "Name", "Ana"),
+      clickEvent(2, "click-2", "Save"),
+      submit(3, "click-3"),
+      observation(4),
+    ];
+    expect(firstEntryEvents(once, "click-3")).toEqual(once);
+    expect(recordedWarnings(once)).not.toContain(REPEAT_NOTE);
+    // Two such saves: the first keeps its submit and confirmation, and the submit is the commit.
+    const twice = [
+      ...once,
+      fillEvent(5, "fill-5", "Name", "Bo"),
+      clickEvent(6, "click-6", "Save"),
+      submit(7, "click-7"),
+    ];
+    expect(firstEntryEvents(twice, "click-7").map((event) => event.seq)).toEqual([1, 2, 3, 4]);
+    const request = makeRecipeRequest(twice, {
+      name: "Two saves",
+      recordKeyColumn: "name",
+      commitStepId: "click-7",
+    });
+    expect(request.commit_step_ids).toEqual(["click-3"]);
+  });
+
   it("leaves a single-save recording exactly as it is today", () => {
     const events = loadFixture("odoo_quick_create_owner_pick.json");
 
