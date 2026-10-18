@@ -76,6 +76,7 @@ from packages.ledger import (
 )
 
 from .approvals import evaluate_policy
+from .check_words import describe_check, parking_reason
 from .clock import Clock
 from .conditions import condition_timeout
 from .executor import ConditionResult, ConfirmationProbe, Executor, StepCommand
@@ -906,7 +907,14 @@ class RunLoop:
             step=step,
             outcome="failed",
         )
-        return self._reconcile(conn, record, run, epoch, step)
+        return self._reconcile(
+            conn,
+            record,
+            run,
+            epoch,
+            step,
+            check_sentence=describe_check(condition, row, variables),
+        )
 
     def _simple_step(
         self,
@@ -1079,7 +1087,15 @@ class RunLoop:
         run: RunClaim,
         epoch: int,
         step: Mapping[str, Any] | None = None,
+        *,
+        check_sentence: str | None = None,
     ) -> str:
+        """Check the destination; a search error or ambiguity parks the record (S2).
+
+        PL-047: when the commit's own check failed, ``check_sentence`` says what the runner looked
+        for, and the parked reason carries it instead of the reconciler's generic error. Every
+        other caller leaves it ``None`` and keeps the reconciler's words exactly.
+        """
         diff = self.reconciler.search(record)
         outcome = outcome_of(diff)
 
@@ -1121,13 +1137,10 @@ class RunLoop:
             return "pending"
 
         # S2: an ambiguous match or a search error parks the record; it never fails it.
-        self._transition(
-            conn,
-            record,
-            "reconciling",
-            "parked",
-            diff.error or "the destination check found more than one match",
-        )
+        reason = diff.error or "the destination check found more than one match"
+        if check_sentence is not None:
+            reason = parking_reason(check_sentence, run.destination_key)
+        self._transition(conn, record, "reconciling", "parked", reason)
         return "parked"
 
     # -- PL-014: run-level events (R6) -------------------------------------
