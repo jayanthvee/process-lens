@@ -12,6 +12,11 @@ export interface RecorderStatus {
   startedAt: string | null;
   wsUrl: string;
   wsConnected: boolean;
+  /**
+   * PL-039: why a start did not happen, in the popup's own words. Null when the worker has
+   * nothing to say; the popup shows it in place of the steps until the next start clears it.
+   */
+  warning: string | null;
 }
 
 export const EMPTY_STATUS: RecorderStatus = {
@@ -20,6 +25,7 @@ export const EMPTY_STATUS: RecorderStatus = {
   startedAt: null,
   wsUrl: "",
   wsConnected: false,
+  warning: null,
 };
 
 /** Where an attended execution is, for the status line. */
@@ -44,7 +50,9 @@ export const EMPTY_EXECUTOR_STATUS: ExecutorStatus = {
 /** Sent from a content script or the popup to the service worker. */
 export type ToWorker =
   | { type: "record:event"; event: PendingEvent }
-  | { type: "record:start" }
+  // `tabId`: the tab the popup is looking at. The worker cannot know it: its "current window" is
+  // whichever window was focused last, which may be the ProcessLens work window (PL-039 review).
+  | { type: "record:start"; tabId?: number }
   | { type: "record:stop" }
   | { type: "record:clear" }
   | { type: "record:get" }
