@@ -10,7 +10,7 @@ import {
 import type { SessionState } from "../background/command-session";
 import type { RecordedEvent } from "../shared/recipe-types";
 import { createMakeRecipeForm, RECIPE_KEY, ROW_KEY } from "./make-recipe";
-import { applyStep, autoConnect, currentStep, openTaskTab } from "./flow";
+import { applyStep, autoConnect, currentStep, openTaskTab, renderStepList } from "./flow";
 import {
   plainDetail,
   recordingWords,
@@ -18,7 +18,6 @@ import {
   sessionWords,
   stepCountWords,
   stepSentences,
-  STEPS_EMPTY,
   streamWords,
 } from "./words";
 
@@ -115,6 +114,11 @@ function sessionStorageAdapter(): {
 let recordedEvents: RecordedEvent[] = [];
 /** Whether the recorder is running right now, as the last status reported it. */
 let recordingNow = false;
+/**
+ * PL-039: why the last start did not happen, in the worker's own words, or null. It shows in
+ * place of the steps until the next start clears it.
+ */
+let statusWarning: string | null = null;
 /** The saved task's page on the dashboard, set once a save has gone through (PL-033). */
 let savedTaskUrl: string | null = null;
 
@@ -141,30 +145,17 @@ async function send(message: ToWorker): Promise<RecorderResponse> {
 
 /**
  * The live list of recorded steps: one plain sentence per step, and one sentence of its own while
- * there is nothing recorded. Names come from the element's own words, never from a step id.
+ * there is nothing recorded. A warning the worker set in place of a start (PL-039) takes the
+ * list's place, since a recording that never began has no steps to name.
  */
 function renderSteps(events: RecordedEvent[]): void {
-  const sentences = stepSentences(events);
-  if (sentences.length === 0) {
-    const empty = document.createElement("li");
-    empty.className = "steps__empty";
-    empty.textContent = STEPS_EMPTY;
-    stepsEl.replaceChildren(empty);
-    return;
-  }
-  stepsEl.replaceChildren(
-    ...sentences.map((sentence) => {
-      const item = document.createElement("li");
-      item.className = "steps__item";
-      item.textContent = sentence;
-      return item;
-    }),
-  );
+  renderStepList(stepsEl, stepSentences(events), statusWarning);
 }
 
 function render(status: RecorderStatus): void {
   const recording = status.state === "recording";
   recordingNow = recording;
+  statusWarning = status.warning ?? null;
   stateEl.textContent = recordingWords(recording ? "recording" : "idle");
   stateEl.dataset["state"] = status.state;
   countEl.textContent = stepCountWords(status.count);
@@ -172,6 +163,7 @@ function render(status: RecorderStatus): void {
   startButton.disabled = recording;
   stopButton.disabled = !recording;
   if (document.activeElement !== wsEl) wsEl.value = status.wsUrl;
+  renderSteps(recordedEvents);
   syncFlow();
 }
 

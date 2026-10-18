@@ -36,6 +36,7 @@ import { resolverExpression } from "../executor/ladder";
 import type { ExecutorRecipe, StepReport } from "../executor/types";
 import { dispatchCommandStep, prepareCommandStep } from "./command-step";
 import { RecorderSession, shouldRecordNavigation } from "./recorder-session";
+import { REFRESH_PAGE_WARNING, UNRECORDABLE_PAGE_WARNING } from "../popup/words";
 import {
   CommandSession,
   type CheckAnswer,
@@ -238,8 +239,108 @@ function stop(): void {
 
 function clear(): void {
   session.clear();
-  status = { ...status, count: 0, startedAt: status.state === "recording" ? new Date().toISOString() : null };
+  status = {
+    ...status,
+    count: 0,
+    // A clear is a fresh start: whatever the last refused start said no longer applies.
+    warning: null,
+    startedAt: status.state === "recording" ? new Date().toISOString() : null,
+  };
   updateBadge();
+}
+
+// --- starting a recording on a page the worker can still see (PL-039) --------
+
+/** How long a tab has to answer the recorder's ping before the page counts as unreachable. */
+const PING_TIMEOUT_MS = 1000;
+
+/** What starting a recording needs from the browser, so the guard can be driven in a test. */
+export interface StartGuardDeps {
+  /** The tab a start would record on: the active tab of the current window. */
+  activeTab: () => Promise<{ id?: number; url?: string } | undefined>;
+  /** One message to a tab; rejects when the page has no listener. */
+  ping: (tabId: number, message: unknown) => Promise<unknown>;
+  /** How long to wait for the ping's answer. Defaults to one second. */
+  timeoutMs?: number;
+}
+
+/** The guard's verdict: either the recording may start, or the plain words the popup shows. */
+export type StartGuard = { started: true } | { started: false; warning: string };
+
+/**
+ * Whether a page is one a recording is never allowed on: a browser page or the Web Store.
+ * A page with no readable URL is not decided here -- the ping decides it instead.
+ */
+export function unrecordablePage(url: string | undefined): boolean {
+  if (!url) return false;
+  if (url.startsWith("chrome://")) return true;
+  try {
+    const parsed = new URL(url);
+    return (
+      parsed.host === "chromewebstore.google.com" ||
+      (parsed.host === "chrome.google.com" && parsed.pathname.startsWith("/webstore"))
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Ask the tab's content script whether it is listening, within a one-second timeout.
+ * A reload of the extension orphans the content script of every open tab: no answer,
+ * no recording -- there is nothing to record with.
+ */
+async function pingContentScript(deps: StartGuardDeps, tabId: number): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    const timer = setTimeout(() => resolve(false), deps.timeoutMs ?? PING_TIMEOUT_MS);
+    deps
+      .ping(tabId, { type: "record:ping" })
+      .then((response) => {
+        clearTimeout(timer);
+        resolve((response as { ok?: boolean } | undefined)?.ok === true);
+      })
+      .catch(() => {
+        clearTimeout(timer);
+        resolve(false);
+      });
+  });
+}
+
+/** Decide whether a recording may start on the active tab, and why not when it may not. */
+export async function startRecordingGuard(deps: StartGuardDeps): Promise<StartGuard> {
+  const tab = await deps.activeTab();
+  if (unrecordablePage(tab?.url)) {
+    return { started: false, warning: UNRECORDABLE_PAGE_WARNING };
+  }
+  if (tab?.id === undefined) return { started: false, warning: REFRESH_PAGE_WARNING };
+  if (!(await pingContentScript(deps, tab.id))) {
+    return { started: false, warning: REFRESH_PAGE_WARNING };
+  }
+  return { started: true };
+}
+
+/**
+ * Start a recording on the active tab, or refuse with a warning the popup shows in place of
+ * the steps. A refusal writes nothing else: the state stays idle, and after refreshing the
+ * page the person presses Start again (PL-039).
+ */
+export async function startRecordingOnActiveTab(deps: StartGuardDeps): Promise<RecorderStatus> {
+  const guard = await startRecordingGuard(deps);
+  if (!guard.started) {
+    status = { ...status, warning: guard.warning };
+    return snapshot();
+  }
+  status = { ...status, warning: null };
+  start();
+  return snapshot();
+}
+
+/** The real deps: the active tab of the current window, and one message to it. */
+function startGuardDeps(): StartGuardDeps {
+  return {
+    activeTab: async () => (await chrome.tabs.query({ active: true, currentWindow: true }))[0],
+    ping: (tabId, message) => chrome.tabs.sendMessage(tabId, message),
+  };
 }
 
 // --- attended execution ------------------------------------------------------
@@ -794,7 +895,9 @@ async function handle(message: ToWorker, sender?: chrome.runtime.MessageSender):
   const sendingTabId = sender?.tab?.id;
   switch (message.type) {
     case "record:start":
-      start();
+      // PL-039: the ping first. A tab whose content script the extension reload orphaned
+      // records nothing, so the start is refused with the refresh warning instead.
+      await startRecordingOnActiveTab(startGuardDeps());
       break;
     case "record:stop":
       stop();

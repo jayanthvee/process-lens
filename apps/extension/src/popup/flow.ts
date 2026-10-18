@@ -3,6 +3,7 @@
 // The markup holds one card per step, in order. Only the current step's button is gold: the other
 // cards' primary buttons are demoted to quiet ones while the person is on a different step. The
 // module is chrome-free and DOM-only, so the tests can drive it directly.
+import { STEPS_EMPTY } from "./words";
 
 /** The three steps of the popup, in the order a person walks them. */
 export type PopupStep = "teach" | "save" | "open";
@@ -41,6 +42,39 @@ export function applyStep(root: ParentNode, step: PopupStep): void {
       button.classList.toggle("button--quiet", !isCurrent);
     }
   }
+}
+
+/**
+ * The live list of steps: the recorder's warning in place of the steps when a start was refused
+ * (PL-039), else one sentence per recorded step, else the empty line.
+ */
+export function renderStepList(
+  steps: HTMLOListElement,
+  sentences: string[],
+  warning: string | null,
+): void {
+  if (warning !== null && warning.trim().length > 0) {
+    const item = document.createElement("li");
+    item.className = "steps__warning";
+    item.textContent = warning;
+    steps.replaceChildren(item);
+    return;
+  }
+  if (sentences.length === 0) {
+    const empty = document.createElement("li");
+    empty.className = "steps__empty";
+    empty.textContent = STEPS_EMPTY;
+    steps.replaceChildren(empty);
+    return;
+  }
+  steps.replaceChildren(
+    ...sentences.map((sentence) => {
+      const item = document.createElement("li");
+      item.className = "steps__item";
+      item.textContent = sentence;
+      return item;
+    }),
+  );
 }
 
 /** The task's page on the dashboard, from the ProcessLens address the person connected to. */

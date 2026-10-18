@@ -12,6 +12,11 @@ export interface RecorderStatus {
   startedAt: string | null;
   wsUrl: string;
   wsConnected: boolean;
+  /**
+   * PL-039: why a start did not happen, in the popup's own words. Null when the worker has
+   * nothing to say; the popup shows it in place of the steps until the next start clears it.
+   */
+  warning: string | null;
 }
 
 export const EMPTY_STATUS: RecorderStatus = {
@@ -20,6 +25,7 @@ export const EMPTY_STATUS: RecorderStatus = {
   startedAt: null,
   wsUrl: "",
   wsConnected: false,
+  warning: null,
 };
 
 /** Where an attended execution is, for the status line. */
