@@ -451,6 +451,13 @@ export function makeRecipeRequest(
   // PL-042: the recording sent is the first entry when the recording saves twice; the chosen
   // commit names the save step, falling back to the recording's own default.
   const entry = firstEntryEvents(events, choice.commitStepId ?? defaultCommitStepId(events));
+  // T1 review: a trimmed recording ends at the FIRST save click, so that click is the commit. The
+  // chosen id may name the repeat's save, which is no longer in the recording -- left as is, the
+  // first save would compile as a plain click with no write-ahead and no save check.
+  const trimmed = entry.length < events.length;
+  const commitStepId = trimmed
+    ? (entry[entry.length - 1]?.step?.id ?? choice.commitStepId)
+    : choice.commitStepId;
   const sampleRow: Record<string, string> = {};
   for (const value of recordedValues(entry)) sampleRow[value.column] = value.value;
 
@@ -465,7 +472,7 @@ export function makeRecipeRequest(
     // The form pins the origins the person ticked; a direct caller that names none
     // gets the recording's own origins, exactly as before this field existed.
     allowed_origins: choice.allowedOrigins ?? recordedOrigins(entry),
-    commit_step_ids: choice.commitStepId ? [choice.commitStepId] : [],
+    commit_step_ids: commitStepId ? [commitStepId] : [],
     // The route defaults these the same way, so a caller that names neither stays
     // on the compiler's built-in defaults.
     duplicate_check: choice.duplicateCheck ?? true,

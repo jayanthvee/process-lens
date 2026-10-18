@@ -913,6 +913,8 @@ describe("a recording that saves twice (PL-042)", () => {
 
     expect(request.recording).toHaveLength(24);
     expect(request.recording[request.recording.length - 1]?.step?.id).toBe("click-8");
+    // The commit is the save the trimmed recording ends on, never the dropped repeat's save.
+    expect(request.commit_step_ids).toEqual(["click-8"]);
     expect(request.sample_row).toEqual({
       contact: "Probe Five Contact",
       email: "probe.five.example.test",
