@@ -11,6 +11,7 @@ import {
   commitChoices,
   defaultCommitStepId,
   defaultRecordKeyColumn,
+  firstEntryEvents,
   makeRecipeRequest,
   parkFieldDefaults,
   recordedValues,
@@ -869,5 +870,122 @@ describe("back-to-back fills of one field (PL-037)", () => {
       "400",
     ]);
     expect(values.map((value) => value.column)).toEqual(["email", "phone", "expected_revenue"]);
+  });
+});
+
+describe("a recording that saves twice (PL-042)", () => {
+  const REPEAT_NOTE =
+    "This recording saves twice. ProcessLens kept the first entry and ignored the repeat after it.";
+
+  function loadFixture(name: string): RecordedEvent[] {
+    const path = resolve(
+      dirname(fileURLToPath(import.meta.url)),
+      "../../../packages/compiler/tests/fixtures/",
+      name,
+    );
+    return JSON.parse(readFileSync(path, "utf-8"));
+  }
+
+  it("offers no `_2` column: every reader sees only the first entry", () => {
+    const events = loadFixture("odoo_two_saves_owner.json");
+
+    expect(recordedValues(events).map((value) => value.column)).toEqual([
+      "contact",
+      "email",
+      "phone",
+      "expected_revenue",
+    ]);
+    expect(defaultRecordKeyColumn(events)).toBe("email");
+    expect(parkFieldDefaults(events, "email")).toEqual(["email"]);
+  });
+
+  it("says in plain words that the repeat was ignored", () => {
+    expect(recordedWarnings(loadFixture("odoo_two_saves_owner.json"))).toContain(REPEAT_NOTE);
+  });
+
+  it("sends events that end at the first Add", () => {
+    const events = loadFixture("odoo_two_saves_owner.json");
+    const request = makeRecipeRequest(events, {
+      name: "Odoo leads",
+      recordKeyColumn: "email",
+      commitStepId: defaultCommitStepId(events),
+    });
+
+    expect(request.recording).toHaveLength(24);
+    expect(request.recording[request.recording.length - 1]?.step?.id).toBe("click-8");
+    // The commit is the save the trimmed recording ends on, never the dropped repeat's save.
+    expect(request.commit_step_ids).toEqual(["click-8"]);
+    expect(request.sample_row).toEqual({
+      contact: "Probe Five Contact",
+      email: "probe.five.example.test",
+      phone: "5550000055",
+      expected_revenue: "3820",
+    });
+  });
+
+  it("firstEntryEvents keeps the first save click and a single save untouched", () => {
+    const events = loadFixture("odoo_two_saves_owner.json");
+    const entry = firstEntryEvents(events, defaultCommitStepId(events));
+    expect(entry).toHaveLength(24);
+    expect(entry[entry.length - 1]?.step?.id).toBe("click-8");
+
+    const quickCreate = loadFixture("odoo_quick_create_owner_pick.json");
+    expect(firstEntryEvents(quickCreate, defaultCommitStepId(quickCreate))).toBe(quickCreate);
+    expect(firstEntryEvents(quickCreate, null)).toBe(quickCreate);
+  });
+
+  it("leaves a single-save recording exactly as it is today", () => {
+    const events = loadFixture("odoo_quick_create_owner_pick.json");
+
+    expect(recordedValues(events).map((value) => value.value)).toEqual([
+      "probe.three@example.test",
+      "5550000033",
+      "400",
+    ]);
+    expect(recordedValues(events).map((value) => value.column)).toEqual([
+      "email",
+      "phone",
+      "expected_revenue",
+    ]);
+    expect(recordedWarnings(events)).toEqual([
+      "Expected Revenue: this field changed without any typing: the page set it",
+      "Contact: this field changed without any typing: the page set it",
+      "Opportunity: this field changed without any typing: the page set it",
+      "Email: this field changed without any typing: the page set it",
+    ]);
+    expect(defaultRecordKeyColumn(events)).toBe("email");
+    expect(parkFieldDefaults(events, "email")).toEqual(["email"]);
+    expect(recordedWarnings(events)).not.toContain(REPEAT_NOTE);
+  });
+
+  it("does not treat two Adds with different targets as a repeat", () => {
+    const events: RecordedEvent[] = [
+      fillEvent(1, "fill-1", "Email", "ravi@example.test"),
+      clickEvent(2, "click-1", "Add"),
+      fillEvent(3, "fill-2", "Notes", "second entry"),
+      clickEvent(4, "click-2", "Submit"),
+    ];
+
+    expect(recordedValues(events).map((value) => value.column)).toEqual(["email", "notes"]);
+    expect(recordedWarnings(events)).not.toContain(REPEAT_NOTE);
+    expect(
+      makeRecipeRequest(events, {
+        name: "Two adds",
+        recordKeyColumn: "email",
+        commitStepId: "click-2",
+      }).recording,
+    ).toHaveLength(4);
+  });
+
+  it("shows the note where the other warnings are shown", () => {
+    const { fetchImpl } = fakeFetch({});
+    const form = mount(fetchImpl);
+
+    form.refresh(loadFixture("odoo_two_saves_owner.json"));
+
+    expect(control("make-warnings").textContent).toContain(REPEAT_NOTE);
+    expect(
+      Array.from(control<HTMLSelectElement>("make-key").options).map((item) => item.value),
+    ).toEqual(["contact", "email", "phone", "expected_revenue"]);
   });
 });
