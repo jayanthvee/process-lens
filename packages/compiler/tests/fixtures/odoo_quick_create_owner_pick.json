@@ -1,0 +1,452 @@
+[
+  {
+    "at": "2026-10-18T00:55:01.162Z",
+    "kind": "click",
+    "url": "http://localhost:8069/odoo/crm",
+    "step": {
+      "id": "click-1",
+      "action": "click",
+      "name": "Click New",
+      "targets": [
+        {
+          "by": "role",
+          "role": "button",
+          "name": "New"
+        },
+        {
+          "by": "css",
+          "selector": "button.btn.o-kanban-button-new"
+        },
+        {
+          "by": "text_fuzzy",
+          "value": "New"
+        }
+      ]
+    },
+    "seq": 1
+  },
+  {
+    "at": "2026-10-18T00:55:02.431Z",
+    "kind": "fill",
+    "url": "http://localhost:8069/odoo/crm",
+    "step": {
+      "id": "fill-1",
+      "action": "fill",
+      "name": "Fill Expected Revenue",
+      "targets": [
+        {
+          "by": "role",
+          "role": "textbox",
+          "name": "Expected Revenue"
+        },
+        {
+          "by": "label",
+          "text": "Expected Revenue"
+        },
+        {
+          "by": "css",
+          "selector": "#expected_revenue_0"
+        }
+      ],
+      "value": {
+        "kind": "constant",
+        "value": "0.00"
+      },
+      "clear_first": true
+    },
+    "warning": "this field changed without any typing: the page set it",
+    "page_set": true,
+    "keystrokes": 0,
+    "seq": 2
+  },
+  {
+    "at": "2026-10-18T00:55:02.477Z",
+    "kind": "click",
+    "url": "http://localhost:8069/odoo/crm",
+    "step": {
+      "id": "click-2",
+      "action": "click",
+      "name": "Click Contact",
+      "targets": [
+        {
+          "by": "role",
+          "role": "combobox",
+          "name": "Contact"
+        },
+        {
+          "by": "label",
+          "text": "Contact"
+        },
+        {
+          "by": "css",
+          "selector": "#partner_id_0"
+        }
+      ]
+    },
+    "seq": 3
+  },
+  {
+    "at": "2026-10-18T00:55:04.549Z",
+    "kind": "click",
+    "url": "http://localhost:8069/odoo/crm",
+    "step": {
+      "id": "click-3",
+      "action": "click",
+      "name": "Click Ridgeline Outfitters",
+      "targets": [
+        {
+          "by": "role",
+          "role": "option",
+          "name": "Ridgeline Outfitters"
+        },
+        {
+          "by": "css",
+          "selector": "#partner_id_0_0_3"
+        },
+        {
+          "by": "text_fuzzy",
+          "value": "Ridgeline Outfitters"
+        }
+      ]
+    },
+    "seq": 4
+  },
+  {
+    "at": "2026-10-18T00:55:06.017Z",
+    "kind": "fill",
+    "url": "http://localhost:8069/odoo/crm",
+    "step": {
+      "id": "fill-2",
+      "action": "fill",
+      "name": "Fill Contact",
+      "targets": [
+        {
+          "by": "role",
+          "role": "combobox",
+          "name": "Contact"
+        },
+        {
+          "by": "label",
+          "text": "Contact"
+        },
+        {
+          "by": "css",
+          "selector": "#partner_id_0"
+        }
+      ],
+      "value": {
+        "kind": "constant",
+        "value": "Ridgeline Outfitters"
+      },
+      "clear_first": true
+    },
+    "warning": "this field changed without any typing: the page set it",
+    "page_set": true,
+    "keystrokes": 0,
+    "seq": 5
+  },
+  {
+    "at": "2026-10-18T00:55:06.018Z",
+    "kind": "fill",
+    "url": "http://localhost:8069/odoo/crm",
+    "step": {
+      "id": "fill-3",
+      "action": "fill",
+      "name": "Fill Opportunity",
+      "targets": [
+        {
+          "by": "role",
+          "role": "textbox",
+          "name": "Opportunity"
+        },
+        {
+          "by": "label",
+          "text": "Opportunity"
+        },
+        {
+          "by": "css",
+          "selector": "#name_0"
+        },
+        {
+          "by": "text_fuzzy",
+          "value": "e.g. Product Pricing"
+        }
+      ],
+      "value": {
+        "kind": "constant",
+        "value": "Ridgeline Outfitters's opportunity"
+      },
+      "clear_first": true
+    },
+    "warning": "this field changed without any typing: the page set it",
+    "page_set": true,
+    "keystrokes": 0,
+    "seq": 6
+  },
+  {
+    "at": "2026-10-18T00:55:06.018Z",
+    "kind": "fill",
+    "url": "http://localhost:8069/odoo/crm",
+    "step": {
+      "id": "fill-4",
+      "action": "fill",
+      "name": "Fill Email",
+      "targets": [
+        {
+          "by": "role",
+          "role": "textbox",
+          "name": "Email"
+        },
+        {
+          "by": "label",
+          "text": "Email"
+        },
+        {
+          "by": "css",
+          "selector": "#email_from_0"
+        },
+        {
+          "by": "text_fuzzy",
+          "value": "e.g. \"email@address.com\""
+        }
+      ],
+      "value": {
+        "kind": "constant",
+        "value": "ap@ridgeline-outfitters.test"
+      },
+      "clear_first": true
+    },
+    "warning": "this field changed without any typing: the page set it",
+    "page_set": true,
+    "keystrokes": 0,
+    "seq": 7
+  },
+  {
+    "at": "2026-10-18T00:55:09.157Z",
+    "kind": "fill",
+    "url": "http://localhost:8069/odoo/crm",
+    "step": {
+      "id": "fill-5",
+      "action": "fill",
+      "name": "Fill Email",
+      "targets": [
+        {
+          "by": "role",
+          "role": "textbox",
+          "name": "Email"
+        },
+        {
+          "by": "label",
+          "text": "Email"
+        },
+        {
+          "by": "css",
+          "selector": "#email_from_0"
+        },
+        {
+          "by": "text_fuzzy",
+          "value": "e.g. \"email@address.com\""
+        }
+      ],
+      "value": {
+        "kind": "constant",
+        "value": "p@ridgeline-outfitters.testa"
+      },
+      "clear_first": true
+    },
+    "keystrokes": 2,
+    "seq": 8
+  },
+  {
+    "at": "2026-10-18T00:55:16.326Z",
+    "kind": "fill",
+    "url": "http://localhost:8069/odoo/crm",
+    "step": {
+      "id": "fill-6",
+      "action": "fill",
+      "name": "Fill Email",
+      "targets": [
+        {
+          "by": "role",
+          "role": "textbox",
+          "name": "Email"
+        },
+        {
+          "by": "label",
+          "text": "Email"
+        },
+        {
+          "by": "css",
+          "selector": "#email_from_0"
+        },
+        {
+          "by": "text_fuzzy",
+          "value": "e.g. \"email@address.com\""
+        }
+      ],
+      "value": {
+        "kind": "constant",
+        "value": "probe.three@example.test"
+      },
+      "clear_first": true
+    },
+    "keystrokes": 27,
+    "seq": 9
+  },
+  {
+    "at": "2026-10-18T00:55:16.328Z",
+    "kind": "press",
+    "url": "http://localhost:8069/odoo/crm",
+    "step": {
+      "id": "press-1",
+      "action": "press",
+      "name": "Press Tab",
+      "targets": [
+        {
+          "by": "role",
+          "role": "textbox",
+          "name": "Email"
+        },
+        {
+          "by": "label",
+          "text": "Email"
+        },
+        {
+          "by": "css",
+          "selector": "#email_from_0"
+        },
+        {
+          "by": "text_fuzzy",
+          "value": "e.g. \"email@address.com\""
+        }
+      ],
+      "key": "Tab"
+    },
+    "seq": 10
+  },
+  {
+    "at": "2026-10-18T00:55:20.312Z",
+    "kind": "fill",
+    "url": "http://localhost:8069/odoo/crm",
+    "step": {
+      "id": "fill-7",
+      "action": "fill",
+      "name": "Fill Phone",
+      "targets": [
+        {
+          "by": "role",
+          "role": "textbox",
+          "name": "Phone"
+        },
+        {
+          "by": "label",
+          "text": "Phone"
+        },
+        {
+          "by": "css",
+          "selector": "#phone_0"
+        },
+        {
+          "by": "text_fuzzy",
+          "value": "e.g. \"0123456789\""
+        }
+      ],
+      "value": {
+        "kind": "constant",
+        "value": "5550000033"
+      },
+      "clear_first": true
+    },
+    "keystrokes": 12,
+    "seq": 11
+  },
+  {
+    "at": "2026-10-18T00:55:20.312Z",
+    "kind": "press",
+    "url": "http://localhost:8069/odoo/crm",
+    "step": {
+      "id": "press-2",
+      "action": "press",
+      "name": "Press Tab",
+      "targets": [
+        {
+          "by": "role",
+          "role": "textbox",
+          "name": "Phone"
+        },
+        {
+          "by": "label",
+          "text": "Phone"
+        },
+        {
+          "by": "css",
+          "selector": "#phone_0"
+        },
+        {
+          "by": "text_fuzzy",
+          "value": "e.g. \"0123456789\""
+        }
+      ],
+      "key": "Tab"
+    },
+    "seq": 12
+  },
+  {
+    "at": "2026-10-18T00:55:23.619Z",
+    "kind": "fill",
+    "url": "http://localhost:8069/odoo/crm",
+    "step": {
+      "id": "fill-8",
+      "action": "fill",
+      "name": "Fill Expected Revenue",
+      "targets": [
+        {
+          "by": "role",
+          "role": "textbox",
+          "name": "Expected Revenue"
+        },
+        {
+          "by": "label",
+          "text": "Expected Revenue"
+        },
+        {
+          "by": "css",
+          "selector": "#expected_revenue_0"
+        }
+      ],
+      "value": {
+        "kind": "constant",
+        "value": "400"
+      },
+      "clear_first": true
+    },
+    "keystrokes": 3,
+    "seq": 13
+  },
+  {
+    "at": "2026-10-18T00:55:23.694Z",
+    "kind": "click",
+    "url": "http://localhost:8069/odoo/crm",
+    "step": {
+      "id": "click-4",
+      "action": "click",
+      "name": "Click Add",
+      "targets": [
+        {
+          "by": "role",
+          "role": "button",
+          "name": "Add"
+        },
+        {
+          "by": "css",
+          "selector": "button.btn.o_kanban_add"
+        },
+        {
+          "by": "text_fuzzy",
+          "value": "Add"
+        }
+      ]
+    },
+    "seq": 14
+  }
+]

@@ -248,6 +248,21 @@ def test_a_policy_blocked_event_pauses_the_run_with_policy_blocked(
     assert base.states(run_id) == {"row-0001": "pending"}
 
 
+def test_a_window_hidden_event_pauses_the_run_and_releases_the_row(
+    seed: Callable[..., Seed], make_worker: Callable[..., Worker], conn: psycopg.Connection
+) -> None:
+    """PL-040: a hidden work window is the person's to fix; the row is released, never failed."""
+    base, run_id = _one_row(seed)
+
+    scripted = ScriptedRun.build(plan={"search": "refused"})
+    scripted.events.push("window_hidden", "the ProcessLens window is hidden behind other windows")
+    worker = make_worker(scripted)
+    assert worker.run_once() is True
+
+    assert base.run_status(run_id) == ("paused", "window_hidden")
+    assert base.states(run_id) == {"row-0001": "pending"}
+
+
 def test_a_login_required_event_pauses_the_run_with_login_required(
     seed: Callable[..., Seed], make_worker: Callable[..., Worker], conn: psycopg.Connection
 ) -> None:

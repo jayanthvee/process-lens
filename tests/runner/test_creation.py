@@ -68,6 +68,76 @@ def test_copies_the_recipe_approval_policy_onto_the_run(
         assert cur.fetchone()[0] == {"commit": "first_record"}
 
 
+def _verify_first_record(conn: psycopg.Connection, run_id: uuid.UUID) -> None:
+    """Walk the run's first record to `verified` by legal transitions (a read-only finish)."""
+    record = conn.execute(
+        "SELECT id FROM run_records WHERE run_id = %s ORDER BY created_at, id LIMIT 1", (run_id,)
+    ).fetchone()[0]
+    for state in ("claimed", "prechecked", "filling", "verified"):
+        conn.execute("UPDATE run_records SET state = %s WHERE id = %s", (state, record))
+
+
+def _policy(conn: psycopg.Connection, run_id: uuid.UUID) -> dict:
+    return conn.execute("SELECT approval_policy FROM runs WHERE id = %s", (run_id,)).fetchone()[0]
+
+
+def test_the_rows_after_a_verified_preview_are_not_asked_about_again(
+    seed: Callable[..., Seed], conn: psycopg.Connection
+) -> None:
+    """PL-040: "Try one row" was approved and verified, so "Run the other rows" does not re-ask."""
+    base = seed(recipe(approval_policy={"commit": "first_record"}))
+    base.add_input_record(email="a@x.com")
+    base.add_input_record(email="b@x.com")
+
+    preview = base.create_run(mode="preview")
+    _verify_first_record(conn, preview)
+    conn.execute("UPDATE runs SET status = 'completed' WHERE id = %s", (preview,))
+    batch = base.create_run()
+
+    assert _policy(conn, batch) == {"commit": "none", "approved_in_preview": str(preview)}
+
+
+def test_a_preview_that_did_not_verify_still_gates_the_first_row(
+    seed: Callable[..., Seed], conn: psycopg.Connection
+) -> None:
+    base = seed(recipe(approval_policy={"commit": "first_record"}))
+    base.add_input_record(email="a@x.com")
+
+    preview = base.create_run(mode="preview")
+    conn.execute("UPDATE runs SET status = 'completed' WHERE id = %s", (preview,))
+    batch = base.create_run()
+
+    assert _policy(conn, batch) == {"commit": "first_record"}
+
+
+def test_a_verified_preview_of_another_recipe_version_does_not_count(
+    seed: Callable[..., Seed], conn: psycopg.Connection
+) -> None:
+    base = seed(recipe(approval_policy={"commit": "first_record"}))
+    base.add_input_record(email="a@x.com")
+
+    preview = base.create_run(mode="preview")
+    _verify_first_record(conn, preview)
+    conn.execute("UPDATE runs SET status = 'completed' WHERE id = %s", (preview,))
+    batch = _create(base, recipe(approval_policy={"commit": "first_record"}))
+
+    assert _policy(conn, batch) == {"commit": "first_record"}
+
+
+def test_a_recipe_that_gates_every_row_keeps_gating_after_a_preview(
+    seed: Callable[..., Seed], conn: psycopg.Connection
+) -> None:
+    base = seed(recipe(approval_policy={"commit": "every_record"}))
+    base.add_input_record(email="a@x.com")
+
+    preview = base.create_run(mode="preview")
+    _verify_first_record(conn, preview)
+    conn.execute("UPDATE runs SET status = 'completed' WHERE id = %s", (preview,))
+    batch = base.create_run()
+
+    assert _policy(conn, batch) == {"commit": "every_record"}
+
+
 # --- fail closed ------------------------------------------------------------
 
 
