@@ -470,6 +470,30 @@ def list_open_runs(
         return [_row(OpenRunRow, row) for row in cur.fetchall()]
 
 
+# PL-040: the newest preview ("Try one row") of a batch on one recipe version that verified a row.
+# Creating the batch run that follows it waives the first-record approval the preview already got.
+_VERIFIED_PREVIEW = """
+SELECT r.id
+FROM runs r
+WHERE r.input_batch_id = %(batch)s
+  AND r.recipe_version_id = %(version)s
+  AND r.mode = 'preview'
+  AND EXISTS (SELECT 1 FROM run_records rr WHERE rr.run_id = r.id AND rr.state = 'verified')
+ORDER BY r.created_at DESC, r.id
+LIMIT 1
+"""
+
+
+def verified_preview_run(
+    conn: psycopg.Connection, input_batch_id: uuid.UUID, recipe_version_id: uuid.UUID
+) -> uuid.UUID | None:
+    """The newest preview of this batch and recipe version that verified a row, or ``None``."""
+    with conn.cursor() as cur:
+        cur.execute(_VERIFIED_PREVIEW, {"batch": input_batch_id, "version": recipe_version_id})
+        row = cur.fetchone()
+    return row[0] if row else None
+
+
 __all__ = [
     "AppRow",
     "AppTaskRow",
@@ -488,6 +512,7 @@ __all__ = [
     "list_spreadsheets",
     "list_tasks",
     "list_transitions",
+    "verified_preview_run",
     "results_rows",
     "run_of_record",
     "run_summary",
