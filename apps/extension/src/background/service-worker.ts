@@ -673,20 +673,41 @@ function getCommandSession(): CommandSession {
     // debugger may not attach to. A background TAB is no better: Chrome stops drawing hidden tabs,
     // and an app like Odoo never finishes rendering there. A separate visible window keeps drawing
     // while the person works in their own tabs, and lets them watch the run.
+    // Chrome refuses bounds it thinks are off screen, so the window takes the right half of the
+    // person's own window, then no bounds at all. It never falls back to a tab the person is using.
     bindActiveTab: async () => {
-      let tabId: number | null = null;
+      const attempts: chrome.windows.CreateData[] = [];
       try {
-        const win = await chrome.windows.create({
-          url: "about:blank",
-          focused: true,
-          type: "normal",
-          width: 1200,
-          height: 860,
-        });
-        tabId = win?.tabs?.[0]?.id ?? null;
+        const own = await chrome.windows.getLastFocused();
+        if (own?.width && own.height && own.left !== undefined && own.top !== undefined) {
+          const width = Math.max(500, Math.floor(own.width / 2));
+          attempts.push({
+            url: "about:blank",
+            focused: true,
+            type: "normal",
+            left: own.left + own.width - width,
+            top: own.top,
+            width,
+            height: own.height,
+          });
+        }
       } catch {
-        const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-        tabId = tabs[0]?.id ?? null;
+        // no window to measure: the plain window below
+      }
+      attempts.push({ url: "about:blank", focused: true, type: "normal" });
+      let tabId: number | null = null;
+      for (const data of attempts) {
+        try {
+          const win = await chrome.windows.create(data);
+          tabId = win?.tabs?.[0]?.id ?? null;
+          if (tabId !== null) break;
+        } catch (error) {
+          console.warn("ProcessLens: could not open the work window", error);
+        }
+      }
+      if (tabId === null) {
+        const tab = await chrome.tabs.create({ url: "about:blank", active: true });
+        tabId = tab?.id ?? null;
       }
       commandBoundTabId = tabId;
       return tabId;
