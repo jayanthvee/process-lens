@@ -668,9 +668,18 @@ function getCommandSession(): CommandSession {
       const id: ReturnType<typeof setInterval> = setInterval(fn, ms);
       return () => clearInterval(id);
     },
+    // PL-037: the session works in a tab of its own, opened blank in the background. Binding the
+    // ACTIVE tab took over whatever the person was looking at -- the dashboard, or a new-tab page,
+    // which is a chrome:// URL the debugger may not attach to, so every row then failed.
     bindActiveTab: async () => {
-      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-      const tabId = tabs[0]?.id ?? null;
+      let tabId: number | null = null;
+      try {
+        const tab = await chrome.tabs.create({ url: "about:blank", active: false });
+        tabId = tab.id ?? null;
+      } catch {
+        const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+        tabId = tabs[0]?.id ?? null;
+      }
       commandBoundTabId = tabId;
       return tabId;
     },
