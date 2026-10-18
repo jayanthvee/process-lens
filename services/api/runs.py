@@ -13,6 +13,7 @@ import uuid
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
+import psycopg
 from fastapi import APIRouter, Body, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
@@ -325,12 +326,27 @@ def list_transitions_endpoint(
 
 @router.post("/runs/{run_id}/pause", response_model=RunDetail)
 def pause_run_endpoint(run_id: uuid.UUID) -> RunDetail:
-    """Ask a run to pause at its next step boundary."""
+    """Ask a run to pause at its next step boundary.
+
+    PL-039: ``runs_one_active_per_destination`` covers ``running`` and ``paused``, so pausing a
+    queued run while another run of a task on this app is already paused violates the index. That
+    is a conflict the person can resolve, not a server error, so it is a 409 in plain words.
+    """
     with connection() as conn:
         run = _fetch_run(conn, run_id)
         if run.status not in _OPEN_STATUSES:
             raise HTTPException(status_code=409, detail=f"run {run_id} is {run.status}")
-        set_run_status(conn, run_id, "paused", pause_reason="paused_by_operator")
+        try:
+            set_run_status(conn, run_id, "paused", pause_reason="paused_by_operator")
+        except psycopg.errors.UniqueViolation as exc:
+            conn.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Another run of a task on this app is already paused. "
+                    "Finish or cancel that one first."
+                ),
+            ) from exc
         conn.commit()
     return get_run_endpoint(run_id)
 
