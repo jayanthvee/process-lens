@@ -171,13 +171,26 @@ export function firstEntryEvents(
   events.forEach((event, index) => {
     const step = event?.step ?? null;
     if (!step || step.action !== "click") return;
+    // T1: the recorder logs a form save as a click and then a `submit` of the same control; the
+    // compiler folds the pair into one step, so the `submit` is not a second save.
+    if (event.kind === "submit") return;
     if (targetSignature(step) === signature) {
       if (first === -1) first = index;
       saves += 1;
     }
   });
   if (saves < 2 || first === -1) return events;
-  return events.slice(0, first + 1);
+  // T1: the save's own submit and observation (its confirmation, recorded right after the click) belongs to
+  // the first entry. Cutting it off leaves the commit with nothing to check, so the first row
+  // parks with "could not verify the save".
+  let end = first + 1;
+  while (
+    end < events.length &&
+    (events[end]?.kind === "observation" || events[end]?.kind === "submit")
+  ) {
+    end += 1;
+  }
+  return events.slice(0, end);
 }
 
 /**
@@ -456,7 +469,8 @@ export function makeRecipeRequest(
   // first save would compile as a plain click with no write-ahead and no save check.
   const trimmed = entry.length < events.length;
   const commitStepId = trimmed
-    ? (entry[entry.length - 1]?.step?.id ?? choice.commitStepId)
+    ? ([...entry].reverse().find((event) => event?.step?.action === "click")?.step?.id ??
+      choice.commitStepId)
     : choice.commitStepId;
   const sampleRow: Record<string, string> = {};
   for (const value of recordedValues(entry)) sampleRow[value.column] = value.value;
