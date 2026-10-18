@@ -87,10 +87,10 @@ export interface MeasureResult {
   /** The tag of the element at the box center, or "" when the hit test is unavailable. */
   hit: string;
   /**
-   * True when the measured document is the top document (`window.top ===
-   * window.self`). A click is dispatched at the top document's coordinates, so
-   * one inside a subframe can never land on the element: `dispatchClick`
-   * refuses it rather than clicking somewhere unrelated.
+   * True when `x`/`y` are top-viewport coordinates: the top document, or a
+   * same-origin frame whose iframe offsets were added (PL-018b). A click is
+   * dispatched in the top viewport, so a target in a cross-origin frame, whose
+   * offset can't be read, is refused by `dispatchClick`.
    */
   topFrame: boolean;
   reason?: string;
@@ -107,16 +107,34 @@ export interface MeasureResult {
  */
 export function measureTargetInPage(query: MeasureQuery): MeasureResult {
   const MARKER = "data-pl-target";
-  // `window.top === window.self` only in the top document; an inaccessible
-  // `window.top` means a cross-origin parent, so this document is not the top
-  // one either.
-  const topFrame = (() => {
+  // PL-018b: a click is dispatched in TOP-viewport coordinates, but this document measures in its
+  // own viewport. In a same-origin frame, each enclosing iframe's content-box origin is added on the
+  // way up. A cross-origin parent hides `frameElement` (it reads null), so no offset is known and
+  // the coordinates are not the top viewport's: `topFrame` is then false and a click is refused.
+  const frameOffset = (): { dx: number; dy: number } | null => {
+    let dx = 0;
+    let dy = 0;
     try {
-      return window.top === window.self;
+      let win: Window = window;
+      while (win !== win.top) {
+        const host = win.frameElement as HTMLElement | null;
+        if (!host) return null;
+        const box = host.getBoundingClientRect();
+        const style = win.parent.getComputedStyle(host);
+        dx += box.left + host.clientLeft + (parseFloat(style.paddingLeft) || 0);
+        dy += box.top + host.clientTop + (parseFloat(style.paddingTop) || 0);
+        win = win.parent;
+      }
     } catch {
-      return false;
+      return null;
     }
-  })();
+    return { dx, dy };
+  };
+  const topFrame = frameOffset() !== null;
+  const toTop = (x: number, y: number): { x: number; y: number } => {
+    const offset = frameOffset() ?? { dx: 0, dy: 0 };
+    return { x: x + offset.dx, y: y + offset.dy };
+  };
   const reject = (reason: string): MeasureResult => ({
     ok: false,
     x: 0,
@@ -213,9 +231,9 @@ export function measureTargetInPage(query: MeasureQuery): MeasureResult {
     if (hit !== element && !element.contains(hit) && !hostChain.includes(hit)) {
       return reject(`the box center is covered by <${hit.tagName.toLowerCase()}>`);
     }
-    return { ok: true, x, y, width, height, hit: hit.tagName.toLowerCase(), topFrame };
+    return { ok: true, ...toTop(x, y), width, height, hit: hit.tagName.toLowerCase(), topFrame };
   }
-  return { ok: true, x, y, width, height, hit: "", topFrame };
+  return { ok: true, ...toTop(x, y), width, height, hit: "", topFrame };
 }
 
 /** The query handed to the page-side settle: the marked element's token and the time it may take. */
@@ -238,13 +256,34 @@ export interface SettleQuery {
  */
 export function settleTargetInPage(query: SettleQuery): Promise<MeasureResult> {
   const MARKER = "data-pl-target";
-  const topFrame = (() => {
+  // PL-018b: a click is dispatched in TOP-viewport coordinates, but this document measures in its
+  // own viewport. In a same-origin frame, each enclosing iframe's content-box origin is added on the
+  // way up. A cross-origin parent hides `frameElement` (it reads null), so no offset is known and
+  // the coordinates are not the top viewport's: `topFrame` is then false and a click is refused.
+  const frameOffset = (): { dx: number; dy: number } | null => {
+    let dx = 0;
+    let dy = 0;
     try {
-      return window.top === window.self;
+      let win: Window = window;
+      while (win !== win.top) {
+        const host = win.frameElement as HTMLElement | null;
+        if (!host) return null;
+        const box = host.getBoundingClientRect();
+        const style = win.parent.getComputedStyle(host);
+        dx += box.left + host.clientLeft + (parseFloat(style.paddingLeft) || 0);
+        dy += box.top + host.clientTop + (parseFloat(style.paddingTop) || 0);
+        win = win.parent;
+      }
     } catch {
-      return false;
+      return null;
     }
-  })();
+    return { dx, dy };
+  };
+  const topFrame = frameOffset() !== null;
+  const toTop = (x: number, y: number): { x: number; y: number } => {
+    const offset = frameOffset() ?? { dx: 0, dy: 0 };
+    return { x: x + offset.dx, y: y + offset.dy };
+  };
   const failure = (reason: string): MeasureResult => ({
     ok: false,
     x: 0,
@@ -369,8 +408,7 @@ export function settleTargetInPage(query: SettleQuery): Promise<MeasureResult> {
           }
           return {
             ok: true,
-            x: frameB.left + frameB.width / 2,
-            y: frameB.top + frameB.height / 2,
+            ...toTop(frameB.left + frameB.width / 2, frameB.top + frameB.height / 2),
             width: frameB.width,
             height: frameB.height,
             hit: "",
@@ -400,13 +438,34 @@ export function settleTargetInPage(query: SettleQuery): Promise<MeasureResult> {
  */
 export function hitTestTargetInPage(query: MeasureQuery): MeasureResult {
   const MARKER = "data-pl-target";
-  const topFrame = (() => {
+  // PL-018b: a click is dispatched in TOP-viewport coordinates, but this document measures in its
+  // own viewport. In a same-origin frame, each enclosing iframe's content-box origin is added on the
+  // way up. A cross-origin parent hides `frameElement` (it reads null), so no offset is known and
+  // the coordinates are not the top viewport's: `topFrame` is then false and a click is refused.
+  const frameOffset = (): { dx: number; dy: number } | null => {
+    let dx = 0;
+    let dy = 0;
     try {
-      return window.top === window.self;
+      let win: Window = window;
+      while (win !== win.top) {
+        const host = win.frameElement as HTMLElement | null;
+        if (!host) return null;
+        const box = host.getBoundingClientRect();
+        const style = win.parent.getComputedStyle(host);
+        dx += box.left + host.clientLeft + (parseFloat(style.paddingLeft) || 0);
+        dy += box.top + host.clientTop + (parseFloat(style.paddingTop) || 0);
+        win = win.parent;
+      }
     } catch {
-      return false;
+      return null;
     }
-  })();
+    return { dx, dy };
+  };
+  const topFrame = frameOffset() !== null;
+  const toTop = (x: number, y: number): { x: number; y: number } => {
+    const offset = frameOffset() ?? { dx: 0, dy: 0 };
+    return { x: x + offset.dx, y: y + offset.dy };
+  };
   const reject = (reason: string): MeasureResult => ({
     ok: false,
     x: 0,
@@ -465,7 +524,7 @@ export function hitTestTargetInPage(query: MeasureQuery): MeasureResult {
   if (!fromPoint) {
     // jsdom has no elementFromPoint; in a browser it is present, so the check is real wherever a
     // click can actually be dispatched.
-    return { ok: true, x, y, width, height, hit: "", topFrame };
+    return { ok: true, ...toTop(x, y), width, height, hit: "", topFrame };
   }
   const hit = fromPoint.call(document, x, y);
   // A shadow target reports its host here, because the point lookup retargets across the shadow
@@ -488,7 +547,31 @@ export function hitTestTargetInPage(query: MeasureQuery): MeasureResult {
     node = hostEl;
   }
   if (hit && (hit === element || element.contains(hit) || hostChain.includes(hit))) {
-    return { ok: true, x, y, width, height, hit: hit.tagName.toLowerCase(), topFrame };
+    // In a frame, the point must also reach this frame in every enclosing document: an overlay in
+    // the parent page over the iframe would take the click even though the frame's own test passed.
+    let win: Window = window;
+    let px = x;
+    let py = y;
+    try {
+      while (win !== win.top) {
+        const host = win.frameElement as HTMLElement | null;
+        if (!host) break;
+        const box = host.getBoundingClientRect();
+        const style = win.parent.getComputedStyle(host);
+        px += box.left + host.clientLeft + (parseFloat(style.paddingLeft) || 0);
+        py += box.top + host.clientTop + (parseFloat(style.paddingTop) || 0);
+        const above = win.parent.document.elementFromPoint(px, py);
+        if (above !== host) {
+          return reject(
+            `the target is covered by another element (the frame is covered by <${above ? above.tagName.toLowerCase() : "nothing"}> in its parent page)`,
+          );
+        }
+        win = win.parent;
+      }
+    } catch {
+      return reject("the frame's parent page could not be read");
+    }
+    return { ok: true, ...toTop(x, y), width, height, hit: hit.tagName.toLowerCase(), topFrame };
   }
   return reject(
     hit

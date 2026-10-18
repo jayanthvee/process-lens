@@ -77,18 +77,39 @@ export class FrameContexts {
   private readonly byFrame = new Map<string, number>();
   private unsubscribe: (() => void) | null = null;
 
-  /** Start listening to `Runtime.executionContextCreated`. Idempotent. */
+  /**
+   * Start listening to the execution-context events. Idempotent.
+   *
+   * PL-018b: a context that is destroyed (its frame navigated or went away) is forgotten, and a
+   * "cleared" forgets them all, so a step never evaluates in a dead context id between a frame's
+   * navigation and its new context being reported.
+   */
   listen(cdp: CdpTransport): void {
     if (this.unsubscribe || !cdp.on) return;
-    this.unsubscribe = cdp.on("Runtime.executionContextCreated", (params) => {
-      const context = params["context"] as
-        | { id?: number; auxData?: { frameId?: string; isDefault?: boolean } }
-        | undefined;
-      const frameId = context?.auxData?.frameId;
-      if (frameId && typeof context?.id === "number" && context.auxData?.isDefault) {
-        this.byFrame.set(frameId, context.id);
-      }
-    });
+    const on = cdp.on.bind(cdp);
+    const offs = [
+      on("Runtime.executionContextCreated", (params) => {
+        const context = params["context"] as
+          | { id?: number; auxData?: { frameId?: string; isDefault?: boolean } }
+          | undefined;
+        const frameId = context?.auxData?.frameId;
+        if (frameId && typeof context?.id === "number" && context.auxData?.isDefault) {
+          this.byFrame.set(frameId, context.id);
+        }
+      }),
+      on("Runtime.executionContextDestroyed", (params) => {
+        const id = params["executionContextId"];
+        for (const [frameId, contextId] of this.byFrame) {
+          if (contextId === id) this.byFrame.delete(frameId);
+        }
+      }),
+      on("Runtime.executionContextsCleared", () => {
+        this.byFrame.clear();
+      }),
+    ];
+    this.unsubscribe = () => {
+      for (const off of offs) off();
+    };
   }
 
   /** The default execution context of a frame, once the page has reported it. */
@@ -104,6 +125,7 @@ export class FrameContexts {
   stop(): void {
     this.unsubscribe?.();
     this.unsubscribe = null;
+    this.byFrame.clear();
   }
 }
 

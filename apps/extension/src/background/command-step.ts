@@ -9,6 +9,7 @@
 // The split is a seam, not a rewrite: a prepare does exactly what the service worker used to do
 // before its early return, and a dispatch does exactly what it used to do after it.
 import type { CdpTransport } from "../executor/cdp";
+import type { FrameContexts } from "../executor/frames";
 import { checkChallengeOrLogin, checkDestructive, checkOrigin } from "../executor/guards";
 import {
   performStep,
@@ -26,6 +27,8 @@ export interface CommandStepOptions {
   beforeInput?: () => void;
   /** Fires once, after the first trusted input event (R2). */
   onFirstInput?: () => void;
+  /** The bound tab's frame contexts, so a step inside a same-origin iframe can run (PL-018b). */
+  frames?: FrameContexts;
 }
 
 function stepDeps(opts: CommandStepOptions): StepRunDeps {
@@ -35,6 +38,7 @@ function stepDeps(opts: CommandStepOptions): StepRunDeps {
     cdp: opts.cdp,
     commandMode: true,
     ...(opts.beforeInput ? { beforeInput: opts.beforeInput } : {}),
+    ...(opts.frames ? { frames: opts.frames } : {}),
   };
 }
 

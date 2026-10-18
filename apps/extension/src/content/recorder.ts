@@ -378,7 +378,21 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
    * element. Zero means the value arrived without typing, which tells the compiler the page set it.
    */
   const keystrokes = new Map<Element, number>();
-  const url = hooks.url ?? (() => doc.location?.href ?? "");
+  // PL-018b: a step taken inside a same-origin frame happened on the page the person is on, so it
+  // carries the TOP document's URL. The frame's own URL made the compiled recipe open the frame's
+  // page by itself, where the frame path then pointed at nothing. A cross-origin parent can't be
+  // read and keeps the frame's URL, as before.
+  const url =
+    hooks.url ??
+    ((): string => {
+      try {
+        const top = doc.defaultView?.top;
+        if (top && top !== doc.defaultView && top.location?.href) return top.location.href;
+      } catch {
+        // A cross-origin top window: fall through to this document's own URL.
+      }
+      return doc.location?.href ?? "";
+    });
   const stamp = hooks.now ?? (() => new Date().toISOString());
   const frame = computeFramePath(doc.defaultView ?? window);
 
