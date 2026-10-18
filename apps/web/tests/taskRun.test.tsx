@@ -683,4 +683,51 @@ describe("the preview row stopped for your decision", () => {
     expect(within(card).getByText("Adding this row in the ProcessLens window\u2026")).toBeTruthy();
     expect(within(card).queryByText("Waiting for your decision")).toBeNull();
   });
+  it("a row paused for anything but a decision says why and offers Resume in the card", async () => {
+    let paused = true;
+    const fetchStub = createFetchStub({
+      ...SHELL_WITH_OPERATOR,
+      "/api/v1/tasks": { body: [TASK] },
+      "/api/v1/batches/batch-1/check": { body: CHECK },
+      "/api/v1/batches/batch-1/mapping": { body: { batch_id: "batch-1", mapping: {} } },
+      "/api/v1/batches": { body: UPLOAD },
+      "/api/v1/runs": { body: { run_id: "run-preview", status: "queued" } },
+      "/api/v1/runs/run-preview": () => ({
+        body: paused
+          ? runDetail("paused", { pause_reason: "window_hidden" })
+          : runDetail("running"),
+      }),
+      "/api/v1/runs/run-preview/resume": () => {
+        paused = false;
+        return { body: runDetail("running") };
+      },
+    });
+    stub = fetchStub;
+    const view = renderApp("/tasks/wf-1/run");
+    await pump();
+    await addFile(view);
+    await act(async () => {
+      fireEvent.click(button("Continue"));
+    });
+    await pump();
+    await act(async () => {
+      fireEvent.click(button("Try it"));
+    });
+    await pump();
+    await pump();
+
+    const card = screen.getByText("3. Try one row").closest("section") as HTMLElement;
+    expect(within(card).getByText(/The ProcessLens window was hidden/)).toBeTruthy();
+    expect(within(card).queryByText("Adding this row in the ProcessLens window…")).toBeNull();
+    await act(async () => {
+      fireEvent.click(within(card).getByRole("button", { name: "Resume" }));
+    });
+    await pump();
+
+    const sent = fetchStub.requests.filter(
+      (call) => call.method === "POST" && call.path === "/api/v1/runs/run-preview/resume",
+    );
+    expect(sent).toHaveLength(1);
+    expect(within(card).getByText("Adding this row in the ProcessLens window…")).toBeTruthy();
+  });
 });

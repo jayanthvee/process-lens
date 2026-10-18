@@ -4,7 +4,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { ApprovalPanel } from "../components/ApprovalPanel";
 import { apiGet, apiPost, apiPostFile, apiPut, errorText } from "../lib/api";
 import { POLL_INTERVAL_MS, useJson } from "../lib/useJson";
-import { isOpenStatus, refusalWords, runStatusWords } from "../lib/words";
+import { isOpenStatus, pauseReasonWords, refusalWords, runStatusWords } from "../lib/words";
 import { runsBlocked, useWorkspaceState } from "../lib/workspace";
 import type {
   BatchCheck,
@@ -200,6 +200,20 @@ export function TaskRun(): JSX.Element {
   async function tryIt(): Promise<void> {
     const created = await create("preview");
     if (created !== null) setRunId(created);
+  }
+
+  async function resumeIt(): Promise<void> {
+    if (runId === null) return;
+    setBusy(true);
+    setProblem(null);
+    try {
+      await apiPost(`/api/v1/runs/${runId}/resume`);
+      run.reload();
+    } catch (failure) {
+      setProblem(refusalWords(errorText(failure)));
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function runTheRest(): Promise<void> {
@@ -433,6 +447,22 @@ export function TaskRun(): JSX.Element {
                 >
                   Try it
                 </button>
+              ) : runOpen && run.data?.status === "paused" ? (
+                // PL-040 review: a row that paused for anything but a decision says why, with
+                // the one button that carries on, here in the card that started it.
+                <>
+                  <span className="run-count run-paused">
+                    {pauseReasonWords(run.data.pause_reason) ?? "This row is paused."}
+                  </span>
+                  <button
+                    type="button"
+                    className="btn primary run-resume"
+                    disabled={busy}
+                    onClick={() => void resumeIt()}
+                  >
+                    Resume
+                  </button>
+                </>
               ) : runOpen ? (
                 <>
                   <span className="live">
