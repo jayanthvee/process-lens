@@ -1,11 +1,13 @@
 /**
- * The pure decisions the Needs help page makes: when the safety gate lets an action through, what
- * the request body carries, and the two endpoint paths.
+ * The decisions the row actions make: when the safety gate lets an action through, what the request
+ * body carries, the two endpoint paths, and the one call that sends it.
  *
  * This is the same shape PL-015's `src/logic.ts` had, so `needsHelp.test.tsx` can call these
  * functions directly as well as through the page. A commit-attempted row may already have been
  * saved, so the gate is the one place a person can get past the ledger's duplicate protection and
  * it is never one click (ticket PL-023 requirement 6; the safety rule is unchanged from PL-015).
+ * `sendRecordAction` is shared with a run's own rows (PL-038), so both screens send the same path
+ * and the same body.
  */
 
 import { apiPost } from "../lib/api";
