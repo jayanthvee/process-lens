@@ -71,6 +71,7 @@ from .models import (
     WeekCountsRow,
 )
 from .reads import (
+    keeps_failing_tasks,
     list_apps,
     list_needs_help,
     list_open_approvals,
@@ -177,6 +178,7 @@ __all__ = [
     "get_user",
     "heartbeat",
     "insert_batch",
+    "keeps_failing_tasks",
     "list_apps",
     "list_batch_rows",
     "list_needs_help",

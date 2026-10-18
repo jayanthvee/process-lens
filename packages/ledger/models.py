@@ -232,6 +232,14 @@ class TaskListRow:
 
 
 @dataclass(frozen=True)
+class KeepsFailingRow:
+    """One task that stopped working: the reason its last two finished runs both gave."""
+
+    workflow_id: uuid.UUID
+    reason: str
+
+
+@dataclass(frozen=True)
 class AppTaskRow:
     """One saved task that may use an app's site."""
 

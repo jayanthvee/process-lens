@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 
 import { useJson } from "../lib/useJson";
 import { isOpenStatus, relativeTime, runStatusWords } from "../lib/words";
+import { KeepsFailingWarning } from "../components/KeepsFailingWarning";
 import type { TaskRow } from "../types";
 import "./tasks.css";
 
@@ -102,6 +103,11 @@ export function Tasks(): JSX.Element {
                       {task.name}
                     </Link>
                     <small>{task.app ?? "No site yet"}</small>
+                    {/* PL-041: the task's last two runs both stopped the same way, so the task
+                        itself needs recording again. The warning sits on the task's own row. */}
+                    {task.keeps_failing == null ? null : (
+                      <KeepsFailingWarning keepsFailing={task.keeps_failing} />
+                    )}
                   </td>
                   <td>{relativeTime(task.last_run?.started_at ?? null)}</td>
                   <td>

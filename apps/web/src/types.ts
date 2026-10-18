@@ -126,6 +126,16 @@ export interface TaskRow {
   name: string;
   app: string | null;
   last_run: TaskLastRun | null;
+  /**
+   * Set only on `GET /api/v1/tasks`, and only while the task's last two finished runs both added
+   * nothing and stopped for the same reason (PL-041).
+   */
+  keeps_failing?: KeepsFailing | null;
+}
+
+/** The reason a task's last two runs both stopped for, in the runner's own words. */
+export interface KeepsFailing {
+  reason: string;
 }
 
 /** A task's most recent run. */

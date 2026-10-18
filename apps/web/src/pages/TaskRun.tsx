@@ -2,6 +2,7 @@ import { type CSSProperties, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 
 import { ApprovalPanel } from "../components/ApprovalPanel";
+import { KeepsFailingWarning } from "../components/KeepsFailingWarning";
 import { WaitingRun } from "../components/WaitingRun";
 import { apiGet, apiPost, apiPostFile, apiPut, errorText } from "../lib/api";
 import { POLL_INTERVAL_MS, useJson } from "../lib/useJson";
@@ -261,6 +262,11 @@ export function TaskRun(): JSX.Element {
         <div>
           <h1 className="big">{task.name}</h1>
           <p className="lede">Your spreadsheet, one step at a time.</p>
+          {/* PL-041: the last two runs both stopped the same way, so this task needs recording
+              again. Said here, before a spreadsheet is added, with the fix beside it. */}
+          {task.keeps_failing == null ? null : (
+            <KeepsFailingWarning keepsFailing={task.keeps_failing} />
+          )}
         </div>
       </section>
 
