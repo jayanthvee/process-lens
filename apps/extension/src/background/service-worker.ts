@@ -668,14 +668,22 @@ function getCommandSession(): CommandSession {
       const id: ReturnType<typeof setInterval> = setInterval(fn, ms);
       return () => clearInterval(id);
     },
-    // PL-037: the session works in a tab of its own, opened blank in the background. Binding the
-    // ACTIVE tab took over whatever the person was looking at -- the dashboard, or a new-tab page,
-    // which is a chrome:// URL the debugger may not attach to, so every row then failed.
+    // PL-037: the session works in a window of its own. Binding the ACTIVE tab took over whatever
+    // the person was looking at -- the dashboard, or a new-tab page, which is a chrome:// URL the
+    // debugger may not attach to. A background TAB is no better: Chrome stops drawing hidden tabs,
+    // and an app like Odoo never finishes rendering there. A separate visible window keeps drawing
+    // while the person works in their own tabs, and lets them watch the run.
     bindActiveTab: async () => {
       let tabId: number | null = null;
       try {
-        const tab = await chrome.tabs.create({ url: "about:blank", active: false });
-        tabId = tab.id ?? null;
+        const win = await chrome.windows.create({
+          url: "about:blank",
+          focused: true,
+          type: "normal",
+          width: 1200,
+          height: 860,
+        });
+        tabId = win?.tabs?.[0]?.id ?? null;
       } catch {
         const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
         tabId = tabs[0]?.id ?? null;
