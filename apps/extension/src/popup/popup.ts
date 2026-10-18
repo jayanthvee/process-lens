@@ -204,7 +204,13 @@ function download(events: RecordedEvent[]): void {
 }
 
 startButton.addEventListener("click", () => {
-  void send({ type: "record:start" }).then((response) => render(response.status));
+  // The popup's own window is the one the person is looking at, so its active tab is the page.
+  void chrome.tabs
+    .query({ active: true, currentWindow: true })
+    .then((tabs) => tabs[0]?.id)
+    .catch(() => undefined)
+    .then((tabId) => send({ type: "record:start", ...(tabId !== undefined ? { tabId } : {}) }))
+    .then((response) => render(response.status));
 });
 
 stopButton.addEventListener("click", () => {

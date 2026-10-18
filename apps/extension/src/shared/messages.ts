@@ -50,7 +50,9 @@ export const EMPTY_EXECUTOR_STATUS: ExecutorStatus = {
 /** Sent from a content script or the popup to the service worker. */
 export type ToWorker =
   | { type: "record:event"; event: PendingEvent }
-  | { type: "record:start" }
+  // `tabId`: the tab the popup is looking at. The worker cannot know it: its "current window" is
+  // whichever window was focused last, which may be the ProcessLens work window (PL-039 review).
+  | { type: "record:start"; tabId?: number }
   | { type: "record:stop" }
   | { type: "record:clear" }
   | { type: "record:get" }

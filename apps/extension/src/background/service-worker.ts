@@ -350,9 +350,14 @@ export async function startRecordingOnActiveTab(deps: StartGuardDeps): Promise<R
 }
 
 /** The real deps: the active tab of the current window, and one message to it. */
-function startGuardDeps(): StartGuardDeps {
+function startGuardDeps(tabId?: number): StartGuardDeps {
   return {
-    activeTab: async () => (await chrome.tabs.query({ active: true, currentWindow: true }))[0],
+    // The popup names the tab it is looking at. Without one (an older popup), fall back to the
+    // last focused window's active tab.
+    activeTab: async () =>
+      tabId !== undefined
+        ? await chrome.tabs.get(tabId).catch(() => undefined)
+        : (await chrome.tabs.query({ active: true, currentWindow: true }))[0],
     ping: (tabId, message) => chrome.tabs.sendMessage(tabId, message),
   };
 }
@@ -974,7 +979,10 @@ async function handle(message: ToWorker, sender?: chrome.runtime.MessageSender):
     case "record:start":
       // PL-039: the ping first. A tab whose content script the extension reload orphaned
       // records nothing, so the start is refused with the refresh warning instead.
-      await startRecordingOnActiveTab({ ...startGuardDeps(), senderTabId: sendingTabId });
+      await startRecordingOnActiveTab({
+        ...startGuardDeps(message.tabId),
+        senderTabId: sendingTabId,
+      });
       break;
     case "record:stop":
       stop();
