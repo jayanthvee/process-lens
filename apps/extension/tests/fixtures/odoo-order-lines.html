@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<!-- PL-048: the Odoo 18 quotation's editable order-line markup, copied from the real app
+     (infra/test-apps odoo, sale.order form, order-line x2many list). The customer many2one
+     sits above the list; the list has a handle column, then Product / Quantity / Unit Price.
+     One read-only row and one editing row: the editing row's product cell carries the
+     o-autocomplete input (role="combobox", placeholder "Search a product") and the quantity
+     cell a bare input.o_input with no placeholder and no label -- neither field has an
+     accessible name of its own, which is why PL-046's replay could not name them.
+
+     Two more variants exercise the header-position rule: a table whose Product header spans
+     two columns (colspan), and an ARIA grid whose cells carry aria-colindex. The sort caret
+     in the Product header carries a glyph character so the tests can pin that sort arrows
+     and icon glyphs are left out of the header name. -->
+<html lang="en">
+  <body>
+    <div id="quote">
+      <div name="partner_id" class="o_field_widget o_required_modifier o_field_res_partner_many2one">
+        <label for="partner_id_0">Customer</label>
+        <div class="o_field_many2one_selection">
+          <div class="o_input_dropdown">
+            <div class="o-autocomplete dropdown">
+              <input
+                type="text"
+                id="partner_id_0"
+                class="o-autocomplete--input o_input pe-3"
+                autocomplete="off"
+                role="combobox"
+                aria-autocomplete="list"
+                aria-haspopup="listbox"
+                placeholder="Type to find a customer..."
+                aria-expanded="false"
+              />
+            </div>
+            <span class="o_dropdown_button"></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="o_field_x2many_list_row_add">
+        <table class="o_list_table table table-sm table-hover position-relative mb-0 o_list_table_ungrouped">
+          <thead>
+            <tr>
+              <th
+                data-tooltip-delay="1000"
+                tabindex="-1"
+                data-name="sequence"
+                class="align-middle o_column_sortable position-relative cursor-pointer o_list_number_th o_handle_cell opacity-trigger-hover w-print-auto"
+                style="width: 29px"
+              ></th>
+              <th
+                data-tooltip-delay="1000"
+                tabindex="-1"
+                data-name="product_template_id"
+                class="align-middle cursor-default o_sol_product_many2one_cell opacity-trigger-hover w-print-auto"
+                style="width: 409px"
+              >
+                <div class="d-flex" data-tooltip-template="web.ListHeaderTooltip">
+                  <span class="d-block min-w-0 text-truncate flex-grow-1 flex-shrink-1">Product</span>
+                  <div class="o_list_header_label_spacer"></div>
+                  <i class="o_list_sortable_caret d-none fa-angle-down opacity-0 opacity-100-hover">&#9662;</i>
+                </div>
+                <span
+                  class="o_resize position-absolute top-0 end-0 bottom-0 ps-1 bg-black-25 opacity-0 opacity-50-hover z-1"
+                ></span>
+              </th>
+              <th
+                data-tooltip-delay="1000"
+                tabindex="-1"
+                data-name="product_uom_qty"
+                class="align-middle o_column_sortable position-relative cursor-pointer o_list_number_th opacity-trigger-hover w-print-auto"
+                style="width: 92px"
+              >
+                <div class="d-flex" data-tooltip-template="web.ListHeaderTooltip">
+                  <span class="d-block min-w-0 text-truncate flex-grow-1 flex-shrink-1">Quantity</span>
+                  <div class="o_list_header_label_spacer"></div>
+                  <i class="o_list_sortable_caret d-none fa-angle-down opacity-0 opacity-100-hover">&#9662;</i>
+                </div>
+                <span
+                  class="o_resize position-absolute top-0 end-0 bottom-0 ps-1 bg-black-25 opacity-0 opacity-50-hover z-1"
+                ></span>
+              </th>
+              <th
+                data-tooltip-delay="1000"
+                tabindex="-1"
+                data-name="price_unit"
+                class="align-middle o_column_sortable position-relative cursor-pointer o_list_number_th opacity-trigger-hover w-print-auto"
+                style="width: 88px"
+              >
+                <div class="d-flex" data-tooltip-template="web.ListHeaderTooltip">
+                  <span class="d-block min-w-0 text-truncate flex-grow-1 flex-shrink-1">Unit Price</span>
+                  <div class="o_list_header_label_spacer"></div>
+                  <i class="o_list_sortable_caret d-none fa-angle-down opacity-0 opacity-100-hover">&#9662;</i>
+                </div>
+                <span
+                  class="o_resize position-absolute top-0 end-0 bottom-0 ps-1 bg-black-25 opacity-0 opacity-50-hover z-1"
+                ></span>
+              </th>
+            </tr>
+          </thead>
+          <tbody class="ui-sortable">
+            <!-- The demonstration's own line, read-only: a cell's text is its name, unchanged. -->
+            <tr class="o_data_row o_row_draggable" data-id="datapoint_11">
+              <td
+                class="o_data_cell cursor-pointer o_field_cell o_list_number o_handle_cell"
+                data-tooltip-delay="1000"
+                tabindex="-1"
+                name="sequence"
+              >
+                <div name="sequence" class="o_field_widget o_field_handle">
+                  <span class="o_row_handle oi oi-draggable ui-sortable-handle"></span>
+                </div>
+              </td>
+              <td
+                class="o_data_cell cursor-pointer o_field_cell o_list_many2one o_sol_product_many2one_cell"
+                data-tooltip-delay="1000"
+                tabindex="-1"
+                name="product_template_id"
+              >
+                <div name="product_template_id" class="o_field_widget o_field_sol_product_many2one">
+                  <div class="o_field_product_label_section_and_note_cell">
+                    <span class="text-truncate">Mesh Task Chair</span>
+                  </div>
+                </div>
+              </td>
+              <td
+                class="o_data_cell cursor-pointer o_field_cell o_list_number"
+                data-tooltip-delay="1000"
+                tabindex="-1"
+                name="product_uom_qty"
+              >
+                <span class="o_list_number">3.00</span>
+              </td>
+              <td
+                class="o_data_cell cursor-pointer o_field_cell o_list_number"
+                data-tooltip-delay="1000"
+                tabindex="-1"
+                name="price_unit"
+              >
+                <span class="o_list_number">85.00</span>
+              </td>
+            </tr>
+            <!-- The row being edited: Odoo renders inputs only here. -->
+            <tr class="o_data_row o_selected_row o_row_draggable" data-id="datapoint_12">
+              <td
+                class="o_data_cell cursor-pointer o_field_cell o_list_number o_handle_cell"
+                data-tooltip-delay="1000"
+                tabindex="-1"
+                name="sequence"
+              >
+                <div name="sequence" class="o_field_widget o_field_handle">
+                  <span class="o_row_handle oi oi-draggable ui-sortable-handle"></span>
+                </div>
+              </td>
+              <td
+                class="o_data_cell cursor-pointer o_field_cell o_list_many2one o_sol_product_many2one_cell o_required_modifier"
+                data-tooltip-delay="1000"
+                tabindex="-1"
+                name="product_template_id"
+              >
+                <div name="product_template_id" class="o_field_widget o_required_modifier o_field_sol_product_many2one">
+                  <div class="o_field_product_label_section_and_note_cell">
+                    <div class="d-flex align-items-center justify-content-between">
+                      <div class="o_input_dropdown">
+                        <div class="o-autocomplete dropdown">
+                          <input
+                            type="text"
+                            class="o-autocomplete--input o_input pe-3"
+                            autocomplete="off"
+                            role="combobox"
+                            aria-autocomplete="list"
+                            aria-haspopup="listbox"
+                            placeholder="Search a product"
+                            aria-expanded="false"
+                          />
+                        </div>
+                        <span class="o_dropdown_button"></span>
+                      </div>
+                      <button
+                        class="btn fa fa-bars text-start o_external_button px-1"
+                        data-tooltip="Click or press enter to add a description"
+                        id="labelVisibilityButtonId"
+                        type="button"
+                      ></button>
+                    </div>
+                  </div>
+                </div>
+              </td>
+              <td
+                class="o_data_cell cursor-pointer o_field_cell o_list_number o_required_modifier"
+                data-tooltip-delay="1000"
+                tabindex="-1"
+                name="product_uom_qty"
+              >
+                <div name="product_uom_qty" class="o_field_widget o_required_modifier o_field_float">
+                  <input inputmode="decimal" class="o_input" autocomplete="off" type="text" />
+                </div>
+              </td>
+              <td
+                class="o_data_cell cursor-pointer o_field_cell o_list_number"
+                data-tooltip-delay="1000"
+                tabindex="-1"
+                name="price_unit"
+              >
+                <span class="o_list_number">0.00</span>
+              </td>
+            </tr>
+            <tr>
+              <td></td>
+              <td class="o_field_x2many_list_row_add" colspan="7">
+                <a href="#" role="button" tabindex="-1">Add a product</a>
+                <a href="#" role="button" class="ml16" tabindex="-1">Add a section</a>
+                <a href="#" role="button" class="ml16" tabindex="-1">Add a note</a>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Variant: the Product header spans the product and description columns, so a control in
+         either one is named "Product"; the Quantity header sits one column further right. -->
+    <div id="colspan-variant">
+      <table class="o_list_table table table-sm">
+        <thead>
+          <tr>
+            <th colspan="2"><span>Product</span></th>
+            <th><span>Quantity</span></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td name="product_template_id">
+              <input
+                type="text"
+                class="o-autocomplete--input o_input"
+                autocomplete="off"
+                role="combobox"
+                placeholder="Search a product"
+              />
+            </td>
+            <td name="name">
+              <input inputmode="text" class="o_input" autocomplete="off" type="text" />
+            </td>
+            <td name="product_uom_qty">
+              <input inputmode="decimal" class="o_input" autocomplete="off" type="text" />
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Variant: an ARIA grid whose cells and headers carry aria-colindex. -->
+    <div id="colindex-variant">
+      <div role="table" aria-label="Order lines">
+        <div role="row">
+          <span role="columnheader" aria-colindex="1">SKU</span>
+          <span role="columnheader" aria-colindex="2">Quantity</span>
+        </div>
+        <div role="row">
+          <span role="cell" aria-colindex="1">
+            <input type="text" class="o_input" autocomplete="off" />
+          </span>
+          <span role="cell" aria-colindex="2">
+            <input inputmode="decimal" class="o_input" autocomplete="off" type="text" />
+          </span>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>
