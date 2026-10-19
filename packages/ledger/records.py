@@ -131,9 +131,17 @@ def change_state(
     new: str,
     reason: str,
     error: Any = None,
+    refund_attempt: bool = False,
 ) -> None:
-    """Move a record to ``new`` when it is in ``expected`` and this worker's lease is live."""
+    """Move a record to ``new`` when it is in ``expected`` and this worker's lease is live.
+
+    ``refund_attempt`` marks a release to ``pending`` caused by a pause, not a failure: the guard
+    (migration 0009) gives the claim's attempt back. Call it inside the caller's transaction, since
+    the mark is transaction-local.
+    """
     with conn.cursor() as cur, guard_refusal_is_typed():
+        if refund_attempt:
+            cur.execute("SELECT set_config('processlens.refund_attempt', 'on', true)")
         cur.execute(
             _CHANGE_STATE,
             {
@@ -146,7 +154,11 @@ def change_state(
                 "epoch": epoch,
             },
         )
-        if cur.rowcount == 0:
+        moved = cur.rowcount
+        if refund_attempt:
+            # The mark covers this one update, not whatever else the transaction goes on to do.
+            cur.execute("SELECT set_config('processlens.refund_attempt', 'off', true)")
+        if moved == 0:
             _classify_miss(conn, record_id, worker=worker, epoch=epoch)
 
 
