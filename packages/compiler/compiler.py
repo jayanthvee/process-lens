@@ -18,6 +18,7 @@ from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from typing import Any
+from urllib.parse import urlsplit
 
 from .assertions import (
     DEFAULT_ASSERTION_TIMEOUT_MS,
@@ -1088,6 +1089,36 @@ def _required_columns(options: CompileOptions) -> set[str]:
     return required
 
 
+def _page_change_start(prior_candidates: list[Candidate], save_path: str) -> int:
+    """PL-044: where the entry a save belongs to begins among the steps before it.
+
+    A recording may hold an abandoned entry before the real one: a New click, a
+    stray pick, a visit to a record's own page. Walking back from the save, the
+    last step that moved the page ends everything before it -- a navigate step, a
+    step whose after_url landed on a path other than the save's page, or an
+    observation whose url_matches does not fit the save's page. With no page
+    change the whole recording is one entry, which is the behavior before
+    PL-044. A candidate whose observation carries no URL says nothing about the
+    page, so it never counts as a page change.
+    """
+    start = 0
+    for index, previous in enumerate(prior_candidates):
+        if previous.action == "navigate":
+            start = index + 1
+            continue
+        if previous.after_url and urlsplit(previous.after_url).path != save_path:
+            start = index + 1
+            continue
+        pattern = (previous.observation or {}).get("url_matches")
+        if isinstance(pattern, str) and pattern:
+            try:
+                if re.fullmatch(pattern, save_path) is None:
+                    start = index + 1
+            except re.error:
+                pass
+    return start
+
+
 def _infer_assertion_from_fills(
     candidate: Candidate,
     prior_candidates: list[Candidate],
@@ -1100,6 +1131,10 @@ def _infer_assertion_from_fills(
     from the record key or a required column; the text it then waits for is the FIRST templated
     fill of the form, because that is the field a list or kanban card shows as the record's name
     (Odoo's quick-create card shows the contact, never the email the key may be).
+
+    PL-044: only the entry the save belongs to counts -- the steps after the last page
+    change before the save. An abandoned entry before it (a stray pick on the same page,
+    a visit to another record) must not become the save's check.
     """
     if candidate.action != "click" or candidate.observation or candidate.after_url:
         return None
@@ -1113,7 +1148,8 @@ def _infer_assertion_from_fills(
     # PL-037: the first thing entered in the form, typed or picked. A contact picked straight from
     # the open list is a record's name the new card shows, just like a typed one.
     first_entry: str | None = None
-    for previous in prior_candidates:
+    entry_start = _page_change_start(prior_candidates, urlsplit(candidate.url).path)
+    for previous in prior_candidates[entry_start:]:
         if previous.action == "click" and _is_option_click(previous) and first_entry is None:
             picked = next(
                 (

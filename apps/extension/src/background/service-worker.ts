@@ -35,10 +35,11 @@ import {
 import { resolverExpression } from "../executor/ladder";
 import { ExecutorError, type ExecutorRecipe, type StepReport } from "../executor/types";
 import {
-  WINDOW_HIDDEN_MESSAGE,
   ensureVisible,
   pageIsHidden,
+  windowHiddenMessage,
   type VisibilityDeps,
+  type VisibilityReport,
 } from "../executor/visibility";
 import { dispatchCommandStep, prepareCommandStep } from "./command-step";
 import { canRemoveStep, RecorderSession, shouldRecordNavigation } from "./recorder-session";
@@ -626,6 +627,8 @@ async function runCommandStep(
   if (tabId === null || tabId < 0) throw new Error("no tab is bound to this session");
 
   let attached = false;
+  /** The last report `ensureVisible` produced, for the `window_hidden` conversion (PL-045). */
+  let visibleReport: VisibilityReport | undefined;
   try {
     const cdp = await ensureDebugger(tabId);
     attached = true;
@@ -637,7 +640,11 @@ async function runCommandStep(
       beforeInput: opts.beforeInput,
       onFirstInput: opts.sentInput,
       frames: commandFrames,
-      ensureVisible: () => ensureVisible(workTabVisibility(cdp, tabId)),
+      ensureVisible: async () => {
+        const report = await ensureVisible(workTabVisibility(cdp, tabId));
+        visibleReport = report;
+        return report;
+      },
     };
     return opts.phase === "prepare"
       ? await prepareCommandStep(step, body)
@@ -645,11 +652,24 @@ async function runCommandStep(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (classifyAttachError(message) === "policy_blocked") throw new Error(POLICY_BLOCKED_MESSAGE);
+    // PL-045: the full report goes to the worker console; a person reading the run only sees the
+    // `window_hidden` detail, which carries the same one-line summary.
+    if (visibleReport && error instanceof ExecutorError && error.event === "window_hidden") {
+      console.warn("[processlens] the work window stayed hidden", visibleReport);
+    }
     // PL-040: the window was hidden while the step ran (the target never settled, the form never
     // drew). The step's own message hides the cause, so it is reported as the run-level event.
     if (error instanceof ExecutorError && !error.event && commandCdpToken) {
       if (await pageIsHidden(commandCdpToken)) {
-        throw new ExecutorError(WINDOW_HIDDEN_MESSAGE, error.stepId, "park", "window_hidden");
+        if (visibleReport) {
+          console.warn("[processlens] the work window stayed hidden", visibleReport);
+        }
+        throw new ExecutorError(
+          windowHiddenMessage(visibleReport),
+          error.stepId,
+          "park",
+          "window_hidden",
+        );
       }
     }
     throw error;
@@ -660,10 +680,23 @@ async function runCommandStep(
   }
 }
 
-/** PL-040: how the session checks and raises the work tab. */
+/** PL-040: how the session checks and raises the work tab. PL-045: and what Chrome says about it. */
 function workTabVisibility(cdp: CdpTransport, tabId: number): VisibilityDeps {
   return {
     isHidden: () => pageIsHidden(cdp),
+    windowFacts: async () => {
+      try {
+        const tab = await chrome.tabs.get(tabId);
+        const win = await chrome.windows.get(tab.windowId);
+        return {
+          state: win.state ?? "unknown",
+          focused: win.focused === true,
+          tabActive: tab.active === true,
+        };
+      } catch {
+        return undefined;
+      }
+    },
     bringForward: async () => {
       const tab = await chrome.tabs.update(tabId, { active: true });
       if (tab?.windowId === undefined) return;

@@ -8,3 +8,6 @@
 - **Checked with the real compiler:** the trimmed fixture compiles `click-8` as the commit, with `text_count_increases`.
 
 **Noted for later (compiler).** The owner's recording starts with an abandoned entry (New → pick a contact → open the contact's page). The PL-037 rule takes the first option pick as the save check's text, so the check counts that constant contact rather than the row's own. The fix is either to prefer the templated entry closest to the save, or to let the person delete the stray steps (PL-043).
+
+## T1 fix after the browser suite
+The recorder logs a form save as a click and then a `submit` of the same control (the compiler folds the pair). `firstEntryEvents` counted that pair as two saves, so every single-save recording was trimmed between the click and its submit, dropping the save's confirmation; the first row then parked with "could not verify the save" and the run paused (`canary_failed`) in all three recording e2e tests. A `submit` no longer counts as a second save, and a trimmed entry keeps the first save's submit and observation. Two vitest cases cover it. Gates: extension check 486 passed; full e2e 23 passed (17 min).
