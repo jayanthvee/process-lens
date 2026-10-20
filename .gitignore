@@ -55,3 +55,8 @@ Thumbs.db
 
 # Packaging metadata written by editable installs
 *.egg-info/
+
+# The extension's private key, if it ever lands in the tree by accident (PL-052).
+*.pem
+# The extension's release zips: built, never committed.
+apps/extension/release/

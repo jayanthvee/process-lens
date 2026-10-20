@@ -6,7 +6,8 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const dist = resolve(root, "dist");
+// `npm run package` validates the build it is about to zip; a plain run checks `dist/`.
+const dist = resolve(process.env.PROCESSLENS_DIST ?? resolve(root, "dist"));
 
 const problems = [];
 const notes = [];
