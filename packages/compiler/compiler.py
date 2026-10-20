@@ -1110,6 +1110,54 @@ def _resolve_commit_assertion(
     )
 
 
+MANUAL_SECONDS_MIN = 1
+MANUAL_SECONDS_MAX = 86400
+
+
+def _manual_seconds_per_row(candidates: list[Candidate], events: list[Event]) -> int | None:
+    """PL-060: how long the demonstrated row took, in whole seconds.
+
+    The demonstration is the one real measurement of manual effort in the whole system, so it is
+    taken from the kept steps themselves: the first kept event's ``at`` to the commit's own
+    ``at`` (or the last kept event when no step commits). Steps dropped by the folds are not part
+    of the entry the recipe was built from, so they are not part of the measurement either.
+
+    ``None`` -- the field is left out, silently -- whenever the recording cannot support a number:
+    fewer than two kept events carry a parseable ``at``, the span is negative or longer than a
+    day, or the two timestamps cannot be compared. A row that took under a second still took
+    time, so it rounds up to one.
+    """
+    if not candidates:
+        return None
+    stamps = {event.seq: _parse_iso(event.at) for event in events}
+    start: Any = None
+    end: Any = None
+    parseable = 0
+    for candidate in candidates:
+        at = stamps.get(candidate.seq)
+        if at is None:
+            if candidate.commit:
+                # The commit is where the measurement ends; without its time there is none.
+                return None
+            continue
+        parseable += 1
+        if start is None:
+            start = at
+        end = at
+        if candidate.commit:
+            break
+    if parseable < 2:
+        return None
+    try:
+        seconds = (end - start).total_seconds()
+    except TypeError:
+        # A recording mixing naive and offset timestamps has no comparable span.
+        return None
+    if seconds < 0 or seconds > MANUAL_SECONDS_MAX:
+        return None
+    return max(MANUAL_SECONDS_MIN, round(seconds))
+
+
 def _required_columns(options: CompileOptions) -> set[str]:
     """Columns the input schema marks required, plus any park_fields."""
     required: set[str] = set()
@@ -1274,6 +1322,13 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
         )
     else:
         searched_column = ""
+
+    # PL-060: the demonstration is the one real measurement of manual effort, so the recipe
+    # remembers it. A recording whose timestamps cannot support a number simply carries none.
+    manual_seconds = _manual_seconds_per_row(parameterized, events)
+    if manual_seconds is not None:
+        meta["manual_seconds_per_row"] = manual_seconds
+        warnings.append(f"one row took about {manual_seconds} seconds by hand")
 
     without_assertion: list[str] = []
     for index, candidate in enumerate(parameterized):

@@ -131,6 +131,12 @@
           "maxItems": 20,
           "uniqueItems": true,
           "items": { "$ref": "#/$defs/origin" }
+        },
+        "manual_seconds_per_row": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 86400,
+          "description": "How long one row took the person by hand, measured from the demonstration."
         }
       }
     },
