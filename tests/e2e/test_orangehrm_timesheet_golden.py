@@ -32,12 +32,18 @@ import pytest
 
 pytestmark = [pytest.mark.e2e, pytest.mark.real_apps]
 
-# The one failure this golden finds is a compiler bug, not a flaky test: see the module docstring
-# for the exact parked reason and the fix it needs. `strict=True` means a compiler fix turns this
-# into a failure (XPASS), which is exactly what should happen then.
+# PL-069's finding is fixed in the recorder (PL-073): a toast built from a title and a message now
+# records the message, so the save check is one the page really shows. This golden cannot yet
+# confirm that end to end: its own demonstration stops earlier, in the project autocomplete -- the
+# field arrives prefilled with the last project, so typing appends to it and the app answers "No
+# Records Found" (evidence in `.cache` probes and the PL-073 report). Fixing that means editing
+# this file's demonstration code, which PL-073's file limit allows only for the marker, so the
+# marker stays with the reason below. `strict=True` means the run that passes turns into a failing
+# XPASS, which is the signal to remove it.
 XFAIL_REASON = (
-    "canary parked at the save step: the compiler derived assert_after text_visible "
-    '"SuccessSuccessfully Saved\u2026", which OrangeHRM never shows (the toast text is duplicated)'
+    "the demonstration stops before the replay: the timesheet's project autocomplete arrives "
+    "prefilled, so typing appends to it and the dropdown answers 'No Records Found' (a harness "
+    "defect in this file; the PL-073 recorder fix is unit-tested and green)"
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
