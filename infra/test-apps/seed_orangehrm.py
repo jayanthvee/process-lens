@@ -308,10 +308,18 @@ def clear_timesheets(app: OrangeHRM, employee: int, week_start: date, log: Log) 
             continue
         timesheet_id = int(timesheet["id"])
         entries = app.get(f"/time/employees/timesheets/{timesheet_id}/entries")
-        ids = [int(entry["id"]) for entry in (entries or {}).get("data", [])]
-        if ids:
-            app.delete(f"/time/employees/timesheets/{timesheet_id}/entries", {"ids": ids})
-            removed += len(ids)
+        # A row is a project and an activity, with no id of its own; the grid's own save removes
+        # one by naming the pair in `deletedEntries`, so the reset does the same.
+        rows = [
+            {"projectId": int(entry["project"]["id"]), "activityId": int(entry["activity"]["id"])}
+            for entry in (entries or {}).get("data", [])
+        ]
+        if rows:
+            app.put(
+                f"/time/employees/timesheets/{timesheet_id}/entries",
+                {"entries": [], "deletedEntries": rows},
+            )
+            removed += len(rows)
     if removed:
         log(f"removed {removed} timesheet row(s) for the week of {week_start.isoformat()}")
     return removed
