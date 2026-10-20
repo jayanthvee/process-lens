@@ -406,28 +406,40 @@ export async function resolveStepTarget(
     if ((step.targets ?? []).length === 0) {
       return { ok: false, error: `step ${step.id} has no target ladder` };
     }
-    const { result, token } = await resolveWhenReady(deps.cdp, step, deps, contextId);
-    if (!result.ok) {
-      return { ok: false, error: `${result.error ?? "no rung matched"}${attemptTrail(result)}` };
-    }
-    // A click lands at a measured box center, so its target is hit-tested here.
-    // A fill or a select acts on the element itself and needs no box; measuring
-    // one would refuse an off-screen field that a focus can still reach.
-    if (step.action === "click") {
-      try {
-        await measureTarget(deps.cdp, token, contextId);
-      } catch (error) {
-        return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    // A click's prepare can lose its target the same way the click itself can (see the click
+    // branch of runStep): Odoo redraws an autocomplete's options while the pick is being prepared,
+    // so the marked option is gone when its box is measured. Nothing has been pressed yet, so the
+    // ladder is climbed again, bounded by the ready wait.
+    const prepareDeadline = Date.now() + readyWaitMs(step);
+    for (;;) {
+      const { result, token } = await resolveWhenReady(deps.cdp, step, deps, contextId);
+      if (!result.ok) {
+        return { ok: false, error: `${result.error ?? "no rung matched"}${attemptTrail(result)}` };
       }
+      // A click lands at a measured box center, so its target is hit-tested here.
+      // A fill or a select acts on the element itself and needs no box; measuring
+      // one would refuse an off-screen field that a focus can still reach.
+      if (step.action === "click") {
+        try {
+          await measureTarget(deps.cdp, token, contextId);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (message.includes("no longer in the document") && Date.now() < prepareDeadline) {
+            await delay(READY_WAIT_POLL_MS);
+            continue;
+          }
+          return { ok: false, error: message };
+        }
+      }
+      return {
+        ok: true,
+        token,
+        rung: result.rung,
+        by: result.by,
+        tag: result.tag,
+        name: result.name ?? "",
+      };
     }
-    return {
-      ok: true,
-      token,
-      rung: result.rung,
-      by: result.by,
-      tag: result.tag,
-      name: result.name ?? "",
-    };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
   }
