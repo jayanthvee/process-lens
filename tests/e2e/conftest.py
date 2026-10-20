@@ -316,8 +316,12 @@ class Harness:
         *,
         recipe: dict[str, Any] | None = None,
         key_column: str = "email",
+        tenant_id: str | None = None,
     ) -> str:
         """Seed one tenant/workflow/batch, ingest the recipe, and create the run through the API.
+
+        ``tenant_id`` puts the run in an existing tenant instead of a fresh one: a route that checks
+        the person's tenant (PL-068's verification code) needs the run in the API operator's own.
 
         ``key_column`` names the row column the ledger's *input record* key is taken from. It is
         not the recipe's ``record_key`` (the runner renders that from the recipe); it only has to
@@ -331,9 +335,10 @@ class Harness:
         document = recipe if recipe is not None else self.recipe()
         document = _rewrite_origin(document, self.crm_port)
         with psycopg.connect(self.dsn, autocommit=True) as conn:
-            tenant_id = self._one(
-                conn, "INSERT INTO tenants (name) VALUES ('e2e tenant') RETURNING id"
-            )
+            if tenant_id is None:
+                tenant_id = self._one(
+                    conn, "INSERT INTO tenants (name) VALUES ('e2e tenant') RETURNING id"
+                )
             workflow_id = self._one(
                 conn,
                 "INSERT INTO workflows (tenant_id, name, destination_key, allowed_origins) "
@@ -1079,10 +1084,11 @@ def api_server(database_url: str, extension_id: str) -> Iterator[dict[str, Any]]
     env = dict(os.environ)
     env["DATABASE_URL"] = database_url
     env["PROCESSLENS_EXTENSION_ID"] = extension_id
+    operator = _session_operator(database_url)
     env["PROCESSLENS_RUNNER_SECRET"] = RUNNER_SECRET
     # PL-030: the popup's Save as task stores the task under the configured operator, so the API
     # needs one, or every compile_via_popup would read the failed save as a refusal.
-    env["PROCESSLENS_OPERATOR_ID"] = _session_operator(database_url)
+    env["PROCESSLENS_OPERATOR_ID"] = operator
     env["PYTHONPATH"] = str(REPO_ROOT)
     process = subprocess.Popen(
         [
@@ -1109,7 +1115,7 @@ def api_server(database_url: str, extension_id: str) -> Iterator[dict[str, Any]]
             timeout=30.0,
             message="the API never answered /health",
         )
-        yield {"base": base, "port": port}
+        yield {"base": base, "port": port, "operator_id": operator}
     finally:
         process.terminate()
         try:

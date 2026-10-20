@@ -296,6 +296,24 @@ def test_a_login_required_event_pauses_the_run_with_login_required(
     assert base.run_status(run_id) == ("paused", "login_required")
 
 
+def test_a_code_required_event_pauses_the_run_and_releases_the_record(
+    seed: Callable[..., Seed], make_worker: Callable[..., Worker], conn: psycopg.Connection
+) -> None:
+    """PL-068: a verification-code page pauses the run like a login wall, and holds nothing."""
+    base, run_id = _one_row(seed)
+
+    scripted = ScriptedRun.build()
+    scripted.events.push("code_required", "Enter the 6-digit code we emailed you")
+    worker = make_worker(scripted)
+    assert worker.run_once() is True
+
+    assert base.run_status(run_id) == ("paused", "code_required")
+    assert base.states(run_id) == {"row-0001": "pending"}, "the record is released, not burned"
+    record = get_record(conn, base.record_ids(run_id)[0])
+    assert record is not None
+    assert record.attempts == 0
+
+
 def test_an_off_origin_event_parks_the_record(
     seed: Callable[..., Seed], make_worker: Callable[..., Worker], conn: psycopg.Connection
 ) -> None:
