@@ -272,3 +272,19 @@ export function minutesSavedWords(minutes: number): string {
   const hours = Math.max(1, Math.round(total / 60));
   return `About ${plural(hours, "hour")} saved`;
 }
+
+/**
+ * The words the workflow editor's own sentences must never carry (PL-062).
+ *
+ * A step's own check and the way an element is found are engine ideas. The editor says "how we know
+ * it saved" and "what the step clicks"; these two words never reach a person's eyes. They live in
+ * their own list, appended here, so this file's other editor never has to touch `ENGINE_WORDS`.
+ */
+export const EDITOR_ENGINE_WORDS: ReadonlyArray<{
+  engine: string;
+  pattern: RegExp;
+  plain: string;
+}> = [
+  { engine: "assert", pattern: /\bassert\w*/i, plain: "how we know it saved" },
+  { engine: "selector", pattern: /\bselector\w*/i, plain: "the element's own words" },
+];

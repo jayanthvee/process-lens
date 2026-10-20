@@ -14,6 +14,8 @@ import { App } from "../src/App";
 export interface RecordedRequest {
   method: string;
   path: string;
+  /** The query string, with its leading `?`, exactly as the page sent it. */
+  search: string;
   body: unknown;
 }
 
@@ -66,11 +68,12 @@ export function createFetchStub(routes: StubRoutes = {}): FetchStub {
     const raw =
       typeof input === "string" ? input : input instanceof URL ? input.toString() : String(input);
     const path = new URL(raw, "http://localhost").pathname;
+    const search = new URL(raw, "http://localhost").search;
     const method = (init?.method ?? "GET").toUpperCase();
     const rawBody = init?.body;
     const body: unknown =
       typeof rawBody === "string" && rawBody !== "" ? (JSON.parse(rawBody) as unknown) : null;
-    const call: RecordedRequest = { method, path, body };
+    const call: RecordedRequest = { method, path, search, body };
     requests.push(call);
     calls.push(path);
     const entry = pick(routes, path);

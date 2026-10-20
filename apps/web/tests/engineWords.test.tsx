@@ -26,7 +26,7 @@
 import { fireEvent } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
-import { ENGINE_WORDS } from "../src/lib/words";
+import { ENGINE_WORDS, EDITOR_ENGINE_WORDS } from "../src/lib/words";
 import type {
   HomeSummary,
   NeedsHelpRow,
@@ -41,7 +41,7 @@ import { createFetchStub, renderApp, settle, type StubRoutes } from "./helpers";
 const OPERATOR_ID = "0f8fad5b-d9cb-469f-a165-70867728950e";
 
 /** The rule is `lib/words.ts`'s own list, so the test and the pages can never drift apart. */
-const FORBIDDEN = ENGINE_WORDS;
+const FORBIDDEN = [...ENGINE_WORDS, ...EDITOR_ENGINE_WORDS];
 
 /** Every forbidden word this text contains, so a failure names the rule it broke. */
 function engineWordsIn(text: string): string[] {
@@ -148,10 +148,15 @@ const RECIPE = {
   name: "Add inquiries",
   recipe: {
     steps: [
-      { action: "navigate", url: "https://crm.example.com/leads" },
-      { action: "fill", targets: [{ by: "label", text: "Email" }], value: "{{row.email}}" },
-      { action: "click", targets: [{ by: "role", name: "Save" }] },
-      { action: "end_record" },
+      { id: "open-page", action: "navigate", url: "https://crm.example.com/leads" },
+      {
+        id: "type-email",
+        action: "fill",
+        targets: [{ by: "label", text: "Email" }],
+        value: "{{row.email}}",
+      },
+      { id: "save", action: "click", commit: true, targets: [{ by: "role", name: "Save" }], assert_after: { text_visible: "Saved", timeout_ms: 8000 } },
+      { id: "done", action: "end_record" },
     ],
   },
 };
@@ -335,5 +340,62 @@ describe("the sample data", () => {
     for (const value of shown) {
       expect(engineWordsIn(value), `the sample data says "${value}"`).toEqual([]);
     }
+  });
+});
+
+describe("the workflow editor shows only plain words", () => {
+  it("in edit mode, with its own controls", async () => {
+    const stub = createFetchStub(routes());
+    const view = renderApp("/tasks/task-1");
+    await settle();
+
+    fireEvent.click(view.getByRole("button", { name: "Edit steps" }));
+    await settle();
+
+    const text = visibleText(view.container);
+    for (const expected of ["Comes from", "How we know it saved", "Save", "Cancel"]) {
+      expect(text, `the editor should show "${expected}"`).toContain(expected);
+    }
+    const found = engineWordsIn(text);
+    const detail = found
+      .map((engine) => `${engine} (show "${FORBIDDEN.find((r) => r.engine === engine)?.plain}")`)
+      .join(", ");
+    expect(found, `the editor must say: ${detail}`).toEqual([]);
+
+    stub.restore();
+    view.unmount();
+  });
+
+  it("when the API refuses a save", async () => {
+    const stub = createFetchStub(
+      routes({
+        "/api/v1/recipes": {
+          status: 422,
+          body: {
+            detail: {
+              message: "the recipe does not match the recipe schema",
+              problems: [
+                "steps[2] (save): a commit step must carry an assert_after",
+                "steps[1]: value is required",
+              ],
+            },
+          },
+        },
+      }),
+    );
+    const view = renderApp("/tasks/task-1");
+    await settle();
+    fireEvent.click(view.getByRole("button", { name: "Edit steps" }));
+    await settle();
+    fireEvent.click(view.getByRole("button", { name: "Save" }));
+    await settle();
+
+    const text = visibleText(view.container);
+    expect(text).toContain("The step that saves has to say how we know it saved.");
+    const found = engineWordsIn(text);
+    expect(found, `the refusal must not carry: ${found.join(", ")}`).toEqual([]);
+
+    stub.restore();
+    view.unmount();
   });
 });
