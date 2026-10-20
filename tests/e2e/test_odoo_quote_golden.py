@@ -7,32 +7,18 @@ Save. The order line is added in an editable list, which no other golden
 exercises: this ticket finds out whether list-row editing records and replays,
 and reports exactly where it does not.
 
-**It does not replay (PL-046's finding, marked `xfail(strict=True)`).** The
-demonstration records and compiles; the replay parks every row before any
-quotation is written. The compiled defects, in the order a replay meets them:
+**It replays.** PL-046 found three defects; they are fixed, in the order a replay met them:
 
-1. The editable row's fields have no accessible names, only placeholders, so
-   the recorder can offer no rung that resolves to exactly one element. The
-   first casualty is the product field's own click ("Click Search a product"):
-   its role rung (the placeholder "Search a product") matches nothing and its
-   css rung ``input.o-autocomplete--input.o_input`` matches two (the customer's
-   autocomplete and the row's), so the ladder refuses it -- every row parks
-   with "the click target could not be resolved: no rung of the target ladder
-   resolved to exactly one element" before any line is added. The quantity
-   fill ("Fill input", css rung ``input.o_input``, many matches) sits right
-   behind it and would refuse the same way.
-2. The product autocomplete is recorded as "Search a product", and the
-   compiler's duplicate check reads any fill followed by a click naming
-   "search" as a search, so every row carries a skip-as-duplicate branch keyed
-   on the product name.
-3. The save's evidence is the demonstration's own quotation number
-   (``text_visible: "S00001"``), recorded verbatim into the commit's
-   ``assert_after``; no replay row's save can show it.
+1. The editable row's fields had no accessible names (PL-048): they are now named by their column
+   header ("Product", "Quantity"), and the ready wait no longer gives up on the ambiguous match
+   Odoo shows for ~170 ms before the row renders. A click's prepare also finds an autocomplete
+   option again when Odoo redraws the list under it.
+2. "Search a product" read as a duplicate search (PL-049): a dropdown pick is not a search.
+3. The save was checked by the demonstration's own number, S00001 (PL-049, PL-059): it is now
+   checked by the page moving from /odoo/sales/new to the saved quotation.
 
-When the recorder, compiler or runner learns any of this, the strict xfail will
-XPASS and fail -- remove the marker and the assertions below are the ticket's
-full requirement: three rows, each one `sale.order` for its customer with
-exactly one line of its product at its quantity, all `verified`.
+The requirement: three rows, each one `sale.order` for its customer with exactly one line of its
+product at its quantity, all `verified`.
 
 The app is reset by `infra/test-apps/reset.py odoo` before the test runs
 (``odoo_reset``), so the golden can be run again.
@@ -49,7 +35,7 @@ from typing import Any
 
 import pytest
 
-# Where this test leaves its trail. The test is `xfail(strict=True)`, and pytest shows nothing
+# Where this test leaves its trail. While this test was `xfail(strict=True)`, pytest showed nothing
 # of an xfailed run -- not its prints, not its captured output -- so every phase boundary and
 # every run diagnostic is appended here, under the repo's gitignored `.cache/`.
 TRACE_PATH = Path(__file__).resolve().parents[2] / ".cache" / "pl046" / "quote-golden-trace.log"
@@ -65,21 +51,6 @@ def _trace(message: str) -> None:
 pytestmark = [
     pytest.mark.e2e,
     pytest.mark.real_apps,
-    pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "PL-046: an editable order-line row's fields record with no accessible name, so "
-            "the compiled recipe cannot replay them. Every row parks at the product field's "
-            "own click ('Click Search a product'): the role rung is the field's placeholder "
-            "and matches nothing, and the css rung 'input.o-autocomplete--input.o_input' "
-            "matches two autocomplete inputs, so the ladder refuses it -- 'the click target "
-            "could not be resolved: no rung of the target ladder resolved to exactly one "
-            "element'. The quantity fill ('Fill input', css rung 'input.o_input') sits behind "
-            "it and refuses the same way; behind those, the product autocomplete trips the "
-            "compiler's duplicate-check branch, and the commit asserts the demonstration's "
-            "own quotation number ('S00001'), which no replay row can show."
-        ),
-    ),
 ]
 
 # One demonstration's values, synthetic on purpose: they become the sample row.
