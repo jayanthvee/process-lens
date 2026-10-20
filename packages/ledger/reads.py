@@ -613,3 +613,80 @@ __all__ = [
     "week_counts",
     "window_run_seconds",
 ]
+
+
+# PL-065: what happened inside one record, for the results page.
+from dataclasses import dataclass as _dataclass  # noqa: E402
+from datetime import datetime as _datetime  # noqa: E402
+
+
+@_dataclass(frozen=True)
+class StepEventRow:
+    """One step attempt of one record: what it was, how long it took, and how it ended."""
+
+    step_id: str
+    attempt: int
+    started_at: _datetime
+    ended_at: _datetime | None
+    outcome: str
+    error: str | None
+
+
+# One record's step events, in the order they ran.
+#
+# ``observed`` is deliberately not selected: it can hold the values the page showed for a row, and
+# the results page never shows them. The error comes back as its message (or its reason) only, cut
+# short -- the rest of the JSON is for an engineer.
+_LIST_RECORD_STEPS = """
+SELECT step_id,
+       attempt,
+       started_at,
+       ended_at,
+       outcome::text AS outcome,
+       CASE
+         WHEN error IS NULL THEN NULL
+         WHEN jsonb_typeof(error) = 'string' THEN left(error #>> '{}', %(cut)s)
+         ELSE left(coalesce(error ->> 'message', error ->> 'reason'), %(cut)s)
+       END AS error
+FROM step_events
+WHERE run_record_id = %(record)s AND tenant_id = %(tenant)s
+ORDER BY started_at, id
+"""
+
+# How much of a step's error a page shows: one sentence's worth, never the whole detail.
+STEP_ERROR_CHARACTERS = 200
+
+
+def record_steps(
+    conn: psycopg.Connection, record_id: uuid.UUID, tenant_id: uuid.UUID
+) -> list[StepEventRow]:
+    """One record's step attempts, oldest first, scoped to the caller's tenant.
+
+    A record in another tenant returns nothing, so a caller cannot read a row it does not own.
+    """
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            _LIST_RECORD_STEPS,
+            {"record": record_id, "tenant": tenant_id, "cut": STEP_ERROR_CHARACTERS},
+        )
+        return [StepEventRow(**row) for row in cur.fetchall()]
+
+
+# The steps of one pinned recipe version, for naming a step event. A version that is gone, or whose
+# document has no step list, has none -- the caller falls back to the step's own id.
+_SELECT_RECIPE_STEPS = """
+SELECT recipe -> 'steps' AS steps
+FROM recipe_versions
+WHERE id = %(version)s
+"""
+
+
+def pinned_recipe_steps(conn: psycopg.Connection, recipe_version_id: uuid.UUID) -> list[dict]:
+    """The step list of one recipe version, exactly as it was stored."""
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(_SELECT_RECIPE_STEPS, {"version": recipe_version_id})
+        row = cur.fetchone()
+    if row is None:
+        return []
+    steps = row["steps"]
+    return steps if isinstance(steps, list) else []

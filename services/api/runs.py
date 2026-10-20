@@ -22,6 +22,7 @@ from packages.ledger import (
     IllegalTransition,
     StateConflict,
     dismiss_record,
+    get_record,
     get_run,
     list_open_approvals,
     list_runs,
@@ -36,6 +37,7 @@ from services.runner.creation import CreationError, create_run, workflow_tenant
 
 from .admin import require_runs_allowed
 from .db import connection
+from .recipes import NESTED_STEP_KEYS
 
 router = APIRouter(prefix="/api/v1", tags=["runs"])
 
@@ -139,6 +141,19 @@ class RecordDetail(BaseModel):
     max_attempts: int
     commit_attempted: bool
     destination_ref: str | None
+
+
+class StepLine(BaseModel):
+    """PL-065: one step attempt of one row, as the results page shows it."""
+
+    step_id: str
+    step_name: str
+    attempt: int
+    outcome: str
+    # Null while the step has not finished; rounded to a tenth of a second otherwise.
+    seconds: float | None
+    # The step's own sentence, when it stopped the row. Never the whole error.
+    error: str | None
 
 
 class TransitionDetail(BaseModel):
@@ -457,6 +472,60 @@ def dismiss_record_endpoint(
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         conn.commit()
     return RequeueResponse(record_id=record_id, state=state)
+
+
+def _step_names(steps: Any, names: dict[str, str] | None = None) -> dict[str, str]:
+    """Every step id in a recipe document mapped to the name a person reads, branches and loops
+    included. A step without a name is left out, so the caller falls back to its id."""
+    found = names if names is not None else {}
+    if not isinstance(steps, list):
+        return found
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        step_id = step.get("id")
+        name = step.get("name")
+        if isinstance(step_id, str) and isinstance(name, str) and name.strip() != "":
+            found[step_id] = name.strip()
+        for key in NESTED_STEP_KEYS:
+            _step_names(step.get(key), found)
+    return found
+
+
+def _seconds(started: datetime, ended: datetime | None) -> float | None:
+    """How long one step took, to a tenth of a second, or None while it is still going."""
+    if ended is None:
+        return None
+    return round((ended - started).total_seconds(), 1)
+
+
+@router.get("/runs/{run_id}/records/{record_id}/steps", response_model=list[StepLine])
+def record_steps_endpoint(run_id: uuid.UUID, record_id: uuid.UUID) -> list[StepLine]:
+    """PL-065: one row's steps, oldest first, with the name each one has in the recipe.
+
+    The read is scoped by the run's tenant, so a record that is not this run's -- or not this
+    tenant's -- is a 404 rather than somebody else's row.
+    """
+    with connection() as conn:
+        run = _fetch_run(conn, run_id)
+        record = get_record(conn, record_id)
+        if record is None or record.run_id != run_id or record.tenant_id != run.tenant_id:
+            raise HTTPException(
+                status_code=404, detail=f"record {record_id} is not in run {run_id}"
+            )
+        events = reads.record_steps(conn, record_id, run.tenant_id)
+        names = _step_names(reads.pinned_recipe_steps(conn, run.recipe_version_id))
+    return [
+        StepLine(
+            step_id=event.step_id,
+            step_name=names.get(event.step_id, event.step_id),
+            attempt=event.attempt,
+            outcome=event.outcome,
+            seconds=_seconds(event.started_at, event.ended_at),
+            error=event.error,
+        )
+        for event in events
+    ]
 
 
 @router.get("/runs/{run_id}/results.csv", response_class=PlainTextResponse)

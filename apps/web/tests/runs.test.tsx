@@ -721,3 +721,171 @@ describe("a hostile value is rendered as text", () => {
   });
 });
 
+
+/* ---------------------------------------------------------------- */
+/* PL-065: what happened inside a row                                */
+/* ---------------------------------------------------------------- */
+
+describe("the steps inside a row", () => {
+  const STEPS = [
+    {
+      step_id: "open-form",
+      step_name: "Open the new lead form",
+      attempt: 1,
+      outcome: "ok",
+      seconds: 0.3,
+      error: null,
+    },
+    {
+      step_id: "type-email",
+      step_name: "Email",
+      attempt: 1,
+      outcome: "ok",
+      seconds: 0.4,
+      error: null,
+    },
+    {
+      step_id: "click-save",
+      step_name: "Save the lead",
+      attempt: 2,
+      outcome: "failed",
+      seconds: 1.2,
+      error: "the Save button never appeared",
+    },
+  ];
+
+  function routes(steps: unknown = STEPS) {
+    return {
+      ...SHELL,
+      "/api/v1/runs/run-1/records/rr-1/steps": { body: steps },
+      "/api/v1/runs/run-1/records": { body: [record({ state: "failed", reason: "attempts exhausted" })] },
+      "/api/v1/runs/run-1": { body: runDetail({ status: "completed" }) },
+    };
+  }
+
+  it("keeps the steps closed until a person asks for them", async () => {
+    const fetchStub = createFetchStub(routes());
+    stub = fetchStub;
+    renderApp("/runs/run-1");
+    await settle();
+
+    const toggle = screen.getByRole("button", { name: "Show steps" });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(callsTo(fetchStub, "/api/v1/runs/run-1/records/rr-1/steps")).toBe(0);
+    // Nothing about a step is on the page yet.
+    expect(screen.queryByText("Open the new lead form")).toBeNull();
+  });
+
+  it("lists each step with its outcome and how long it took", async () => {
+    stub = createFetchStub(routes());
+    renderApp("/runs/run-1");
+    await settle();
+
+    fireEvent.click(screen.getByRole("button", { name: "Show steps" }));
+    await settle();
+
+    expect(await screen.findByText("Open the new lead form")).toBeTruthy();
+    expect(screen.getByText("Email")).toBeTruthy();
+    expect(screen.getByText("Save the lead")).toBeTruthy();
+    // Three outcomes, in plain words, and the durations as a person reads them.
+    expect(screen.getAllByText("done")).toHaveLength(2);
+    expect(screen.getByText("stopped here")).toBeTruthy();
+    expect(screen.getByText("0.3 s")).toBeTruthy();
+    expect(screen.getByText("1.2 s")).toBeTruthy();
+  });
+
+  it("shows the sentence the step that stopped the row gave", async () => {
+    stub = createFetchStub(routes());
+    renderApp("/runs/run-1");
+    await settle();
+
+    fireEvent.click(screen.getByRole("button", { name: "Show steps" }));
+    await settle();
+
+    expect(await screen.findByText("the Save button never appeared")).toBeTruthy();
+  });
+
+  it("says how many times a step was tried when it was more than once", async () => {
+    stub = createFetchStub(routes());
+    renderApp("/runs/run-1");
+    await settle();
+
+    fireEvent.click(screen.getByRole("button", { name: "Show steps" }));
+    await settle();
+
+    expect(await screen.findByText("tried 2 times")).toBeTruthy();
+    // The steps that worked first time say nothing about attempts.
+    expect(screen.queryByText("tried 1 time")).toBeNull();
+  });
+
+  it("refreshes an open row with the page's poll, and stops when it is closed", async () => {
+    // The interval is faked so the test does not spend four seconds waiting for real ticks; every
+    // other timer (the helpers' settle) stays real.
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const fetchStub = createFetchStub({
+      ...SHELL,
+      "/api/v1/runs/run-1/records/rr-1/steps": { body: STEPS },
+      "/api/v1/runs/run-1/records": { body: [record()] },
+      // A run that is going, so the page polls and an open row is the live view.
+      "/api/v1/runs/run-1": { body: runDetail({ status: "running" }) },
+    });
+    stub = fetchStub;
+    renderApp("/runs/run-1");
+    await settle();
+
+    fireEvent.click(screen.getByRole("button", { name: "Show steps" }));
+    await settle();
+    await screen.findByText("Open the new lead form");
+    const first = callsTo(fetchStub, "/api/v1/runs/run-1/records/rr-1/steps");
+    expect(first).toBeGreaterThan(0);
+
+    // The page's own poll reaches the open row.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+    });
+    expect(callsTo(fetchStub, "/api/v1/runs/run-1/records/rr-1/steps")).toBeGreaterThan(first);
+
+    fireEvent.click(screen.getByRole("button", { name: "Hide steps" }));
+    await settle();
+    expect(screen.queryByText("Open the new lead form")).toBeNull();
+
+    const closed = callsTo(fetchStub, "/api/v1/runs/run-1/records/rr-1/steps");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 2);
+    });
+    expect(callsTo(fetchStub, "/api/v1/runs/run-1/records/rr-1/steps")).toBe(closed);
+  });
+
+  it("says a step is still going while it has no end", async () => {
+    stub = createFetchStub(
+      routes([
+        {
+          step_id: "click-save",
+          step_name: "Save the lead",
+          attempt: 1,
+          outcome: "ok",
+          seconds: null,
+          error: null,
+        },
+      ]),
+    );
+    renderApp("/runs/run-1");
+    await settle();
+
+    fireEvent.click(screen.getByRole("button", { name: "Show steps" }));
+    await settle();
+
+    expect(await screen.findByText("going")).toBeTruthy();
+  });
+
+  it("says so when a row has no steps yet", async () => {
+    stub = createFetchStub(routes([]));
+    renderApp("/runs/run-1");
+    await settle();
+
+    fireEvent.click(screen.getByRole("button", { name: "Show steps" }));
+    await settle();
+
+    expect(await screen.findByText("No steps have been recorded for this row yet.")).toBeTruthy();
+  });
+});

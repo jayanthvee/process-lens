@@ -272,3 +272,31 @@ export function minutesSavedWords(minutes: number): string {
   const hours = Math.max(1, Math.round(total / 60));
   return `About ${plural(hours, "hour")} saved`;
 }
+
+/** PL-065: a step's outcome on the results page, in the word a person uses. */
+export function stepOutcomeWords(outcome: string): string {
+  switch (outcome) {
+    case "skipped":
+      return "skipped";
+    case "failed":
+      return "stopped here";
+    case "retried":
+      return "tried again";
+    case "ok":
+      return "done";
+    default:
+      return "recorded";
+  }
+}
+
+/** "0.4 s", or "going" while the step has not finished yet. */
+export function stepSecondsWords(seconds: number | null): string {
+  if (seconds === null || !Number.isFinite(seconds)) return "going";
+  return `${seconds.toFixed(1)} s`;
+}
+
+/** "tried 2 times", or null when the step worked on its first attempt. */
+export function stepAttemptsWords(attempt: number): string | null {
+  if (!Number.isFinite(attempt) || attempt <= 1) return null;
+  return `tried ${attempt} times`;
+}

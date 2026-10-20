@@ -16,6 +16,9 @@ import {
   rowOutcome,
   runActions,
   runStatusWords,
+  stepAttemptsWords,
+  stepOutcomeWords,
+  stepSecondsWords,
 } from "../lib/words";
 import type { ExecutorSession, OperatorInfo, RecordRow, RunDetail as RunDetailPayload } from "../types";
 import {
@@ -64,6 +67,70 @@ function reasonWords(row: RecordRow, needsHelp: boolean): string | null {
   const written = (row.reason ?? "").trim();
   if (written !== "") return plainReason(row.reason, row.state);
   return needsHelp ? plainReason(null, row.state) : null;
+}
+
+/** PL-065: one step attempt of one row, as `GET /api/v1/runs/{run}/records/{record}/steps` sends it. */
+interface StepLine {
+  step_id: string;
+  step_name: string;
+  attempt: number;
+  outcome: string;
+  seconds: number | null;
+  error: string | null;
+}
+
+/**
+ * One row's steps, closed until a person asks for them.
+ *
+ * The read happens only while the disclosure is open, so a page with twenty rows asks for nothing
+ * until somebody opens one -- and once open, it refreshes on the page's own poll, which is what
+ * makes this the live view of a run that is going.
+ */
+function RowSteps({ path, pollMs }: { path: string; pollMs: number | null }): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const steps = useJson<StepLine[]>(open ? path : null, open ? pollMs : null);
+  const lines = Array.isArray(steps.data) ? steps.data : [];
+
+  return (
+    <>
+      <button
+        type="button"
+        className="btn quiet row-steps-toggle"
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
+      >
+        {open ? "Hide steps" : "Show steps"}
+      </button>
+      {open ? (
+        <div className="row-steps-body">
+          {lines.length === 0 ? (
+            <p className="row-steps-empty">
+              {steps.error ?? "No steps have been recorded for this row yet."}
+            </p>
+          ) : (
+            <ol className="row-steps-list">
+              {lines.map((step, index) => {
+                const tried = stepAttemptsWords(step.attempt);
+                return (
+                  <li key={`${step.step_id}-${step.attempt}-${index}`}>
+                    <b>{step.step_name}</b>
+                    <span className={`res ${step.outcome === "failed" ? "help" : "idle"}`}>
+                      {stepOutcomeWords(step.outcome)}
+                    </span>
+                    <span className="row-step-time">{stepSecondsWords(step.seconds)}</span>
+                    {tried === null ? null : <span className="row-step-tries">{tried}</span>}
+                    {step.error === null ? null : (
+                      <small className="row-step-error">{step.error}</small>
+                    )}
+                  </li>
+                );
+              })}
+            </ol>
+          )}
+        </div>
+      ) : null}
+    </>
+  );
 }
 
 /** One run: live progress, its buttons, and what every row ended up as. */
@@ -467,6 +534,14 @@ export function RunDetail(): JSX.Element {
                         </td>
                       </tr>
                     ) : null}
+                    <tr className="row-steps">
+                      <td colSpan={4}>
+                        <RowSteps
+                          path={`/api/v1/runs/${detail.id}/records/${row.id}/steps`}
+                          pollMs={pollMs}
+                        />
+                      </td>
+                    </tr>
                   </Fragment>
                 );
               })}

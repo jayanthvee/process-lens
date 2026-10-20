@@ -337,3 +337,51 @@ describe("the sample data", () => {
     }
   });
 });
+
+describe("a row's steps show only plain words", () => {
+  it("with a retry and the step that stopped the row", async () => {
+    const stub = createFetchStub(
+      routes({
+        "/api/v1/runs/run-1/records/row-a/steps": {
+          body: [
+            {
+              step_id: "type-email",
+              step_name: "Email",
+              attempt: 1,
+              outcome: "retried",
+              seconds: 0.4,
+              error: null,
+            },
+            {
+              step_id: "click-save",
+              step_name: "Save the lead",
+              attempt: 2,
+              outcome: "failed",
+              seconds: 1.2,
+              error: "the Save button never appeared",
+            },
+          ],
+        },
+      }),
+    );
+    const view = renderApp("/runs/run-1");
+    await settle();
+
+    const toggle = view.getAllByRole("button", { name: "Show steps" })[0];
+    expect(toggle).toBeDefined();
+    fireEvent.click(toggle as HTMLElement);
+    await settle();
+    await view.findByText("Save the lead");
+
+    const text = visibleText(view.container);
+    expect(text).toContain("tried 2 times");
+    const found = engineWordsIn(text);
+    const detail = found
+      .map((engine) => `${engine} (show "${FORBIDDEN.find((r) => r.engine === engine)?.plain}")`)
+      .join(", ");
+    expect(found, `the steps must say: ${detail}`).toEqual([]);
+
+    stub.restore();
+    view.unmount();
+  });
+});
