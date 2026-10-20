@@ -22,7 +22,9 @@ from urllib.parse import urlsplit
 
 from .assertions import (
     DEFAULT_ASSERTION_TIMEOUT_MS,
+    condition_from_observation,
     infer_assertion,
+    observation_is_generated_reference,
     origin_of,
     path_pattern,
 )
@@ -942,6 +944,27 @@ def _render_steps(
     return steps
 
 
+def _is_option_pick(candidate: Candidate) -> bool:
+    """Whether a click accepts a suggestion from a dropdown rather than running a search.
+
+    PL-049: the product field's placeholder is "Search a product", and the recording reads that
+    placeholder back as the field's accessible name. The click that follows is a pick -- its
+    ladder names an ``option``, or the dropdown that holds one -- not a search. Treating it as a
+    search would make every row skip itself as a duplicate.
+    """
+    if candidate.action != "click":
+        return False
+    for rung in candidate.targets or []:
+        if str(rung.get("role", "")).lower() == "option":
+            return True
+        within = rung.get("within")
+        if isinstance(within, str):
+            container = within.lower()
+            if "listbox" in container or "autocomplete" in container:
+                return True
+    return False
+
+
 def _looks_like_a_search(fill: Candidate, runner: Candidate) -> bool:
     """Whether a fill-then-run pair reads as a search, not any other fill-then-run.
 
@@ -950,9 +973,18 @@ def _looks_like_a_search(fill: Candidate, runner: Candidate) -> bool:
     signal a recording carries is the control's own name: a search box or a search button says
     "search". Erring the other way is safe -- a search that is not recognised simply gets no branch
     -- so a pair with no such signal is not a search.
+
+    PL-049: a click that accepts a suggestion from a dropdown is a pick, not a search, even when
+    the field's name or placeholder says "Search a product". A ``text_fuzzy`` rung is the
+    recorder's placeholder fallback, so a "search" found only there is not durable enough to
+    switch the duplicate branch on.
     """
+    if _is_option_pick(runner):
+        return False
     for candidate in (fill, runner):
         for rung in candidate.targets or []:
+            if str(rung.get("by", "")).lower() == "text_fuzzy":
+                continue
             if str(rung.get("role", "")).lower() == "searchbox":
                 return True
             within = rung.get("within")
@@ -1074,6 +1106,7 @@ def _resolve_commit_assertion(
         candidate.url,
         candidate.after_url,
         options.assertion_timeout_ms,
+        sample_values=options.sample_row.values(),
     )
 
 
@@ -1247,10 +1280,25 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
         if not candidate.commit:
             continue
         supplied = (options.commit_assertions or {}).get(candidate.recorded_id or "")
+        sample_values = options.sample_row.values()
+        observation_pins = (
+            condition_from_observation(
+                candidate.observation,
+                options.assertion_timeout_ms,
+                sample_values=sample_values,
+            )
+            is not None
+        )
         assert_after = _resolve_commit_assertion(candidate, options)
         inferred_from_fill = False
         if assert_after is None:
-            assert_after = _infer_assertion_from_fills(candidate, parameterized[:index], options)
+            fallback = candidate
+            if observation_is_generated_reference(candidate.observation, sample_values):
+                # The number belongs to the demonstration's record, so it is no evidence for
+                # this one. The next assertion the compiler would pick -- the new record's
+                # name appearing -- is the real check (PL-049).
+                fallback = replace(candidate, observation=None)
+            assert_after = _infer_assertion_from_fills(fallback, parameterized[:index], options)
             if assert_after is not None:
                 inferred_from_fill = True
                 warnings.append("this save is checked by the new record's name appearing")
@@ -1266,7 +1314,7 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
                 f"assertion for {candidate.recorded_id or candidate.seq} "
                 "taken from the one supplied for it"
             )
-        elif candidate.observation:
+        elif observation_pins:
             warnings.append(
                 f"assertion for {candidate.recorded_id or candidate.seq} "
                 "taken from the recorded observation"
