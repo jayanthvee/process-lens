@@ -261,6 +261,26 @@ def test_a_window_hidden_event_pauses_the_run_and_releases_the_row(
 
     assert base.run_status(run_id) == ("paused", "window_hidden")
     assert base.states(run_id) == {"row-0001": "pending"}
+    # 0009: the release gives the claim's attempt back, so pauses never exhaust a row.
+    record = get_record(conn, base.record_ids(run_id)[0])
+    assert record is not None
+    assert record.attempts == 0
+
+
+def test_a_disconnect_release_does_not_spend_an_attempt(
+    seed: Callable[..., Seed], make_worker: Callable[..., Worker], conn: psycopg.Connection
+) -> None:
+    base, run_id = _one_row(seed)
+
+    scripted = ScriptedRun.build()
+    scripted.events.push("detached", "the extension disconnected")
+    worker = make_worker(scripted)
+    assert worker.run_once() is True
+
+    assert base.states(run_id) == {"row-0001": "pending"}
+    record = get_record(conn, base.record_ids(run_id)[0])
+    assert record is not None
+    assert record.attempts == 0
 
 
 def test_a_login_required_event_pauses_the_run_with_login_required(

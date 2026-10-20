@@ -557,7 +557,9 @@ class RunLoop:
 
             if current.status != "running":
                 if box.state == "filling":
-                    self._transition(conn, record, "filling", "pending", "paused")
+                    self._transition(
+                        conn, record, "filling", "pending", "paused", refund_attempt=True
+                    )
                 return "paused"
 
             action = step.get("action")
@@ -1257,7 +1259,8 @@ class RunLoop:
         """The ticket's rule: before the commit the record is released; inside it, reconcile."""
         reason = detail or kind
         if box.state in WORKING_STATES:
-            self._transition(conn, record, box.state, "pending", reason)
+            # 0009: a pause never failed the row, so its claim is not counted as an attempt.
+            self._transition(conn, record, box.state, "pending", reason, refund_attempt=True)
             box.state = "pending"
             return
         if box.state in COMMIT_WINDOW_STATES:
@@ -1325,6 +1328,7 @@ class RunLoop:
         observed: dict[str, Any] | None = None,
         error: Any = None,
         rung: int | None = None,
+        refund_attempt: bool = False,
     ) -> None:
         """One state change, and the step event that accompanies it, in one transaction."""
         with conn.transaction():
@@ -1337,6 +1341,7 @@ class RunLoop:
                 new=new,
                 reason=reason,
                 error=error,
+                refund_attempt=refund_attempt,
             )
             if step is not None:
                 record_step_event(
