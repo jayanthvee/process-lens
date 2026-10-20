@@ -86,6 +86,10 @@ class CompileResult:
 
     recipe: dict[str, Any]
     warnings: list[str] = field(default_factory=list)
+    # PL-077: which of the two searched shapes this recording is, so the Make recipe form can word
+    # its rule. ``"update"`` is a find-then-update (the search finds the record to change),
+    # ``"create"`` is everything else, and ``None`` means the recording holds no search at all.
+    search_kind: str | None = None
 
 
 def _next_actionable_url(events: list[Event], index: int) -> str | None:
@@ -571,7 +575,9 @@ def _drop_container_clicks(
     """Drop clicks on containers, not controls.
 
     PL-031: a click on a group or card whose text contains the labels of two or more inputs is
-    not a control click. So is a bare css-only click with no role, label or test id.
+    not a control click. So is a bare css-only click with no role, label or test id -- unless the
+    recording saw that click move the page (PL-075): Odoo's product list row is a css-only `tr`,
+    and clicking it opens the record. A click with navigation evidence is an action, not noise.
     """
     warnings: list[str] = []
     kept: list[Candidate] = []
@@ -583,9 +589,13 @@ def _drop_container_clicks(
             continue
 
         targets = candidate.targets or []
-        # A css-only target with no durable semantic rung is a container, not a control.
+        # A css-only target with no durable semantic rung is a container, not a control -- unless
+        # the click's own observation says it moved the page, which is an action whatever the
+        # element was. (`after_url` is the next action's page, not this click's evidence, so it
+        # cannot decide this.)
         has_semantic = any(rung.get("by") in ("role", "testid", "label") for rung in targets)
-        if not has_semantic:
+        moved = isinstance((candidate.observation or {}).get("url_matches"), str)
+        if not has_semantic and not moved:
             warnings.append(
                 f"dropped container click at event {candidate.seq}: "
                 "it has no role, label or test id"
@@ -1058,6 +1068,59 @@ def detect_duplicate_search(
     return found[0]
 
 
+_UUID = re.compile(r"[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}")
+
+
+def _opens_a_record(candidate: Candidate) -> bool:
+    """Whether this click navigated to a record's own page (PL-077).
+
+    The one signal is in the URLs the recording already carries: the page the click ran on and the
+    page it landed on. A *record page* is a page whose last path segment is all digits
+    (``/odoo/products/17``); a create page names its purpose in words (``/odoo/products/new``),
+    and a click that changes nothing leaves the URL where it was. Both are read from the URLs
+    only -- never from the app's name, its version, or anything the page says.
+
+    An update-in-place click (a row that opens in a dialog, say) lands on the same URL and is
+    therefore *not* a record page; that shape stays a create, which is today's behaviour.
+    """
+    landed = candidate.after_url or ""
+    started = candidate.url or ""
+    if not landed or landed == started:
+        return False
+    if not origin_of(landed) or origin_of(landed) != origin_of(started):
+        return False
+    tail = urlsplit(landed).path.rstrip("/").rsplit("/", 1)[-1]
+    # A numeric id (Odoo) or a UUID (Twenty and most newer apps) names one record.
+    return tail.isdigit() or _UUID.fullmatch(tail) is not None
+
+
+def detect_find_then_update(candidates: list[Candidate], run_index: int) -> bool:
+    """Whether a searched recording is a find-then-update rather than a create (PL-077).
+
+    The rule, decided from the recorded steps and their URLs alone:
+
+    * after the step that runs the search, and before the first commit that follows it, a click
+      navigates to a **record page** -- a page on the same origin whose last path segment is all
+      digits, different from the page the click ran on; and
+    * there is a commit after that click (the caller only searches for recordings that commit).
+
+    Then the search finds the record the run is about to change: the duplicate check must not skip
+    it, and a search that finds nothing must park the row instead. Everything else is a create:
+    no search, a click to a page whose last segment is a word (``.../new``), a click that does not
+    navigate, or a commit before any such click.
+    """
+    first_commit = next(
+        (index for index in range(run_index + 1, len(candidates)) if candidates[index].commit),
+        None,
+    )
+    if first_commit is None:
+        return False
+    return any(
+        candidate.action == "click" and _opens_a_record(candidate)
+        for candidate in candidates[run_index + 1 : first_commit]
+    )
+
+
 def _duplicate_branch(value_template: str) -> dict[str, Any]:
     """A branch that ends a record ``skipped`` when the search already shows its value.
 
@@ -1084,6 +1147,39 @@ def _duplicate_branch(value_template: str) -> dict[str, Any]:
                 "action": "end_record",
                 "outcome": "skipped",
                 "reason": "duplicate",
+            }
+        ],
+    }
+
+
+def _not_found_branch(value_template: str, key_column: str) -> dict[str, Any]:
+    """A branch that ends a record ``parked`` when the search finds nothing (PL-077).
+
+    The mirror image of :func:`_duplicate_branch`, and built from the same machinery: the same
+    ``element_absent`` condition shape the schema already has (no new keys), reading the same
+    results cell. For an update, an empty result means the row has nothing to change, so carrying
+    on would type into whatever page the run happens to be on. It parks with a reason the runner
+    renders from the row, and never ``failed``: a recipe's ``end_record`` cannot fail a record
+    (D-017).
+    """
+    return {
+        "action": "branch",
+        "name": "Park a record when the search finds nothing",
+        "when": {
+            "element_absent": {
+                "targets": [
+                    {"by": "role", "role": "cell", "name": value_template},
+                ]
+            }
+        },
+        "then": [
+            {
+                "id": "end-record-1",
+                "action": "end_record",
+                "outcome": "parked",
+                "reason": (
+                    f"No record matched {{{{row.{key_column}}}}}, so there was nothing to change."
+                ),
             }
         ],
     }
@@ -1267,12 +1363,36 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
     # the destination, so it is demoted before any assertion is required of it, and the branch that
     # reads its result goes straight after it.
     search = detect_duplicate_search(candidates, options)
+    # PL-077: which searched shape this is, decided from the recording rather than from whether the
+    # person ticked the rule -- the form has to word its checkbox even when it is unticked.
+    shape_search = search or detect_duplicate_search(
+        candidates, replace(options, duplicate_check=True)
+    )
+    search_kind = (
+        "update"
+        if shape_search is not None and detect_find_then_update(candidates, shape_search[0])
+        else "create"
+        if shape_search is not None
+        else None
+    )
+    search_branch: dict[str, Any] | None = None
     if search is not None:
         search_run, searched_column = search
         parameterized[search_run].commit = False
         warnings.append(
             "the search step is not a commit step; it reads the destination, it does not change it"
         )
+        value_template = f"{{{{row.{searched_column} | lower}}}}"
+        if search_kind == "update":
+            # The search finds the record to change: skipping it would skip every row, and finding
+            # nothing leaves nothing to change.
+            search_branch = _not_found_branch(value_template, searched_column)
+            warnings.append(
+                "the search finds the record to change, so a row is parked when the search finds "
+                "nothing"
+            )
+        else:
+            search_branch = _duplicate_branch(value_template)
     else:
         searched_column = ""
 
@@ -1345,7 +1465,14 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
             # a person reviewing the task should know this commit is proved by "the page moved",
             # not by "the change landed".
             pattern = str(candidate.assert_after.get("url_matches", ""))
-            if pattern and candidate.url and re.search(pattern, candidate.url):
+            if (
+                pattern
+                and candidate.url
+                and re.search(pattern, candidate.url)
+                # PL-075: `element_absent` is the proof; the URL only pins the record page, so an
+                # update-in-place is not the weakness this warning is about.
+                and "element_absent" not in candidate.assert_after
+            ):
                 warnings.append(
                     f"assertion for {candidate.recorded_id or candidate.seq} is also true on the "
                     f"page the step ran on ({pattern!r}), so it cannot tell an accepted commit "
@@ -1358,9 +1485,6 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
         )
 
     _check_navigate_origins(parameterized, meta["allowed_origins"])
-    duplicate_branch = (
-        _duplicate_branch(f"{{{{row.{searched_column} | lower}}}}") if search is not None else None
-    )
     recipe: dict[str, Any] = {
         "format_version": 1,
         "meta": meta,
@@ -1368,9 +1492,9 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
             parameterized,
             options,
             duplicate_branch_after=search[0] if search is not None else None,
-            duplicate_branch=duplicate_branch,
+            duplicate_branch=search_branch,
         ),
     }
 
     assert_valid_recipe(recipe)
-    return CompileResult(recipe=recipe, warnings=warnings)
+    return CompileResult(recipe=recipe, warnings=warnings, search_kind=search_kind)

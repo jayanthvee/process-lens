@@ -44,6 +44,23 @@ export const SAVE_TASK_REFUSAL = "Could not save the task";
  *  words, so the save result says what is missing and what it costs. */
 export const NO_SEARCH_HINT = DUPLICATES_BLOCKED;
 
+/**
+ * The two wordings of the search rule's checkbox (PL-077).
+ *
+ * A search that finds a record means two different things. For a create it means the record is
+ * already there, and the row is skipped. For a find-then-update -- the search finds the record the
+ * row is about to change -- skipping would skip every row, and finding *nothing* is the case worth
+ * stopping for, so the same rule is worded as the park it really is. The compiler decides which
+ * shape a recording is and the form words the rule to match.
+ */
+export const SKIP_IF_THERE = "If this row is already there, skip it";
+export const PARK_WHEN_NOTHING_FOUND = "Park a row when the search finds nothing";
+
+/** The checkbox's wording for a compiled shape: no shape, or a create, keeps today's words. */
+export function duplicateLabelFor(searchKind: string | null): string {
+  return searchKind === "update" ? PARK_WHEN_NOTHING_FOUND : SKIP_IF_THERE;
+}
+
 /** One recorded constant value, ready to become a row column. */
 export interface RecordedValue {
   stepId: string;
@@ -70,7 +87,13 @@ export interface CompileRequestBody {
 
 /** What the compile route answered: a recipe, or the problems it found. */
 export type CompileOutcome =
-  | { ok: true; recipe: Record<string, unknown>; warnings: string[] }
+  | {
+      ok: true;
+      recipe: Record<string, unknown>;
+      warnings: string[];
+      /** PL-077: `"update"`, `"create"`, or null when the recording holds no search. */
+      searchKind: string | null;
+    }
   | { ok: false; problems: string[] };
 
 /** The sentence `recordedWarnings` adds when a recording saves twice (PL-042). */
@@ -550,7 +573,11 @@ export async function compileRecording(
   const body = await readJson(response);
   if (!response.ok) return { ok: false, problems: problemsFrom(response.status, body) };
 
-  const payload = (body ?? {}) as { recipe?: unknown; warnings?: unknown };
+  const payload = (body ?? {}) as {
+    recipe?: unknown;
+    warnings?: unknown;
+    search_kind?: unknown;
+  };
   const recipe = payload.recipe;
   if (!recipe || typeof recipe !== "object") {
     return {
@@ -563,7 +590,12 @@ export async function compileRecording(
         (warning): warning is string => typeof warning === "string" && warning.length > 0,
       )
     : [];
-  return { ok: true, recipe: recipe as Record<string, unknown>, warnings };
+  // PL-077: the compiler says which searched shape it compiled, so the form can word its rule.
+  const searchKind =
+    typeof payload.search_kind === "string" && payload.search_kind.length > 0
+      ? payload.search_kind
+      : null;
+  return { ok: true, recipe: recipe as Record<string, unknown>, warnings, searchKind };
 }
 
 /**
@@ -723,6 +755,21 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
     duplicateHintEl.textContent = detected ? "" : NO_SEARCH_HINT;
   }
 
+  /** The checkbox's own sentence: the form's label, in the markup beside the box. */
+  const duplicateLabelEl = duplicateEl
+    .closest("label")
+    ?.querySelector<HTMLElement>(".field__label");
+
+  /**
+   * Word the search rule for the shape the compiler just reported (PL-077).
+   *
+   * A create keeps "If this row is already there, skip it"; a find-then-update is told the truth
+   * about what the same rule now does: it parks a row whose search found nothing to change.
+   */
+  function applySearchKind(searchKind: string | null): void {
+    if (duplicateLabelEl) duplicateLabelEl.textContent = duplicateLabelFor(searchKind);
+  }
+
   /**
    * One park checkbox per input column, pre-ticked for a required field or the record key. The
    * record key's row is not fixed at refresh time: the person chooses the key in the select, so
@@ -809,6 +856,9 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
 
   function refresh(next: RecordedEvent[]): void {
     events = Array.isArray(next) ? next : [];
+    // A recording that has not been compiled is not yet a shape: until the compiler says
+    // otherwise, the rule is worded as the create's (PL-077).
+    applySearchKind(null);
 
     const values = recordedValues(events);
     // A name the person typed survives a refresh; an empty box gets a default.
@@ -898,6 +948,8 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
         showProblems(outcome.problems);
         return;
       }
+      // The compiler decides the shape; the rule's own sentence follows it (PL-077).
+      applySearchKind(outcome.searchKind);
       // The run controls read these two keys, and the row is the sample row the route compiled.
       await deps.storage.set({ [RECIPE_KEY]: outcome.recipe, [ROW_KEY]: request.sample_row });
       // Compiling stored nothing: this POST is what makes the task real (PL-030). The two session

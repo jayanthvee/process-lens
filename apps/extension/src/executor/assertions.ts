@@ -99,19 +99,52 @@ export const PAGE_TEXT_SOURCE = `(() => {
   return parts.join(" ").replace(/\\s+/g, " ").trim();
 })()`;
 
+/** The predicate keys a condition may carry, in the order they are evaluated. */
+const PREDICATE_KEYS = [
+  "text_visible",
+  "text_absent",
+  "text_count_increases",
+  "url_matches",
+  "element_present",
+  "element_absent",
+  "value_equals",
+] as const;
+
 /**
  * A page expression that evaluates the condition to a boolean.
  *
- * The predicate set is closed: `text_visible`, `text_absent`, `url_matches`,
- * `element_present`, `element_absent`, `value_equals`. Anything else raises, so
- * a condition the executor does not understand can never pass silently.
+ * PL-075: every predicate key in the condition counts. The expression used to return at the first
+ * key it recognised, so a condition saying "the text is visible AND the URL matches" passed on the
+ * strength of the text alone — a fail-open for any caller that paired two checks. A condition with
+ * several keys now holds only when all of them hold. `timeout_ms` is not a predicate.
+ *
+ * The predicate set is closed: `text_visible`, `text_absent`, `text_count_increases`,
+ * `url_matches`, `element_present`, `element_absent`, `value_equals`. A condition carrying none of
+ * them raises, so one the executor does not understand can never pass silently.
  */
 export function conditionExpression(condition: Condition, ctx: ConditionContext): string {
   const record = condition as Record<string, unknown>;
+  const keys = PREDICATE_KEYS.filter((key) => key in record);
+  if (keys.length === 0) {
+    throw new Error(
+      `the executor does not understand the condition: ${JSON.stringify(condition)}`,
+    );
+  }
+  const parts = keys.map((key) => predicateExpression(record, key, ctx));
+  if (parts.length === 1) return parts[0] as string;
+  return `(() => ${parts.map((part) => `(${part})`).join(" && ")})()`;
+}
+
+/** One predicate's page expression. */
+function predicateExpression(
+  record: Record<string, unknown>,
+  key: (typeof PREDICATE_KEYS)[number],
+  ctx: ConditionContext,
+): string {
   const normal = (value: unknown): string =>
     `String(${JSON.stringify(value)}).replace(/\\s+/g, " ").trim()`;
 
-  if ("text_visible" in record) {
+  if (key === "text_visible") {
     const wanted = record["text_visible"];
     if (typeof wanted !== "string" || wanted.trim() === "") {
       // Fail-closed (F3): `text_visible: ""` would make `includes("")` true for every page, so an
@@ -124,12 +157,12 @@ export function conditionExpression(condition: Condition, ctx: ConditionContext)
       wanted,
     )}); })()`;
   }
-  if ("text_absent" in record) {
+  if (key === "text_absent") {
     return `(() => { const text = ${PAGE_TEXT_SOURCE}; return !text.includes(${normal(
       record["text_absent"],
     )}); })()`;
   }
-  if ("text_count_increases" in record) {
+  if (key === "text_count_increases") {
     const wanted = record["text_count_increases"];
     if (typeof wanted !== "string" || wanted.trim() === "") {
       throw new Error(
@@ -156,14 +189,13 @@ export function conditionExpression(condition: Condition, ctx: ConditionContext)
       return false;
     })()`;
   }
-  if ("url_matches" in record) {
+  if (key === "url_matches") {
     return `(() => { try { return new RegExp(${JSON.stringify(
       record["url_matches"],
     )}).test(location.href); } catch { return false; } })()`;
   }
-  if ("element_present" in record || "element_absent" in record) {
-    const key = "element_present" in record ? "element_present" : "element_absent";
-    const selector = selectorOf(condition, key);
+  if (key === "element_present" || key === "element_absent") {
+    const selector = selectorOf(record as Condition, key);
     const negate = key === "element_absent" ? "!" : "";
     const call = resolverCallExpression(ctx.resolverSource, {
       ...(selector as Record<string, unknown>),
@@ -171,7 +203,7 @@ export function conditionExpression(condition: Condition, ctx: ConditionContext)
     });
     return `(() => { const result = ${call}; return ${negate}(result && result.ok === true); })()`;
   }
-  if ("value_equals" in record) {
+  if (key === "value_equals") {
     const spec = record["value_equals"] as {
       selector?: { targets?: unknown; within?: unknown };
       case_insensitive?: boolean;
@@ -213,7 +245,7 @@ export function conditionExpression(condition: Condition, ctx: ConditionContext)
       return a === b;
     })()`;
   }
-  throw new Error(`the executor does not understand the condition: ${JSON.stringify(condition)}`);
+  throw new Error(`the executor does not understand the predicate ${key}`);
 }
 
 /**

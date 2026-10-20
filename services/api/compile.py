@@ -53,6 +53,11 @@ class CompileResponse(BaseModel):
 
     recipe: dict[str, Any]
     warnings: list[str]
+    # PL-077: which searched shape this recording is. "update" is a find-then-update (the search
+    # finds the record to change), "create" is everything else, and null means no search at all.
+    # The Make recipe form words its search rule from this, so the person reads the rule the
+    # compiler actually applied.
+    search_kind: str | None = None
 
 
 @router.post("/recipes/compile", response_model=CompileResponse)
@@ -83,4 +88,6 @@ def compile_recipe(request: CompileRequest) -> CompileResponse:
             status_code=422,
             detail={"message": message, "problems": list(exc.problems) or [message]},
         ) from exc
-    return CompileResponse(recipe=result.recipe, warnings=result.warnings)
+    return CompileResponse(
+        recipe=result.recipe, warnings=result.warnings, search_kind=result.search_kind
+    )

@@ -14,9 +14,11 @@ import {
   firstEntryEvents,
   makeRecipeRequest,
   parkFieldDefaults,
+  PARK_WHEN_NOTHING_FOUND,
   recordedValues,
   recordedWarnings,
   searchDetected,
+  SKIP_IF_THERE,
   type FormStorage,
   type MakeRecipeForm,
 } from "../src/popup/make-recipe";
@@ -1048,5 +1050,69 @@ describe("a recording that saves twice (PL-042)", () => {
     expect(
       Array.from(control<HTMLSelectElement>("make-key").options).map((item) => item.value),
     ).toEqual(["contact", "email", "phone", "expected_revenue"]);
+  });
+});
+
+describe("the wording of the search rule (PL-077)", () => {
+  /**
+   * A find-then-update recording: search for the key, open the result it found, change a value,
+   * save. The compiler answers with `search_kind: "update"` for this shape.
+   */
+  function updateRecording(): RecordedEvent[] {
+    return [
+      fillEvent(1, "fill-1", "Email", "ravi@example.test"),
+      clickEvent(2, "click-1", "Search"),
+      clickEvent(3, "click-2", "SKU-1"),
+      fillEvent(4, "fill-2", "Notes", "changed"),
+      clickEvent(5, "click-3", "Save"),
+    ];
+  }
+
+  it("says the row is parked when the search finds nothing, after an update compiles", async () => {
+    const { fetchImpl } = fakeFetch({
+      recipe: { id: "price", steps: [] },
+      warnings: [],
+      search_kind: "update",
+    });
+    const form = mount(fetchImpl);
+
+    form.refresh(updateRecording());
+    await form.submit();
+
+    const box = control<HTMLInputElement>("make-duplicate");
+    const label = box.closest("label")?.querySelector(".field__label");
+    expect(label?.textContent).toBe(PARK_WHEN_NOTHING_FOUND);
+    // The rule is what an update needs, so it stays ticked.
+    expect(box.checked).toBe(true);
+  });
+
+  it("keeps 'skip it' wording for a create", async () => {
+    const { fetchImpl } = fakeFetch({
+      recipe: { id: "new-lead", steps: [] },
+      warnings: [],
+      search_kind: "create",
+    });
+    const form = mount(fetchImpl);
+
+    form.refresh(searchRecording());
+    await form.submit();
+
+    const box = control<HTMLInputElement>("make-duplicate");
+    const label = box.closest("label")?.querySelector(".field__label");
+    expect(label?.textContent).toBe(SKIP_IF_THERE);
+    expect(box.checked).toBe(true);
+  });
+
+  it("keeps 'skip it' wording when the answer says nothing about the shape", async () => {
+    const { fetchImpl } = fakeFetch({ recipe: { id: "x", steps: [] }, warnings: [] });
+    const form = mount(fetchImpl);
+
+    form.refresh(searchRecording());
+    await form.submit();
+
+    const label = control<HTMLInputElement>("make-duplicate")
+      .closest("label")
+      ?.querySelector(".field__label");
+    expect(label?.textContent).toBe(SKIP_IF_THERE);
   });
 });

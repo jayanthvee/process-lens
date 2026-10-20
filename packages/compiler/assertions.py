@@ -137,6 +137,16 @@ def condition_from_observation(
         return None
     if _is_weak_observation(observation):
         return None
+    # PL-075: an update-in-place has no confirmation and no navigation; the proof is that the
+    # control the save was sent with is gone or hidden, on the record's own page. Both halves are
+    # kept: `element_absent` is the evidence, and `url_matches` only pins the page it happened on.
+    absent = observation.get("element_absent")
+    if isinstance(absent, dict) and absent.get("targets"):
+        condition: dict[str, Any] = {"element_absent": absent}
+        pinned = observation.get("url_matches")
+        if isinstance(pinned, str) and pinned:
+            condition["url_matches"] = pinned
+        return {**condition, "timeout_ms": timeout_ms}
     for key in OBSERVATION_KEYS:
         if key in observation:
             if key == "text_visible" and _is_generated_reference_not_typed(

@@ -342,7 +342,9 @@ class Harness:
             workflow_id = self._one(
                 conn,
                 "INSERT INTO workflows (tenant_id, name, destination_key, allowed_origins) "
-                "VALUES (%s, 'E2E leads', 'lead-crm', %s) RETURNING id",
+                "VALUES (%s, 'E2E leads', 'lead-crm', %s) "
+                # A run in an existing tenant reuses that tenant's workflow (one name per tenant).
+                "ON CONFLICT (tenant_id, name) DO UPDATE SET name = EXCLUDED.name RETURNING id",
                 (tenant_id, [self.crm_url]),
             )
             batch_id = insert_batch(
@@ -1282,12 +1284,7 @@ def messy_harness(
     # PL-033 put Connect, the address and Try one row under a closed "More"; open it, as a
     # person would, so the controls the harness drives are visible.
     popup.evaluate("() => document.querySelectorAll('details').forEach((d) => { d.open = true; })")
-    # As in the fixture harness (PL-058): the popup's own first connect attempt disables Connect
-    # until it settles, and a click before then is lost.
-    popup.wait_for_function(
-        "() => document.getElementById('connect') && !document.getElementById('connect').disabled",
-        timeout=15_000,
-    )
+    ready_to_connect(popup)
     popup.evaluate("v => { document.getElementById('hub').value = v; }", api_server["base"])
     page.bring_to_front()
     popup.evaluate("document.getElementById('connect').click()")
@@ -1378,12 +1375,7 @@ def corpus_harness(
     # PL-033 put Connect, the address and Try one row under a closed "More"; open it, as a
     # person would, so the controls the harness drives are visible.
     popup.evaluate("() => document.querySelectorAll('details').forEach((d) => { d.open = true; })")
-    # As in the fixture harness (PL-058): the popup's own first connect attempt disables Connect
-    # until it settles, and a click before then is lost.
-    popup.wait_for_function(
-        "() => document.getElementById('connect') && !document.getElementById('connect').disabled",
-        timeout=15_000,
-    )
+    ready_to_connect(popup)
     popup.evaluate("v => { document.getElementById('hub').value = v; }", api_server["base"])
     page.bring_to_front()
     popup.evaluate("document.getElementById('connect').click()")
@@ -1483,6 +1475,27 @@ __all__ = [
 # therefore logs in again afterwards, which is why the order below is reset -> page -> connect.
 
 
+def ready_to_connect(popup: Any) -> None:
+    """Wait until the popup's Connect can be pressed, disconnecting an earlier session first.
+
+    The popup's own first connect attempt disables Connect until it settles (PL-058), and a
+    session an earlier test opened keeps it disabled for good: Connect binds the active tab, so
+    a new tab needs that session closed first, exactly as a person would press Disconnect.
+    """
+    popup.wait_for_function(
+        "() => { const c = document.getElementById('connect');"
+        " const d = document.getElementById('disconnect');"
+        " return !!c && (!c.disabled || (!!d && !d.disabled)); }",
+        timeout=15_000,
+    )
+    if popup.evaluate("() => document.getElementById('connect').disabled"):
+        popup.evaluate("document.getElementById('disconnect').click()")
+        popup.wait_for_function(
+            "() => !document.getElementById('connect').disabled",
+            timeout=15_000,
+        )
+
+
 def bind_extension_to(
     context: Any, extension_id: str, api_server: dict[str, Any], page: Any
 ) -> tuple[Any, str]:
@@ -1497,12 +1510,7 @@ def bind_extension_to(
     # PL-033 put Connect, the address and Try one row under a closed "More"; open it, as a
     # person would, so the controls the harness drives are visible.
     popup.evaluate("() => document.querySelectorAll('details').forEach((d) => { d.open = true; })")
-    # As in the fixture harness (PL-058): the popup's own first connect attempt disables Connect
-    # until it settles, and a click before then is lost.
-    popup.wait_for_function(
-        "() => document.getElementById('connect') && !document.getElementById('connect').disabled",
-        timeout=15_000,
-    )
+    ready_to_connect(popup)
     popup.evaluate("v => { document.getElementById('hub').value = v; }", api_server["base"])
     page.bring_to_front()
     popup.evaluate("document.getElementById('connect').click()")
