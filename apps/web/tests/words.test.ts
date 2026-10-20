@@ -12,6 +12,8 @@ import {
   rowOutcome,
   runActions,
   runStatusWords,
+  siteCapReached,
+  siteCapWords,
 } from "../src/lib/words";
 
 describe("rowOutcome", () => {
@@ -207,5 +209,20 @@ describe("durationWords and minutesSavedWords", () => {
     expect(minutesSavedWords(1)).toBe("About 1 minute saved");
     expect(minutesSavedWords(0)).toBe("Nothing saved yet");
     expect(minutesSavedWords(-5)).toBe("Nothing saved yet");
+  });
+});
+
+describe("the site daily cap (PL-067)", () => {
+  it("names the site, its limit and tomorrow in one sentence", () => {
+    expect(
+      siteCapWords({ origin: "https://www.linkedin.com/", limit: 25, used: 25 }),
+    ).toBe(
+      "Paused: today's limit for linkedin.com (25 rows) is reached. It can continue tomorrow.",
+    );
+  });
+
+  it("keeps Resume disabled while the count stands, and only then", () => {
+    expect(siteCapReached({ origin: "https://x.example", limit: 25, used: 25 })).toBe(true);
+    expect(siteCapReached({ origin: "https://x.example", limit: 25, used: 24 })).toBe(false);
   });
 });

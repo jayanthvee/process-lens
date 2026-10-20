@@ -133,6 +133,9 @@ class RunDetail(BaseModel):
     saved_seconds: int | None = None
     counts: RunCounts
     open_approval: OpenApproval | None = None
+    # PL-067: set while a `site_daily_cap` pause stands, so the run page can name the site, the
+    # limit and today's count, and keep its Resume disabled while the count stands.
+    site_cap: dict[str, Any] | None = None
     # Set only while this run is queued and another run on the same app is running or paused.
     waiting_behind: WaitingBehind | None = None
 
@@ -266,6 +269,10 @@ def get_run_endpoint(run_id: uuid.UUID) -> RunDetail:
         run_time = reads.run_time(conn, run_id)
         approval = open_approval_for_run(conn, run_id)
         blocking = reads.run_blocking(conn, run_id)
+        # PL-067: the cap a `site_daily_cap` pause stands at, for the run page's sentence.
+        site_cap = (
+            reads.run_site_cap(conn, run_id) if run.pause_reason == "site_daily_cap" else None
+        )
 
     counts = RunCounts(
         total=summary.total if summary else 0,
@@ -302,6 +309,7 @@ def get_run_endpoint(run_id: uuid.UUID) -> RunDetail:
         automated_seconds_per_row=automated_per_row,
         saved_seconds=saved_seconds,
         counts=counts,
+        site_cap=site_cap,
         open_approval=(
             OpenApproval(
                 id=approval.id,

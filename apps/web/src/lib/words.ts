@@ -341,6 +341,36 @@ export function estimatedRowsNote(rows: number | null | undefined): string | nul
   return `estimated for ${plural(count, "row")}`;
 }
 
+/*
+ * PL-067: the site daily cap. The pause names the site and its limit in one sentence, and the
+ * run page keeps its Resume disabled while the count stands: the owner's rule that the action
+ * sits on the same screen, but a resume while the cap holds would just be refused.
+ */
+
+export interface SiteCap {
+  origin: string;
+  limit: number;
+  used: number;
+}
+
+/** The cap's origin as a person says it: linkedin.com, not https://www.linkedin.com/. */
+export function siteCapHost(origin: string): string {
+  return origin.replace(/^\w+:\/\//, "").replace(/\/+$/, "").replace(/^www\./, "");
+}
+
+/** The sentence the run page shows for a `site_daily_cap` pause. */
+export function siteCapWords(cap: SiteCap): string {
+  return (
+    `Paused: today's limit for ${siteCapHost(cap.origin)} ` +
+    `(${cap.limit} rows) is reached. It can continue tomorrow.`
+  );
+}
+
+/** Whether the cap still stands: the Resume button stays disabled while it does. */
+export function siteCapReached(cap: SiteCap): boolean {
+  return cap.used >= cap.limit;
+}
+
 /**
  * PL-068: the site is asking for a verification code while the run is paused.
  *

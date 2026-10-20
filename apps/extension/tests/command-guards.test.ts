@@ -135,6 +135,70 @@ describe("checkChallengeOrLogin", () => {
     });
     expect(result.ok).toBe(true);
   });
+
+  // --- PL-067: warning pages -------------------------------------------------
+
+  it.each([
+    "unusual activity",
+    "we've restricted",
+    "too many requests",
+    "verify you're human",
+    "temporarily blocked",
+    "security check",
+  ])("a visible heading saying '%s' raises the challenge event", async (phrase) => {
+    document.body.innerHTML = `<h2 id='head'>${phrase}</h2><p>Some page copy.</p>`;
+    const head = document.getElementById("head") as HTMLElement;
+    head.getBoundingClientRect = () => ({ width: 300, height: 24 }) as DOMRect;
+    const { cdp } = fakeCdp();
+    const result = await checkChallengeOrLogin({ cdp, step: step(), allowedOrigins: [] });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.event).toBe("challenge");
+  });
+
+  it("a dialog saying the account is temporarily blocked raises the challenge event", async () => {
+    document.body.innerHTML =
+      "<div role='dialog' id='box'><p>Your account has been temporarily blocked.</p></div>";
+    const box = document.getElementById("box") as HTMLElement;
+    box.getBoundingClientRect = () => ({ width: 400, height: 200 }) as DOMRect;
+    const { cdp } = fakeCdp();
+    const result = await checkChallengeOrLogin({ cdp, step: step(), allowedOrigins: [] });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.event).toBe("challenge");
+      expect(result.reason).toMatch(/temporarily blocked/);
+      expect(result.reason).toMatch(/Resume/);
+    }
+  });
+
+  it("a page titled Security Verification raises the challenge event", async () => {
+    document.title = "Security Verification";
+    const { cdp } = fakeCdp();
+    const result = await checkChallengeOrLogin({ cdp, step: step(), allowedOrigins: [] });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.event).toBe("challenge");
+  });
+
+  it("a job description that merely says 'security check' is not a warning page", async () => {
+    // Only page-level markers count: the title, a heading, or a dialog. The page's own copy --
+    // a LinkedIn job description, say -- is never one, and an input's value is never read.
+    document.title = "Operations Manager - job post";
+    document.body.innerHTML =
+      "<p>You will own physical security check procedures at our depots.</p>" +
+      "<input id='q' value='security check'>";
+    const { cdp } = fakeCdp();
+    const result = await checkChallengeOrLogin({ cdp, step: step(), allowedOrigins: [] });
+    expect(result.ok).toBe(true);
+  });
+
+  it("a hidden heading with a marker is not a warning page", async () => {
+    document.body.innerHTML =
+      "<h2 id='head' style='display:none'>unusual activity</h2><p>ordinary page</p>";
+    const head = document.getElementById("head") as HTMLElement;
+    head.getBoundingClientRect = () => ({ width: 0, height: 0 }) as DOMRect;
+    const { cdp } = fakeCdp();
+    const result = await checkChallengeOrLogin({ cdp, step: step(), allowedOrigins: [] });
+    expect(result.ok).toBe(true);
+  });
 });
 
 describe("checkDestructive", () => {
