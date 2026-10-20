@@ -159,3 +159,5 @@ P-001 proposed migration 0002 for each of these; L1, L4, L5, and L6 are now enfo
 | I28 | A guard refusal during a record never crashes the worker: the record is parked, or the run pauses `internal_error` (a `StaleLease` still stops the worker, which is correct) | `services/runner/run_loop.py` | `tests/runner/test_refused_transition.py` (DB, PL-013 review) |
 | I12 | `run_summary` counts match the ledger | View | `tests/db` (DB, PL-002) |
 | I13 | `packages/ledger` mirrors the guard exactly | Contract test | Compare its table with the 32 pairs read from the database |
+
+PL-067: the runner can pause a run with `pause_reason = 'site_daily_cap'` before claiming a row, when the tenant's `site_daily_caps` setting has a limit for the recipe's origin and this tenant's rows that entered `submitting` today (UTC) have reached it. The record stays `pending`; nothing reaches the commit window, so every invariant above is untouched.

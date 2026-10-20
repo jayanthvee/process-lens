@@ -36,6 +36,7 @@ going down the ``else`` branch of a duplicate search.
 from __future__ import annotations
 
 import logging
+import random
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -62,16 +63,20 @@ from packages.ledger import (
     decisions_for_step,
     get_record,
     get_run,
+    has_pending_records,
     mark_submitted_unverified,
     open_approval_request,
     reconciling_records,
     record_step_event,
     recover_run,
     release_run,
+    run_pacing_settings,
     set_run_status,
+    site_rows_submitted_today,
     skip_already_committed,
     skip_pending_records,
     tenant_is_frozen,
+    tenant_site_caps,
     verify_commit,
 )
 
@@ -137,6 +142,15 @@ UNKNOWN_CONFIRMATION_REASON = "could not tell whether the confirmation was alrea
 
 # The freshness probe asks "is it there now", so it polls once at the schema's own minimum.
 CONFIRMATION_PROBE_TIMEOUT_MS = 100
+
+# PL-067: pacing. The largest piece of a wait the run loop lets pass before it re-reads the run's
+# status, so a pause or a cancel during a wait is noticed within about a second.
+PACING_SLICE_SECONDS = 1.0
+# The jitter pacing adds, as a fraction of the gap: a wait of 0-25% longer than the setting, so
+# two runs started together do not act in lock-step. A rate limit, not a disguise.
+PACING_JITTER_FRACTION = 0.25
+# PL-067: the pause reason when a site's daily cap is reached.
+SITE_DAILY_CAP = "site_daily_cap"
 
 _PRE_EXIT = {"skip": "skipped", "park": "parked", "fail": "failed"}
 
@@ -210,6 +224,12 @@ class RunLoop:
         # PL-027: the last record this run claimed, so the abandon guard can be released against a
         # record when the run ends with nothing left to name.
         self._last_record: RecordClaim | None = None
+        # PL-067: the run's pacing settings, read once per run, and the clock times of the last
+        # claim and the last executor command, which the gaps are measured from.
+        self.min_seconds_between_rows = 0.0
+        self.min_seconds_between_steps = 0.0
+        self._last_claim_at: float | None = None
+        self._last_step_at: float | None = None
 
     # -- the run -----------------------------------------------------------
 
@@ -225,6 +245,12 @@ class RunLoop:
         # R6: never start a run whose lease could lapse mid-step: the heartbeat must outlive
         # three times the longest step in the recipe plus the dispatch budget.
         self._require_heartbeat_headroom(recipe)
+
+        # PL-067: the run's own pacing, read once. A run pins its recipe for its whole life, and
+        # the person's pacing is the same kind of decision.
+        self.min_seconds_between_rows, self.min_seconds_between_steps = run_pacing_settings(
+            conn, run.id
+        )
 
         skip_already_committed(conn, run.id, run.destination_key)
 
@@ -255,11 +281,24 @@ class RunLoop:
                 self._hand_back(conn, run)
                 return
 
+            # PL-067: pace before claiming, then the site's daily cap. Both run before any record
+            # is touched, so a pause here leaves every record `pending` and nothing reaches the
+            # commit window. A run with no row left to claim has nothing to pace or cap: it goes
+            # on to the (empty) claim and completes.
+            if has_pending_records(conn, run.id):
+                if not self._pace_before_claim(conn, run, epoch):
+                    self._hand_back(conn, run)
+                    return
+                if self._pause_at_site_cap(conn, run, epoch):
+                    self._hand_back(conn, run)
+                    return
+
             with conn.transaction():
                 record = claim_record(conn, run.id, self.worker_id, epoch)
             if record is None:
                 break
             self._last_record = record
+            self._last_claim_at = self.clock.time()
 
             try:
                 outcome = self._process_record(conn, record, run, epoch, recipe, meta, rules)
@@ -326,6 +365,105 @@ class RunLoop:
         """Release a paused run (B1). False when it was resumed, so the caller keeps going."""
         with conn.transaction():
             return release_run(conn, run.id, self.worker_id)
+
+    # -- PL-067: pacing and the site daily cap -------------------------------
+
+    def _pace(self, conn: psycopg.Connection, run: RunClaim, epoch: int, seconds: float) -> bool:
+        """Wait at least ``seconds`` (plus 0-25% jitter), noticing a stop within one slice.
+
+        Returns True when the run may carry on; False when it was paused or cancelled during the
+        wait. The wait is sliced, and each slice re-reads the run's status from the database, so a
+        pause is noticed within about a second of it happening. All time goes through the clock.
+        """
+        if seconds <= 0:
+            return True
+        delay = seconds * (1.0 + random.uniform(0.0, PACING_JITTER_FRACTION))
+        deadline = self.clock.time() + delay
+        while True:
+            current = get_run(conn, run.id)
+            if current is None or current.cancel_requested_at is not None:
+                return False
+            if current.status != "running":
+                return False
+            now = self.clock.time()
+            if now >= deadline:
+                return True
+            self.clock.pause(min(PACING_SLICE_SECONDS, deadline - now))
+
+    def _pace_before_claim(self, conn: psycopg.Connection, run: RunClaim, epoch: int) -> bool:
+        """The row gap: the wait before claiming the next row, measured from the last claim.
+
+        A gap belongs between two rows: the first claim of a run waits for nothing, and a run with
+        no row left to claim spends nothing before finding that out.
+        """
+        if self.min_seconds_between_rows <= 0 or self._last_claim_at is None:
+            return True
+        if not has_pending_records(conn, run.id):
+            return True
+        elapsed = max(0.0, self.clock.time() - self._last_claim_at)
+        return self._pace(conn, run, epoch, self.min_seconds_between_rows - elapsed)
+
+    def _pace_for_step(
+        self,
+        conn: psycopg.Connection,
+        record: RecordClaim,
+        run: RunClaim,
+        epoch: int,
+        box: _Box,
+    ) -> bool:
+        """The step gap: the wait before sending the next command, measured from the last one."""
+        if self.min_seconds_between_steps <= 0:
+            return True
+        elapsed = (
+            0.0 if self._last_step_at is None else max(0.0, self.clock.time() - self._last_step_at)
+        )
+        remaining = self.min_seconds_between_steps - elapsed
+        if remaining <= 0:
+            return True
+        if self._pace(conn, run, epoch, remaining):
+            self._last_step_at = self.clock.time()
+            return True
+        # The run stopped during the wait: the record leaves the tab exactly as it does at the
+        # step boundary's own pause.
+        if box.state == "filling":
+            self._transition(conn, record, "filling", "pending", "paused", refund_attempt=True)
+            box.state = "pending"
+        return False
+
+    def _pause_at_site_cap(self, conn: psycopg.Connection, run: RunClaim, epoch: int) -> bool:
+        """Pause the run when a site it works on has reached its daily cap (PL-067).
+
+        The count is this tenant's rows that entered `submitting` today (UTC) on runs whose recipe
+        allows the origin. The run pauses BEFORE claiming, so the record stays `pending`, nothing
+        reaches the commit window, and the ledger's invariants are untouched.
+        """
+        if not self._allowed_origins:
+            return False
+        caps = tenant_site_caps(conn, run.tenant_id)
+        if not caps:
+            return False
+        for origin in self._allowed_origins:
+            limit = caps.get(origin)
+            if limit is None:
+                continue
+            if site_rows_submitted_today(conn, run.tenant_id, origin) >= limit:
+                with conn.transaction():
+                    set_run_status(
+                        conn,
+                        run.id,
+                        "paused",
+                        pause_reason=SITE_DAILY_CAP,
+                        worker=self.worker_id,
+                        epoch=epoch,
+                    )
+                logger.warning(
+                    "run %s paused: today's limit for %s (%d rows) is reached",
+                    run.id,
+                    origin,
+                    limit,
+                )
+                return True
+        return False
 
     # -- the abandon guard (PL-027) ----------------------------------------
 
@@ -645,6 +783,11 @@ class RunLoop:
             if box.state == "prechecked":
                 self._transition(conn, record, "prechecked", "filling", "steps begin")
                 box.state = "filling"
+
+            # PL-067: pace before sending the next command. A pause or cancel during the wait
+            # releases the record the same way a pause at the step boundary does.
+            if not self._pace_for_step(conn, record, run, epoch, box):
+                return "paused"
 
             if step.get("commit") is True:
                 terminal = self._commit_step(conn, record, run, epoch, step, row, variables, box)

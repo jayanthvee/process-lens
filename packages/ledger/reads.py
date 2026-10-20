@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
+from typing import Any
 
 import psycopg
 from psycopg.rows import dict_row
@@ -713,3 +714,91 @@ __all__ = [
     "week_manual_seconds",
     "window_run_seconds",
 ]
+
+# --------------------------------------------------------------------------- PL-067
+
+
+def run_pacing_settings(conn: psycopg.Connection, run_id: uuid.UUID) -> tuple[int, int]:
+    """The run's pacing settings: (min_seconds_between_rows, min_seconds_between_steps).
+
+    Both are nullable on `runs` (migration 0010); unset reads as 0, which is the behaviour
+    the runner had before pacing existed.
+    """
+    row = conn.execute(
+        "SELECT coalesce(min_seconds_between_rows, 0), coalesce(min_seconds_between_steps, 0) "
+        "FROM runs WHERE id = %s",
+        (run_id,),
+    ).fetchone()
+    return (int(row[0]), int(row[1])) if row is not None else (0, 0)
+
+
+def tenant_site_caps(conn: psycopg.Connection, tenant_id: uuid.UUID) -> dict[str, int]:
+    """The tenant's `site_daily_caps` setting: {origin: number of rows per day}."""
+    row = conn.execute(
+        "SELECT settings->'site_daily_caps' FROM tenants WHERE id = %s", (tenant_id,)
+    ).fetchone()
+    caps = row[0] if row is not None else None
+    if not isinstance(caps, dict):
+        return {}
+    return {str(origin): int(limit) for origin, limit in caps.items()}
+
+
+def site_rows_submitted_today(conn: psycopg.Connection, tenant_id: uuid.UUID, origin: str) -> int:
+    """How many of this tenant's rows entered `submitting` today (UTC) on runs that allow origin.
+
+    The count reads the append-only transition audit (0002), joined to the run and its pinned
+    recipe version, so a row counts once per entry into the commit window and only for a site
+    the recipe is actually allowed to act on.
+    """
+    row = conn.execute(
+        "SELECT count(*) FROM run_record_transitions t "
+        "JOIN run_records rr ON rr.id = t.run_record_id "
+        "JOIN runs r ON r.id = rr.run_id "
+        "JOIN recipe_versions rv ON rv.id = r.recipe_version_id "
+        "WHERE t.tenant_id = %s AND t.to_state = 'submitting' "
+        "AND t.at >= date_trunc('day', now() AT TIME ZONE 'utc') "
+        "AND rv.recipe->'meta'->'allowed_origins' ? %s",
+        (tenant_id, origin),
+    ).fetchone()
+    return int(row[0]) if row is not None else 0
+
+
+def run_site_cap(conn: psycopg.Connection, run_id: uuid.UUID) -> dict[str, Any] | None:
+    """The site cap a `site_daily_cap` pause happened at, for the run page's sentence.
+
+    Returns the run's first allowed origin with the tenant's limit for it and today's count,
+    or `None` when the run allows no origin the tenant caps.
+    """
+    row = conn.execute(
+        "SELECT r.tenant_id, rv.recipe->'meta'->'allowed_origins' FROM runs r "
+        "JOIN recipe_versions rv ON rv.id = r.recipe_version_id WHERE r.id = %s",
+        (run_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    tenant_id, origins = row[0], row[1]
+    if not isinstance(origins, list) or not origins:
+        return None
+    origin = str(origins[0])
+    limit = tenant_site_caps(conn, tenant_id).get(origin)
+    if limit is None:
+        return None
+    return {
+        "origin": origin,
+        "limit": limit,
+        "used": site_rows_submitted_today(conn, tenant_id, origin),
+    }
+
+
+def has_pending_records(conn: psycopg.Connection, run_id: uuid.UUID) -> bool:
+    """Whether the run has a record a claim could take (PL-067).
+
+    Pacing reads this before waiting: a gap belongs between two rows, so the run must not spend
+    one before discovering there is no next row to claim.
+    """
+    row = conn.execute(
+        "SELECT 1 FROM run_records WHERE run_id = %s AND state = 'pending' "
+        "AND attempts < max_attempts LIMIT 1",
+        (run_id,),
+    ).fetchone()
+    return row is not None

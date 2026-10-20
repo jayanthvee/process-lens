@@ -721,3 +721,29 @@ describe("a hostile value is rendered as text", () => {
   });
 });
 
+
+describe("a run paused at a site's daily cap (PL-067)", () => {
+  it("names the site and its limit, and keeps Resume disabled while the count stands", async () => {
+    stub = createFetchStub({
+      ...SHELL,
+      "/api/v1/runs/run-1/records": { body: [] },
+      "/api/v1/runs/run-1": {
+        body: runDetail({
+          status: "paused",
+          pause_reason: "site_daily_cap",
+          site_cap: { origin: "https://www.linkedin.com/", limit: 25, used: 25 },
+        }),
+      },
+    });
+    renderApp("/runs/run-1");
+    await settle();
+
+    expect(
+      screen.getAllByText(
+        "Paused: today's limit for linkedin.com (25 rows) is reached. It can continue tomorrow.",
+      ).length,
+    ).toBeGreaterThan(0);
+    const resume = screen.getByRole("button", { name: "Resume" }) as HTMLButtonElement;
+    expect(resume.disabled).toBe(true);
+  });
+});

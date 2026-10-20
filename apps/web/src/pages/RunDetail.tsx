@@ -13,6 +13,8 @@ import {
   pauseReasonWords,
   plainReason,
   refusalWords,
+  siteCapReached,
+  siteCapWords,
   rowOutcome,
   runActions,
   runStatusWords,
@@ -245,6 +247,11 @@ export function RunDetail(): JSX.Element {
   const total = totalCount(counts);
   const alreadyThere = counts.skipped ?? 0;
   const pauseReason = pauseReasonWords(detail.pause_reason);
+  // PL-067: a `site_daily_cap` pause names the site and its limit, and the Resume button stays
+  // disabled while the count stands. The action still sits on this screen, per the owner's rule.
+  const siteCap = detail.site_cap ?? null;
+  const capSentence = siteCap ? siteCapWords(siteCap) : null;
+  const capReached = siteCap !== null && siteCapReached(siteCap);
   const started = stamp(detail.started_at);
   const finished = stamp(detail.finished_at);
   const request = detail.open_approval;
@@ -316,7 +323,12 @@ export function RunDetail(): JSX.Element {
             <p className="times time-compare">{comparison}</p>
           )}
         </div>
-        <p className="pause-reason">{pauseReason ?? "Not paused."}</p>
+        <p className="pause-reason">{capSentence ?? pauseReason ?? "Not paused."}</p>
+        {capReached ? (
+          <p className="pause-reason cap-note">
+            The count resets at midnight UTC. This button works again then.
+          </p>
+        ) : null}
         {started === null && finished === null ? null : (
           <p className="times">
             {started === null ? null : (
@@ -355,11 +367,16 @@ export function RunDetail(): JSX.Element {
               <button
                 type="button"
                 className="btn quiet run-action-resume"
-                disabled={busy !== null}
+                disabled={busy !== null || capReached}
                 onClick={() => void act("resume")}
               >
                 Resume
               </button>
+              {capReached ? (
+                <span className="refusal cap-note" role="status">
+                  {capSentence}
+                </span>
+              ) : null}
               {refusal?.action === "resume" ? (
                 <span className="refusal action-error" role="status">
                   {refusal.text}

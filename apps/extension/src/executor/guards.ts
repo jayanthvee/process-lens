@@ -64,6 +64,8 @@ export async function checkOrigin(ctx: GuardContext): Promise<GuardResult> {
 export interface ChallengeProbe {
   challenge: boolean;
   marker: string;
+  /** The warning-page phrase that matched, when the hit came from PL-067's markers. */
+  warning_marker: string;
   password_field: boolean;
   password_name: string;
 }
@@ -122,6 +124,44 @@ export function challengeOrLoginInPage(query: { targets: unknown[] }): Challenge
   }
   if (!marker && /just a moment/i.test(document.title ?? "")) marker = "Just a moment";
 
+  // PL-067: rate-limit and unusual-activity pages, on page-level surfaces only -- the title, a
+  // visible heading, or a dialog's text. The list lives here, inside the function, because this
+  // function is serialized into the page and cannot see the module's scope. Each marker matches
+  // ONE surface; the page's own copy (a LinkedIn job description that says "security check") is
+  // never a marker, and an input's value is never read. Every hit raises the existing `challenge`
+  // event: the run pauses and nothing is clicked or solved. A rate limit, not a disguise.
+  const WARNING_PAGE_MARKERS: ReadonlyArray<{ phrase: string; where: "text" | "title" }> = [
+    { phrase: "unusual activity", where: "text" },
+    { phrase: "we've restricted", where: "text" },
+    { phrase: "too many requests", where: "text" },
+    { phrase: "verify you're human", where: "text" },
+    { phrase: "temporarily blocked", where: "text" },
+    { phrase: "security check", where: "text" },
+    { phrase: "Security Verification", where: "title" },
+  ];
+  let warningMarker = "";
+  const surfaces = [
+    document.title ?? "",
+    ...Array.from(document.querySelectorAll("h1, h2, h3, h4, h5, h6"))
+      .filter(isVisible)
+      .map((heading) => heading.textContent ?? ""),
+    ...Array.from(document.querySelectorAll("dialog, [role='dialog']"))
+      .filter(isVisible)
+      .map((dialog) => dialog.textContent ?? ""),
+  ];
+  const pageText = surfaces.join("\n").toLowerCase();
+  for (const markerSpec of WARNING_PAGE_MARKERS) {
+    const phrase = markerSpec.phrase.toLowerCase();
+    const hit =
+      markerSpec.where === "title"
+        ? (document.title ?? "").toLowerCase().includes(phrase)
+        : pageText.includes(phrase);
+    if (hit) {
+      warningMarker = markerSpec.phrase;
+      break;
+    }
+  }
+
   let passwordName = "";
   for (const input of Array.from(document.querySelectorAll('input[type="password"]'))) {
     if (!isVisible(input)) continue;
@@ -131,8 +171,9 @@ export function challengeOrLoginInPage(query: { targets: unknown[] }): Challenge
   }
 
   return {
-    challenge: marker !== "",
+    challenge: marker !== "" || warningMarker !== "",
     marker,
+    warning_marker: warningMarker,
     password_field: passwordName !== "",
     password_name: passwordName,
   };
@@ -151,10 +192,15 @@ export async function checkChallengeOrLogin(ctx: GuardContext): Promise<GuardRes
     | ChallengeProbe
     | undefined;
   if (probe?.challenge) {
+    // PL-067: a warning page names itself in the sentence, so the person knows which page to
+    // look at. ProcessLens never pushes past it either way.
+    const reason = probe.warning_marker
+      ? `The site showed a warning page ('${probe.warning_marker}'). Check it yourself, then Resume.`
+      : `the page is showing a challenge (${probe.marker}); ProcessLens never solves or bypasses one`;
     return {
       ok: false,
       event: "challenge",
-      reason: `the page is showing a challenge (${probe.marker}); ProcessLens never solves or bypasses one`,
+      reason,
     };
   }
   if (probe?.password_field) {

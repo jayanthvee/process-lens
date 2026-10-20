@@ -23,6 +23,8 @@ export interface RunDetail {
   pause_reason: string | null;
   counts: Record<string, number>;
   open_approval: ApprovalRequest | null;
+  /** PL-067: set while a `site_daily_cap` pause stands, so the page can name the site and limit. */
+  site_cap?: { origin: string; limit: number; used: number } | null;
   started_at?: string | null;
   finished_at?: string | null;
   /**
