@@ -273,6 +273,43 @@ class Odoo:
             ["product_id", "product_uom_qty"],
         )
 
+    def draft_invoices_by_partner(self, partner: int) -> list[dict[str, Any]]:
+        """Every DRAFT customer invoice (`account.move`, `out_invoice`) of one customer.
+
+        The seeder gives every customer one POSTED invoice (PL-051's reset seeds them posted), so
+        a draft invoice on this customer is one the run wrote -- exactly what the invoice golden
+        counts.
+        """
+        return self.search_read(
+            "account.move",
+            [
+                ("partner_id", "=", partner),
+                ("move_type", "=", "out_invoice"),
+                ("state", "=", "draft"),
+            ],
+            ["name", "state", "move_type", "invoice_line_ids"],
+        )
+
+    def invoice_lines(self, move: int) -> list[dict[str, Any]]:
+        """Every `account.move.line` of one draft invoice, with product, quantity and price."""
+        return self.search_read(
+            "account.move.line",
+            [("move_id", "=", move)],
+            ["product_id", "quantity", "price_unit"],
+        )
+
+    def product_list_price(self, code: str) -> float:
+        """The current `list_price` of the seeded product whose `default_code` is `code`."""
+        found = self.search_read(
+            "product.product", [("default_code", "=", code)], ["list_price"], limit=1
+        )
+        if not found:
+            raise AssertionError(
+                f"Odoo has no product.product with default_code {code!r}; "
+                "run `python infra/test-apps/reset.py odoo` to seed the products"
+            )
+        return float(found[0].get("list_price") or 0.0)
+
 
 def login_odoo(page: Any, env: dict[str, str], *, base: str | None = None) -> None:
     """Log the page into Odoo, as a person does, through the real login form."""
