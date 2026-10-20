@@ -64,6 +64,7 @@ function readBase64(file: File): Promise<string> {
  */
 function AddWordDocument(): JSX.Element {
   const [preview, setPreview] = useState<DocumentPreview | null>(null);
+  const [uploadedName, setUploadedName] = useState<string>("");
   const [reading, setReading] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
 
@@ -77,6 +78,7 @@ function AddWordDocument(): JSX.Element {
         file_name: file.name,
         content_base64: content,
       });
+      setUploadedName(file.name);
       setPreview(answer);
     } catch (failure) {
       setProblem(refusalWords(errorText(failure)));
@@ -147,7 +149,14 @@ function AddWordDocument(): JSX.Element {
             >
               {DOWNLOAD_CSV}
             </a>
-            <Link className="btn quiet" to="/tasks">
+            <Link
+              className="btn quiet"
+              // PL-076: the cleaned CSV travels to the task list with the token, and the name
+              // rides along so the list can say which document's rows are waiting.
+              to={`/tasks?csv=${encodeURIComponent(preview.csv_token)}${
+                uploadedName ? `&name=${encodeURIComponent(uploadedName)}` : ""
+              }`}
+            >
               {USE_FOR_A_TASK}
             </Link>
           </p>

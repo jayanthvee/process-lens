@@ -1,12 +1,18 @@
 import { type CSSProperties, useEffect, useRef, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 
 import { ApprovalPanel } from "../components/ApprovalPanel";
 import { KeepsFailingWarning } from "../components/KeepsFailingWarning";
 import { WaitingRun } from "../components/WaitingRun";
 import { apiGet, apiPost, apiPostFile, apiPut, errorText } from "../lib/api";
 import { POLL_INTERVAL_MS, useJson } from "../lib/useJson";
-import { isOpenStatus, pauseReasonWords, refusalWords, runStatusWords } from "../lib/words";
+import {
+  DOCUMENT_ROWS_GONE,
+  isOpenStatus,
+  pauseReasonWords,
+  refusalWords,
+  runStatusWords,
+} from "../lib/words";
 import { runsBlocked, useWorkspaceState } from "../lib/workspace";
 import type {
   BatchCheck,
@@ -62,6 +68,12 @@ function readyWords(ready: number, needLook: number): string {
 export function TaskRun(): JSX.Element {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  // PL-076: a cleaned document from the Spreadsheets page arrives as ?csv=<token>. Once the task
+  // is known, the CSV is fetched and handed to the very same `add` a picked file goes through,
+  // so the person lands on the check step with the rows already loaded.
+  const [params] = useSearchParams();
+  const csvToken = params.get("csv");
+  const csvName = params.get("name") ?? "";
 
   // Whether an admin has paused runs, or this person's extension is too old. The buttons below
   // stand down while that is true; the shell's banner is what says why.
@@ -74,6 +86,8 @@ export function TaskRun(): JSX.Element {
     (Array.isArray(tasks.data) ? tasks.data : []).find((entry) => entry.workflow_id === id) ?? null;
 
   const fileInput = useRef<HTMLInputElement | null>(null);
+  // The carry-in runs once: a re-render must not fetch the same document again.
+  const carriedIn = useRef(false);
   const [batch, setBatch] = useState<BatchUpload | null>(null);
   const [step, setStep] = useState<number>(1);
   // The columns a person changed. Anything they left alone stays exactly as the check chose it.
@@ -154,6 +168,33 @@ export function TaskRun(): JSX.Element {
       setBusy(false);
     }
   }
+
+  // PL-076: carry the cleaned document in. The fetch is the API's own download route; its bytes
+  // become a File and go through `add`, exactly as a picked file does. A token that has expired
+  // (or a fetch that fails) says so once in the upload area, and the picker stays usable.
+  useEffect(() => {
+    if (csvToken === null || task === null || carriedIn.current) return;
+    carriedIn.current = true;
+    const name = `${csvName.replace(/\.docx$/i, "") || "document"}.csv`;
+    void (async () => {
+      setBusy(true);
+      setProblem(null);
+      try {
+        const response = await fetch(
+          `/api/v1/documents/to-csv/${encodeURIComponent(csvToken)}.csv`,
+        );
+        if (!response.ok) throw new Error("the document's rows are gone");
+        const blob = await response.blob();
+        await add(new File([blob], name, { type: "text/csv" }));
+      } catch {
+        setProblem(DOCUMENT_ROWS_GONE);
+      } finally {
+        setBusy(false);
+      }
+    })();
+    // `add` is recreated each render but reads only state this effect already depends on.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [csvToken, csvName, task]);
 
   async function continueOn(): Promise<void> {
     if (batch === null || entries === null) return;
