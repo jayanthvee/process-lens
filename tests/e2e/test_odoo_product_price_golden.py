@@ -8,12 +8,12 @@ internal reference -> open it -> change **Sales Price** -> Save. The sheet has
 same change applies once while a later change to the same record is still a
 new key.
 
-The search here is a real search (the search view, Enter applied), which is
-why the duplicate-search heuristic has something to read. The popup proposes
-its skip-if-the-search-finds-it branch when a search is detected; for an
-update the branch would skip every row -- the product always exists -- so the
-golden unticks it, which is what a person updating prices would do, and the
-trace records that the popup proposed it.
+The search here is a real search (the search view, Enter applied). PL-077
+tells the two searched shapes apart: this recording opens the result the search
+found and commits on that record's own page, so it is a find-then-update, and
+the popup words its rule "Park a row when the search finds nothing" -- a skip
+rule would end every row `skipped`, since the product always exists. The golden
+leaves the rule as the popup offers it and asserts that wording.
 
 The requirement: three rows, each product's `list_price` equals its row's
 price, all rows `verified`, and a second run of the same sheet changes nothing.
@@ -150,13 +150,19 @@ def record_price_change(harness) -> None:
 # ------------------------------------------------------------------- the compile
 
 
-def compile_update_recipe(harness, name: str, record_key: str | None) -> dict[str, Any]:
-    """Compile through the popup's own form, with the duplicate branch unticked.
+# PL-077: the popup words the search rule for the shape the compiler reports. An update parks a
+# row whose search found nothing; it never skips one it found. The golden reads that sentence.
+PARK_WHEN_NOTHING_FOUND = "Park a row when the search finds nothing"
 
-    The popup proposes the skip-if-the-search-finds-it branch when the recording holds a search;
-    for an update workflow that branch would end every row `skipped` -- the product the search
-    finds is the one the row is about to update -- so the person unticks it. Whether the popup
-    proposed it is read before the untick and left in the trace.
+
+def compile_update_recipe(harness, name: str, record_key: str | None) -> dict[str, Any]:
+    """Compile through the popup's own form, leaving the search rule as the popup words it.
+
+    PL-077: the popup used to propose the skip-if-the-search-finds-it branch, which for an update
+    would end every row `skipped` -- the product the search finds is the one the row is about to
+    update -- so this golden unticked it. The compiler now tells the two shapes apart, and the
+    popup words the same rule as "Park a row when the search finds nothing" for an update; the
+    form is left exactly as the popup offers it, and the wording is asserted below.
     """
     popup = harness.popup
     popup.evaluate("(v) => { document.getElementById('hub').value = v; }", harness.api_base)
@@ -165,9 +171,7 @@ def compile_update_recipe(harness, name: str, record_key: str | None) -> dict[st
         popup.select_option("#make-key", value=record_key)
     duplicate = popup.locator("#make-duplicate")
     proposed = duplicate.is_checked() if duplicate.count() else None
-    _trace(f"popup proposed the duplicate branch: {proposed}")
-    if proposed:
-        popup.uncheck("#make-duplicate")
+    _trace(f"popup proposes the search rule: {proposed}")
     # Tick no park boxes (the form's own default) and clear the two session keys first: they are
     # shared across tests, and a rejected compile stores nothing.
     popup.evaluate(
@@ -191,6 +195,12 @@ def compile_update_recipe(harness, name: str, record_key: str | None) -> dict[st
     )
     result = popup.evaluate("() => document.getElementById('make-result')?.textContent || ''")
     warnings = popup.evaluate("() => document.getElementById('make-warnings')?.textContent || ''")
+    # PL-077: the rule's own sentence, as the form words it once the compiler has answered.
+    rule_words = popup.evaluate(
+        "() => document.getElementById('make-duplicate')"
+        "?.closest('label')?.querySelector('.field__label')?.textContent || ''"
+    )
+    _trace(f"popup rule wording: {rule_words!r}")
     _trace(f"popup result: {result!r} warnings: {warnings!r}")
     stored = popup.evaluate(
         "async () => { const s = await chrome.storage.session.get("
@@ -201,6 +211,7 @@ def compile_update_recipe(harness, name: str, record_key: str | None) -> dict[st
     return {
         "recipe": stored.get("recipe") if compiled else None,
         "duplicate_proposed": proposed,
+        "rule_words": rule_words,
         "result": result,
         "warnings": warnings,
     }
@@ -297,6 +308,11 @@ def test_odoo_product_price_golden(odoo_harness, odoo_app) -> None:
         f"result={outcome['result']!r} warnings={outcome['warnings']!r} events={json.dumps(events)}"
     )
     recipe = outcome["recipe"]
+    # PL-077: an update is parked when its search finds nothing, and the form says so.
+    assert outcome["rule_words"] == PARK_WHEN_NOTHING_FOUND, (
+        f"the popup words the search rule as {outcome['rule_words']!r}, not "
+        f"{PARK_WHEN_NOTHING_FOUND!r} ({outcome['warnings']!r})"
+    )
     _trace(
         f"compile ok: steps={[step.get('id') for step in recipe['steps']]} "
         f"idempotency_key={recipe.get('idempotency_key')!r} "
