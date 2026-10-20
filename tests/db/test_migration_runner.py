@@ -61,6 +61,7 @@ def test_shipped_migrations_apply_and_record_their_hash(
         "0006_admin_core.sql",
         "0007_transitions_at_index.sql",
         "0008_admin_grant_tidy.sql",
+        "0009_attempt_refund.sql",
     ]
     assert _recorded(dsn) == {
         "0001_init.sql": sha256_of(MIGRATIONS / "0001_init.sql"),
@@ -70,6 +71,7 @@ def test_shipped_migrations_apply_and_record_their_hash(
         "0006_admin_core.sql": sha256_of(MIGRATIONS / "0006_admin_core.sql"),
         "0007_transitions_at_index.sql": sha256_of(MIGRATIONS / "0007_transitions_at_index.sql"),
         "0008_admin_grant_tidy.sql": sha256_of(MIGRATIONS / "0008_admin_grant_tidy.sql"),
+        "0009_attempt_refund.sql": sha256_of(MIGRATIONS / "0009_attempt_refund.sql"),
     }
     assert "run_records" in _table_names(dsn)
 

@@ -23,11 +23,16 @@ cannot verify.
 If neither is available the compiler refuses to mark the step as a commit rather
 than inventing an assertion. An unverifiable commit is worse than a compiled
 recipe that tells the builder to re-record.
+
+PL-059 adds one more source, which the compiler uses when neither of the above
+exists and the save was sent from a ``/new`` page: the address the save must land
+on (:func:`condition_from_new_page`).
 """
 
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -77,14 +82,56 @@ def _is_weak_observation(observation: dict[str, Any]) -> bool:
     return _is_weak_text(observation.get("text_visible"))
 
 
+# PL-049: a reference the destination generated for one record. It has letters and digits, at
+# least three digits, and may carry "/" or "-" separators: S00001, INV/2026/00012, PO-0042. The
+# recording reads it off the page after a save, but the next record gets a different one, so a
+# replay can never see it again.
+GENERATED_REFERENCE_PATTERN = re.compile(r"^(?=.*[A-Za-z])(?=(?:[^0-9]*[0-9]){3})[A-Za-z0-9/-]+$")
+
+
+def looks_like_generated_reference(text: Any) -> bool:
+    """Whether text looks like an identifier the application made up for one record."""
+    return isinstance(text, str) and GENERATED_REFERENCE_PATTERN.match(text.strip()) is not None
+
+
+def _is_generated_reference_not_typed(text: Any, sample_values: Iterable[Any] | None) -> bool:
+    """Whether an observation text is a generated reference the person did not type.
+
+    ``sample_values`` are the cells of the demonstration's own row: a reference that is one of
+    them was typed by the person, so it is part of the workflow, not the app's per-record answer.
+    """
+    if not looks_like_generated_reference(text):
+        return False
+    if sample_values is None:
+        return True
+    recorded = str(text).strip()
+    return not any(value is not None and str(value).strip() == recorded for value in sample_values)
+
+
+def observation_is_generated_reference(
+    observation: dict[str, Any] | None, sample_values: Iterable[Any] | None
+) -> bool:
+    """Whether an observation's text is a generated reference the person did not type."""
+    if not observation:
+        return False
+    return _is_generated_reference_not_typed(observation.get("text_visible"), sample_values)
+
+
 def condition_from_observation(
-    observation: dict[str, Any] | None, timeout_ms: int = DEFAULT_ASSERTION_TIMEOUT_MS
+    observation: dict[str, Any] | None,
+    timeout_ms: int = DEFAULT_ASSERTION_TIMEOUT_MS,
+    *,
+    sample_values: Iterable[Any] | None = None,
 ) -> dict[str, Any] | None:
     """Build an assertion from what the recording observed, if it observed anything.
 
     A weak observation -- a loading spinner's own text, or text read while the page was busy --
     yields nothing: it is not evidence that the destination accepted the change, and a commit
     built on it would be verified the moment the spinner appeared.
+
+    PL-049: a ``text_visible`` that looks like a reference the app generated (``S00001``) yields
+    nothing either, unless the person typed that value in the sample row. It is the
+    demonstration's own record number, and every replay would wait for a page that cannot exist.
     """
     if not observation:
         return None
@@ -92,6 +139,11 @@ def condition_from_observation(
         return None
     for key in OBSERVATION_KEYS:
         if key in observation:
+            if key == "text_visible" and _is_generated_reference_not_typed(
+                observation[key], sample_values
+            ):
+                # Another predicate may still be real evidence; only the number is not.
+                continue
             return {key: observation[key], "timeout_ms": timeout_ms}
     return None
 
@@ -141,6 +193,41 @@ def path_shape_pattern(url: str) -> str | None:
     return re.sub(r"\d+", r"\\d+", re.escape(path))
 
 
+# PL-059: the record segment an app lands on after saving a "new" page. Odoo and Twenty use a
+# plain number (/odoo/sales/42); some apps use a UUID instead. One pattern accepts both.
+NEW_PAGE_SUFFIX = "/new"
+NEW_PAGE_RECORD_SEGMENT = r"(?:[0-9]+|[0-9a-f-]{8,})"
+
+
+def condition_from_new_page(
+    url: str, timeout_ms: int = DEFAULT_ASSERTION_TIMEOUT_MS
+) -> dict[str, Any] | None:
+    """An assertion from the address a save sent from a "new" page must land on.
+
+    Odoo saves ``/odoo/sales/new`` and lands on ``/odoo/sales/42``; Twenty and most other apps
+    do the same with ``/new`` and a record id (or a UUID). When the recording observed no
+    navigation, that shape is still evidence: the page the save was sent from cannot satisfy the
+    pattern, so a passing check means the save landed on a saved record rather than staying on
+    the form.
+
+    The pattern is built the way the navigation checks build theirs -- the page's own path,
+    escaped, with the varying last segment generalised -- and carries only the path, because
+    ``url_matches`` is matched against the whole page URL.
+    """
+    if not url or not origin_of(url):
+        return None
+    path = urlsplit(url).path.rstrip("/")
+    if not path.endswith(NEW_PAGE_SUFFIX):
+        return None
+    prefix = path_pattern(path)
+    if prefix is None:
+        return None
+    if prefix == NEW_PAGE_SUFFIX:
+        # The save page is the site root's own "/new": the record page is one segment below it.
+        prefix = "/"
+    return {"url_matches": re.escape(prefix) + NEW_PAGE_RECORD_SEGMENT, "timeout_ms": timeout_ms}
+
+
 def condition_from_navigation(
     before_url: str, after_url: str, timeout_ms: int = DEFAULT_ASSERTION_TIMEOUT_MS
 ) -> dict[str, Any] | None:
@@ -172,9 +259,13 @@ def infer_assertion(
     before_url: str,
     after_url: str | None,
     timeout_ms: int = DEFAULT_ASSERTION_TIMEOUT_MS,
+    *,
+    sample_values: Iterable[Any] | None = None,
 ) -> dict[str, Any] | None:
     """The assertion for a commit step, from observation first, then navigation."""
-    from_observation = condition_from_observation(observation, timeout_ms)
+    from_observation = condition_from_observation(
+        observation, timeout_ms, sample_values=sample_values
+    )
     if from_observation is not None:
         return from_observation
     if after_url:

@@ -10,6 +10,8 @@ your popup connected.
 
 What it does, in order:
 
+* refuses to start when another copy already holds the port or ``.data/demo.pid`` -- one plain
+  line says which copy is in the way, and nothing is touched;
 * applies the migrations (``db.migrate``);
 * makes sure one operator user (owner role) exists in one tenant, and stores its
   id and a generated runner secret in ``.data/demo.env`` -- gitignored -- reusing
@@ -28,34 +30,48 @@ What it does, in order:
 The decision to start is a pure function (``worker_decision``), and the words
 the window says are another one (``status_lines``); both are unit-tested in
 ``tests/demo/test_demo.py`` with no processes and no database. Ctrl+C stops the
-worker and the API.
+worker and the API, and releases the pid lock file.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import secrets
 import shutil
+import socket
 import subprocess
 import sys
 import time
 import urllib.error
 import urllib.request
 import uuid
-from collections.abc import Sequence
-from dataclasses import dataclass
 from pathlib import Path
 
 # Run as `python scripts/demo.py`, Python puts scripts/ on the path, not the repository, so the
 # project's own packages would not import without this.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import psycopg  # noqa: E402
-
 from db.migrate import apply_migrations, database_url  # noqa: E402
-from packages.ledger import OpenRunRow, list_open_runs  # noqa: E402
+from services.deploy import (  # noqa: E402,F401  (re-exported: the demo's tests pin these)
+    EXTENSION_ID_KEY,
+    OPERATOR_KEY,
+    RUNNER_SECRET_KEY,
+    START,
+    WAIT,
+    State,
+    ensure_operator_row,
+    open_runs,
+    status_lines,
+    stop_process,
+    waiting_run_id,
+    worker_decision,
+)
+from services.deploy import (
+    attached_session as deploy_attached_session,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = REPO_ROOT / ".data"
@@ -69,6 +85,15 @@ API_PORT = 8000
 API_BASE = f"http://{API_HOST}:{API_PORT}"
 HUB_URL = f"ws://{API_HOST}:{API_PORT}"
 
+# PL-050: the lock that says this checkout's demo owns the database, and the line a person reads
+# when a second copy tries to start. The message is one plain sentence on purpose: it is the whole
+# answer, and it names the fix a person can act on (their other terminal).
+PID_FILE = DATA_DIR / "demo.pid"
+PORT_TAKEN_MESSAGE = (
+    f"ProcessLens is already running on {API_BASE} (or something else is using port {API_PORT}). "
+    "Close the other copy first: find its terminal and press Ctrl+C."
+)
+
 # The worker is started with the same arguments the e2e harness uses: poll for new runs every half
 # a second, and stop waiting after 90 s -- the supervisor starts the next one when work appears.
 WORKER_POLL_SECONDS = 0.5
@@ -77,103 +102,116 @@ WORKER_MAX_SECONDS = 90.0
 SUPERVISOR_POLL_SECONDS = 2.0
 HEALTH_TIMEOUT_SECONDS = 30.0
 
-TENANT_NAME = "demo"
-OPERATOR_EMAIL = "owner@demo.processlens.local"
-OPERATOR_NAME = "Demo owner"
-
-OPERATOR_KEY = "PROCESSLENS_OPERATOR_ID"
-RUNNER_SECRET_KEY = "PROCESSLENS_RUNNER_SECRET"
-EXTENSION_ID_KEY = "PROCESSLENS_EXTENSION_ID"
-
-# The supervisor's two answers.
-START = "start"
-WAIT = "wait"
+# The supervisor's two answers and its state live in services.deploy now; the demo re-exports
+# them (START, WAIT, State, worker_decision, waiting_run_id, status_lines, open_runs,
+# stop_process) so its own tests and habits keep working unchanged.
 
 
-@dataclass(frozen=True)
-class State:
-    """One tick of the supervisor's view, summarized for ``status_lines``.
+# ---------------------------------------------------------------- one copy at a time
 
-    ``waiting_run`` is the id of the run a worker could take, or ``None``;
-    ``worker_running_for`` is the id of the run the worker we started will drive;
-    ``last_exit`` is the previous worker's exit code, reset when a new one starts.
+
+def port_in_use(port: int) -> bool:
+    """Whether something already listens on ``127.0.0.1:<port>``.
+
+    Binding is the only reliable question: a plain socket that says the address is taken gives the
+    same answer the API's own bind would get. The socket is closed at once and never listens, so
+    asking does not keep the port.
     """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        try:
+            probe.bind((API_HOST, port))
+        except OSError:
+            return True
+    return False
 
-    session_attached: bool
-    waiting_run: str | None
-    worker_running_for: str | None
-    last_exit: int | None
 
+def _pid_alive(pid: int) -> bool:
+    """Whether a process with this id is running.
 
-def worker_decision(runs: Sequence[OpenRunRow], session: str | None, *, worker_alive: bool) -> str:
-    """Whether the supervisor should start a worker now: ``start`` or ``wait``.
-
-    The rule, in order:
-
-    * our own worker is still alive: wait -- only one worker at a time;
-    * no extension session is attached: wait -- a worker with no browser to drive
-      refuses to claim, so starting one would only fail and exit;
-    * a run is ``queued``: start -- nobody has claimed it;
-    * a run is ``running`` whose lease has lapsed: start -- its worker is gone;
-    * anything else (every running run has a live worker, or a paused run waits
-      for a person): wait.
-
-    ``session`` is the attached session's id, or ``None`` when none is attached.
-    Each run arrives with whether a live worker holds it, decided by the same
-    lease rule the ledger's takeover uses, so the two can never disagree.
+    On POSIX, signal 0 asks the kernel without touching the process. Windows has no such signal
+    (``os.kill`` there would terminate it), so a process handle and a zero-time wait answer
+    instead. No new dependency: ``ctypes`` is part of the standard library.
     """
-    if worker_alive:
-        return WAIT
-    if session is None:
-        return WAIT
-    for row in runs:
-        if row.status == "queued":
-            return START
-        if row.status == "running" and not row.worker_live:
-            return START
-    return WAIT
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        kernel32.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
+        kernel32.WaitForSingleObject.restype = ctypes.c_ulong
+        kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        synchronize = 0x00100000
+        wait_timeout = 0x00000102
+        handle = kernel32.OpenProcess(synchronize, False, pid)
+        if not handle:
+            return False
+        try:
+            return kernel32.WaitForSingleObject(handle, 0) == wait_timeout
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # The process exists; it just is not ours to signal.
+        return True
+    except OSError:
+        return False
+    return True
 
 
-def waiting_run_id(runs: Sequence[OpenRunRow]) -> str | None:
-    """The id of the run a worker could take -- the same rows ``worker_decision`` starts on."""
-    for row in runs:
-        if row.status == "queued" or (row.status == "running" and not row.worker_live):
-            return str(row.run_id)
-    return None
+def other_demo_pid(path: Path) -> int | None:
+    """The pid a lock file names, when that process is still alive.
 
-
-def status_lines(previous: State, current: State) -> list[str]:
-    """The words the demo window says this tick, given the tick before.
-
-    Only a change produces a sentence, so the window never says the same thing twice: a run that
-    keeps waiting, a session that stays connected and a worker that keeps running are all silence.
-    The waiting line names Chrome, not the session, because Chrome is what the person can fix.
+    A missing file, an unreadable one, a file that holds no number, and a number whose process is
+    gone are all "no other demo": a stale file is a crash's leftover, not a copy to respect.
     """
-    lines: list[str] = []
+    try:
+        raw = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    try:
+        pid = int(raw)
+    except ValueError:
+        return None
+    return pid if _pid_alive(pid) else None
 
-    if current.session_attached != previous.session_attached:
-        if current.session_attached:
-            lines.append("Chrome is connected.")
-        else:
-            lines.append(
-                "Chrome is not connected: open the ProcessLens extension and press Connect."
-            )
 
-    waiting_now = current.waiting_run is not None and not current.session_attached
-    waiting_before = previous.waiting_run is not None and not previous.session_attached
-    if waiting_now and not waiting_before:
-        lines.append("A run is waiting for Chrome.")
+def write_pid_file(path: Path) -> None:
+    """Claim the lock with this process's pid."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"{os.getpid()}\n", encoding="utf-8")
 
-    if current.worker_running_for and current.worker_running_for != previous.worker_running_for:
-        lines.append(f"Started a runner for run {current.worker_running_for[:8]}.")
 
-    if current.last_exit is not None and current.last_exit != previous.last_exit:
-        if current.last_exit == 0:
-            lines.append("The runner finished.")
-        else:
-            lines.append(f"The runner stopped with code {current.last_exit}.")
+def remove_pid_file(path: Path) -> None:
+    """Release the lock, but only while it is still ours.
 
-    return lines
+    A second copy that already took the lock must not lose it because the first one exits.
+    """
+    try:
+        raw = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return
+    try:
+        pid = int(raw)
+    except ValueError:
+        return
+    if pid != os.getpid():
+        return
+    with contextlib.suppress(OSError):
+        path.unlink()
+
+
+def already_running_message(pid: int) -> str:
+    """The pid refusal: the same plain line, naming the copy that is already running."""
+    return (
+        f"ProcessLens is already running on {API_BASE} (another demo, pid {pid}, is watching "
+        "the same database). Close the other copy first: find its terminal and press Ctrl+C."
+    )
 
 
 # ---------------------------------------------------------------- the demo identity
@@ -206,35 +244,14 @@ def ensure_operator(dsn: str) -> tuple[uuid.UUID, str]:
     The stored operator is only reused while its ``users`` row still exists: a demo.env left over
     from a wiped database would otherwise configure an operator the API refuses (403) instead of a
     person who can own tasks. A fresh identity is one tenant with one owner, written back out.
+    The database work itself is the deploy module's (``ensure_operator_row``), so the two paths
+    cannot drift.
     """
     stored = read_demo_env()
     secret = stored.get(RUNNER_SECRET_KEY, "").strip() or secrets.token_urlsafe(32)
     raw = stored.get(OPERATOR_KEY, "").strip()
-    try:
-        stored_operator = uuid.UUID(raw) if raw else None
-    except ValueError:
-        stored_operator = None
 
-    with psycopg.connect(dsn, autocommit=True) as conn, conn.cursor() as cur:
-        if stored_operator is not None:
-            cur.execute("SELECT 1 FROM users WHERE id = %s", (stored_operator,))
-            if cur.fetchone() is not None:
-                return stored_operator, secret
-
-        cur.execute("SELECT id FROM tenants WHERE name = %s", (TENANT_NAME,))
-        row = cur.fetchone()
-        if row is None:
-            cur.execute("INSERT INTO tenants (name) VALUES (%s) RETURNING id", (TENANT_NAME,))
-            tenant_id = cur.fetchone()[0]
-        else:
-            tenant_id = row[0]
-        cur.execute(
-            "INSERT INTO users (tenant_id, email, name, role) "
-            "VALUES (%s, %s, %s, 'owner') RETURNING id",
-            (tenant_id, OPERATOR_EMAIL, OPERATOR_NAME),
-        )
-        operator = uuid.UUID(str(cur.fetchone()[0]))
-
+    operator = ensure_operator_row(dsn, raw or None)
     write_demo_env({OPERATOR_KEY: str(operator), RUNNER_SECRET_KEY: secret})
     return operator, secret
 
@@ -326,25 +343,7 @@ def wait_for_health() -> None:
 
 def attached_session() -> str | None:
     """The attached extension session's id, or ``None`` when the popup has not connected."""
-    try:
-        with urllib.request.urlopen(f"{API_BASE}/api/v1/executor/session", timeout=5) as response:
-            body = json.loads(response.read())
-    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError, ValueError):
-        return None
-    if body.get("attached") is not True:
-        return None
-    session_id = body.get("session_id")
-    return session_id if isinstance(session_id, str) and session_id else None
-
-
-def open_runs(dsn: str) -> list[OpenRunRow]:
-    """The runs a worker could take, read fresh each tick so a database restart heals itself."""
-    try:
-        with psycopg.connect(dsn, autocommit=True, connect_timeout=3) as conn:
-            return list_open_runs(conn)
-    except psycopg.Error as exc:
-        print(f"  could not read the runs: {exc}")
-        return []
+    return deploy_attached_session(API_BASE)
 
 
 def start_worker(dsn: str, runner_secret: str, session_id: str, *, number: int) -> subprocess.Popen:
@@ -380,17 +379,6 @@ def start_worker(dsn: str, runner_secret: str, session_id: str, *, number: int) 
         stderr=subprocess.STDOUT,
         text=True,
     )
-
-
-def stop_process(process: subprocess.Popen | None) -> None:
-    """Terminate cleanly, then kill only if ten seconds were not enough."""
-    if process is None or process.poll() is not None:
-        return
-    process.terminate()
-    try:
-        process.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        process.kill()
 
 
 # ---------------------------------------------------------------- the words a person reads
@@ -434,79 +422,98 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    # PL-050: a second copy fights the first over the same database, and the person who started it
+    # sees "Try one row" hang at Queued with no explanation. Both refusals come before the
+    # migrations, the builds and the API, and each is one plain line.
+    if port_in_use(API_PORT):
+        print(PORT_TAKEN_MESSAGE)
+        return 1
+    running_pid = other_demo_pid(PID_FILE)
+    if running_pid is not None and running_pid != os.getpid():
+        print(already_running_message(running_pid))
+        return 1
+
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    dsn = database_url()
-
-    print("Applying migrations...")
-    apply_migrations(dsn)
-    print("Making sure one operator exists...")
-    operator, runner_secret = ensure_operator(dsn)
-    print("Building the web app and the extension when they are missing...")
-    build_if_missing(WEB_DIR, "index.html")
-    build_if_missing(EXTENSION_DIR, "manifest.json")
-
-    api = start_api(
-        dsn, operator_id=operator, runner_secret=runner_secret, extension_id=args.extension_id
-    )
-    worker: subprocess.Popen | None = None
-    worker_number = 0
-    worker_run_id: str | None = None
-    worker_session: str | None = None
-    last_exit: int | None = None
-    previous = State(
-        session_attached=False, waiting_run=None, worker_running_for=None, last_exit=None
-    )
+    write_pid_file(PID_FILE)
     try:
-        wait_for_health()
-        print_steps(extension_id=args.extension_id)
-        while True:
-            if worker is not None and worker.poll() is not None:
-                last_exit = worker.returncode
-                worker = None
-                worker_run_id = None
-            session_id = attached_session()
-            # PL-037: a worker talks to the one Chrome session it was started for. When Chrome
-            # reconnects, that session is gone and the worker would pause every run it touches, so
-            # it is stopped and the next tick starts one for the new session.
-            if worker is not None and worker_session is not None and session_id != worker_session:
-                worker.terminate()
-                try:
-                    worker.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    worker.kill()
-                worker = None
-                worker_run_id = None
-            runs = open_runs(dsn)
-            waiting_run = waiting_run_id(runs)
-            decision = worker_decision(runs, session_id, worker_alive=worker is not None)
-            if decision == START and session_id is not None and waiting_run is not None:
-                worker_number += 1
-                worker = start_worker(dsn, runner_secret, session_id, number=worker_number)
-                worker_session = session_id
-                worker_run_id = waiting_run
-                last_exit = None
-                started_log = f".data/worker-logs/demo-worker-{worker_number}.log"
-            else:
-                started_log = None
-            current = State(
-                session_attached=session_id is not None,
-                waiting_run=waiting_run,
-                worker_running_for=worker_run_id,
-                last_exit=last_exit,
-            )
-            for line in status_lines(previous, current):
-                print(f"  {line}")
-            if started_log is not None:
-                print(f"    (its log: {started_log})")
-            previous = current
-            time.sleep(SUPERVISOR_POLL_SECONDS)
-    except KeyboardInterrupt:
-        print()
-        print("Stopping.")
+        dsn = database_url()
+
+        print("Applying migrations...")
+        apply_migrations(dsn)
+        print("Making sure one operator exists...")
+        operator, runner_secret = ensure_operator(dsn)
+        print("Building the web app and the extension when they are missing...")
+        build_if_missing(WEB_DIR, "index.html")
+        build_if_missing(EXTENSION_DIR, "manifest.json")
+
+        api = start_api(
+            dsn, operator_id=operator, runner_secret=runner_secret, extension_id=args.extension_id
+        )
+        worker: subprocess.Popen | None = None
+        worker_number = 0
+        worker_run_id: str | None = None
+        worker_session: str | None = None
+        last_exit: int | None = None
+        previous = State(
+            session_attached=False, waiting_run=None, worker_running_for=None, last_exit=None
+        )
+        try:
+            wait_for_health()
+            print_steps(extension_id=args.extension_id)
+            while True:
+                if worker is not None and worker.poll() is not None:
+                    last_exit = worker.returncode
+                    worker = None
+                    worker_run_id = None
+                session_id = attached_session()
+                # PL-037: a worker talks to the one Chrome session it was started for. When
+                # Chrome reconnects, that session is gone and the worker would pause every run it
+                # touches, so it is stopped and the next tick starts one for the new session.
+                if (
+                    worker is not None
+                    and worker_session is not None
+                    and session_id != worker_session
+                ):
+                    worker.terminate()
+                    try:
+                        worker.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        worker.kill()
+                    worker = None
+                    worker_run_id = None
+                runs = open_runs(dsn)
+                waiting_run = waiting_run_id(runs)
+                decision = worker_decision(runs, session_id, worker_alive=worker is not None)
+                if decision == START and session_id is not None and waiting_run is not None:
+                    worker_number += 1
+                    worker = start_worker(dsn, runner_secret, session_id, number=worker_number)
+                    worker_session = session_id
+                    worker_run_id = waiting_run
+                    last_exit = None
+                    started_log = f".data/worker-logs/demo-worker-{worker_number}.log"
+                else:
+                    started_log = None
+                current = State(
+                    session_attached=session_id is not None,
+                    waiting_run=waiting_run,
+                    worker_running_for=worker_run_id,
+                    last_exit=last_exit,
+                )
+                for line in status_lines(previous, current):
+                    print(f"  {line}")
+                if started_log is not None:
+                    print(f"    (its log: {started_log})")
+                previous = current
+                time.sleep(SUPERVISOR_POLL_SECONDS)
+        except KeyboardInterrupt:
+            print()
+            print("Stopping.")
+        finally:
+            stop_process(worker)
+            stop_process(api)
+        return 0
     finally:
-        stop_process(worker)
-        stop_process(api)
-    return 0
+        remove_pid_file(PID_FILE)
 
 
 if __name__ == "__main__":

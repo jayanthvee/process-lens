@@ -1191,6 +1191,12 @@ def harness(
     # The active tab at Connect time is the one the extension binds, so the CRM tab is
     # brought forward and the popup's hub is set without focusing anything.
     hub_url = api_server["base"]
+    # The popup connects by itself on open, to the default address, where nothing listens in a
+    # test. Until that attempt settles, Connect is disabled and a click on it is lost; wait for it.
+    popup.wait_for_function(
+        "() => document.getElementById('connect') && !document.getElementById('connect').disabled",
+        timeout=15_000,
+    )
     popup.evaluate("(value) => { document.getElementById('hub').value = value; }", hub_url)
     page.bring_to_front()
     popup.evaluate("document.getElementById('connect').click()")

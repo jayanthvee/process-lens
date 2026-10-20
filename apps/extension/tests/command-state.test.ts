@@ -819,3 +819,36 @@ describe("CommandSession", () => {
     expect(reconnected?.messages().filter((message) => message["type"] === "result")).toHaveLength(1);
   });
 });
+
+describe("connect when nothing answers", () => {
+  it("returns to idle when the hub cannot be reached, so Connect can be pressed again", async () => {
+    // The popup connects by itself on open to http://127.0.0.1:8000. With nothing listening there,
+    // fetch throws, and the session used to stay in "pairing" for good: the popup said
+    // "Connecting to ProcessLens" forever and the Connect button stayed disabled.
+    globalThis.fetch = (async () => {
+      throw new TypeError("Failed to fetch");
+    }) as unknown as typeof fetch;
+    const harness = makeHarness();
+
+    await expect(harness.session.connect("http://127.0.0.1:8000")).rejects.toThrow();
+
+    expect(harness.states.at(-1)).toBe("idle");
+    expect(harness.sockets).toHaveLength(0);
+  });
+
+  it("can connect on a second try after the first could not reach the hub", async () => {
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls += 1;
+      if (calls === 1) throw new TypeError("Failed to fetch");
+      return { status: 201, json: async () => ({ session_id: "sess-2", session_token: "tok-2" }) };
+    }) as unknown as typeof fetch;
+    const harness = makeHarness();
+
+    await expect(harness.session.connect("http://127.0.0.1:8000")).rejects.toThrow();
+    const socket = await openSession(harness);
+
+    expect(socket).toBeDefined();
+    expect(harness.states.at(-1)).toBe("ready");
+  });
+});

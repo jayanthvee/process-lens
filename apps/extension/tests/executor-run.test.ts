@@ -550,3 +550,28 @@ describe("preparing a click on a list that re-renders", () => {
     expect(prepared.ok).toBe(true);
   });
 });
+
+describe("a dropdown option named like a destructive verb", () => {
+  it("is clicked, because picking an entry is never destructive", async () => {
+    // PL-063, on Odoo: the product "Noise-Cancelling Headset" parked every invoice row as a "cancel"
+    // control. A Cancel button is still refused (see the destructive guard tests).
+    document.body.innerHTML =
+      "<ul role='listbox'><li role='option'>[PL-AUD-8001] Noise-Cancelling Headset</li></ul>";
+    const { cdp } = fakeCdp();
+
+    const summary = await runRecipe(
+      recipe([
+        {
+          id: "click-6",
+          action: "click",
+          targets: [{ by: "role", role: "option", name: "[PL-AUD-8001] Noise-Cancelling Headset" }],
+          timeout_ms: 2000,
+        },
+      ]),
+      { row: {} },
+      { cdp },
+    );
+
+    expect(summary.steps.map((step) => step.outcome)).toEqual(["done"]);
+  });
+});

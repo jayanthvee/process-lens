@@ -18,10 +18,14 @@ from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from typing import Any
+from urllib.parse import urlsplit
 
 from .assertions import (
     DEFAULT_ASSERTION_TIMEOUT_MS,
+    condition_from_new_page,
+    condition_from_observation,
     infer_assertion,
+    observation_is_generated_reference,
     origin_of,
     path_pattern,
 )
@@ -941,6 +945,27 @@ def _render_steps(
     return steps
 
 
+def _is_option_pick(candidate: Candidate) -> bool:
+    """Whether a click accepts a suggestion from a dropdown rather than running a search.
+
+    PL-049: the product field's placeholder is "Search a product", and the recording reads that
+    placeholder back as the field's accessible name. The click that follows is a pick -- its
+    ladder names an ``option``, or the dropdown that holds one -- not a search. Treating it as a
+    search would make every row skip itself as a duplicate.
+    """
+    if candidate.action != "click":
+        return False
+    for rung in candidate.targets or []:
+        if str(rung.get("role", "")).lower() == "option":
+            return True
+        within = rung.get("within")
+        if isinstance(within, str):
+            container = within.lower()
+            if "listbox" in container or "autocomplete" in container:
+                return True
+    return False
+
+
 def _looks_like_a_search(fill: Candidate, runner: Candidate) -> bool:
     """Whether a fill-then-run pair reads as a search, not any other fill-then-run.
 
@@ -949,9 +974,18 @@ def _looks_like_a_search(fill: Candidate, runner: Candidate) -> bool:
     signal a recording carries is the control's own name: a search box or a search button says
     "search". Erring the other way is safe -- a search that is not recognised simply gets no branch
     -- so a pair with no such signal is not a search.
+
+    PL-049: a click that accepts a suggestion from a dropdown is a pick, not a search, even when
+    the field's name or placeholder says "Search a product". A ``text_fuzzy`` rung is the
+    recorder's placeholder fallback, so a "search" found only there is not durable enough to
+    switch the duplicate branch on.
     """
+    if _is_option_pick(runner):
+        return False
     for candidate in (fill, runner):
         for rung in candidate.targets or []:
+            if str(rung.get("by", "")).lower() == "text_fuzzy":
+                continue
             if str(rung.get("role", "")).lower() == "searchbox":
                 return True
             within = rung.get("within")
@@ -1073,6 +1107,7 @@ def _resolve_commit_assertion(
         candidate.url,
         candidate.after_url,
         options.assertion_timeout_ms,
+        sample_values=options.sample_row.values(),
     )
 
 
@@ -1088,6 +1123,36 @@ def _required_columns(options: CompileOptions) -> set[str]:
     return required
 
 
+def _page_change_start(prior_candidates: list[Candidate], save_path: str) -> int:
+    """PL-044: where the entry a save belongs to begins among the steps before it.
+
+    A recording may hold an abandoned entry before the real one: a New click, a
+    stray pick, a visit to a record's own page. Walking back from the save, the
+    last step that moved the page ends everything before it -- a navigate step, a
+    step whose after_url landed on a path other than the save's page, or an
+    observation whose url_matches does not fit the save's page. With no page
+    change the whole recording is one entry, which is the behavior before
+    PL-044. A candidate whose observation carries no URL says nothing about the
+    page, so it never counts as a page change.
+    """
+    start = 0
+    for index, previous in enumerate(prior_candidates):
+        if previous.action == "navigate":
+            start = index + 1
+            continue
+        if previous.after_url and urlsplit(previous.after_url).path != save_path:
+            start = index + 1
+            continue
+        pattern = (previous.observation or {}).get("url_matches")
+        if isinstance(pattern, str) and pattern:
+            try:
+                if re.fullmatch(pattern, save_path) is None:
+                    start = index + 1
+            except re.error:
+                pass
+    return start
+
+
 def _infer_assertion_from_fills(
     candidate: Candidate,
     prior_candidates: list[Candidate],
@@ -1100,6 +1165,10 @@ def _infer_assertion_from_fills(
     from the record key or a required column; the text it then waits for is the FIRST templated
     fill of the form, because that is the field a list or kanban card shows as the record's name
     (Odoo's quick-create card shows the contact, never the email the key may be).
+
+    PL-044: only the entry the save belongs to counts -- the steps after the last page
+    change before the save. An abandoned entry before it (a stray pick on the same page,
+    a visit to another record) must not become the save's check.
     """
     if candidate.action != "click" or candidate.observation or candidate.after_url:
         return None
@@ -1113,7 +1182,8 @@ def _infer_assertion_from_fills(
     # PL-037: the first thing entered in the form, typed or picked. A contact picked straight from
     # the open list is a record's name the new card shows, just like a typed one.
     first_entry: str | None = None
-    for previous in prior_candidates:
+    entry_start = _page_change_start(prior_candidates, urlsplit(candidate.url).path)
+    for previous in prior_candidates[entry_start:]:
         if previous.action == "click" and _is_option_click(previous) and first_entry is None:
             picked = next(
                 (
@@ -1211,10 +1281,33 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
         if not candidate.commit:
             continue
         supplied = (options.commit_assertions or {}).get(candidate.recorded_id or "")
+        sample_values = options.sample_row.values()
+        observation_pins = (
+            condition_from_observation(
+                candidate.observation,
+                options.assertion_timeout_ms,
+                sample_values=sample_values,
+            )
+            is not None
+        )
         assert_after = _resolve_commit_assertion(candidate, options)
+        inferred_from_new_page = False
+        if assert_after is None and not candidate.after_url and candidate.action == "click":
+            # PL-059: the save was sent from a "new" page and the person saw no navigation, so
+            # the address it must land on is the evidence. Unlike "the name appears again", it
+            # cannot be true on the form the save was sent from: /odoo/sales/new does not match
+            # /odoo/sales/<id>. Only a click is a save; a select or a press commits nothing.
+            assert_after = condition_from_new_page(candidate.url, options.assertion_timeout_ms)
+            inferred_from_new_page = assert_after is not None
         inferred_from_fill = False
         if assert_after is None:
-            assert_after = _infer_assertion_from_fills(candidate, parameterized[:index], options)
+            fallback = candidate
+            if observation_is_generated_reference(candidate.observation, sample_values):
+                # The number belongs to the demonstration's record, so it is no evidence for
+                # this one. The next assertion the compiler would pick -- the new record's
+                # name appearing -- is the real check (PL-049).
+                fallback = replace(candidate, observation=None)
+            assert_after = _infer_assertion_from_fills(fallback, parameterized[:index], options)
             if assert_after is not None:
                 inferred_from_fill = True
                 warnings.append("this save is checked by the new record's name appearing")
@@ -1230,11 +1323,13 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
                 f"assertion for {candidate.recorded_id or candidate.seq} "
                 "taken from the one supplied for it"
             )
-        elif candidate.observation:
+        elif observation_pins:
             warnings.append(
                 f"assertion for {candidate.recorded_id or candidate.seq} "
                 "taken from the recorded observation"
             )
+        elif inferred_from_new_page:
+            warnings.append("this save is checked by the page moving from /new to the saved record")
         elif inferred_from_fill:
             warnings.append(
                 f"assertion for {candidate.recorded_id or candidate.seq} "

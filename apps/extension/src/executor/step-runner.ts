@@ -24,7 +24,7 @@ import {
   measureTarget,
   type InputHooks,
 } from "./dispatch";
-import { destructiveMatch } from "./guards";
+import { destructiveMatch, isOption } from "./guards";
 import { readFrameTree, selectFrame, type FrameContexts } from "./frames";
 import {
   resolverExpression,
@@ -66,6 +66,8 @@ export interface ResolvedTarget {
   tag: string;
   /** The matched element's accessible name, for the destructive-control guard. */
   name: string;
+  /** The matched element's role: a picked option is never judged destructive (PL-066). */
+  role?: string;
 }
 
 /** Why a step's target could not be resolved. */
@@ -307,6 +309,7 @@ async function resolveStep(
         rung: preset.rung,
         by: preset.by,
         name: preset.name,
+        role: preset.role,
         marker: preset.token,
         x: 0,
         y: 0,
@@ -438,6 +441,7 @@ export async function resolveStepTarget(
         by: result.by,
         tag: result.tag,
         name: result.name ?? "",
+        role: result.role,
       };
     }
   } catch (error) {
@@ -954,7 +958,7 @@ export async function performStep(
     // mode (whose handler checks it earlier, on the same name) and the local test run, and it cannot
     // be bypassed by a recipe that points at a bare CSS selector.
     if (!step.allow_destructive_control) {
-      const blocked = destructiveMatch(nameOf(result));
+      const blocked = isOption(result.role) ? null : destructiveMatch(nameOf(result));
       if (blocked) {
         throw new ExecutorError(
           `refusing to click a destructive control ("${blocked}"): set allow_destructive_control on step ${step.id} to permit it`,

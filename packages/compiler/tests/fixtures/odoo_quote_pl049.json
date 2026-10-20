@@ -1,0 +1,57 @@
+[
+  {
+    "seq": 1,
+    "kind": "fill",
+    "url": "http://127.0.0.1:8069/odoo/sales/new",
+    "at": "2026-10-19T00:00:01.000Z",
+    "keystrokes": 15,
+    "step": {
+      "id": "fill-1",
+      "action": "fill",
+      "name": "Fill Search a product",
+      "targets": [
+        {"by": "role", "role": "combobox", "name": "Search a product"},
+        {"by": "css", "selector": "input.o-autocomplete--input.o_input"},
+        {"by": "text_fuzzy", "value": "Search a product"}
+      ],
+      "value": {"kind": "constant", "value": "Mesh Task Chair"},
+      "clear_first": true
+    }
+  },
+  {
+    "seq": 2,
+    "kind": "click",
+    "url": "http://127.0.0.1:8069/odoo/sales/new",
+    "at": "2026-10-19T00:00:02.000Z",
+    "step": {
+      "id": "click-2",
+      "action": "click",
+      "name": "Click [PL-CHR-2001] Mesh Task Chair",
+      "targets": [
+        {"by": "role", "role": "option", "name": "[PL-CHR-2001] Mesh Task Chair"}
+      ]
+    }
+  },
+  {
+    "seq": 3,
+    "kind": "click",
+    "url": "http://127.0.0.1:8069/odoo/sales/new",
+    "at": "2026-10-19T00:00:03.000Z",
+    "step": {
+      "id": "save-1",
+      "action": "click",
+      "name": "Click Save",
+      "targets": [
+        {"by": "role", "role": "button", "name": "Save"},
+        {"by": "css", "selector": "button.o_form_button_save"}
+      ]
+    },
+    "observation": {"text_visible": "S00001"}
+  },
+  {
+    "seq": 4,
+    "kind": "navigate",
+    "url": "http://127.0.0.1:8069/odoo/sales/12",
+    "at": "2026-10-19T00:00:04.000Z"
+  }
+]

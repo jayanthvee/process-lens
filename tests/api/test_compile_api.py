@@ -54,12 +54,17 @@ def a_demonstration() -> list[dict[str, Any]]:
     ]
 
 
+# PL-059: a save on a ``/new`` page is checked by the address it lands on, so the unobserved-save
+# tests below save on a page with no ``/new`` -- they are about the fallbacks after that one.
+NOT_NEW_URL = "https://app.example.com/records"
+
+
 def an_unobserved_save() -> list[dict[str, Any]]:
     """The same save, but nothing observed what it did: no assertion can be inferred."""
     return [
-        action_event(1, "fill", "fill", EMAIL_TARGETS, value="ravi@example.com"),
-        action_event(2, "click", "click", SAVE_TARGETS, name="Click Save"),
-        action_event(3, "submit", "click", SAVE_TARGETS),
+        action_event(1, "fill", "fill", EMAIL_TARGETS, value="ravi@example.com", url=NOT_NEW_URL),
+        action_event(2, "click", "click", SAVE_TARGETS, name="Click Save", url=NOT_NEW_URL),
+        action_event(3, "submit", "click", SAVE_TARGETS, url=NOT_NEW_URL),
     ]
 
 
@@ -117,10 +122,16 @@ def test_an_unobserved_save_with_no_inferrable_fill_is_still_422(
 
     recording = [
         action_event(
-            1, "fill", "fill", INTEREST_TARGETS, value="Data course", name="Fill Interest"
+            1,
+            "fill",
+            "fill",
+            INTEREST_TARGETS,
+            value="Data course",
+            name="Fill Interest",
+            url=NOT_NEW_URL,
         ),
-        action_event(2, "click", "click", SAVE_TARGETS, name="Click Save"),
-        action_event(3, "submit", "click", SAVE_TARGETS),
+        action_event(2, "click", "click", SAVE_TARGETS, name="Click Save", url=NOT_NEW_URL),
+        action_event(3, "submit", "click", SAVE_TARGETS, url=NOT_NEW_URL),
     ]
     response = client.post(
         "/api/v1/recipes/compile",

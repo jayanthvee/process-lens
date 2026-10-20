@@ -7,6 +7,7 @@ that names ``runs`` or ``run_records``. Nothing here writes, so nothing needs a 
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 
 import psycopg
 from psycopg.rows import dict_row
@@ -325,6 +326,100 @@ def window_run_seconds(
     return float(row[0]) if row is not None else 0.0
 
 
+# PL-061: how long the demonstration says one row takes by hand, as the pinned recipe remembers it.
+# A number is the only shape the schema allows; anything else (an older task, a hand-written
+# document) reads as absent rather than failing the whole page on a cast. Done means the rows the
+# run finished with -- the same verified-plus-skipped count the results screen calls "done".
+_MANUAL_SECONDS_EXPR = "(rv.recipe -> 'meta' ->> 'manual_seconds_per_row')::double precision"
+
+_RUN_TIME = f"""
+SELECT
+  count(rr.id) FILTER (WHERE rr.state IN ('verified', 'skipped')) AS done,
+  (extract(epoch FROM (ru.finished_at - ru.started_at)))::double precision AS automated_seconds,
+  CASE
+    WHEN jsonb_typeof(rv.recipe -> 'meta' -> 'manual_seconds_per_row') = 'number'
+      THEN {_MANUAL_SECONDS_EXPR}
+  END AS manual_seconds_per_row
+FROM runs ru
+JOIN recipe_versions rv ON rv.id = ru.recipe_version_id
+LEFT JOIN run_records rr ON rr.run_id = ru.id
+WHERE ru.id = %(run)s
+GROUP BY ru.id, rv.id
+"""
+
+# The same arithmetic for the Home window, one row of audit per finished row: each verified row
+# costs what its own recipe says, or 180 seconds (three minutes) when the task never measured
+# itself. ``estimated_rows`` is how many of those rows had to use the fallback, so the screen can
+# say the figure is partly an estimate instead of pretending it is all measured.
+_WEEK_MANUAL_SECONDS = f"""
+SELECT
+  coalesce(sum(coalesce(manual.seconds, %(fallback)s)), 0)::double precision AS manual_seconds,
+  count(*) FILTER (WHERE manual.seconds IS NULL) AS estimated_rows
+FROM run_record_transitions t
+JOIN run_records rr ON rr.id = t.run_record_id
+JOIN runs ru ON ru.id = rr.run_id
+JOIN recipe_versions rv ON rv.id = ru.recipe_version_id
+CROSS JOIN LATERAL (
+  SELECT CASE
+    WHEN jsonb_typeof(rv.recipe -> 'meta' -> 'manual_seconds_per_row') = 'number'
+      THEN {_MANUAL_SECONDS_EXPR}
+  END AS seconds
+) manual
+WHERE t.to_state = 'verified'
+  AND t.at >= now() - make_interval(days => %(days)s)
+  AND (%(tenant)s::uuid IS NULL OR rr.tenant_id = %(tenant)s)
+"""
+
+# What a task that never measured itself costs one row, in seconds: the three minutes the screens
+# used to assume for every row.
+FALLBACK_MANUAL_SECONDS_PER_ROW = 180
+
+
+@dataclass(frozen=True)
+class RunTimeRow:
+    """PL-061: one run's done rows, its wall clock, and the manual time its task remembers.
+
+    ``automated_seconds`` is ``None`` while the run has no start or no finish; the manual figure is
+    ``None`` when the pinned recipe carries no measurement.
+    """
+
+    done: int
+    automated_seconds: float | None
+    manual_seconds_per_row: float | None
+
+
+@dataclass(frozen=True)
+class WeekTimeRow:
+    """PL-061: the Home window's manual time, and how many of its rows were estimated."""
+
+    manual_seconds: float
+    estimated_rows: int
+
+
+def run_time(conn: psycopg.Connection, run_id: uuid.UUID) -> RunTimeRow | None:
+    """The done rows, the wall clock, and the pinned task's manual seconds for one run."""
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(_RUN_TIME, {"run": run_id})
+        row = cur.fetchone()
+    return _row(RunTimeRow, row) if row is not None else None
+
+
+def week_manual_seconds(
+    conn: psycopg.Connection, *, days: int, tenant_id: uuid.UUID | None = None
+) -> WeekTimeRow:
+    """The manual seconds the window's finished rows are worth, with their estimate count."""
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            _WEEK_MANUAL_SECONDS,
+            {
+                "days": days,
+                "tenant": tenant_id,
+                "fallback": FALLBACK_MANUAL_SECONDS_PER_ROW,
+            },
+        )
+        return _row(WeekTimeRow, cur.fetchone())
+
+
 def list_needs_help(
     conn: psycopg.Connection, *, tenant_id: uuid.UUID | None = None
 ) -> list[NeedsHelpRow]:
@@ -589,11 +684,14 @@ __all__ = [
     "AppRow",
     "AppTaskRow",
     "BlockingRunRow",
+    "FALLBACK_MANUAL_SECONDS_PER_ROW",
     "RunClaim",
     "RunListRow",
+    "RunTimeRow",
     "SpreadsheetRow",
     "TaskListRow",
     "WeekCountsRow",
+    "WeekTimeRow",
     "keeps_failing_tasks",
     "list_apps",
     "list_needs_help",
@@ -605,11 +703,13 @@ __all__ = [
     "list_spreadsheets",
     "list_tasks",
     "list_transitions",
+    "run_time",
     "verified_preview_run",
     "results_rows",
     "run_blocking",
     "run_of_record",
     "run_summary",
     "week_counts",
+    "week_manual_seconds",
     "window_run_seconds",
 ]

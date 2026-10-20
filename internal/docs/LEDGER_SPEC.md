@@ -27,7 +27,7 @@ ever disagree, the migrations win and this page has a bug. Every query on the le
 There are 32 legal transitions between different states (28 in 0001; 0002 added `parked → skipped`,
 `failed → reconciling`, and `parked → reconciling`; 0003 added `filling → skipped`). An update that
 keeps the same state is always accepted. Any other pair raises `illegal ledger transition`.
-`pending → claimed` increments `attempts`, and `CHECK (attempts <= max_attempts)` stops a fourth claim.
+`pending → claimed` increments `attempts`, and `CHECK (attempts <= max_attempts)` stops a fourth claim. A release back to `pending` because the run paused (a pause, a lost connection, a hidden window, an admin freeze) gives that claim's attempt back: the runner marks the update with the transaction-local `processlens.refund_attempt`, and the guard decrements `attempts` (migration 0009). Crash recovery does not mark its releases, so they still count.
 
 Two further rules ride on those transitions, for a record that may already have saved (its
 `commit_attempted` is true, because it has entered `submitting`):
@@ -132,7 +132,7 @@ P-001 proposed migration 0002 for each of these; L1, L4, L5, and L6 are now enfo
 | # | Invariant | Enforced by | Test (layer, owner) |
 | --- | --- | --- | --- |
 | I1 | Only the 32 transitions above are accepted | Guard trigger | `tests/db`: all 121 ordered state pairs; 32 pass, 89 raise (DB, PL-012, PL-013) |
-| I2 | `attempts` rises only on `pending → claimed`; never more than `max_attempts` | Trigger and CHECK | `tests/db` attempts cap (DB, PL-002) |
+| I2 | `attempts` rises only on `pending → claimed`, and falls by one only on a marked pause release (0009); never more than `max_attempts` | Trigger and CHECK | `tests/db` attempts cap (DB, PL-002) |
 | I3 | One ledger row per (run, record key) and per (run, input record) | UNIQUE | `tests/db` duplicate insert (DB, PL-002) |
 | I4 | A key is committed at most once per tenant and destination | UNIQUE on `committed_keys` | `tests/db` ON CONFLICT inserts 0 rows (DB, PL-002) |
 | I5 | Each record is claimed by exactly one worker | Claim pattern, `SKIP LOCKED` | Two-worker race over 50 records, 10 times (DB, PL-002) |

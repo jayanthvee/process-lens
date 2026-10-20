@@ -10,8 +10,11 @@ The week's counts and the minutes saved come from the append-only audit table
 this API. A row is "done" when it entered ``verified`` inside the rolling last seven days and
 "already there" when it entered ``skipped``; neither is inferred from a run's own status.
 
-Minutes saved is three minutes for every done row, minus the wall clock the window's runs took,
-clamped at zero and reported in whole minutes.
+Minutes saved used to be three minutes for every done row, minus the wall clock the window's runs
+took, clamped at zero. PL-061 makes the manual side real: every done row is worth the manual
+seconds its own task learned while it was taught (``meta.manual_seconds_per_row``), with the old
+three minutes (180 seconds) only as the fallback for a task that never measured itself. The
+fallback rows are counted in ``estimated_rows`` so the screen can say so.
 
 Three routes are frozen by PL-023: the whole week, the rows that need a person, and the saved
 tasks. All three take the optional ``tenant_id`` filter ``/api/v1/recipes`` takes, so a test can
@@ -35,6 +38,7 @@ from packages.ledger import (
     list_running_runs,
     list_tasks,
     week_counts,
+    week_manual_seconds,
     window_run_seconds,
 )
 
@@ -44,8 +48,6 @@ router = APIRouter(prefix="/api/v1", tags=["home"])
 
 # The week is the rolling last seven days.
 HOME_WINDOW_DAYS = 7
-# What one row costs a person by hand.
-MINUTES_PER_ROW = 3
 # The Home panels are a glance, not an export: three rows that need a person, five tasks.
 NEEDS_HELP_ON_HOME = 3
 TASKS_ON_HOME = 5
@@ -117,6 +119,15 @@ class HomeSummary(BaseModel):
 
     window_days: int
     counts: HomeCounts
+    # PL-061: the real comparison, in seconds. `manual_seconds` is what the week's done rows would
+    # have cost by hand; `automated_seconds` is what the window's finished runs actually took;
+    # `saved_seconds` is the difference, never below zero. `estimated_rows` counts the rows whose
+    # task had no measurement, so the screen can say the figure is partly an estimate.
+    manual_seconds: int
+    automated_seconds: int
+    saved_seconds: int
+    estimated_rows: int
+    # The pre-PL-061 field, kept working until every screen reads the new ones.
     minutes_saved: int
     needs_help: list[NeedsHelpEntry]
     running: list[RunningEntry]
@@ -166,12 +177,15 @@ def home_summary(tenant_id: Annotated[uuid.UUID | None, Query()] = None) -> Home
     """The week at a glance: the counts, the time saved, help needed, live runs and tasks."""
     with connection() as conn:
         counts = week_counts(conn, days=HOME_WINDOW_DAYS, tenant_id=tenant_id)
+        week_time = week_manual_seconds(conn, days=HOME_WINDOW_DAYS, tenant_id=tenant_id)
         seconds = window_run_seconds(conn, days=HOME_WINDOW_DAYS, tenant_id=tenant_id)
         needing = list_needs_help(conn, tenant_id=tenant_id)
         running = list_running_runs(conn, tenant_id=tenant_id)
         tasks = list_tasks(conn, tenant_id=tenant_id, limit=TASKS_ON_HOME)
 
-    minutes_saved = max(0, round(counts.done * MINUTES_PER_ROW - seconds / 60))
+    manual_seconds = round(week_time.manual_seconds)
+    automated_seconds = round(seconds)
+    saved_seconds = max(0, manual_seconds - automated_seconds)
     return HomeSummary(
         window_days=HOME_WINDOW_DAYS,
         counts=HomeCounts(
@@ -181,7 +195,11 @@ def home_summary(tenant_id: Annotated[uuid.UUID | None, Query()] = None) -> Home
             # needs-help page read the same set.
             needs_help=len(needing),
         ),
-        minutes_saved=minutes_saved,
+        manual_seconds=manual_seconds,
+        automated_seconds=automated_seconds,
+        saved_seconds=saved_seconds,
+        estimated_rows=week_time.estimated_rows,
+        minutes_saved=round(saved_seconds / 60),
         needs_help=_needs_help(needing[:NEEDS_HELP_ON_HOME]),
         running=[
             RunningEntry(

@@ -2,9 +2,25 @@ import { type CSSProperties, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { useJson } from "../lib/useJson";
-import { durationWords, isOpenStatus, plainReason, relativeTime, runStatusWords } from "../lib/words";
+import {
+  durationWords,
+  estimatedRowsNote,
+  isOpenStatus,
+  plainReason,
+  relativeTime,
+  runStatusWords,
+} from "../lib/words";
 import type { HomeSummary, TaskRow } from "../types";
 import "./home.css";
+
+/**
+ * PL-061: the real time comparison the API now sends with the week. Declared on top of the shared
+ * summary type here, so Home can read it while the rest of the app catches up.
+ */
+type HomeSummaryTime = HomeSummary & {
+  saved_seconds?: number;
+  estimated_rows?: number;
+};
 
 /** The blur-in stagger: the hero and the panels rise in 70 ms apart (DESIGN.md §7). */
 function slot(index: number): CSSProperties {
@@ -50,7 +66,7 @@ export function Home(): JSX.Element {
   // A run that is still going keeps the page live. The moment none is, `pollMs` is null and
   // `useJson` clears the interval, so a finished week makes no more requests.
   const [live, setLive] = useState(false);
-  const { data, error } = useJson<HomeSummary>("/api/v1/home", live ? 2000 : null);
+  const { data, error } = useJson<HomeSummaryTime>("/api/v1/home", live ? 2000 : null);
 
   useEffect(() => {
     setLive((data?.running?.length ?? 0) > 0);
@@ -71,6 +87,12 @@ export function Home(): JSX.Element {
   const needsHelp = data.needs_help ?? [];
   const tasks = data.tasks ?? [];
   const nothing = counts.done === 0 && counts.needs_help === 0;
+  // PL-061: the figure is the API's own saved seconds, and the note says when part of it had to be
+  // estimated because a task never measured itself. A payload without the new fields keeps the old
+  // figure and the old note.
+  const savedSeconds =
+    data.saved_seconds !== undefined ? data.saved_seconds : (data.minutes_saved ?? 0) * 60;
+  const estimateNote = estimatedRowsNote(data.estimated_rows);
 
   return (
     <div className="home">
@@ -101,9 +123,14 @@ export function Home(): JSX.Element {
           ) : null}
         </div>
         <div className="saved-fig in" style={slot(2)}>
-          <b>{durationWords(data.minutes_saved ?? 0)}</b>
+          <b>{durationWords(savedSeconds / 60)}</b>
           <span>Time saved this week</span>
-          <small>vs. about 3 minutes a row by hand</small>
+          <small>
+            {estimateNote ??
+              (data.saved_seconds === undefined
+                ? "vs. about 3 minutes a row by hand"
+                : "vs. the time each row took by hand")}
+          </small>
         </div>
       </section>
 

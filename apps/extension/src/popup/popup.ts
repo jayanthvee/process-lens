@@ -1,23 +1,18 @@
 // The popup: the start/stop/clear controls, the live count, and the export.
 // It holds no recording state itself — every action goes to the service worker.
 import {
-  EMPTY_EXECUTOR_STATUS,
   EMPTY_STATUS,
-  type ExecutorStatus,
   type RecorderStatus,
   type ToWorker,
 } from "../shared/messages";
 import type { SessionState } from "../background/command-session";
 import type { RecordedEvent } from "../shared/recipe-types";
-import { createMakeRecipeForm, RECIPE_KEY, ROW_KEY } from "./make-recipe";
+import { createMakeRecipeForm } from "./make-recipe";
 import { applyStep, autoConnect, currentStep, openTaskTab, renderStepList } from "./flow";
 import {
-  plainDetail,
   recordingWords,
-  runStateWords,
   sessionWords,
   stepCountWords,
-  stepSentences,
   streamWords,
 } from "./words";
 
@@ -33,7 +28,20 @@ interface SessionInfo {
   detail?: string;
 }
 
-const DEFAULT_HUB_URL = "http://127.0.0.1:8000";
+/**
+ * Where the popup points when the person has not typed an address.
+ *
+ * A handed-out build bakes in the hub it was built for: `npm run build` replaces
+ * `__PROCESSLENS_HUB_URL__` with the address it was given (`PROCESSLENS_HUB_URL`), so a
+ * coworker's copy already knows where ProcessLens is. A build given no address -- the e2e
+ * harness's own, and a developer's -- keeps this machine.
+ */
+declare const __PROCESSLENS_HUB_URL__: string | undefined;
+
+const DEFAULT_HUB_URL: string =
+  typeof __PROCESSLENS_HUB_URL__ === "string" && __PROCESSLENS_HUB_URL__.trim() !== ""
+    ? __PROCESSLENS_HUB_URL__.trim()
+    : "http://127.0.0.1:8000";
 
 function element<T extends HTMLElement>(id: string): T {
   const found = document.getElementById(id);
@@ -50,16 +58,6 @@ const startButton = element<HTMLButtonElement>("start");
 const stopButton = element<HTMLButtonElement>("stop");
 const clearButton = element<HTMLButtonElement>("clear");
 const exportButton = element<HTMLButtonElement>("export");
-
-// The attended-execution controls. The run itself lives in the service worker;
-// this popup only sends the start/pause/resume/abort messages and shows where the
-// run is. The recipe and its input row are loaded into the browser session by
-// whoever prepared the run, under the keys read below.
-const runStartButton = element<HTMLButtonElement>("run-start");
-const runPauseButton = element<HTMLButtonElement>("run-pause");
-const runResumeButton = element<HTMLButtonElement>("run-resume");
-const runAbortButton = element<HTMLButtonElement>("run-abort");
-const runStateEl = element<HTMLParagraphElement>("run-state");
 
 // The hub session controls: a hub URL, connect and disconnect, and the state the
 // worker reports. The session itself lives in the service worker.
@@ -145,11 +143,28 @@ async function send(message: ToWorker): Promise<RecorderResponse> {
 
 /**
  * The live list of recorded steps: one plain sentence per step, and one sentence of its own while
- * there is nothing recorded. A warning the worker set in place of a start (PL-039) takes the
- * list's place, since a recording that never began has no steps to name.
+ * there is nothing recorded. Each line's × asks the worker to delete that step (PL-043); it is
+ * hidden while the recording is still running.
  */
-function renderSteps(events: RecordedEvent[]): void {
-  renderStepList(stepsEl, stepSentences(events), statusWarning);
+function renderSteps(): void {
+  renderStepList(stepsEl, recordedEvents, {
+    recording: recordingNow,
+    onRemove: removeStep,
+    warning: statusWarning,
+  });
+}
+
+/**
+ * Delete one recorded step, and redraw from the recording the worker answers with: the list, the
+ * count and the save form's columns all follow from that one answer.
+ */
+function removeStep(seq: number): void {
+  void send({ type: "record:remove", seq }).then((response) => {
+    render(response.status);
+    recordedEvents = response.events ?? [];
+    renderSteps();
+    makeRecipeForm.refresh(recordedEvents);
+  });
 }
 
 function render(status: RecorderStatus): void {
@@ -163,7 +178,8 @@ function render(status: RecorderStatus): void {
   startButton.disabled = recording;
   stopButton.disabled = !recording;
   if (document.activeElement !== wsEl) wsEl.value = status.wsUrl;
-  renderSteps(recordedEvents);
+  // The × is shown only once the recording has stopped, so the list follows the state too.
+  renderSteps();
   syncFlow();
 }
 
@@ -171,7 +187,7 @@ async function refresh(): Promise<void> {
   const response = await send({ type: "record:get" });
   render(response.status);
   recordedEvents = response.events ?? [];
-  renderSteps(recordedEvents);
+  renderSteps();
   makeRecipeForm.refresh(recordedEvents);
   syncFlow();
 }
@@ -188,7 +204,7 @@ function mergeEvent(event: RecordedEvent): void {
   const index = recordedEvents.findIndex((candidate) => candidate.seq === event.seq);
   if (index >= 0) recordedEvents[index] = event;
   else recordedEvents.push(event);
-  renderSteps(recordedEvents);
+  renderSteps();
   makeRecipeForm.refresh(recordedEvents);
 }
 
@@ -218,7 +234,7 @@ stopButton.addEventListener("click", () => {
     render(response.status);
     // The freshly stopped recording is what the form offers to compile.
     recordedEvents = response.events ?? [];
-    renderSteps(recordedEvents);
+    renderSteps();
     makeRecipeForm.refresh(recordedEvents);
   });
 });
@@ -227,7 +243,7 @@ clearButton.addEventListener("click", () => {
   void send({ type: "record:clear" }).then((response) => {
     render(response.status);
     recordedEvents = response.events ?? [];
-    renderSteps(recordedEvents);
+    renderSteps();
     makeRecipeForm.refresh(recordedEvents);
   });
 });
@@ -253,24 +269,11 @@ exportButton.addEventListener("click", () => {
   void send({ type: "record:get" }).then((response) => download(response.events));
 });
 
-function renderExecutor(status: ExecutorStatus): void {
-  const progress = status.total > 0 ? ` (${status.completed}/${status.total})` : "";
-  // The worker's own detail is written for an engineer: name the state in plain words, and show
-  // the detail only when it is free of the engine's words.
-  const detail = plainDetail(status.message);
-  runStateEl.textContent = `${runStateWords(status.state)}${progress}${detail ? ` — ${detail}` : ""}`;
-  runStateEl.dataset["state"] = status.state;
-  const busy = status.state === "running" || status.state === "paused";
-  runPauseButton.disabled = status.state !== "running";
-  runResumeButton.disabled = status.state !== "paused";
-  runAbortButton.disabled = !busy;
-}
-
 async function sendExecutor(
   message: ToWorker,
-): Promise<{ ok?: boolean; error?: string; status?: ExecutorStatus; session?: SessionInfo }> {
+): Promise<{ ok?: boolean; error?: string; session?: SessionInfo }> {
   const response = (await chrome.runtime.sendMessage(message)) as
-    | { ok?: boolean; error?: string; status?: ExecutorStatus; session?: SessionInfo }
+    | { ok?: boolean; error?: string; session?: SessionInfo }
     | undefined;
   return response ?? {};
 }
@@ -322,56 +325,21 @@ disconnectButton.addEventListener("click", () => {
   void sendExecutor({ type: "executor:disconnect" }).then((response) => renderSession(response.session));
 });
 
-async function startExecutor(): Promise<void> {
-  const store = chrome.storage?.session;
-  const stored = store ? ((await store.get([RECIPE_KEY, ROW_KEY])) as Record<string, unknown>) : {};
-  const recipe = stored[RECIPE_KEY];
-  if (!recipe) {
-    noteEl.textContent =
-      "There is no task ready to try yet. Save this recording as a task first.";
-    return;
-  }
-  const response = await sendExecutor({
-    type: "executor:start",
-    recipe,
-    row: (stored[ROW_KEY] as Record<string, unknown>) ?? {},
-  });
-  if (response.status) renderExecutor(response.status);
-  if (response.error) noteEl.textContent = response.error;
-}
-
-runStartButton.addEventListener("click", () => {
-  void startExecutor();
-});
-runPauseButton.addEventListener("click", () => {
-  void sendExecutor({ type: "executor:pause" });
-});
-runResumeButton.addEventListener("click", () => {
-  void sendExecutor({ type: "executor:resume" });
-});
-runAbortButton.addEventListener("click", () => {
-  void sendExecutor({ type: "executor:abort" });
-});
-
 chrome.runtime.onMessage.addListener((message: unknown) => {
   const incoming = message as {
     type?: string;
-    status?: RecorderStatus | ExecutorStatus;
+    status?: RecorderStatus;
     state?: SessionState;
     detail?: string;
     event?: RecordedEvent;
   };
   if (incoming?.type === "record:state" && incoming.status) render(incoming.status as RecorderStatus);
   if (incoming?.type === "record:appended" && incoming.event) mergeEvent(incoming.event);
-  if (incoming?.type === "executor:state" && incoming.status) {
-    renderExecutor(incoming.status as ExecutorStatus);
-  }
   if (incoming?.type === "executor:session-state" && incoming.state) {
     renderSession({ state: incoming.state, detail: incoming.detail });
   }
 });
 
-renderExecutor({ ...EMPTY_EXECUTOR_STATUS });
 renderSession({ state: "idle" });
 void refresh();
 // Connect first, then say so: the person opens the popup and reads either "Connected to
