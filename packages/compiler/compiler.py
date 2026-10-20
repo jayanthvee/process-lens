@@ -1068,6 +1068,9 @@ def detect_duplicate_search(
     return found[0]
 
 
+_UUID = re.compile(r"[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}")
+
+
 def _opens_a_record(candidate: Candidate) -> bool:
     """Whether this click navigated to a record's own page (PL-077).
 
@@ -1087,7 +1090,8 @@ def _opens_a_record(candidate: Candidate) -> bool:
     if not origin_of(landed) or origin_of(landed) != origin_of(started):
         return False
     tail = urlsplit(landed).path.rstrip("/").rsplit("/", 1)[-1]
-    return tail.isdigit()
+    # A numeric id (Odoo) or a UUID (Twenty and most newer apps) names one record.
+    return tail.isdigit() or _UUID.fullmatch(tail) is not None
 
 
 def detect_find_then_update(candidates: list[Candidate], run_index: int) -> bool:

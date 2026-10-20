@@ -45,24 +45,6 @@ def _trace(message: str) -> None:
 pytestmark = [
     pytest.mark.e2e,
     pytest.mark.real_apps,
-    # PL-075 fixed PL-063's cause: the commit now compiles from the Save control's disappearance
-    # (`element_absent` on the record page), and the first run's three rows verify with Odoo's
-    # `list_price` equal to the sheet. The golden still fails one step further on, at the SECOND
-    # run of the same sheet: the product's price already equals the row, so Odoo keeps the Save
-    # control hidden and the click step cannot be prepared ("1 matched, 0 usable - no visible,
-    # enabled match"), the first record parks and the run pauses `canary_failed` with the other two
-    # rows `pending`. The ledger did not skip the already-committed keys first. That is a separate
-    # ticket (a repeat run of an update, or the ledger's own skip), not this one's compile path.
-    pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "PL-075: the in-place save now compiles and the first run verifies all three rows with "
-            "the sheet's prices. The second run of the same sheet parks its first row: Odoo keeps "
-            "the Save control hidden because the price already equals the row, so the commit "
-            "click cannot be prepared, and the run pauses canary_failed with two rows pending. "
-            "The ledger did not skip the already-committed keys before driving the browser."
-        ),
-    ),
 ]
 
 # One demonstration's values, synthetic on purpose: they become the sample row.
@@ -375,7 +357,15 @@ def test_odoo_product_price_golden(odoo_harness, odoo_app) -> None:
     # 6. A second run of the same sheet changes nothing: the ledger's own idempotency. The rows
     #    end skipped (already-committed keys) or verified without a second write, whichever the
     #    ledger's rule gives; what actually happened goes in the trace and the report.
-    run2 = harness.make_run(rows, recipe=recipe, key_column=sku_column)
+    #    The second run belongs to the same tenant: a tenant's committed keys are its own, and a
+    #    fresh tenant (the harness default) would have none to skip.
+    import psycopg
+
+    with psycopg.connect(harness.dsn) as conn:
+        first_tenant = conn.execute(
+            "SELECT tenant_id FROM runs WHERE id = %s", (run_id,)
+        ).fetchone()[0]
+    run2 = harness.make_run(rows, recipe=recipe, key_column=sku_column, tenant_id=str(first_tenant))
     try:
         records2 = harness.settle_run(run2, timeout=700, max_seconds=680)
     except Exception:

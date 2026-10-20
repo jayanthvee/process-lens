@@ -240,3 +240,14 @@ def test_a_create_recipe_is_unchanged_byte_for_byte() -> None:
         "fill",
         "click",
     ]
+
+
+def test_a_record_page_named_by_a_uuid_is_an_update() -> None:
+    """Twenty-style record pages end in a UUID, not a number; they open one record too (T1)."""
+    uuid_url = "https://crm.example.com/object/product/3f2b8c1e-9a4d-4e7b-8c21-5d6e7f809a1b"
+    recording = [
+        {**event, "url": uuid_url} if event["url"] == RECORD_URL else event
+        for event in _find_then_update()
+    ]
+    result = compile_recording(recording, _options(commit_step_ids=["save-1"]))
+    assert result.search_kind == "update"
