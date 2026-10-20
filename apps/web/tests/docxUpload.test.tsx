@@ -68,8 +68,10 @@ describe("adding a Word document", () => {
     expect(screen.getByRole("link", { name: "Download CSV" }).getAttribute("href")).toBe(
       "/api/v1/documents/to-csv/tok-1.csv",
     );
+    // PL-076: the way on carries the token (and the document's name), so the task list can hand
+    // the cleaned rows to the task a person picks.
     expect(screen.getByRole("link", { name: "Use for a task" }).getAttribute("href")).toBe(
-      "/tasks",
+      "/tasks?csv=tok-1&name=contacts.docx",
     );
   });
 

@@ -403,3 +403,15 @@ export const ADD_WORD_DOCUMENT_SENTENCE =
 export const READING_DOCUMENT = "Reading the document…";
 export const DOWNLOAD_CSV = "Download CSV";
 export const USE_FOR_A_TASK = "Use for a task";
+
+/*
+ * PL-076: a cleaned document carried to a task. The task list says which document's rows are
+ * waiting, the run page uploads those rows through the normal file path, and an expired token
+ * says so once, in the upload area, with the file picker still there.
+ */
+export function pickTaskForCsv(fileName: string): string {
+  return `Pick the task to use ${fileName}'s rows with.`;
+}
+
+export const DOCUMENT_ROWS_GONE =
+  "That document's rows are no longer here. Add the Word document again, or pick a file.";

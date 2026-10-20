@@ -17,6 +17,8 @@ export interface RecordedRequest {
   /** The query string, with its leading `?`, exactly as the page sent it. */
   search: string;
   body: unknown;
+  /** The form a request carried, when it was a `FormData` upload (PL-076). */
+  form?: FormData;
 }
 
 export interface StubResponse {
@@ -35,12 +37,18 @@ export interface FetchStub {
   restore: () => void;
 }
 
-/** A `Response` good enough for the API client: status, ok, and a JSON text body. */
+/** A `Response` good enough for the API client: status, ok, and a JSON text body.
+ *
+ * `blob()` answers the same bytes as a CSV blob, so the document-to-CSV fetch (PL-076) behaves as
+ * it does in a browser: the page uploads the blob through the normal file path.
+ */
 export function jsonResponse(status: number, body: unknown): Response {
+  const text = body === undefined ? "" : typeof body === "string" ? body : JSON.stringify(body);
   return {
     ok: status >= 200 && status < 300,
     status,
-    text: async () => (body === undefined ? "" : JSON.stringify(body)),
+    text: async () => text,
+    blob: async () => new Blob([text], { type: "text/csv" }),
   } as unknown as Response;
 }
 
@@ -73,7 +81,13 @@ export function createFetchStub(routes: StubRoutes = {}): FetchStub {
     const rawBody = init?.body;
     const body: unknown =
       typeof rawBody === "string" && rawBody !== "" ? (JSON.parse(rawBody) as unknown) : null;
-    const call: RecordedRequest = { method, path, search, body };
+    const call: RecordedRequest = {
+      method,
+      path,
+      search,
+      body,
+      ...(rawBody instanceof FormData ? { form: rawBody } : {}),
+    };
     requests.push(call);
     calls.push(path);
     const entry = pick(routes, path);

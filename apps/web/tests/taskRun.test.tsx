@@ -731,3 +731,48 @@ describe("the preview row stopped for your decision", () => {
     expect(within(card).getByText("Adding this row in the ProcessLens window…")).toBeTruthy();
   });
 });
+
+describe("a cleaned document carried in from the Spreadsheets page (PL-076)", () => {
+  it("uploads the fetched CSV through the normal batch upload, with no file picked", async () => {
+    stub = createFetchStub({
+      ...SHELL,
+      "/api/v1/tasks": { body: [TASK] },
+      "/api/v1/documents/to-csv/tok-123.csv": { body: "Name,Email\nPriya,priya@example.com" },
+      "/api/v1/batches/batch-1/check": { body: CHECK },
+      "/api/v1/batches": { body: UPLOAD },
+    });
+    renderApp("/tasks/wf-1/run?csv=tok-123&name=spring%20leads.docx");
+    await settle();
+
+    const upload = stub.requests.find(
+      (call) => call.method === "POST" && call.path === "/api/v1/batches",
+    );
+    expect(upload?.form).toBeDefined();
+    const file = upload?.form?.get("file") as File;
+    expect(file.name).toBe("spring leads.csv");
+    expect(await file.text()).toBe("Name,Email\nPriya,priya@example.com");
+    expect(upload?.form?.get("workflow_id")).toBe("wf-1");
+    // The person lands on the column-mapping step with the rows already loaded.
+    expect(screen.getByText("2. Check it")).toBeTruthy();
+  });
+
+  it("shows one plain sentence for an expired token and leaves the picker working", async () => {
+    stub = createFetchStub({
+      ...SHELL,
+      "/api/v1/tasks": { body: [TASK] },
+      "/api/v1/documents/to-csv/tok-old.csv": { status: 404, body: { detail: "expired" } },
+    });
+    renderApp("/tasks/wf-1/run?csv=tok-old");
+    await settle();
+
+    expect(
+      screen.getByText(
+        "That document's rows are no longer here. Add the Word document again, or pick a file.",
+      ),
+    ).toBeTruthy();
+    expect(screen.getByLabelText("Your spreadsheet")).toBeTruthy();
+    expect(
+      stub.requests.filter((call) => call.method === "POST" && call.path === "/api/v1/batches"),
+    ).toHaveLength(0);
+  });
+});

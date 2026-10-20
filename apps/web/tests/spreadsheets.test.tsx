@@ -1,6 +1,6 @@
-/** The uploaded spreadsheets: what a person sees on the Spreadsheets page, and how a run used them. */
+﻿/** The uploaded spreadsheets: what a person sees on the Spreadsheets page, and how a run used them. */
 
-import { screen } from "@testing-library/react";
+import { fireEvent, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { engineWordsIn } from "../src/lib/words";
@@ -114,7 +114,7 @@ describe("the spreadsheets page", () => {
     );
   });
 
-  it("shows only the plain words of DESIGN.md §2", async () => {
+  it("shows only the plain words of DESIGN.md Â§2", async () => {
     stub = serve([sheet({ runs: 2, last_run_id: "run-1" })]);
     const view = renderApp("/spreadsheets");
     await settle();
@@ -122,5 +122,34 @@ describe("the spreadsheets page", () => {
     const text = view.container.textContent ?? "";
     expect(text).not.toBe("");
     expect(engineWordsIn(text)).toEqual([]);
+  });
+});
+
+describe("carrying a cleaned document to a task (PL-076)", () => {
+  it("'Use for a task' carries the csv token and the document's name", async () => {
+    stub = createFetchStub({
+      ...SHELL,
+      "/api/v1/spreadsheets": { body: [] },
+      "/api/v1/documents/to-csv": {
+        body: {
+          columns: ["Name", "Email"],
+          rows: [{ Name: "Priya", Email: "priya@example.com" }],
+          notes: [],
+          csv_token: "tok-123",
+        },
+      },
+    });
+    renderApp("/spreadsheets");
+    await settle();
+    const input = screen.getByLabelText("Add a Word document") as HTMLInputElement;
+    const file = new File(["docx-bytes"], "spring leads.docx", {
+      type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    });
+    fireEvent.change(input, { target: { files: [file] } });
+    await settle();
+
+    const link = screen.getByRole("link", { name: "Use for a task" }) as HTMLAnchorElement;
+    expect(link.getAttribute("href")).toContain("csv=tok-123");
+    expect(decodeURIComponent(link.getAttribute("href") ?? "")).toContain("spring leads.docx");
   });
 });
