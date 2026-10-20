@@ -1276,6 +1276,12 @@ def messy_harness(
     # PL-033 put Connect, the address and Try one row under a closed "More"; open it, as a
     # person would, so the controls the harness drives are visible.
     popup.evaluate("() => document.querySelectorAll('details').forEach((d) => { d.open = true; })")
+    # As in the fixture harness (PL-058): the popup's own first connect attempt disables Connect
+    # until it settles, and a click before then is lost.
+    popup.wait_for_function(
+        "() => document.getElementById('connect') && !document.getElementById('connect').disabled",
+        timeout=15_000,
+    )
     popup.evaluate("v => { document.getElementById('hub').value = v; }", api_server["base"])
     page.bring_to_front()
     popup.evaluate("document.getElementById('connect').click()")
@@ -1366,6 +1372,12 @@ def corpus_harness(
     # PL-033 put Connect, the address and Try one row under a closed "More"; open it, as a
     # person would, so the controls the harness drives are visible.
     popup.evaluate("() => document.querySelectorAll('details').forEach((d) => { d.open = true; })")
+    # As in the fixture harness (PL-058): the popup's own first connect attempt disables Connect
+    # until it settles, and a click before then is lost.
+    popup.wait_for_function(
+        "() => document.getElementById('connect') && !document.getElementById('connect').disabled",
+        timeout=15_000,
+    )
     popup.evaluate("v => { document.getElementById('hub').value = v; }", api_server["base"])
     page.bring_to_front()
     popup.evaluate("document.getElementById('connect').click()")
@@ -1479,6 +1491,12 @@ def bind_extension_to(
     # PL-033 put Connect, the address and Try one row under a closed "More"; open it, as a
     # person would, so the controls the harness drives are visible.
     popup.evaluate("() => document.querySelectorAll('details').forEach((d) => { d.open = true; })")
+    # As in the fixture harness (PL-058): the popup's own first connect attempt disables Connect
+    # until it settles, and a click before then is lost.
+    popup.wait_for_function(
+        "() => document.getElementById('connect') && !document.getElementById('connect').disabled",
+        timeout=15_000,
+    )
     popup.evaluate("v => { document.getElementById('hub').value = v; }", api_server["base"])
     page.bring_to_front()
     popup.evaluate("document.getElementById('connect').click()")

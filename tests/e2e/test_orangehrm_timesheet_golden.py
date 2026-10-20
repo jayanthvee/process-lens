@@ -32,19 +32,16 @@ import pytest
 
 pytestmark = [pytest.mark.e2e, pytest.mark.real_apps]
 
-# PL-069's finding is fixed in the recorder (PL-073): a toast built from a title and a message now
-# records the message, so the save check is one the page really shows. This golden cannot yet
-# confirm that end to end: its own demonstration stops earlier, in the project autocomplete -- the
-# field arrives prefilled with the last project, so typing appends to it and the app answers "No
-# Records Found" (evidence in `.cache` probes and the PL-073 report). Fixing that means editing
-# this file's demonstration code, which PL-073's file limit allows only for the marker, so the
-# marker stays with the reason below. `strict=True` means the run that passes turns into a failing
-# XPASS, which is the signal to remove it.
+# PL-069's finding is fixed in the recorder (PL-073): the save check is now "Successfully Saved",
+# which OrangeHRM really shows. The demonstration records and compiles cleanly. The replay's
+# canary row then parks at the save: the page never showed that text within 8 seconds (PL-078).
+# `strict=True` means the run that passes turns into a failing XPASS, which is the signal to
+# remove this marker.
 XFAIL_REASON = (
-    "the demonstration stops before the replay: the timesheet's project autocomplete arrives "
-    "prefilled, so typing appends to it and the dropdown answers 'No Records Found' (a harness "
-    "defect in this file; the PL-073 recorder fix is unit-tested and green)"
+    "the replay's canary parks at the save: OrangeHRM never showed 'Successfully Saved' within "
+    "8 seconds (PL-078)"
 )
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT / "infra" / "test-apps") not in sys.path:
@@ -86,7 +83,11 @@ def orangehrm_reset(orangehrm_app_env: dict[str, str]) -> dict[str, Any]:
 
 @pytest.fixture(scope="session")
 def orangehrm_page(context: Any, orangehrm_reset: dict[str, Any], orangehrm_app_env) -> Any:
-    """A Chromium tab on OrangeHRM, signed in as the employee whose timesheet this is."""
+    """A Chromium tab on OrangeHRM, signed in as the employee whose timesheet this is.
+
+    The reset empties the seeded employee's week, so the demonstration must sign in as that
+    employee: the admin's own "My Timesheets" is a different week the reset never touches.
+    """
     from .real_apps import login_orangehrm, orangehrm_base
 
     settings = testapps_env.orangehrm_settings(orangehrm_app_env)
@@ -95,8 +96,8 @@ def orangehrm_page(context: Any, orangehrm_reset: dict[str, Any], orangehrm_app_
         page,
         orangehrm_app_env,
         base=orangehrm_base(orangehrm_app_env),
-        username=settings["ORANGEHRM_ADMIN_USER"],
-        password=settings["ORANGEHRM_ADMIN_PASSWORD"],
+        username=settings.get("ORANGEHRM_TEST_EMPLOYEE", seed_orangehrm.TEST_EMPLOYEE["username"]),
+        password=settings["ORANGEHRM_EMPLOYEE_PASSWORD"],
     )
     return page
 
@@ -169,9 +170,14 @@ def _fill_week(page: Any, row: dict[str, Any]) -> None:
     of the first row are Monday to Friday. The demonstration types into them the way a person
     would: one cell at a time.
     """
-    cells = page.locator("input.oxd-input--active")
-    # The first two active inputs are the search box and the project hint; the day cells follow.
-    day_cells = [cells.nth(index) for index in range(2, min(cells.count(), 9))]
+    # The day cells are the active inputs with no placeholder: the menu's search box and the
+    # project hint both carry one. They are pinned as handles before any typing, because a
+    # focused cell loses `oxd-input--active` and a lazy `nth()` would then point at its neighbour.
+    day_cells = [
+        cell
+        for cell in page.locator("input.oxd-input--active").element_handles()
+        if cell.get_attribute("placeholder") is None
+    ][:7]
     assert len(day_cells) >= 5, f"the grid offers {len(day_cells)} day cells"
     for day, cell in zip(("mon", "tue", "wed", "thu", "fri"), day_cells, strict=False):
         cell.click()
@@ -202,9 +208,12 @@ def record_timesheet(harness: Any, settings: dict[str, str]) -> None:
     hint = page.get_by_placeholder("Type for hints...").first
     hint.wait_for(state="visible", timeout=20_000)
     hint.click()
+    # The field can arrive holding the last project used; typing would append to it, so clear it.
+    hint.press("Control+a")
+    hint.press("Backspace")
     hint.press_sequentially(first["project"], delay=40)
     page.wait_for_timeout(2000)
-    page.get_by_role("option", name=first["project"]).first.click()
+    page.get_by_role("option").filter(has_text=first["project"]).first.click()
     page.wait_for_timeout(1500)
 
     # The activity is a dropdown beside it, empty until the project is chosen.
