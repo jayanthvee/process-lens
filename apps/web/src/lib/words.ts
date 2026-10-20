@@ -372,6 +372,28 @@ export function siteCapReached(cap: SiteCap): boolean {
 }
 
 /**
+ * PL-068: the site is asking for a verification code while the run is paused.
+ *
+ * The heading is the page's own words, passed through from the extension; the sentence never
+ * carries a code, a URL or an engine word. The code itself is supplied by the person, typed on
+ * this screen, and never stored.
+ */
+export function codePromptWords(heading?: string | null): string {
+  const where = (heading ?? "").trim();
+  const asked = where
+    ? `The site is asking for a verification code (${where}).`
+    : "The site is asking for a verification code.";
+  return `${asked} Enter the code it sent you.`;
+}
+
+/** The moment between pressing Continue and the work window reporting back. */
+export const ENTERING_CODE = "Entering the code…";
+
+/** The work window could not find the code field: the person types it there and resumes. */
+export const CODE_NOT_FOUND =
+  "ProcessLens couldn't find where to type the code. Type it in the work window, then press Resume.";
+
+/**
  * PL-072: the Spreadsheets page's Word-document area. A document becomes a CSV, and the two ways
  * on are the download and the task a person already knows.
  */

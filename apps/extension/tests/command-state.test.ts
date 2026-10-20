@@ -84,6 +84,7 @@ interface HarnessOptions {
     aborted: () => boolean,
   ) => Promise<CheckAnswer>;
   restoreBoundTab?: (tabId: number) => Promise<boolean>;
+  enterCode?: (code: string) => Promise<{ entered: boolean; reason: string }>;
   now?: () => number;
   storageValue?: StoredSession | null;
 }
@@ -112,6 +113,7 @@ function makeHarness(options: HarnessOptions = {}): Harness {
       },
     },
     now: options.now ?? (() => clock.value),
+    ...(options.enterCode ? { enterCode: options.enterCode } : {}),
     setInterval: (fn, ms) => {
       const timer: Timer = { fn, ms, cancelled: false };
       timers.push(timer);
@@ -850,5 +852,39 @@ describe("connect when nothing answers", () => {
 
     expect(socket).toBeDefined();
     expect(harness.states.at(-1)).toBe("ready");
+  });
+});
+
+
+describe("a verification code from the run page", () => {
+  it("reaches the code handler and is answered, without echoing the code", async () => {
+    // PL-068: the session's message switch dropped `enter_code` silently, so the run page's code
+    // never arrived and the API timed out with "not found".
+    const typed: string[] = [];
+    const harness = makeHarness({
+      enterCode: async (code) => {
+        typed.push(code);
+        return { entered: true, reason: "submitted" };
+      },
+    });
+    const socket = await openSession(harness);
+
+    deliver(socket, {
+      protocol: 1,
+      type: "enter_code",
+      command_id: "code-1",
+      step_ref: "enter_code",
+      run_id: "run-1",
+      run_record_id: "",
+      lease_epoch: 0,
+      expires_at: 10_000_000,
+      code: "246810",
+    });
+    await flush();
+
+    expect(typed).toEqual(["246810"]);
+    const result = socket.lastResult();
+    expect(result?.["status"]).toBe("ok");
+    expect(JSON.stringify(result)).not.toContain("246810");
   });
 });

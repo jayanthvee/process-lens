@@ -34,8 +34,10 @@ from packages.ledger import (
 )
 from services.runner.creation import CreationError, create_run, workflow_tenant
 
+from . import hub
 from .admin import require_runs_allowed
 from .db import connection
+from .operator import require_operator_user
 
 router = APIRouter(prefix="/api/v1", tags=["runs"])
 
@@ -160,6 +162,23 @@ class TransitionDetail(BaseModel):
     reason: str | None
     actor: str | None
     at: datetime
+
+
+class EnterCodeRequest(BaseModel):
+    """PL-068: the one-time code a person read from their email or phone.
+
+    The shape is the whole check: 4-10 letters or digits. The value is never stored, logged or
+    recorded, and the answer never echoes it.
+    """
+
+    code: Annotated[str, Field(pattern=r"^[0-9A-Za-z]{4,10}$")]
+
+
+class EnterCodeResult(BaseModel):
+    """What the extension did with the code: typed it, or could not find the field."""
+
+    entered: bool
+    reason: str
 
 
 class RequeueRequest(BaseModel):
@@ -433,6 +452,36 @@ def cancel_run_endpoint(run_id: uuid.UUID) -> RunDetail:
         request_cancel(conn, run_id)
         conn.commit()
     return get_run_endpoint(run_id)
+
+
+@router.post("/runs/{run_id}/code", response_model=EnterCodeResult)
+async def enter_code_endpoint(run_id: uuid.UUID, payload: EnterCodeRequest) -> EnterCodeResult:
+    """PL-068: hand a person's verification code to the paused run's work window, once.
+
+    Only a run paused waiting for a code accepts one, and only a person in that run's tenant may
+    send it. The code goes over the session's socket and nowhere else: no database write, no log
+    line, and no echo in the answer.
+    """
+    with connection() as conn:
+        run = _fetch_run(conn, run_id)
+        person = require_operator_user(conn)
+        if person is None or person.tenant_id != run.tenant_id:
+            raise HTTPException(status_code=404, detail=f"run {run_id} does not exist")
+        if run.status != "paused" or run.pause_reason != "code_required":
+            raise HTTPException(
+                status_code=409,
+                detail=f"run {run_id} is {run.status}, not waiting for a verification code",
+            )
+
+    # The run's own lease epoch: the extension refuses a command older than the newest it has seen
+    # for this run, so a code sent with a made-up epoch would be refused as stale.
+    outcome = await hub.send_enter_code(payload.code, run_id=run_id, lease_epoch=run.lease_epoch)
+    if outcome.get("reason") == "no_extension":
+        raise HTTPException(status_code=503, detail="the work window is not connected")
+    return EnterCodeResult(
+        entered=bool(outcome.get("entered")),
+        reason=str(outcome.get("reason") or "not_found"),
+    )
 
 
 @router.post("/records/{record_id}/requeue", response_model=RequeueResponse)

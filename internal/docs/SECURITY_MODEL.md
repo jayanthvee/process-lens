@@ -21,6 +21,11 @@ Safety is enforced in code and in the database, never by asking a model to behav
   sensitive fields masked, and AI calls routed only to providers the customer's data policy allows.
 - **Audit.** Step events, AI calls, and committed keys are append-only.
 - **Bot detection.** No evasion of any kind. Challenges pause the run for a human.
+- **Verification codes.** A one-time code the site sends (by email or SMS) is supplied by a person
+  on the run page. ProcessLens never reads an inbox or a message, never types a password, and never
+  stores, logs or records the code: it travels once over the session socket, is typed into the
+  page, and lives only for that send. A code page is recognised by its own field and heading; a
+  password field on the same page means the run pauses \login_required\ instead.
 
 ## Repository hygiene (public repository)
 
