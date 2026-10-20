@@ -85,7 +85,9 @@ def test_a_recorded_demonstration_compiles_to_a_problem_free_recipe(
 
     assert response.status_code == 200, response.text
     body = response.json()
-    assert set(body) == {"recipe", "warnings"}
+    assert set(body) == {"recipe", "warnings", "search_kind"}
+    # No search in this demonstration, so there is no searched shape to report.
+    assert body["search_kind"] is None
     assert recipe_problems(body["recipe"]) == []
 
 
@@ -228,3 +230,57 @@ def test_the_compile_route_stores_nothing_and_needs_no_database(
 
     assert response.status_code == 200, response.text
     assert recipe_problems(response.json()["recipe"]) == []
+
+
+# ------------------------------------------------------------------ PL-077
+
+
+def a_find_then_update() -> list[dict[str, Any]]:
+    """Search for the SKU, open the result, change a value, save: an update, not a create."""
+    search = [{"by": "role", "role": "searchbox", "name": "Search products"}]
+    row = [{"by": "role", "role": "cell", "name": "SKU-1"}]
+    price = [{"by": "label", "text": "Sales Price"}]
+    list_url = "https://app.example.com/products"
+    record_url = "https://app.example.com/products/17"
+    events = [
+        action_event(1, "fill", "fill", search, value="SKU-1", url=list_url),
+        action_event(2, "press", "press", search, url=list_url),
+        action_event(3, "click", "click", row, url=list_url),
+        action_event(4, "fill", "fill", price, value="19.99", url=record_url),
+        action_event(
+            5,
+            "click",
+            "click",
+            SAVE_TARGETS,
+            url=record_url,
+            observation={"text_visible": "Saved"},
+        ),
+    ]
+    events[1]["step"]["key"] = "Enter"
+    return events
+
+
+def test_the_route_says_which_searched_shape_it_compiled(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PL-077: the popup words its rule from this answer, so the route has to carry the shape."""
+    monkeypatch.setenv("PROCESSLENS_EXTENSION_ID", EXTENSION_ID)
+
+    response = client.post(
+        "/api/v1/recipes/compile",
+        json=request_body(
+            a_find_then_update(),
+            sample_row={"sku": "SKU-1", "price": "19.99"},
+            record_key_column="sku",
+            commit_step_ids=["click-5"],
+        ),
+        headers={"origin": EXTENSION_ORIGIN},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["search_kind"] == "update"
+    branch = next(step for step in body["recipe"]["steps"] if step["action"] == "branch")
+    # An update parks a row whose search found nothing; it never skips one it found.
+    assert branch["when"]["element_absent"] is not None
+    assert branch["then"][0]["outcome"] == "parked"
