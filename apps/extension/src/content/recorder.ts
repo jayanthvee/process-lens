@@ -227,6 +227,27 @@ function isShown(node: Element): boolean {
 }
 
 /**
+ * Whether a control is no longer on the page, or the page is hiding it (PL-075).
+ *
+ * Odoo keeps its Save button in the DOM and hides it with `visibility: hidden` once the record is
+ * clean, so the element's own computed style is the answer; a `display: none` ancestor or a
+ * `hidden` attribute counts too. A merely disabled control is still on the page and is not gone:
+ * the recorder only reports the disappearance, and the executor's resolver already treats a
+ * hidden or disabled element as not matching `element_absent`.
+ */
+function isGoneOrHidden(control: Element): boolean {
+  if (!control.isConnected) return true;
+  const view = control.ownerDocument?.defaultView ?? null;
+  for (let node: Element | null = control; node; node = node.parentElement) {
+    if (node.hasAttribute("hidden")) return true;
+    const style = view && typeof view.getComputedStyle === "function" ? view.getComputedStyle(node) : null;
+    if (style && style.display === "none") return true;
+  }
+  const own = view && typeof view.getComputedStyle === "function" ? view.getComputedStyle(control) : null;
+  return own !== null && own.visibility === "hidden";
+}
+
+/**
  * Every element matching `selector` under `root`, descending through open shadow roots.
  *
  * A confirmation inside an open shadow root is invisible to a document-level query (and a
@@ -830,6 +851,10 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
     observedUrl: string | null;
     preexisting: Set<Element>;
     headings: string[];
+    /** The control the action was performed with, when it had one (PL-075). */
+    control: Element | null;
+    /** Whether that control was on show when the window opened, so its loss means something. */
+    controlShown: boolean;
   }
 
   let watching: ObservationWindow | null = null;
@@ -845,10 +870,10 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
   let actionAwaitingEvidence = false;
 
   /** Emit a click or a submit, then watch the page for what it changed. */
-  function emitAction(kind: "click" | "submit", step: RecordedStep | null): void {
+  function emitAction(kind: "click" | "submit", step: RecordedStep | null, control: Element | null): void {
     hooks.send(stepEvent(kind, step));
     actionAwaitingEvidence = true;
-    beginObservation();
+    beginObservation(control);
   }
 
   function emitObservation(payload: Record<string, unknown>, at: string): void {
@@ -951,8 +976,26 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
       const pattern = navigationPattern(navigated);
       if (pattern && sameOrigin(observation.startUrl, navigated)) {
         emitObservation({ url_matches: pattern }, navigated);
+        return;
       }
     }
+    // PL-075: an update-in-place navigates nowhere and shows no confirmation, but the page does
+    // put its save control away once the record is clean (Odoo hides the Save button; many apps
+    // remove or hide theirs). The control being gone or hidden, on the same record page, is the
+    // proof. A control that is merely disabled is still on the page, so it proves nothing and is
+    // not reported.
+    const control = observation.control;
+    if (control === null || !observation.controlShown || !isGoneOrHidden(control)) return;
+    const targets = computeTargets(control);
+    if (targets.length === 0) return;
+    const pattern = navigationPattern(current);
+    emitObservation(
+      {
+        element_absent: { targets },
+        ...(pattern !== null ? { url_matches: pattern } : {}),
+      },
+      current,
+    );
   }
 
   /**
@@ -960,7 +1003,7 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
    * confirmation appearing, or the URL moving. Either is reported on its own
    * `observation` event; the compiler turns it into the step's assertion.
    */
-  function beginObservation(): void {
+  function beginObservation(control: Element | null): void {
     endObservation();
     if (!active()) return;
 
@@ -984,6 +1027,10 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
       headings: Array.from(doc.querySelectorAll(HEADING_SELECTOR)).map((el) =>
         normalizeText(el.textContent),
       ),
+      control,
+      // Only a control that was on show can be said to have gone away. A click on something the
+      // page was already hiding (a keyboard shortcut's target, say) is not evidence.
+      controlShown: control !== null && !isGoneOrHidden(control),
     };
     watching = observation;
 
@@ -1209,7 +1256,7 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
         return;
       }
     }
-    emitAction("click", clickStep(el));
+    emitAction("click", clickStep(el), el);
   }
 
   function onInput(event: Event): void {
@@ -1258,7 +1305,7 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
     if (tag === "INPUT") {
       const type = inputType(el);
       if (type === "checkbox" || type === "radio") {
-        emitAction("click", clickStep(el));
+        emitAction("click", clickStep(el), el);
         return;
       }
       if (type === "file") return;
@@ -1317,11 +1364,11 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
     const submitter = (event as SubmitEvent).submitter ?? null;
     const control = submitter ?? firstSubmitControl(form);
     if (isPasswordField(control ?? form)) {
-      emitAction("submit", null);
+      emitAction("submit", null, null);
       return;
     }
     const step = control ? clickStep(control) : null;
-    emitAction("submit", step ?? clickStep(form));
+    emitAction("submit", step ?? clickStep(form), control);
   }
 
   /**

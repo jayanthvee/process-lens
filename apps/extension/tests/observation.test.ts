@@ -107,6 +107,80 @@ describe("post-action observation", () => {
     expect(recorded.events.map((event) => event.kind)).toEqual(["click"]);
   });
 
+  it("reports the clicked control's disappearance as evidence (PL-075)", async () => {
+    // An update-in-place (Odoo's product form) navigates nowhere and shows no toast; what it does
+    // show is that the Save control goes away once the record is clean. That, on the same page, is
+    // the proof.
+    document.body.innerHTML = "<button id='save'>Save</button>";
+    const recorded = harness();
+    const save = document.getElementById("save")!;
+    save.dispatchEvent(new Event("click", { bubbles: true }));
+
+    save.remove();
+    await flushMutations();
+    await vi.advanceTimersByTimeAsync(1500);
+
+    expect(recorded.events.map((event) => event.kind)).toEqual(["click", "observation"]);
+    const observation = recorded.events[1]!.observation as {
+      element_absent: { targets: Array<Record<string, unknown>> };
+      url_matches: string;
+    };
+    expect(observation.url_matches).toBe("/leads");
+    expect(observation.element_absent.targets[0]).toMatchObject({
+      by: "role",
+      role: "button",
+      name: "Save",
+    });
+  });
+
+  it("reports a clicked control the page hides as evidence (PL-075)", async () => {
+    // Odoo hides its Save button with `visibility: hidden` once the record is clean; it stays in
+    // the DOM. The executor's resolver already refuses a hidden element, so the same observation
+    // is the proof.
+    document.body.innerHTML = "<button id='save'>Save</button>";
+    const recorded = harness();
+    const save = document.getElementById("save")!;
+    save.dispatchEvent(new Event("click", { bubbles: true }));
+
+    (save as HTMLElement).style.visibility = "hidden";
+    await flushMutations();
+    await vi.advanceTimersByTimeAsync(1500);
+
+    const observation = recorded.events[1]!.observation as { element_absent: unknown };
+    expect(observation.element_absent).toBeTruthy();
+  });
+
+  it("does not take a disabled control for an absent one (PL-075)", async () => {
+    // (b): the evidence is only emitted when the control is gone or hidden. A control that is
+    // merely disabled is still on the page, so nothing is proved.
+    document.body.innerHTML = "<button id='save'>Save</button>";
+    const recorded = harness();
+    const save = document.getElementById("save") as HTMLButtonElement;
+    save.dispatchEvent(new Event("click", { bubbles: true }));
+
+    save.disabled = true;
+    await flushMutations();
+    await vi.advanceTimersByTimeAsync(3000);
+
+    expect(recorded.events.map((event) => event.kind)).toEqual(["click"]);
+  });
+
+  it("keeps a toast as the evidence when the button also goes away (PL-075)", async () => {
+    // Nothing changes for a click that already has a confirmation: the toast is the proof, and
+    // the disappearance is not reported a second time.
+    document.body.innerHTML = "<button id='save'>Save</button><div id='host'></div>";
+    const recorded = harness();
+    const save = document.getElementById("save")!;
+    save.dispatchEvent(new Event("click", { bubbles: true }));
+
+    alertInto("host", "Saved");
+    save.remove();
+    await flushMutations();
+    await vi.advanceTimersByTimeAsync(1500);
+
+    expect(recorded.events[1]!.observation).toEqual({ text_visible: "Saved" });
+  });
+
   it("prefers a confirmation over a navigation", async () => {
     document.body.innerHTML = "<button id='save'>Save</button><div id='host'></div>";
     const recorded = harness();

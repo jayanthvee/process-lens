@@ -571,7 +571,9 @@ def _drop_container_clicks(
     """Drop clicks on containers, not controls.
 
     PL-031: a click on a group or card whose text contains the labels of two or more inputs is
-    not a control click. So is a bare css-only click with no role, label or test id.
+    not a control click. So is a bare css-only click with no role, label or test id -- unless the
+    recording saw that click move the page (PL-075): Odoo's product list row is a css-only `tr`,
+    and clicking it opens the record. A click with navigation evidence is an action, not noise.
     """
     warnings: list[str] = []
     kept: list[Candidate] = []
@@ -583,9 +585,13 @@ def _drop_container_clicks(
             continue
 
         targets = candidate.targets or []
-        # A css-only target with no durable semantic rung is a container, not a control.
+        # A css-only target with no durable semantic rung is a container, not a control -- unless
+        # the click's own observation says it moved the page, which is an action whatever the
+        # element was. (`after_url` is the next action's page, not this click's evidence, so it
+        # cannot decide this.)
         has_semantic = any(rung.get("by") in ("role", "testid", "label") for rung in targets)
-        if not has_semantic:
+        moved = isinstance((candidate.observation or {}).get("url_matches"), str)
+        if not has_semantic and not moved:
             warnings.append(
                 f"dropped container click at event {candidate.seq}: "
                 "it has no role, label or test id"
@@ -1345,7 +1351,14 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
             # a person reviewing the task should know this commit is proved by "the page moved",
             # not by "the change landed".
             pattern = str(candidate.assert_after.get("url_matches", ""))
-            if pattern and candidate.url and re.search(pattern, candidate.url):
+            if (
+                pattern
+                and candidate.url
+                and re.search(pattern, candidate.url)
+                # PL-075: `element_absent` is the proof; the URL only pins the record page, so an
+                # update-in-place is not the weakness this warning is about.
+                and "element_absent" not in candidate.assert_after
+            ):
                 warnings.append(
                     f"assertion for {candidate.recorded_id or candidate.seq} is also true on the "
                     f"page the step ran on ({pattern!r}), so it cannot tell an accepted commit "
