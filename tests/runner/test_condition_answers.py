@@ -17,7 +17,7 @@ import pytest
 from packages.ledger import get_record
 from services.runner.testing import ScriptedRun
 from services.runner.worker import Worker
-from tests.runner.conftest import ORIGIN, Seed, recipe
+from tests.runner.conftest import DESTINATION_KEY, ORIGIN, Seed, recipe
 
 # A duplicate search: if the row is already in the results, the record is skipped.
 TEMPLATED_BRANCH = {
@@ -392,7 +392,10 @@ def test_the_parking_reconciler_never_returns_a_record_to_pending(
     record = get_record(conn, base.record_ids(run_id)[0])
     assert record is not None
     assert record.state == "parked"
-    assert "check the destination" in (record.reason or "")
+    assert record.reason == (
+        'the page never showed "Lead created" within 8 seconds; '
+        f"check {DESTINATION_KEY}: if the row is there, Dismiss it, otherwise Try again"
+    )
 
     diff = ParkingReconciler().search(record)
     assert outcome_of(diff) == "parked", "an unverifiable search never says `pending`"
