@@ -1,0 +1,28 @@
+# The image runs services/, packages/, db/, scripts/ and apps/web/dist -- nothing else the
+# build context carries should reach the daemon: local state, secrets, tests and everything
+# the dev setup needs but a deploy does not (PL-051).
+.git
+.gitignore
+.venv
+venv
+node_modules
+**/node_modules
+.cache
+.worktrees
+.data
+private/
+internal/
+tests/
+fixtures/
+.env
+.env.*
+**/.env
+process_lens.egg-info/
+__pycache__
+**/__pycache__
+*.pyc
+apps/extension
+apps/demo-crm
+infra
+tools
+docker-compose.yml

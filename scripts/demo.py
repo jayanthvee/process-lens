@@ -48,18 +48,30 @@ import time
 import urllib.error
 import urllib.request
 import uuid
-from collections.abc import Sequence
-from dataclasses import dataclass
 from pathlib import Path
 
 # Run as `python scripts/demo.py`, Python puts scripts/ on the path, not the repository, so the
 # project's own packages would not import without this.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import psycopg  # noqa: E402
-
 from db.migrate import apply_migrations, database_url  # noqa: E402
-from packages.ledger import OpenRunRow, list_open_runs  # noqa: E402
+from services.deploy import (  # noqa: E402,F401  (re-exported: the demo's tests pin these)
+    EXTENSION_ID_KEY,
+    OPERATOR_KEY,
+    RUNNER_SECRET_KEY,
+    START,
+    WAIT,
+    State,
+    ensure_operator_row,
+    open_runs,
+    status_lines,
+    stop_process,
+    waiting_run_id,
+    worker_decision,
+)
+from services.deploy import (
+    attached_session as deploy_attached_session,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = REPO_ROOT / ".data"
@@ -90,103 +102,9 @@ WORKER_MAX_SECONDS = 90.0
 SUPERVISOR_POLL_SECONDS = 2.0
 HEALTH_TIMEOUT_SECONDS = 30.0
 
-TENANT_NAME = "demo"
-OPERATOR_EMAIL = "owner@demo.processlens.local"
-OPERATOR_NAME = "Demo owner"
-
-OPERATOR_KEY = "PROCESSLENS_OPERATOR_ID"
-RUNNER_SECRET_KEY = "PROCESSLENS_RUNNER_SECRET"
-EXTENSION_ID_KEY = "PROCESSLENS_EXTENSION_ID"
-
-# The supervisor's two answers.
-START = "start"
-WAIT = "wait"
-
-
-@dataclass(frozen=True)
-class State:
-    """One tick of the supervisor's view, summarized for ``status_lines``.
-
-    ``waiting_run`` is the id of the run a worker could take, or ``None``;
-    ``worker_running_for`` is the id of the run the worker we started will drive;
-    ``last_exit`` is the previous worker's exit code, reset when a new one starts.
-    """
-
-    session_attached: bool
-    waiting_run: str | None
-    worker_running_for: str | None
-    last_exit: int | None
-
-
-def worker_decision(runs: Sequence[OpenRunRow], session: str | None, *, worker_alive: bool) -> str:
-    """Whether the supervisor should start a worker now: ``start`` or ``wait``.
-
-    The rule, in order:
-
-    * our own worker is still alive: wait -- only one worker at a time;
-    * no extension session is attached: wait -- a worker with no browser to drive
-      refuses to claim, so starting one would only fail and exit;
-    * a run is ``queued``: start -- nobody has claimed it;
-    * a run is ``running`` whose lease has lapsed: start -- its worker is gone;
-    * anything else (every running run has a live worker, or a paused run waits
-      for a person): wait.
-
-    ``session`` is the attached session's id, or ``None`` when none is attached.
-    Each run arrives with whether a live worker holds it, decided by the same
-    lease rule the ledger's takeover uses, so the two can never disagree.
-    """
-    if worker_alive:
-        return WAIT
-    if session is None:
-        return WAIT
-    for row in runs:
-        if row.status == "queued":
-            return START
-        if row.status == "running" and not row.worker_live:
-            return START
-    return WAIT
-
-
-def waiting_run_id(runs: Sequence[OpenRunRow]) -> str | None:
-    """The id of the run a worker could take -- the same rows ``worker_decision`` starts on."""
-    for row in runs:
-        if row.status == "queued" or (row.status == "running" and not row.worker_live):
-            return str(row.run_id)
-    return None
-
-
-def status_lines(previous: State, current: State) -> list[str]:
-    """The words the demo window says this tick, given the tick before.
-
-    Only a change produces a sentence, so the window never says the same thing twice: a run that
-    keeps waiting, a session that stays connected and a worker that keeps running are all silence.
-    The waiting line names Chrome, not the session, because Chrome is what the person can fix.
-    """
-    lines: list[str] = []
-
-    if current.session_attached != previous.session_attached:
-        if current.session_attached:
-            lines.append("Chrome is connected.")
-        else:
-            lines.append(
-                "Chrome is not connected: open the ProcessLens extension and press Connect."
-            )
-
-    waiting_now = current.waiting_run is not None and not current.session_attached
-    waiting_before = previous.waiting_run is not None and not previous.session_attached
-    if waiting_now and not waiting_before:
-        lines.append("A run is waiting for Chrome.")
-
-    if current.worker_running_for and current.worker_running_for != previous.worker_running_for:
-        lines.append(f"Started a runner for run {current.worker_running_for[:8]}.")
-
-    if current.last_exit is not None and current.last_exit != previous.last_exit:
-        if current.last_exit == 0:
-            lines.append("The runner finished.")
-        else:
-            lines.append(f"The runner stopped with code {current.last_exit}.")
-
-    return lines
+# The supervisor's two answers and its state live in services.deploy now; the demo re-exports
+# them (START, WAIT, State, worker_decision, waiting_run_id, status_lines, open_runs,
+# stop_process) so its own tests and habits keep working unchanged.
 
 
 # ---------------------------------------------------------------- one copy at a time
@@ -326,35 +244,14 @@ def ensure_operator(dsn: str) -> tuple[uuid.UUID, str]:
     The stored operator is only reused while its ``users`` row still exists: a demo.env left over
     from a wiped database would otherwise configure an operator the API refuses (403) instead of a
     person who can own tasks. A fresh identity is one tenant with one owner, written back out.
+    The database work itself is the deploy module's (``ensure_operator_row``), so the two paths
+    cannot drift.
     """
     stored = read_demo_env()
     secret = stored.get(RUNNER_SECRET_KEY, "").strip() or secrets.token_urlsafe(32)
     raw = stored.get(OPERATOR_KEY, "").strip()
-    try:
-        stored_operator = uuid.UUID(raw) if raw else None
-    except ValueError:
-        stored_operator = None
 
-    with psycopg.connect(dsn, autocommit=True) as conn, conn.cursor() as cur:
-        if stored_operator is not None:
-            cur.execute("SELECT 1 FROM users WHERE id = %s", (stored_operator,))
-            if cur.fetchone() is not None:
-                return stored_operator, secret
-
-        cur.execute("SELECT id FROM tenants WHERE name = %s", (TENANT_NAME,))
-        row = cur.fetchone()
-        if row is None:
-            cur.execute("INSERT INTO tenants (name) VALUES (%s) RETURNING id", (TENANT_NAME,))
-            tenant_id = cur.fetchone()[0]
-        else:
-            tenant_id = row[0]
-        cur.execute(
-            "INSERT INTO users (tenant_id, email, name, role) "
-            "VALUES (%s, %s, %s, 'owner') RETURNING id",
-            (tenant_id, OPERATOR_EMAIL, OPERATOR_NAME),
-        )
-        operator = uuid.UUID(str(cur.fetchone()[0]))
-
+    operator = ensure_operator_row(dsn, raw or None)
     write_demo_env({OPERATOR_KEY: str(operator), RUNNER_SECRET_KEY: secret})
     return operator, secret
 
@@ -446,25 +343,7 @@ def wait_for_health() -> None:
 
 def attached_session() -> str | None:
     """The attached extension session's id, or ``None`` when the popup has not connected."""
-    try:
-        with urllib.request.urlopen(f"{API_BASE}/api/v1/executor/session", timeout=5) as response:
-            body = json.loads(response.read())
-    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError, ValueError):
-        return None
-    if body.get("attached") is not True:
-        return None
-    session_id = body.get("session_id")
-    return session_id if isinstance(session_id, str) and session_id else None
-
-
-def open_runs(dsn: str) -> list[OpenRunRow]:
-    """The runs a worker could take, read fresh each tick so a database restart heals itself."""
-    try:
-        with psycopg.connect(dsn, autocommit=True, connect_timeout=3) as conn:
-            return list_open_runs(conn)
-    except psycopg.Error as exc:
-        print(f"  could not read the runs: {exc}")
-        return []
+    return deploy_attached_session(API_BASE)
 
 
 def start_worker(dsn: str, runner_secret: str, session_id: str, *, number: int) -> subprocess.Popen:
@@ -500,17 +379,6 @@ def start_worker(dsn: str, runner_secret: str, session_id: str, *, number: int) 
         stderr=subprocess.STDOUT,
         text=True,
     )
-
-
-def stop_process(process: subprocess.Popen | None) -> None:
-    """Terminate cleanly, then kill only if ten seconds were not enough."""
-    if process is None or process.poll() is not None:
-        return
-    process.terminate()
-    try:
-        process.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        process.kill()
 
 
 # ---------------------------------------------------------------- the words a person reads
