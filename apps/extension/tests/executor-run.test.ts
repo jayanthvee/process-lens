@@ -93,8 +93,39 @@ describe("waiting for a page that has not rendered yet", () => {
     expect(climbs(calls)).toBeGreaterThan(1);
   });
 
-  it("does not wait when a rung matched more than one element", async () => {
-    // An ambiguous rung is an answer, not a race: waiting would only delay the same refusal.
+  it("climbs again while a rung is ambiguous, and acts once the page settles to one", async () => {
+    // PL-048, on Odoo: after "Add a product" the order line renders ~170 ms later. Until then the
+    // css rung matches the customer's autocomplete and one other, and a climb that stopped at the
+    // first ambiguous answer parked the record just before the row's own input existed.
+    document.body.innerHTML =
+      "<div id='app'><input class='ac' aria-label='Customer'><input class='ac' aria-label='Other'></div>";
+    const { cdp, calls } = fakeCdp();
+
+    setTimeout(() => {
+      document.getElementById("app")!.innerHTML =
+        "<input class='ac' aria-label='Customer'><input class='ac row' aria-label='Product'>";
+      document.querySelector("[aria-label='Customer']")!.classList.remove("ac");
+    }, 120);
+
+    const summary = await runRecipe(
+      recipe([
+        {
+          id: "click-1",
+          action: "click",
+          targets: [{ by: "css", selector: "input.ac" }],
+          timeout_ms: 2000,
+        },
+      ]),
+      { row: {} },
+      { cdp },
+    );
+
+    expect(summary.steps.map((step) => step.outcome)).toEqual(["done"]);
+    expect(climbs(calls)).toBeGreaterThan(1);
+  });
+
+  it("still refuses a rung that stays ambiguous, once the wait is over", async () => {
+    // Waiting never acts on an ambiguous target; it only gives the page its chance to settle.
     document.body.innerHTML = "<button>Save</button><button>Save</button>";
     const { cdp, calls } = fakeCdp();
 
@@ -104,7 +135,7 @@ describe("waiting for a page that has not rendered yet", () => {
           id: "click-1",
           action: "click",
           targets: [{ by: "role", role: "button", name: "Save" }],
-          timeout_ms: 5000,
+          timeout_ms: 600,
         },
       ]),
       { row: {} },
@@ -113,7 +144,8 @@ describe("waiting for a page that has not rendered yet", () => {
 
     expect(summary.state).toBe("failed");
     expect(summary.error).toMatch(/could not be resolved/);
-    expect(climbs(calls)).toBe(1);
+    expect(summary.error).toMatch(/more than one match/);
+    expect(climbs(calls)).toBeGreaterThan(1);
   });
 
   it("refuses a target the page never shows, once the wait is over", async () => {
