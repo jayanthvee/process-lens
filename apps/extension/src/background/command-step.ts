@@ -107,6 +107,7 @@ async function guardAndResolve(
   const destructive = checkDestructive(
     { cdp: opts.cdp, step, allowedOrigins: opts.allowedOrigins },
     resolved.name,
+    resolved.role,
   );
   if (!destructive.ok) {
     throw new ExecutorError(destructive.reason, step.id, "park", destructive.event);

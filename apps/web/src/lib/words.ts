@@ -370,3 +370,14 @@ export function siteCapWords(cap: SiteCap): string {
 export function siteCapReached(cap: SiteCap): boolean {
   return cap.used >= cap.limit;
 }
+
+/**
+ * PL-072: the Spreadsheets page's Word-document area. A document becomes a CSV, and the two ways
+ * on are the download and the task a person already knows.
+ */
+export const ADD_WORD_DOCUMENT = "Add a Word document";
+export const ADD_WORD_DOCUMENT_SENTENCE =
+  "Choose a Word document and ProcessLens will read its table or list into rows.";
+export const READING_DOCUMENT = "Reading the document…";
+export const DOWNLOAD_CSV = "Download CSV";
+export const USE_FOR_A_TASK = "Use for a task";

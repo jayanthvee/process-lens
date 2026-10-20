@@ -3,6 +3,7 @@
 // The fake transport evaluates page expressions in jsdom, so the real 5-rung
 // resolver and the real condition predicates run here; only the browser input
 // itself is recorded rather than performed.
+import { resolveStepTarget } from "../src/executor/step-runner";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   armAbandonGuard,
@@ -514,5 +515,63 @@ describe("resolveValue", () => {
     expect(() => resolveValue({ kind: "document", field: "total" }, { row: {} })).toThrow(
       /cannot resolve a value source/,
     );
+  });
+});
+
+describe("preparing a click on a list that re-renders", () => {
+  it("finds the target again when the page replaced it between finding and measuring", async () => {
+    // PL-059 golden, on Odoo: the product autocomplete redraws its options while the runner prepares
+    // the pick, so the option the ladder marked was gone when its box was measured, and the row
+    // parked. Nothing has been pressed at prepare time, so finding it again is safe.
+    document.body.innerHTML = "<ul role='listbox'><li role='option'>Oak Standing Desk</li></ul>";
+    const { cdp } = fakeCdp();
+    let replaced = false;
+    const send = cdp.send.bind(cdp);
+    cdp.send = async (method, params = {}) => {
+      const answer = await send(method, params);
+      if (!replaced && method === "Runtime.evaluate" && String(params["expression"] ?? "").includes('"targets"')) {
+        replaced = true;
+        document.body.innerHTML = "<ul role='listbox'><li role='option'>Oak Standing Desk</li></ul>";
+      }
+      return answer;
+    };
+
+    const prepared = await resolveStepTarget(
+      {
+        id: "click-6",
+        action: "click",
+        targets: [{ by: "role", role: "option", name: "Oak Standing Desk" }],
+        timeout_ms: 2000,
+      },
+      { cdp },
+    );
+
+    expect(replaced).toBe(true);
+    expect(prepared.ok).toBe(true);
+  });
+});
+
+describe("a dropdown option named like a destructive verb", () => {
+  it("is clicked, because picking an entry is never destructive", async () => {
+    // PL-063, on Odoo: the product "Noise-Cancelling Headset" parked every invoice row as a "cancel"
+    // control. A Cancel button is still refused (see the destructive guard tests).
+    document.body.innerHTML =
+      "<ul role='listbox'><li role='option'>[PL-AUD-8001] Noise-Cancelling Headset</li></ul>";
+    const { cdp } = fakeCdp();
+
+    const summary = await runRecipe(
+      recipe([
+        {
+          id: "click-6",
+          action: "click",
+          targets: [{ by: "role", role: "option", name: "[PL-AUD-8001] Noise-Cancelling Headset" }],
+          timeout_ms: 2000,
+        },
+      ]),
+      { row: {} },
+      { cdp },
+    );
+
+    expect(summary.steps.map((step) => step.outcome)).toEqual(["done"]);
   });
 });

@@ -81,4 +81,81 @@
   .sheet-table .sheet-uploaded {
     display: none;
   }
+
+  .doc-add,
+  .doc-preview {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+}
+
+/* PL-072: the Word-document area. The file input covers its label invisibly, so the whole button
+   opens the picker and the keyboard still reaches it. */
+.doc-add {
+  padding: 2px 20px 18px;
+}
+
+.doc-sentence {
+  margin: 0 0 12px;
+  color: var(--ink-2);
+  font-size: 14.5px;
+}
+
+.doc-choose {
+  position: relative;
+  overflow: hidden;
+}
+
+.doc-choose:focus-within {
+  outline: 2px solid var(--ink-2);
+  outline-offset: 2px;
+}
+
+.doc-file {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.doc-reading {
+  margin: 12px 0 0;
+  color: var(--ink-2);
+  font-size: 14px;
+}
+
+.doc-problem {
+  margin: 12px 0 0;
+  color: var(--help);
+  font-size: 14px;
+}
+
+.doc-preview {
+  padding: 0 20px 18px;
+}
+
+.doc-table {
+  margin-top: 4px;
+}
+
+.doc-table th {
+  color: var(--ink-2);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.doc-notes {
+  margin: 12px 0 0;
+  padding-left: 18px;
+  color: var(--ink-2);
+  font-size: 13.5px;
+}
+
+.doc-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 16px 0 0;
 }

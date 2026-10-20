@@ -61,6 +61,8 @@ export interface ResolveResult {
    * control a person sees, not about what the ladder happened to declare, so it needs this.
    */
   name?: string;
+  /** The matched element's role, as the ladder computes it (PL-066: an option is never destructive). */
+  role?: string;
   attempts: RungAttempt[];
   error?: string;
 }
@@ -1083,6 +1085,7 @@ export function resolveTargetInPage(query: ResolveQuery): ResolveResult {
         y: box.y,
         tag: element.tagName.toLowerCase(),
         name: accessibleNameOf(element),
+        role: roleOf(element),
         attempts,
       };
     }

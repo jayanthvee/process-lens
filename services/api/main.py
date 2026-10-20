@@ -27,6 +27,7 @@ from .approvals import router as approvals_router
 from .apps import router as apps_router
 from .batches import router as batches_router
 from .compile import router as compile_router
+from .documents import router as documents_router
 from .executor import router as executor_router
 from .home import router as home_router
 from .hub import router as hub_router
@@ -55,6 +56,7 @@ app.include_router(recipes_router)
 app.include_router(tasks_router)
 app.include_router(compile_router)
 app.include_router(batches_router)
+app.include_router(documents_router)
 app.include_router(runs_router)
 app.include_router(approvals_router)
 app.include_router(admin_router)

@@ -2,7 +2,8 @@
 
     python infra/test-apps/reset.py odoo      # drop Odoo's database, create and seed it again
     python infra/test-apps/reset.py twenty    # clear Twenty's records, seed them again
-    python infra/test-apps/reset.py all       # both, one after the other
+    python infra/test-apps/reset.py orangehrm # ensure OrangeHRM's data, drop the week's timesheet
+    python infra/test-apps/reset.py all       # all three, one after the other
     python infra/test-apps/reset.py all --seed-only   # ensure the data, drop nothing
 
 `all` is what T1 runs between browser test runs. Each app is reset in well under
@@ -33,7 +34,8 @@ import testapps_env  # noqa: E402  (needs the directory above on sys.path)
 TARGETS: dict[str, tuple[str, ...]] = {
     "odoo": ("seed_odoo",),
     "twenty": ("seed_twenty",),
-    "all": ("seed_odoo", "seed_twenty"),
+    "orangehrm": ("seed_orangehrm",),
+    "all": ("seed_odoo", "seed_twenty", "seed_orangehrm"),
 }
 
 

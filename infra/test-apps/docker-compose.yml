@@ -152,9 +152,107 @@ services:
     volumes:
       - twenty-local-storage:/app/packages/twenty-server/.local-storage
 
+  # -------------------------------------------------------------- OrangeHRM ---
+  # PL-069: OrangeHRM 5.7 stands in for Workday -- real HR software with employees,
+  # customers, projects, activities and weekly timesheets. The official image installs
+  # itself from a browser the first time; the CLI installer it ships
+  # (``installer/cli_install.php``, driven by ``installer/cli_install_config.yaml``) takes
+  # every answer from a file, so a fresh ``up`` gets a ready app with the test admin login.
+  # The install writes ``lib/confs/Conf.php``, which is why that one folder is a named
+  # volume: without it a restarted container forgets it was ever installed.
+  orangehrm-db:
+    image: mariadb:10.11
+    restart: unless-stopped
+    environment:
+      # No MARIADB_DATABASE: the installer creates its own database and the user that
+      # reads it, and refuses to start if the database it was told to make already exists.
+      MARIADB_ROOT_PASSWORD: ${ORANGEHRM_DB_ROOT_PASSWORD:-orangehrm-test-root}
+    volumes:
+      - orangehrm-db-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "healthcheck.sh --connect --innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  orangehrm:
+    image: orangehrm/orangehrm:5.7
+    restart: unless-stopped
+    depends_on:
+      orangehrm-db:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${ORANGEHRM_HTTP_PORT:-8070}:80"
+    environment:
+      # Every value the installer needs, namespaced and defaulted like the other apps here.
+      ORANGEHRM_DB_HOST: orangehrm-db
+      ORANGEHRM_DB_PORT: "3306"
+      ORANGEHRM_DB_NAME: ${ORANGEHRM_DB_NAME:-orangehrm_test}
+      ORANGEHRM_DB_USER: ${ORANGEHRM_DB_USER:-orangehrm}
+      ORANGEHRM_DB_PASSWORD: ${ORANGEHRM_DB_PASSWORD:-orangehrm-test-password}
+      ORANGEHRM_DB_ROOT_PASSWORD: ${ORANGEHRM_DB_ROOT_PASSWORD:-orangehrm-test-root}
+      ORANGEHRM_ADMIN_USER: ${ORANGEHRM_ADMIN_USER:-Admin}
+      ORANGEHRM_ADMIN_PASSWORD: ${ORANGEHRM_ADMIN_PASSWORD:-ProcessLensTest57!}
+      ORANGEHRM_ADMIN_FIRST_NAME: ${ORANGEHRM_ADMIN_FIRST_NAME:-OrangeHRM}
+      ORANGEHRM_ADMIN_LAST_NAME: ${ORANGEHRM_ADMIN_LAST_NAME:-Admin}
+      ORANGEHRM_ADMIN_EMAIL: ${ORANGEHRM_ADMIN_EMAIL:-admin@processlens.test}
+      ORANGEHRM_ORGANIZATION: ${ORANGEHRM_ORGANIZATION:-ProcessLens Test}
+      ORANGEHRM_COUNTRY: ${ORANGEHRM_COUNTRY:-US}
+    volumes:
+      - orangehrm-confs:/var/www/html/lib/confs
+    # The installer reads its answers from a YAML file beside it; this writes that file
+    # once, installs once, and then serves. A container that has already installed only
+    # starts Apache, because ``lib/confs/Conf.php`` is on the volume.
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        if [ ! -f lib/confs/Conf.php ]; then
+          echo "orangehrm: no install found, running the CLI installer"
+          cat > installer/cli_install_config.yaml <<'ORANGEHRM_CONFIG'
+        database:
+          hostName: ${ORANGEHRM_DB_HOST:-orangehrm-db}
+          hostPort: ${ORANGEHRM_DB_PORT:-3306}
+          databaseName: ${ORANGEHRM_DB_NAME:-orangehrm_test}
+          privilegedDatabaseUser: root
+          privilegedDatabasePassword: ${ORANGEHRM_DB_ROOT_PASSWORD:-orangehrm-test-root}
+          useSameDbUserForOrangeHRM: y
+          orangehrmDatabaseUser: ~
+          orangehrmDatabasePassword: ~
+          isExistingDatabase: n
+          enableDataEncryption: n
+        organization:
+          name: ${ORANGEHRM_ORGANIZATION:-ProcessLens Test}
+          country: ${ORANGEHRM_COUNTRY:-US}
+        admin:
+          adminUserName: ${ORANGEHRM_ADMIN_USER:-Admin}
+          adminPassword: ${ORANGEHRM_ADMIN_PASSWORD:-ProcessLensTest57!}
+          adminEmployeeFirstName: ${ORANGEHRM_ADMIN_FIRST_NAME:-OrangeHRM}
+          adminEmployeeLastName: ${ORANGEHRM_ADMIN_LAST_NAME:-Admin}
+          workEmail: ${ORANGEHRM_ADMIN_EMAIL:-admin@processlens.test}
+          contactNumber: ~
+          registrationConsent: false
+        license:
+          agree: y
+        ORANGEHRM_CONFIG
+          php installer/cli_install.php
+        fi
+        exec apache2-foreground
+    healthcheck:
+      # The login page answers once the install is finished; the installer's own pages do not.
+      test: ["CMD-SHELL", "curl -fsS -o /dev/null http://127.0.0.1:80/web/index.php/auth/login"]
+      interval: 10s
+      timeout: 5s
+      retries: 40
+      start_period: 120s
+
 volumes:
   odoo-db-data:
   odoo-filestore:
   twenty-db-data:
   twenty-redis-data:
   twenty-local-storage:
+  orangehrm-db-data:
+  orangehrm-confs:

@@ -107,6 +107,26 @@ const CONFIRMATION_SELECTOR = [
 const HEADING_SELECTOR = "h1, h2, h3, h4, h5, h6";
 const OBSERVATION_TEXT_LIMIT = 200;
 
+/**
+ * The words a confirmation uses to say that the change landed (PL-073).
+ *
+ * A toast is often built from a title and a message in separate elements, and their text runs
+ * together with no space ("Success" + "Successfully Saved" -> "SuccessSuccessfully Saved"). That
+ * string is never on the page, so a check built from it can never pass. The message is the piece
+ * that carries one of these words.
+ */
+const CONFIRMATION_WORDS = [
+  "saved",
+  "created",
+  "updated",
+  "added",
+  "deleted",
+  "sent",
+  "success",
+  "complete",
+  "done",
+];
+
 const CLICKABLE_SELECTOR = [
   "button",
   "a[href]",
@@ -252,6 +272,43 @@ function selectedOptionText(el: Element): string {
   const select = el as HTMLSelectElement;
   const option = select.selectedOptions?.[0] ?? select.options?.[select.selectedIndex ?? -1];
   return normalizeText(option?.textContent ?? select.value);
+}
+
+/**
+ * The text a confirmation should be recorded as (PL-073).
+ *
+ * A node carrying one piece of text keeps today's behaviour exactly: its whole, collapsed text,
+ * cut short. A node built from several pieces -- a toast's title and message, Odoo's notification
+ * title and body -- records the *message* instead: the longest piece that names what happened, or
+ * the longest piece when none of them does. The recorded value is then a string the page really
+ * shows, which is what the executor's `text_visible` check needs.
+ */
+function confirmationText(el: Element, limit = OBSERVATION_TEXT_LIMIT): string {
+  const pieces: string[] = [];
+  const own = ownText(el);
+  if (own) pieces.push(own);
+  for (const child of Array.from(el.querySelectorAll("*"))) {
+    const text = ownText(child);
+    if (text) pieces.push(text);
+  }
+  if (pieces.length <= 1) return trimmedText(el, limit);
+
+  const said = pieces.filter((piece) =>
+    CONFIRMATION_WORDS.some((word) => piece.toLowerCase().includes(word)),
+  );
+  const longest = (said.length > 0 ? said : pieces).reduce((best, piece) =>
+    piece.length > best.length ? piece : best,
+  );
+  return longest.length <= limit ? longest : longest.slice(0, limit);
+}
+
+/** An element's own text -- the text nodes directly inside it, not its children's. */
+function ownText(el: Element): string {
+  let text = "";
+  for (const child of Array.from(el.childNodes)) {
+    if (child.nodeType === 3) text += child.nodeValue ?? "";
+  }
+  return normalizeText(text);
 }
 
 function trimmedText(el: Element | null, limit = OBSERVATION_TEXT_LIMIT): string {
@@ -814,7 +871,7 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
   function confirmationIn(observation: ObservationWindow): { text: string; node: Element | null } {
     for (const node of deepQueryAll(doc, CONFIRMATION_SELECTOR)) {
       if (observation.preexisting.has(node)) continue;
-      const text = trimmedText(node);
+      const text = confirmationText(node);
       if (text) return { text, node };
     }
     const headings = Array.from(doc.querySelectorAll(HEADING_SELECTOR)).map((el) =>
@@ -837,7 +894,7 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
   /** The first confirmation text on this page right now, if any. */
   function presentConfirmationText(): string {
     for (const node of deepQueryAll(doc, CONFIRMATION_SELECTOR)) {
-      const text = trimmedText(node);
+      const text = confirmationText(node);
       if (text) return text;
     }
     return "";
