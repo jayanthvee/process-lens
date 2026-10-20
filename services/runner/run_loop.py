@@ -119,7 +119,11 @@ DISPATCH_BUDGET_SECONDS = 5.0
 
 # PL-014: the run-level events that pause a run, and the pause reason each produces.
 # PL-040: `window_hidden` -- the work window was covered or minimized, so the page stopped drawing.
-PAUSE_EVENTS = frozenset({"challenge", "login_required", "policy_blocked", "window_hidden"})
+# PL-068: `code_required` -- the site asked for a one-time code. The person types it on the run
+# page; the released record is claimed again when the run resumes.
+PAUSE_EVENTS = frozenset(
+    {"challenge", "login_required", "policy_blocked", "window_hidden", "code_required"}
+)
 DISCONNECT_EVENTS = frozenset({"detached", "tab_closed"})
 EXECUTOR_DISCONNECTED = "executor_disconnected"
 

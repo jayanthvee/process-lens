@@ -8,6 +8,9 @@ import { apiPost, errorText } from "../lib/api";
 import { POLL_INTERVAL_MS, useJson } from "../lib/useJson";
 import {
   RUNNING_AGAIN,
+  CODE_NOT_FOUND,
+  ENTERING_CODE,
+  codePromptWords,
   isOpenStatus,
   minutesSavedWords,
   pauseReasonWords,
@@ -130,6 +133,11 @@ export function RunDetail(): JSX.Element {
   const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
   const [batchBusy, setBatchBusy] = useState(false);
   const [batchError, setBatchError] = useState<string | null>(null);
+  // PL-068: a run paused for the site's verification code takes the code right here. The state
+  // lives with every other hook, above the loading return, and the value is cleared on send.
+  const [code, setCode] = useState("");
+  const [codeBusy, setCodeBusy] = useState(false);
+  const [codeProblem, setCodeProblem] = useState<string | null>(null);
   // PL-041: the in-flight flag for Try all again. It is a ref because the second click of a double
   // click arrives before `batchBusy` re-renders the button off.
   const tryingAll = useRef(false);
@@ -245,6 +253,28 @@ export function RunDetail(): JSX.Element {
   const total = totalCount(counts);
   const alreadyThere = counts.skipped ?? 0;
   const pauseReason = pauseReasonWords(detail.pause_reason);
+  const wantsCode = detail.pause_reason === "code_required";
+  const runId = detail.id;
+
+  async function sendCode(): Promise<void> {
+    const value = code.trim();
+    if (codeBusy || !/^[0-9A-Za-z]{4,10}$/.test(value)) return;
+    setCodeBusy(true);
+    setCodeProblem(null);
+    try {
+      const answer = (await apiPost(`/api/v1/runs/${runId}/code`, { code: value })) as {
+        entered?: boolean;
+      };
+      if (answer?.entered !== true) setCodeProblem(CODE_NOT_FOUND);
+    } catch (failure) {
+      setCodeProblem(refusalWords(errorText(failure)));
+    } finally {
+      // The code is never kept: not in state, not on screen, not anywhere after the send.
+      setCode("");
+      setCodeBusy(false);
+      run.reload();
+    }
+  }
   const started = stamp(detail.started_at);
   const finished = stamp(detail.finished_at);
   const request = detail.open_approval;
@@ -317,6 +347,39 @@ export function RunDetail(): JSX.Element {
           )}
         </div>
         <p className="pause-reason">{pauseReason ?? "Not paused."}</p>
+        {!wantsCode ? null : (
+          <div className="code-prompt" role="status">
+            <p className="code-prompt-sentence">{codePromptWords(null)}</p>
+            <form
+              className="code-prompt-form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void sendCode();
+              }}
+            >
+              <label className="code-prompt-label" htmlFor="verification-code">
+                Verification code
+              </label>
+              <input
+                id="verification-code"
+                className="code-prompt-input"
+                autoComplete="one-time-code"
+                inputMode="numeric"
+                maxLength={10}
+                value={code}
+                disabled={codeBusy}
+                onChange={(event) => setCode(event.target.value)}
+              />
+              <button type="submit" className="btn quiet code-prompt-continue" disabled={codeBusy}>
+                Continue
+              </button>
+            </form>
+            {codeBusy ? <p className="code-prompt-note">{ENTERING_CODE}</p> : null}
+            {codeProblem === null ? null : (
+              <p className="code-prompt-note code-prompt-problem">{codeProblem}</p>
+            )}
+          </div>
+        )}
         {started === null && finished === null ? null : (
           <p className="times">
             {started === null ? null : (

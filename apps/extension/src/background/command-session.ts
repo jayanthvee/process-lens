@@ -115,6 +115,12 @@ export interface SessionDeps {
     aborted: () => boolean,
   ) => Promise<CheckAnswer>;
   /**
+   * Type a person's one-time code into the page and press its own continue (PL-068). The answer
+   * says whether the page had a code field; it never carries the code. The code lives only for
+   * this call.
+   */
+  enterCode: (code: string) => Promise<{ entered: boolean; reason: string }>;
+  /**
    * Arm the abandon guard on the bound tab (PL-027): refuse every request that is not a read, so a
    * page that autosaves when it unloads cannot write a record the runner did not commit. The
    * executor releases it itself, on the next navigate's arrival.
@@ -506,7 +512,8 @@ export class CommandSession {
     if (typeof raw === "object" && raw !== null) {
       const record = raw as Record<string, unknown>;
       const type = record["type"];
-      const isCommandType = type === "prepare" || type === "dispatch" || type === "check";
+      const isCommandType =
+        type === "prepare" || type === "dispatch" || type === "check" || type === "enter_code";
       if (isCommandType && record["protocol"] !== PROTOCOL) {
         const commandId = typeof record["command_id"] === "string" ? record["command_id"] : "";
         if (commandId) {
@@ -528,7 +535,13 @@ export class CommandSession {
       if (typeof raw === "object" && raw !== null) {
         const record = raw as Record<string, unknown>;
         const type = record["type"];
-        if ((type === "prepare" || type === "dispatch" || type === "check") && record["protocol"] === PROTOCOL) {
+        if (
+          (type === "prepare" ||
+            type === "dispatch" ||
+            type === "check" ||
+            type === "enter_code") &&
+          record["protocol"] === PROTOCOL
+        ) {
           const commandId = typeof record["command_id"] === "string" ? record["command_id"] : "";
           if (commandId) this.sendResult(commandId, "refused", null, {}, parsed.error);
         }
@@ -654,6 +667,33 @@ export class CommandSession {
           blocked = await this.deps.disarmAbandonGuard();
         }
         if (current()) this.sendResult(command.command_id, "ok", null, { blocked }, null);
+        return;
+      }
+      if (command.type === "enter_code") {
+        // PL-068: the person supplied the code on the run page; it is typed here and reported as
+        // entered or not found. The answer never contains the code, and nothing stores it.
+        try {
+          const answer = await this.deps.enterCode(command.code);
+          if (current()) {
+            this.sendResult(
+              command.command_id,
+              answer.entered ? "ok" : "locator_failed",
+              null,
+              { entered: answer.entered, reason: answer.reason },
+              answer.entered ? null : "the page's code field could not be found",
+            );
+          }
+        } catch (error) {
+          if (current()) {
+            this.sendResult(
+              command.command_id,
+              "not_dispatched",
+              null,
+              { entered: false },
+              error instanceof Error ? error.message : String(error),
+            );
+          }
+        }
         return;
       }
       if (command.type === "check") {

@@ -27,7 +27,13 @@ import { RunControl } from "../executor/control";
 import { runRecipe, validateRecipe } from "../executor/executor";
 import { FrameContexts } from "../executor/frames";
 import { waitForCondition } from "../executor/assertions";
-import { POLICY_BLOCKED_MESSAGE, checkChallengeOrLogin, classifyAttachError } from "../executor/guards";
+import {
+  POLICY_BLOCKED_MESSAGE,
+  checkChallengeOrLogin,
+  classifyAttachError,
+  codePromptInPage,
+  enterCodeInPage,
+} from "../executor/guards";
 import {
   armAbandonGuard as armGuard,
   disarmAbandonGuard as disarmGuard,
@@ -904,6 +910,23 @@ function getCommandSession(): CommandSession {
     },
     runStep: runCommandStep,
     checkCondition: checkCommandCondition,
+    // PL-068: type the person's code into the bound tab and press its own continue. The code is
+    // used for this one page call and never stored.
+    enterCode: async (code: string) => {
+      const tabId = commandBoundTabId;
+      if (tabId === null || tabId < 0) return { entered: false, reason: "not_found" };
+      const cdp = await ensureDebugger(tabId);
+      const expression =
+        `(() => { const codePromptInPage = ${codePromptInPage.toString()};` +
+        ` return (${enterCodeInPage.toString()})(${JSON.stringify({ code })}) })()`;
+      const answer = (await evaluate(cdp, expression, {})) as
+        | { entered?: boolean; reason?: string }
+        | undefined;
+      return {
+        entered: answer?.entered === true,
+        reason: String(answer?.reason ?? "not_found"),
+      };
+    },
     // PL-027: the abandon guard runs on the bound tab's debugger, the same one every command uses.
     armAbandonGuard: async () => {
       const tabId = commandBoundTabId;
