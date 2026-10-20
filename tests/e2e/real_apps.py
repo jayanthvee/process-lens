@@ -18,8 +18,11 @@ credentials it uses are the committed test values in
 
 from __future__ import annotations
 
+import datetime
 import http.client
+import http.cookiejar
 import json
+import re
 import subprocess
 import sys
 import time
@@ -62,6 +65,12 @@ def odoo_base(env: dict[str, str]) -> str:
     """Odoo's origin, without a trailing slash."""
     port = setting(env, "ODOO_HTTP_PORT", "8069")
     return setting(env, "ODOO_URL", f"http://127.0.0.1:{port}").rstrip("/")
+
+
+def orangehrm_base(env: dict[str, str]) -> str:
+    """OrangeHRM's origin, without a trailing slash (PL-069)."""
+    settings = testapps_env.orangehrm_settings(env)
+    return f"http://127.0.0.1:{settings['ORANGEHRM_HTTP_PORT']}"
 
 
 def twenty_base(env: dict[str, str]) -> str:
@@ -370,6 +379,33 @@ def login_twenty(page: Any, env: dict[str, str], *, base: str | None = None) -> 
     raise AssertionError(f"Twenty never left its onboarding (url={page.url})")
 
 
+def login_orangehrm(
+    page: Any,
+    env: dict[str, str],
+    *,
+    base: str | None = None,
+    username: str | None = None,
+    password: str | None = None,
+) -> None:
+    """Sign the page into OrangeHRM through the app's own login form.
+
+    The form is a Vue page: the username and password inputs carry their `name` attributes, and
+    Login submits it. The session is ready once the URL leaves `/auth/login`.
+    """
+    settings = testapps_env.orangehrm_settings(env)
+    origin = base or orangehrm_base(env)
+    page.goto(f"{origin}/web/index.php/auth/login", wait_until="domcontentloaded")
+    page.wait_for_timeout(2500)
+    page.fill("input[name='username']", username or settings["ORANGEHRM_ADMIN_USER"])
+    page.fill("input[name='password']", password or settings["ORANGEHRM_ADMIN_PASSWORD"])
+    page.get_by_role("button", name="Login").first.click()
+    for _ in range(40):
+        if "/auth/login" not in page.url:
+            return
+        page.wait_for_timeout(500)
+    raise AssertionError(f"OrangeHRM never left the login page (url={page.url})")
+
+
 def click_button(page: Any, test_id: str | None, label: str) -> bool:
     """Click the first visible, enabled control with this test id or this exact name.
 
@@ -466,3 +502,129 @@ def get_json(url: str) -> Any:
     if status != 200:
         raise AssertionError(f"GET {url} -> HTTP {status}: {text[:300]}")
     return json.loads(text)
+
+
+# ------------------------------------------------------------- OrangeHRM (PL-069) ---
+
+
+class OrangeHRM:
+    """An admin session against OrangeHRM, for the timesheet golden.
+
+    OrangeHRM's API v2 is session-based: the admin signs in through the app's own login form (the
+    CSRF token on the page, then the form post), and every call after that carries the session
+    cookie. This is only what the golden asks; the seeding lives in
+    `infra/test-apps/seed_orangehrm.py`.
+    """
+
+    def __init__(self, env: dict[str, str]) -> None:
+        self.settings = testapps_env.orangehrm_settings(env)
+        self.base = f"{orangehrm_base(env)}/web/index.php"
+        self.jar = http.cookiejar.CookieJar()
+        self.opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(self.jar))
+
+    def sign_in(self, username: str | None = None, password: str | None = None) -> None:
+        page = self._open("GET", f"{self.base}/auth/login").decode("utf-8", "replace")
+        match = re.search(r':token="&quot;([^&]+)&quot;"', page)
+        if match is None:
+            raise AssertionError("OrangeHRM's login page carried no CSRF token")
+        body = urllib.parse.urlencode(
+            {
+                "_token": match.group(1),
+                "username": username or self.settings["ORANGEHRM_ADMIN_USER"],
+                "password": password or self.settings["ORANGEHRM_ADMIN_PASSWORD"],
+            }
+        ).encode("utf-8")
+        request = urllib.request.Request(f"{self.base}/auth/validate", data=body, method="POST")
+        request.add_header("Content-Type", "application/x-www-form-urlencoded")
+        with self.opener.open(request, timeout=CALL_TIMEOUT_SECONDS) as response:
+            response.read()
+
+    def _open(self, method: str, url: str, payload: object = None) -> bytes:
+        request = urllib.request.Request(url, method=method)
+        request.add_header("Accept", "application/json")
+        if payload is not None:
+            request.data = json.dumps(payload).encode("utf-8")
+            request.add_header("Content-Type", "application/json")
+        try:
+            with self.opener.open(request, timeout=CALL_TIMEOUT_SECONDS) as response:
+                return response.read()
+        except urllib.error.HTTPError as error:
+            body = error.read().decode("utf-8", "replace")
+            raise AssertionError(f"{method} {url} -> HTTP {error.code}: {body[:400]}") from error
+
+    def call(self, method: str, path: str, payload: object = None) -> Any:
+        text = self._open(method, f"{self.base}/api/v2{path}", payload).decode("utf-8", "replace")
+        return json.loads(text) if text.strip() else None
+
+    # -- what the golden asks ------------------------------------------------
+
+    def employee_number(self, username: str) -> int:
+        """The emp number of the person with this ESS login."""
+        users = self.call("GET", f"/admin/users?limit=50&username={urllib.parse.quote(username)}")
+        for user in (users or {}).get("data", []):
+            if user.get("userName") == username:
+                return int(user["employee"]["empNumber"])
+        raise AssertionError(
+            f"OrangeHRM has no user {username!r}; run `python infra/test-apps/reset.py orangehrm`"
+        )
+
+    def week_timesheet(self, employee: int, week_start: datetime.date) -> dict[str, Any] | None:
+        """The employee's timesheet whose week starts on `week_start`, if there is one."""
+        week_end = week_start + datetime.timedelta(days=6)
+        found = self.call(
+            "GET",
+            f"/time/employees/{employee}/timesheets"
+            f"?fromDate={week_start.isoformat()}&toDate={week_end.isoformat()}&limit=50",
+        )
+        for timesheet in (found or {}).get("data", []):
+            if str(timesheet.get("startDate")) == week_start.isoformat():
+                return dict(timesheet)
+        return None
+
+    def timesheet_entries(self, employee: int, timesheet_id: int) -> list[dict[str, Any]]:
+        found = self.call(
+            "GET", f"/time/employees/{employee}/timesheets/{timesheet_id}/entries?limit=200"
+        )
+        return list((found or {}).get("data", []))
+
+
+def _hours(value: Any) -> float:
+    """OrangeHRM's duration as hours: "2.00" and "2:00" both mean two hours."""
+    text = str(value or "").strip()
+    if text == "":
+        return 0.0
+    if ":" in text:
+        hours, _, minutes = text.partition(":")
+        return round(int(hours) + int(minutes) / 60, 2)
+    return round(float(text), 2)
+
+
+def _day_key(day: str) -> str:
+    """`2026-10-19` -> `mon`: named from the date itself, so the week always lines up."""
+    names = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+    return names[datetime.date.fromisoformat(day).weekday()]
+
+
+def orangehrm_timesheet_rows(
+    env: dict[str, str], employee: str, week_start: datetime.date
+) -> list[tuple[str, str, dict[str, float]]]:
+    """One entry per row of the week's timesheet: (project, activity, {day: hours}).
+
+    Read through the API as the admin, so it is the app's own record of what a run wrote -- never
+    the page's, and never the ledger's.
+    """
+    app = OrangeHRM(env)
+    app.sign_in()
+    emp_number = app.employee_number(employee)
+    timesheet = app.week_timesheet(emp_number, week_start)
+    if timesheet is None:
+        return []
+    grouped: dict[tuple[str, str], dict[str, float]] = {}
+    for entry in app.timesheet_entries(emp_number, int(timesheet["id"])):
+        project = str((entry.get("project") or {}).get("name") or "")
+        activity = str((entry.get("activity") or {}).get("name") or "")
+        hours = _hours(entry.get("duration"))
+        if hours == 0:
+            continue
+        grouped.setdefault((project, activity), {})[_day_key(str(entry.get("date")))] = hours
+    return [(project, activity, days) for (project, activity), days in grouped.items()]
