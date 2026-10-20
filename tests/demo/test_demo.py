@@ -7,14 +7,27 @@ tests run no processes and touch no database.
 
 PL-034 adds the words the window says: ``status_lines`` turns one tick's state
 into the sentences a person reads, and prints nothing when nothing changed.
+
+PL-050 adds the two checks that stop a second copy from starting: the port and
+the pid lock file. The checks are small functions, so they are tested here with
+no database and no API.
 """
 
 from __future__ import annotations
 
+import os
+import socket
+import subprocess
+import sys
+import time
 import uuid
+from pathlib import Path
 from typing import Any
 
+import pytest
+
 from packages.ledger.models import OpenRunRow
+from scripts import demo
 from scripts.demo import START, WAIT, State, status_lines, worker_decision
 
 
@@ -143,3 +156,101 @@ def test_an_unchanged_state_says_nothing() -> None:
 
     assert status_lines(quiet, quiet) == []
     assert status_lines(busy, busy) == []
+
+
+# --- PL-050: refuse to start a second copy -----------------------------------
+
+
+def test_a_held_port_is_reported_in_use() -> None:
+    """A listening socket holds the port; once it closes, the port is free again."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as holder:
+        holder.bind((demo.API_HOST, 0))
+        holder.listen(1)
+        port = holder.getsockname()[1]
+        assert demo.port_in_use(port) is True
+
+    deadline = time.monotonic() + 5
+    while demo.port_in_use(port) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert demo.port_in_use(port) is False
+
+
+def test_a_missing_pid_file_is_not_another_demo(tmp_path: Path) -> None:
+    assert demo.other_demo_pid(tmp_path / "demo.pid") is None
+
+
+def test_a_live_pid_in_the_file_is_another_demo(tmp_path: Path) -> None:
+    path = tmp_path / "demo.pid"
+    path.write_text(f"{os.getpid()}\n", encoding="utf-8")
+    assert demo.other_demo_pid(path) == os.getpid()
+
+
+def test_a_dead_pid_in_the_file_is_stale(tmp_path: Path) -> None:
+    finished = subprocess.Popen([sys.executable, "-c", "pass"])
+    finished.wait(timeout=60)
+    path = tmp_path / "demo.pid"
+    path.write_text(f"{finished.pid}\n", encoding="utf-8")
+    assert demo.other_demo_pid(path) is None
+
+
+def test_a_garbage_pid_file_is_stale(tmp_path: Path) -> None:
+    path = tmp_path / "demo.pid"
+    path.write_text("not a pid\n", encoding="utf-8")
+    assert demo.other_demo_pid(path) is None
+
+
+def test_starting_writes_our_pid(tmp_path: Path) -> None:
+    path = tmp_path / "demo.pid"
+    demo.write_pid_file(path)
+    assert path.read_text(encoding="utf-8").strip() == str(os.getpid())
+
+
+def test_cleanup_removes_a_file_holding_our_pid(tmp_path: Path) -> None:
+    path = tmp_path / "demo.pid"
+    path.write_text(f"{os.getpid()}\n", encoding="utf-8")
+    demo.remove_pid_file(path)
+    assert not path.exists()
+
+
+def test_cleanup_leaves_a_file_holding_another_pid(tmp_path: Path) -> None:
+    path = tmp_path / "demo.pid"
+    other = os.getpid() + 1
+    path.write_text(f"{other}\n", encoding="utf-8")
+    demo.remove_pid_file(path)
+    assert path.read_text(encoding="utf-8").strip() == str(other)
+
+
+def test_the_port_check_refuses_before_anything_else(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The port is taken: one plain line, exit 1, and no database work at all."""
+    called: list[str] = []
+
+    def record(name: str) -> None:
+        called.append(name)
+
+    monkeypatch.setattr(demo, "port_in_use", lambda port: True)
+    monkeypatch.setattr(demo, "apply_migrations", lambda dsn: record("migrations"))
+    monkeypatch.setattr(demo, "database_url", lambda: record("dsn") or "postgresql://unused")
+
+    assert demo.main([]) == 1
+    assert called == []
+    printed = [line for line in capsys.readouterr().out.splitlines() if line.strip()]
+    assert printed == [demo.PORT_TAKEN_MESSAGE]
+
+
+def test_an_alive_demo_pid_refuses(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """The lock file names a live process: refuse, and the line names its pid."""
+    monkeypatch.setattr(demo, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(demo, "port_in_use", lambda port: False)
+    monkeypatch.setattr(demo, "other_demo_pid", lambda path: 4242)
+    monkeypatch.setattr(demo, "apply_migrations", lambda dsn: None)
+
+    assert demo.main([]) == 1
+    printed = [line for line in capsys.readouterr().out.splitlines() if line.strip()]
+    assert len(printed) == 1
+    assert demo.API_BASE in printed[0]
+    assert "pid 4242" in printed[0]
+    assert "Close the other copy first" in printed[0]
