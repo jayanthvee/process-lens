@@ -555,8 +555,17 @@ export function isPasswordField(el: Element): boolean {
   const type = (el.getAttribute("type") ?? "text").toLowerCase();
   if (type === "password") return true;
   const autocomplete = (el.getAttribute("autocomplete") ?? "").toLowerCase();
-  return autocomplete.includes("password");
+  if (autocomplete.includes("password")) return true;
+  // PL-068: a one-time verification code is a credential too. The run asks the person for it on
+  // the run page; the recording must never hold one a person typed while teaching.
+  if (autocomplete.includes("one-time-code")) return true;
+  const named = `${el.getAttribute("name") ?? ""} ${el.getAttribute("id") ?? ""}`.toLowerCase();
+  return ONE_TIME_CODE_NAME.test(named);
 }
+
+/** Names and ids a one-time-code field carries: otp, mfa/2fa codes, verification codes. */
+const ONE_TIME_CODE_NAME =
+  /\b(otp|one[-_ ]?time[-_ ]?(code|password)|(verification|mfa|2fa|totp|auth)[-_ ]?code)\b/;
 
 /** True for an element the person types into directly, without a value property. */
 export function isRichText(el: Element): boolean {

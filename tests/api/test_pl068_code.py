@@ -89,7 +89,7 @@ def test_the_code_is_written_nowhere(
 
     delivered: list[str] = []
 
-    async def accept(code: str, *, run_id: uuid.UUID) -> dict[str, object]:
+    async def accept(code: str, *, run_id: uuid.UUID, lease_epoch: int = 0) -> dict[str, object]:
         delivered.append(code)
         return {"entered": True, "reason": "submitted"}
 

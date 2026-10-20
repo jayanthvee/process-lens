@@ -342,11 +342,20 @@ def _resolve_enter_code(text: str) -> bool:
     entered = bool(
         frame.get("status") == "ok" and isinstance(observed, dict) and observed.get("entered")
     )
-    waiter.set_result({"entered": entered, "reason": "submitted" if entered else "not_found"})
+    # The extension's own reason (``not_found``, a refusal's sentence) is kept so the run page can
+    # say what happened; it is the extension's words about the page, never the code.
+    reason = observed.get("reason") if isinstance(observed, dict) else None
+    if not entered and not reason:
+        reason = frame.get("error") or frame.get("status")
+    waiter.set_result(
+        {"entered": entered, "reason": "submitted" if entered else str(reason or "not_found")[:200]}
+    )
     return True
 
 
-async def send_enter_code(code: str, *, run_id: str | uuid.UUID) -> dict[str, Any]:
+async def send_enter_code(
+    code: str, *, run_id: str | uuid.UUID, lease_epoch: int = 0
+) -> dict[str, Any]:
     """Forward a person's code to the attached extension, once, and wait for what it did.
 
     The code is carried in this frame and nowhere else: not in a database row, not in a log line,
@@ -372,7 +381,7 @@ async def send_enter_code(code: str, *, run_id: str | uuid.UUID) -> dict[str, An
         step_ref="enter_code",
         run_id=str(run_id),
         run_record_id="",
-        lease_epoch=0,
+        lease_epoch=lease_epoch,
         expires_at=(time.time() + ENTER_CODE_TIMEOUT_SECONDS) * 1000,
         code=code,
     )

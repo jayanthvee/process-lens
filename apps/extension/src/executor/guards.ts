@@ -167,14 +167,14 @@ export function codePromptInPage(_query: { targets?: unknown[] } = {}): CodeProm
 
   // 3. 4-8 single-character boxes side by side.
   const singles = inputs.filter((input) => input.getAttribute("maxlength") === "1");
-  if (singles.length >= 4 && singles.length <= 8) {
-    const sameRow = singles.every((input) => {
-      const box = input.getBoundingClientRect();
-      const first = singles[0].getBoundingClientRect();
-      return Math.abs(box.top - first.top) < 40;
-    });
+  const firstSingle = singles[0];
+  if (firstSingle && singles.length >= 4 && singles.length <= 8) {
+    const first = firstSingle.getBoundingClientRect();
+    const sameRow = singles.every(
+      (input) => Math.abs(input.getBoundingClientRect().top - first.top) < 40,
+    );
     if (sameRow) {
-      return { found: true, heading: headingText(singles[0]), split: true };
+      return { found: true, heading: headingText(firstSingle), split: true };
     }
   }
 

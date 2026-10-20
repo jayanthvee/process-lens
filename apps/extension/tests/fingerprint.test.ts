@@ -221,3 +221,19 @@ describe("password detection", () => {
     expect(isPasswordField(document.getElementById("e")!)).toBe(false);
   });
 });
+
+describe("a one-time code is never captured, like a password", () => {
+  it("treats verification-code fields as secret", async () => {
+    const { isPasswordField } = await import("../src/shared/fingerprint");
+    const make = (html: string): Element => {
+      document.body.innerHTML = html;
+      return document.body.firstElementChild as Element;
+    };
+    expect(isPasswordField(make("<input autocomplete='one-time-code'>"))).toBe(true);
+    expect(isPasswordField(make("<input name='otp'>"))).toBe(true);
+    expect(isPasswordField(make("<input id='verification-code' inputmode='numeric'>"))).toBe(true);
+    expect(isPasswordField(make("<input name='mfa_code'>"))).toBe(true);
+    expect(isPasswordField(make("<input name='promo_code'>"))).toBe(false);
+    expect(isPasswordField(make("<input name='email'>"))).toBe(false);
+  });
+});

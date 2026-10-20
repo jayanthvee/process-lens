@@ -119,7 +119,8 @@ export interface SessionDeps {
    * says whether the page had a code field; it never carries the code. The code lives only for
    * this call.
    */
-  enterCode: (code: string) => Promise<{ entered: boolean; reason: string }>;
+  /** PL-068: types a person's verification code; a session without it answers "not found". */
+  enterCode?: (code: string) => Promise<{ entered: boolean; reason: string }>;
   /**
    * Arm the abandon guard on the bound tab (PL-027): refuse every request that is not a read, so a
    * page that autosaves when it unloads cannot write a record the runner did not commit. The
@@ -567,6 +568,7 @@ export class CommandSession {
       case "dispatch":
       case "check":
       case "guard":
+      case "enter_code":
         void this.onCommand(message);
         return;
       default:
@@ -673,7 +675,9 @@ export class CommandSession {
         // PL-068: the person supplied the code on the run page; it is typed here and reported as
         // entered or not found. The answer never contains the code, and nothing stores it.
         try {
-          const answer = await this.deps.enterCode(command.code);
+          const answer = this.deps.enterCode
+            ? await this.deps.enterCode(command.code)
+            : { entered: false, reason: "not_found" };
           if (current()) {
             this.sendResult(
               command.command_id,

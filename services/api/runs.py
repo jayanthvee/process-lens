@@ -465,7 +465,9 @@ async def enter_code_endpoint(run_id: uuid.UUID, payload: EnterCodeRequest) -> E
                 detail=f"run {run_id} is {run.status}, not waiting for a verification code",
             )
 
-    outcome = await hub.send_enter_code(payload.code, run_id=run_id)
+    # The run's own lease epoch: the extension refuses a command older than the newest it has seen
+    # for this run, so a code sent with a made-up epoch would be refused as stale.
+    outcome = await hub.send_enter_code(payload.code, run_id=run_id, lease_epoch=run.lease_epoch)
     if outcome.get("reason") == "no_extension":
         raise HTTPException(status_code=503, detail="the work window is not connected")
     return EnterCodeResult(

@@ -91,6 +91,15 @@ def code_harness(
         page=page,
         popup=popup,
     )
+    # The code route checks that the person sending it is in the run's tenant, so the run is made in
+    # the API operator's own tenant rather than a fresh one.
+    import psycopg
+
+    with psycopg.connect(database_url, autocommit=True) as conn:
+        row = conn.execute(
+            "SELECT tenant_id FROM users WHERE id = %s", (api_server["operator_id"],)
+        ).fetchone()
+    ready.operator_tenant_id = str(row[0])
     try:
         yield ready
     finally:
@@ -155,7 +164,9 @@ def test_a_code_page_pauses_the_run_and_the_person_s_code_carries_it_on(
     harness.page.context.clear_cookies()
 
     rows = [{column: CANDIDATE for _label, column in columns}]
-    run_id = harness.make_run(rows, recipe=recipe, key_column=name_column)
+    run_id = harness.make_run(
+        rows, recipe=recipe, key_column=name_column, tenant_id=harness.operator_tenant_id
+    )
 
     # The worker is what drives the run into its code page; the run is only queued until one runs.
     harness.start_worker(max_seconds=280)

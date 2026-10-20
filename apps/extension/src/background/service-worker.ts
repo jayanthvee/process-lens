@@ -39,6 +39,7 @@ import {
   disarmAbandonGuard as disarmGuard,
 } from "../executor/abandon-guard";
 import { resolverExpression } from "../executor/ladder";
+import { evaluate } from "../executor/page";
 import { ExecutorError, type ExecutorRecipe, type StepReport } from "../executor/types";
 import {
   ensureVisible,
