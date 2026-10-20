@@ -309,6 +309,7 @@ async function resolveStep(
         rung: preset.rung,
         by: preset.by,
         name: preset.name,
+        role: preset.role,
         marker: preset.token,
         x: 0,
         y: 0,
