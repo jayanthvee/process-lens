@@ -118,3 +118,30 @@ counts and the awkward rows are asserted by `tests/infra/test_test_apps_samples.
   `twentycrm/twenty:v2.47.0`). Postgres and Redis are pinned to a minor line (`postgres:16`,
   `redis:7.4-alpine`) — the same choice Twenty's own compose makes — so a `docker compose pull`
   can pick up a patch release of those two.
+
+## OrangeHRM (PL-069)
+
+Real HR software with employees, customers, projects, activities and weekly timesheets, standing in
+for Workday (which has no public sandbox). It is **real software**, not a look-alike (D-022).
+
+- **URL:** <http://localhost:8070> -- **Login:** `Admin` / `ProcessLensTest57!`
+- **Seeded people:** `priya.raman`, `jay.vee`, `ravi.iyer` (ESS logins, password
+  `EmployeeTest57!`), 2 customers, 4 projects, the activities *Development* and *Meetings*.
+- **No browser step.** The first `up` installs it unattended: the image's CLI installer
+  (`installer/cli_install.php`) is driven from a YAML file the container writes from its
+  `ORANGEHRM_*` environment. Once installed, the install is kept in the `orangehrm-confs` volume.
+- **Mail is off:** nothing in the stack talks SMTP.
+
+```bash
+docker compose -f infra/test-apps/docker-compose.yml up -d orangehrm   # start (waits for health)
+python infra/test-apps/reset.py orangehrm                              # seed it, empty the test week
+python infra/test-apps/seed_orangehrm.py                               # the seeder on its own
+```
+
+**The reset never drops the database.** It ensures the employees, customers, projects and
+activities over OrangeHRM's own REST API (v2), sets the timesheet week to start on Monday (which
+also enables the Time module), and deletes the rows of the current week's timesheet so the next run
+starts from an empty week. Seconds, not minutes.
+
+The timesheet golden (`tests/e2e/test_orangehrm_timesheet_golden.py`) is the browser test that uses
+it; see `internal/agent/reports/PL-069.md` for what it does and what it found.

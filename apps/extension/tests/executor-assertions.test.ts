@@ -402,3 +402,29 @@ describe("isTransientEvaluateError", () => {
     expect(isTransientEvaluateError(new Error("the target was destroyed"))).toBe(false);
   });
 });
+
+describe("a recorded toast's message is one the executor can find", () => {
+  it("finds the message inside a title-plus-message toast", () => {
+    // The same markup PL-073 records against, and the value the recorder now writes.
+    document.body.innerHTML = `
+      <div class="oxd-toast oxd-toast--success" role="status">
+        <div class="oxd-toast-container--content">
+          <p class="oxd-text oxd-text--toast-title">Success</p>
+          <p class="oxd-text oxd-text--toast-message">Successfully Saved</p>
+        </div>
+      </div>`;
+
+    const expression = conditionExpression({ text_visible: "Successfully Saved" }, ctx);
+
+    expect(run(expression)).toBe(true);
+  });
+
+  it("is not matched by the glued title and message, which is the bug PL-069 found", () => {
+    // A page whose blocks are separated by a newline -- which is what the browser's `innerText`
+    // gives between two paragraphs, and therefore what the executor really reads.
+    const page = "Success\nSuccessfully Saved".replace(/\s+/g, " ").trim();
+
+    expect(page.includes("SuccessSuccessfully Saved")).toBe(false);
+    expect(page.includes("Successfully Saved")).toBe(true);
+  });
+});

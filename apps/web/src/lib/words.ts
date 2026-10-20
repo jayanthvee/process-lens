@@ -362,3 +362,14 @@ export const ENTERING_CODE = "Entering the code…";
 /** The work window could not find the code field: the person types it there and resumes. */
 export const CODE_NOT_FOUND =
   "ProcessLens couldn't find where to type the code. Type it in the work window, then press Resume.";
+
+/**
+ * PL-072: the Spreadsheets page's Word-document area. A document becomes a CSV, and the two ways
+ * on are the download and the task a person already knows.
+ */
+export const ADD_WORD_DOCUMENT = "Add a Word document";
+export const ADD_WORD_DOCUMENT_SENTENCE =
+  "Choose a Word document and ProcessLens will read its table or list into rows.";
+export const READING_DOCUMENT = "Reading the document…";
+export const DOWNLOAD_CSV = "Download CSV";
+export const USE_FOR_A_TASK = "Use for a task";

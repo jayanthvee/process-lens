@@ -227,3 +227,85 @@ describe("post-action observation", () => {
     expect(observation.observation).toEqual({ text_visible: "Signed in for ravi@example.com" });
   });
 });
+
+/**
+ * PL-073: a toast built from several elements records its message, not every child's text glued
+ * together.
+ *
+ * OrangeHRM's `oxd-toast` is a title ("Success") and a message ("Successfully Saved") in two
+ * paragraphs. Their `textContent` runs together -- "SuccessSuccessfully Saved" -- and no page ever
+ * shows that string, so the commit check the compiler derives could never pass. Many apps' toasts
+ * (Vue, MUI, Ant, Chakra) are built the same way.
+ */
+describe("a confirmation's message, not its glued-together text", () => {
+  /** OrangeHRM 5.7's `oxd-toast`, as the app renders it after a save. */
+  const ORANGEHRM_TOAST = `
+    <div class="oxd-toast oxd-toast--success" role="status">
+      <div class="oxd-toast-container--content">
+        <p class="oxd-text oxd-text--toast-title">Success</p>
+        <p class="oxd-text oxd-text--toast-message">Successfully Saved</p>
+      </div>
+    </div>`;
+
+  /** Odoo 18's notification: a title, and the sentence under it. */
+  const ODOO_NOTIFICATION = `
+    <div class="o_notification d-flex" role="status">
+      <div class="o_notification_content">
+        <div class="o_notification_title">Saved</div>
+        <div class="o_notification_body">The lead was created successfully</div>
+      </div>
+    </div>`;
+
+  it("records OrangeHRM's toast as its message", async () => {
+    document.body.innerHTML = "<button id='save'>Save</button><div id='host'></div>";
+    const recorded = harness();
+    document.getElementById("save")!.dispatchEvent(new Event("click", { bubbles: true }));
+
+    document.getElementById("host")!.innerHTML = ORANGEHRM_TOAST;
+    await flushMutations();
+    await vi.advanceTimersByTimeAsync(1500);
+
+    expect(recorded.events[1]!.observation).toEqual({ text_visible: "Successfully Saved" });
+  });
+
+  it("records Odoo's notification as its body", async () => {
+    document.body.innerHTML = "<button id='save'>Save</button><div id='host'></div>";
+    const recorded = harness();
+    document.getElementById("save")!.dispatchEvent(new Event("click", { bubbles: true }));
+
+    document.getElementById("host")!.innerHTML = ODOO_NOTIFICATION;
+    await flushMutations();
+    await vi.advanceTimersByTimeAsync(1500);
+
+    expect(recorded.events[1]!.observation).toEqual({
+      text_visible: "The lead was created successfully",
+    });
+  });
+
+  it("leaves a toast that is one piece of text exactly as it was", async () => {
+    document.body.innerHTML = "<button id='save'>Save</button><div id='host'></div>";
+    const recorded = harness();
+    document.getElementById("save")!.dispatchEvent(new Event("click", { bubbles: true }));
+
+    alertInto("host", "Lead created");
+    await flushMutations();
+    await vi.advanceTimersByTimeAsync(1500);
+
+    expect(recorded.events[1]!.observation).toEqual({ text_visible: "Lead created" });
+  });
+
+  it("takes the longest piece when none of the words is a confirmation word", async () => {
+    document.body.innerHTML = "<button id='save'>Save</button><div id='host'></div>";
+    const recorded = harness();
+    document.getElementById("save")!.dispatchEvent(new Event("click", { bubbles: true }));
+
+    document.getElementById("host")!.innerHTML =
+      "<div role='status'><p>Notice</p><p>All the changes were applied.</p></div>";
+    await flushMutations();
+    await vi.advanceTimersByTimeAsync(1500);
+
+    expect(recorded.events[1]!.observation).toEqual({
+      text_visible: "All the changes were applied.",
+    });
+  });
+});
