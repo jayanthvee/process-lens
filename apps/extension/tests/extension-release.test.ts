@@ -8,7 +8,7 @@
 //
 // Every build here writes under `.cache/` (gitignored) and is removed afterwards; no test touches
 // the real `dist/` and none ever writes or reads a private key.
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -45,7 +45,10 @@ const TEST_ID = "hmofkglcjjcecceaafpceigjjeoaoiib";
 let scratch: string | null = null;
 
 function scratchDir(): string {
-  if (scratch === null) scratch = mkdtempSync(join(SCRATCH, "pl052-"));
+  if (scratch === null) {
+    mkdirSync(SCRATCH, { recursive: true });
+    scratch = mkdtempSync(join(SCRATCH, "pl052-"));
+  }
   return scratch;
 }
 
