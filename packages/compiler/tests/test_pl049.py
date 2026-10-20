@@ -21,6 +21,7 @@ from packages.compiler.validation import validation_errors
 
 BASE_URL = "http://127.0.0.1:8069"
 SALES_NEW = f"{BASE_URL}/odoo/sales/new"
+SALES_FORM = f"{BASE_URL}/odoo/sales"
 SALES_SAVED = f"{BASE_URL}/odoo/sales/12"
 QUOTE_RECORDING = Path(__file__).parent / "fixtures" / "odoo_quote_pl049.json"
 
@@ -193,7 +194,12 @@ def test_a_generated_reference_is_not_pinned(reference: str) -> None:
 
 
 def test_a_generated_reference_falls_back_to_the_new_records_name() -> None:
-    """With no page move, the rejected observation leaves the fill-based check in place."""
+    """With no page move and no "/new" page, the rejected observation leaves the fill check.
+
+    PL-059 gives a save on a "/new" page the address it lands on instead; this fixture stays on
+    a quotation form whose path carries no such signal, so the fill-based fallback is still the
+    next assertion the compiler can pick.
+    """
     recording = [
         action_event(
             1,
@@ -201,15 +207,15 @@ def test_a_generated_reference_falls_back_to_the_new_records_name() -> None:
             "fill",
             [{"by": "role", "role": "combobox", "name": "Customer"}],
             value="Summit Climbing Gym",
-            url=SALES_NEW,
+            url=SALES_FORM,
         ),
-        action_event(2, "fill", "fill", PRODUCT_FILL, value="Mesh Task Chair", url=SALES_NEW),
+        action_event(2, "fill", "fill", PRODUCT_FILL, value="Mesh Task Chair", url=SALES_FORM),
         action_event(
             3,
             "click",
             "click",
             [{"by": "role", "role": "option", "name": "[PL-CHR-2001] Mesh Task Chair"}],
-            url=SALES_NEW,
+            url=SALES_FORM,
         ),
         action_event(
             4,
@@ -217,7 +223,7 @@ def test_a_generated_reference_falls_back_to_the_new_records_name() -> None:
             "click",
             SAVE_TARGETS,
             step_id="save-1",
-            url=SALES_NEW,
+            url=SALES_FORM,
             observation={"text_visible": "S00001"},
         ),
     ]

@@ -22,6 +22,7 @@ from urllib.parse import urlsplit
 
 from .assertions import (
     DEFAULT_ASSERTION_TIMEOUT_MS,
+    condition_from_new_page,
     condition_from_observation,
     infer_assertion,
     observation_is_generated_reference,
@@ -1290,6 +1291,14 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
             is not None
         )
         assert_after = _resolve_commit_assertion(candidate, options)
+        inferred_from_new_page = False
+        if assert_after is None and not candidate.after_url and candidate.action == "click":
+            # PL-059: the save was sent from a "new" page and the person saw no navigation, so
+            # the address it must land on is the evidence. Unlike "the name appears again", it
+            # cannot be true on the form the save was sent from: /odoo/sales/new does not match
+            # /odoo/sales/<id>. Only a click is a save; a select or a press commits nothing.
+            assert_after = condition_from_new_page(candidate.url, options.assertion_timeout_ms)
+            inferred_from_new_page = assert_after is not None
         inferred_from_fill = False
         if assert_after is None:
             fallback = candidate
@@ -1319,6 +1328,8 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
                 f"assertion for {candidate.recorded_id or candidate.seq} "
                 "taken from the recorded observation"
             )
+        elif inferred_from_new_page:
+            warnings.append("this save is checked by the page moving from /new to the saved record")
         elif inferred_from_fill:
             warnings.append(
                 f"assertion for {candidate.recorded_id or candidate.seq} "

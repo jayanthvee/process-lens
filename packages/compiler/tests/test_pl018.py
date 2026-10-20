@@ -256,14 +256,18 @@ def test_a_real_confirmation_is_still_an_assertion() -> None:
 
 
 def test_a_commit_with_only_a_weak_observation_is_refused(options: CompileOptions) -> None:
+    # PL-059: a save on a "/new" page now has an address check; this fixture stays on a page
+    # without that signal, so a weak observation is still the only evidence and is refused.
+    form = "https://app.example.com/records"
     recording = [
-        action_event(1, "fill", "fill", EMAIL_TARGETS, value="ravi@example.com"),
+        action_event(1, "fill", "fill", EMAIL_TARGETS, value="ravi@example.com", url=form),
         action_event(
             2,
             "click",
             "click",
             SAVE_TARGETS,
             name="Click Save",
+            url=form,
             observation={"text_visible": "Loading\u2026"},
         ),
     ]

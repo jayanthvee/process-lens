@@ -166,9 +166,12 @@ def test_a_commit_without_a_click_uses_a_navigation_assertion(options: CompileOp
 
 
 def test_a_commit_with_nothing_to_assert_is_refused(options: CompileOptions) -> None:
+    # PL-059: a save on a "/new" page is now checked by the address it lands on, so this fixture
+    # stays on a page that carries no such signal -- the fail-closed case is still a refusal.
+    form = "https://app.example.com/records"
     recording = [
-        action_event(1, "click", "click", SAVE_TARGETS),
-        action_event(2, "submit", "click", SAVE_TARGETS),
+        action_event(1, "click", "click", SAVE_TARGETS, url=form),
+        action_event(2, "submit", "click", SAVE_TARGETS, url=form),
     ]
     with pytest.raises(CompileError, match="must carry an assertion"):
         compile_recording(recording, options)

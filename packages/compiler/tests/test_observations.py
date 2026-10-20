@@ -133,10 +133,13 @@ def test_an_observation_is_not_a_step_of_its_own() -> None:
 
 
 def test_a_commit_with_no_observation_still_fails_closed() -> None:
+    # PL-059: a "/new" page gives a save an address check; this fixture stays on a page without
+    # that signal so the fail-closed rule is still what is tested.
+    form = "https://app.example.com/records"
     recording = [
-        action_event(1, "fill", "fill", EMAIL_TARGETS, value="ravi@example.com"),
-        action_event(2, "click", "click", SAVE_TARGETS, name="Click Save"),
-        action_event(3, "submit", "click", SAVE_TARGETS),
+        action_event(1, "fill", "fill", EMAIL_TARGETS, value="ravi@example.com", url=form),
+        action_event(2, "click", "click", SAVE_TARGETS, name="Click Save", url=form),
+        action_event(3, "submit", "click", SAVE_TARGETS, url=form),
     ]
 
     with pytest.raises(CompileError):

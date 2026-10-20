@@ -23,6 +23,10 @@ cannot verify.
 If neither is available the compiler refuses to mark the step as a commit rather
 than inventing an assertion. An unverifiable commit is worse than a compiled
 recipe that tells the builder to re-record.
+
+PL-059 adds one more source, which the compiler uses when neither of the above
+exists and the save was sent from a ``/new`` page: the address the save must land
+on (:func:`condition_from_new_page`).
 """
 
 from __future__ import annotations
@@ -187,6 +191,41 @@ def path_shape_pattern(url: str) -> str | None:
     if not path:
         return None
     return re.sub(r"\d+", r"\\d+", re.escape(path))
+
+
+# PL-059: the record segment an app lands on after saving a "new" page. Odoo and Twenty use a
+# plain number (/odoo/sales/42); some apps use a UUID instead. One pattern accepts both.
+NEW_PAGE_SUFFIX = "/new"
+NEW_PAGE_RECORD_SEGMENT = r"(?:[0-9]+|[0-9a-f-]{8,})"
+
+
+def condition_from_new_page(
+    url: str, timeout_ms: int = DEFAULT_ASSERTION_TIMEOUT_MS
+) -> dict[str, Any] | None:
+    """An assertion from the address a save sent from a "new" page must land on.
+
+    Odoo saves ``/odoo/sales/new`` and lands on ``/odoo/sales/42``; Twenty and most other apps
+    do the same with ``/new`` and a record id (or a UUID). When the recording observed no
+    navigation, that shape is still evidence: the page the save was sent from cannot satisfy the
+    pattern, so a passing check means the save landed on a saved record rather than staying on
+    the form.
+
+    The pattern is built the way the navigation checks build theirs -- the page's own path,
+    escaped, with the varying last segment generalised -- and carries only the path, because
+    ``url_matches`` is matched against the whole page URL.
+    """
+    if not url or not origin_of(url):
+        return None
+    path = urlsplit(url).path.rstrip("/")
+    if not path.endswith(NEW_PAGE_SUFFIX):
+        return None
+    prefix = path_pattern(path)
+    if prefix is None:
+        return None
+    if prefix == NEW_PAGE_SUFFIX:
+        # The save page is the site root's own "/new": the record page is one segment below it.
+        prefix = "/"
+    return {"url_matches": re.escape(prefix) + NEW_PAGE_RECORD_SEGMENT, "timeout_ms": timeout_ms}
 
 
 def condition_from_navigation(
