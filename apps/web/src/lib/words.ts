@@ -288,3 +288,55 @@ export const EDITOR_ENGINE_WORDS: ReadonlyArray<{
   { engine: "assert", pattern: /\bassert\w*/i, plain: "how we know it saved" },
   { engine: "selector", pattern: /\bselector\w*/i, plain: "the element's own words" },
 ];
+
+/**
+ * PL-061: what one row costs a task that never measured itself. The same three minutes the screens
+ * used to assume for every row, now only the fallback.
+ */
+export const ESTIMATED_MANUAL_SECONDS_PER_ROW = 180;
+
+/** "14 s", "2 min 10 s", "3 min" -- a short stretch of time, as a person says it. */
+export function secondsWords(seconds: number): string {
+  const total = Math.max(0, Math.round(seconds));
+  const minutes = Math.floor(total / 60);
+  const rest = total % 60;
+  if (minutes === 0) return `${rest} s`;
+  if (rest === 0) return `${minutes} min`;
+  return `${minutes} min ${rest} s`;
+}
+
+/**
+ * The one comparison line on a finished run's results: what a row costs by hand, what ProcessLens
+ * costs, and what the difference saved. When the task never measured itself, the line says so
+ * rather than pretending the three-minute fallback was measured.
+ */
+export function timeComparisonWords(input: {
+  manualSecondsPerRow: number | null | undefined;
+  automatedSecondsPerRow: number | null | undefined;
+  savedSeconds: number | null | undefined;
+}): string {
+  const manual = input.manualSecondsPerRow;
+  if (manual === null || manual === undefined) {
+    return `By hand: about ${secondsWords(ESTIMATED_MANUAL_SECONDS_PER_ROW)} a row (estimated)`;
+  }
+  const parts = [`By hand: about ${secondsWords(manual)} a row`];
+  if (input.automatedSecondsPerRow !== null && input.automatedSecondsPerRow !== undefined) {
+    parts.push(`ProcessLens: ${secondsWords(input.automatedSecondsPerRow)} a row`);
+  }
+  if (input.savedSeconds !== null && input.savedSeconds !== undefined) {
+    parts.push(minutesSavedWords(input.savedSeconds / 60));
+  }
+  return parts.join(" · ");
+}
+
+/**
+ * "estimated for 12 rows", or nothing at all when every row was measured. Home shows this under
+ * the week's figure so an estimate is never presented as a measurement.
+ */
+export function estimatedRowsNote(rows: number | null | undefined): string | null {
+  if (rows === null || rows === undefined || !Number.isFinite(rows) || rows <= 0) {
+    return null;
+  }
+  const count = Math.round(rows);
+  return `estimated for ${plural(count, "row")}`;
+}

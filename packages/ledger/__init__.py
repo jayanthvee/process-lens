@@ -71,6 +71,8 @@ from .models import (
     WeekCountsRow,
 )
 from .reads import (
+    RunTimeRow,
+    WeekTimeRow,
     keeps_failing_tasks,
     list_apps,
     list_needs_help,
@@ -85,8 +87,10 @@ from .reads import (
     results_rows,
     run_of_record,
     run_summary,
+    run_time,
     verified_preview_run,
     week_counts,
+    week_manual_seconds,
     window_run_seconds,
 )
 from .records import (
@@ -145,6 +149,7 @@ __all__ = [
     "RunClaim",
     "RunListRow",
     "RunSummaryRow",
+    "RunTimeRow",
     "RunningRunRow",
     "SpreadsheetRow",
     "StaleLease",
@@ -156,6 +161,7 @@ __all__ = [
     "UserRow",
     "VerifyResult",
     "WeekCountsRow",
+    "WeekTimeRow",
     "all_records_in_exit_state",
     "begin_commit",
     "change_state",
@@ -209,6 +215,7 @@ __all__ = [
     "resume_run",
     "run_of_record",
     "run_summary",
+    "run_time",
     "set_batch_mapping",
     "set_min_extension_version",
     "set_row_clean",
@@ -221,5 +228,6 @@ __all__ = [
     "unfreeze_runs",
     "verify_commit",
     "week_counts",
+    "week_manual_seconds",
     "window_run_seconds",
 ]
