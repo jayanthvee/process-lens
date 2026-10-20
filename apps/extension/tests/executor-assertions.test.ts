@@ -403,6 +403,45 @@ describe("isTransientEvaluateError", () => {
   });
 });
 
+describe("every predicate key counts (PL-075)", () => {
+  it("fails a condition whose text is visible but whose URL does not match", () => {
+    // The fail-open this pins: the expression used to evaluate only the first predicate key, so
+    // `url_matches` here was silently ignored and the condition passed on a page it should have
+    // refused. A commit checked by both "the control is gone" and "this is still the record"
+    // depends on both being true.
+    document.body.textContent = "Saved";
+    window.history.replaceState({}, "", "/records/42");
+
+    const expression = conditionExpression(
+      { text_visible: "Saved", url_matches: "/invoices/" },
+      ctx,
+    );
+
+    expect(run(expression)).toBe(false);
+  });
+
+  it("passes only when every predicate in the condition holds", () => {
+    document.body.textContent = "Saved";
+    window.history.replaceState({}, "", "/records/42");
+
+    expect(
+      run(conditionExpression({ text_visible: "Saved", url_matches: "/records/" }, ctx)),
+    ).toBe(true);
+    expect(
+      run(conditionExpression({ text_visible: "Missing", url_matches: "/records/" }, ctx)),
+    ).toBe(false);
+  });
+
+  it("does not treat timeout_ms as a predicate", () => {
+    document.body.textContent = "Saved";
+
+    expect(run(conditionExpression({ text_visible: "Saved", timeout_ms: 3000 }, ctx))).toBe(true);
+    expect(() => conditionExpression({ timeout_ms: 3000 } as unknown as Condition, ctx)).toThrow(
+      /does not understand/,
+    );
+  });
+});
+
 describe("a recorded toast's message is one the executor can find", () => {
   it("finds the message inside a title-plus-message toast", () => {
     // The same markup PL-073 records against, and the value the recorder now writes.

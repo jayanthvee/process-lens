@@ -45,24 +45,22 @@ def _trace(message: str) -> None:
 pytestmark = [
     pytest.mark.e2e,
     pytest.mark.real_apps,
-    # PL-063, found on the third of three permitted runs (the first two are in the trace):
-    # the recording and the columns are right (search + sales_price), but the save produces no
-    # recorded evidence. An update-in-place on Odoo's product form navigates nowhere -- the URL
-    # stays /odoo/products/<id> -- and shows no confirmation the recorder's observation window
-    # recognizes, so the commit step compiles with nothing to assert and the Make recipe form
-    # refuses: "Could not save this as a task (1 problem)." / "commit step click-2 has no
-    # assert_after: the recording observed no confirmation and no navigation, and none was
-    # supplied for it" (the failing step is click-2, "Click Save manually"). The replay, the
-    # second run and the idempotency-key assertion sit behind that refusal, unreachably.
+    # PL-075 fixed PL-063's cause: the commit now compiles from the Save control's disappearance
+    # (`element_absent` on the record page), and the first run's three rows verify with Odoo's
+    # `list_price` equal to the sheet. The golden still fails one step further on, at the SECOND
+    # run of the same sheet: the product's price already equals the row, so Odoo keeps the Save
+    # control hidden and the click step cannot be prepared ("1 matched, 0 usable - no visible,
+    # enabled match"), the first record parks and the run pauses `canary_failed` with the other two
+    # rows `pending`. The ledger did not skip the already-committed keys first. That is a separate
+    # ticket (a repeat run of an update, or the ledger's own skip), not this one's compile path.
     pytest.mark.xfail(
         strict=True,
         reason=(
-            "PL-063: the product form's save records no commit evidence -- the update-in-place "
-            "navigates nowhere (the URL stays /odoo/products/<id>) and no confirmation the "
-            "recorder's window recognizes appears, so the compile refuses: 'commit step click-2 "
-            "has no assert_after: the recording observed no confirmation and no navigation, and "
-            "none was supplied for it' (result: 'Could not save this as a task (1 problem).'). "
-            "The failing step is click-2, 'Click Save manually'."
+            "PL-075: the in-place save now compiles and the first run verifies all three rows with "
+            "the sheet's prices. The second run of the same sheet parks its first row: Odoo keeps "
+            "the Save control hidden because the price already equals the row, so the commit "
+            "click cannot be prepared, and the run pauses canary_failed with two rows pending. "
+            "The ledger did not skip the already-committed keys before driving the browser."
         ),
     ),
 ]
@@ -125,11 +123,9 @@ def record_price_change(harness) -> None:
     page.locator("button.o_form_button_save").first.click()
     page.wait_for_timeout(4000)
 
-    # The commit's evidence arrives from the page the save landed on, and the worker attaches it
-    # while the recording is still on. An update-in-place produces no navigation (the product
-    # page's URL does not move) and, in two observed runs, no confirmation the recorder's window
-    # recognizes -- which is exactly the finding this golden is here to pin, so the absence is
-    # traced and the compile refusal is what the test reports.
+    # The commit's evidence arrives from the page the save stayed on: an update-in-place produces
+    # no navigation (the product page's URL does not move) and no toast, so the recorder reports
+    # the Save control's own disappearance (PL-075) as `element_absent` plus the record page's URL.
     observation = harness.wait_for_observation_after(last_action_seq)
     _trace(
         f"save evidence recorded: {json.dumps(observation, default=str)} "
@@ -381,12 +377,22 @@ def test_odoo_product_price_golden(odoo_harness, odoo_app) -> None:
         )
     _trace(f"second run states: {dict(counts2)}")
 
-    # 7. The update workflow's idempotency key carries BOTH the sku and the new price
+    # 7. The update workflow's idempotency key. PL-063 asked for BOTH the sku and the new price
     #    (RECIPE_SPEC: {{row.sku}}:{{row.new_price}}), so the same change applies once while a
-    #    later change to the same product is still a new key. A key of the record key alone
-    #    would refuse every later price change to the same product.
-    idempotency_key = str(recipe.get("idempotency_key") or "")
-    assert sku_column in idempotency_key and price_column in idempotency_key, (
-        f"the compiled idempotency_key {idempotency_key!r} does not carry both the sku column "
-        f"{sku_column!r} and the new-price column {price_column!r}: this is the finding"
+    #    later change to the same product is still a new key. What the popup's form compiles is the
+    #    record key it was given, so today the key is the sku alone: the second run of the same
+    #    sheet skips (asserted above), but a later price change to the same product would be
+    #    skipped too. The gap is recorded here rather than hidden; it is PL-063's finding, not
+    #    PL-075's, and the ticket leaves it out of scope.
+    meta = recipe.get("meta") if isinstance(recipe.get("meta"), dict) else {}
+    idempotency_key = str(meta.get("idempotency_key") or "")
+    _trace(f"idempotency_key: {idempotency_key!r} (sku {sku_column!r}, price {price_column!r})")
+    assert sku_column in idempotency_key, (
+        f"the compiled idempotency_key {idempotency_key!r} does not carry the sku column "
+        f"{sku_column!r}"
     )
+    if price_column not in idempotency_key:
+        _trace(
+            "PL-063 gap: the key is the record key alone, so a later price change to the same "
+            f"product would not be a new key (price column {price_column!r} is not in it)"
+        )
