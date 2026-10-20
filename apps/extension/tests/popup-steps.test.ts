@@ -166,12 +166,6 @@ describe("More", () => {
     for (const id of [
       // "Which click finishes the row?" — the last click is preselected, so it lives here.
       "make-commit",
-      // Try one row, Pause, Resume, Stop.
-      "run-start",
-      "run-pause",
-      "run-resume",
-      "run-abort",
-      "run-state",
       // Save a copy of the steps, the streaming field.
       "export",
       "ws",
@@ -190,10 +184,17 @@ describe("More", () => {
     }
   });
 
-  it("has no Try one row of its own in the three steps", () => {
-    const runStart = document.getElementById("run-start");
-    expect(runStart, "the control survives under More").not.toBeNull();
-    expect(runStart?.closest(".step-card"), "but it is not a step of the flow").toBeNull();
+  it("has no run buttons of its own: the dashboard's Try one row is the only one", () => {
+    // PL-043: the old Try one row / Pause / Resume / Stop controls ran a task from inside the
+    // popup, which the dashboard's "3. Try one row" replaced. None of them is left.
+    for (const id of ["run-start", "run-pause", "run-resume", "run-abort", "run-state"]) {
+      expect(document.getElementById(id), `#${id} must be gone`).toBeNull();
+      expect(POPUP_BODY, `#${id} must not survive in the markup`).not.toContain(`id="${id}"`);
+    }
+    // And the copy that explained them goes with them.
+    expect(POPUP_BODY).not.toMatch(/Try one row/);
+    // The commit select stays: the Save form still uses it.
+    expect(document.getElementById("make-commit"), "#make-commit is the form's").not.toBeNull();
   });
 
   it("keeps the support notes reachable but shut", () => {
@@ -266,21 +267,21 @@ describe("plain words under the save result", () => {
 describe("the refresh warning (PL-039)", () => {
   it("renders the recorder's warning in place of the steps", () => {
     const steps = document.getElementById("steps") as HTMLOListElement;
-    renderStepList(steps, ["Clicked Save"], REFRESH_PAGE_WARNING);
+    renderStepList(steps, [{ at: "2026-10-18T00:00:00Z", kind: "click", url: "https://crm.example.test/", seq: 1, step: { id: "click-1", action: "click", name: "Click Save", targets: [{ by: "role", role: "button", name: "Save" }] } }] as never, { recording: false, warning: REFRESH_PAGE_WARNING });
     expect(steps.querySelector("li.steps__warning")?.textContent).toBe(REFRESH_PAGE_WARNING);
     expect(steps.querySelector(".steps__item")).toBeNull();
   });
 
   it("keeps the steps when there is no warning", () => {
     const steps = document.getElementById("steps") as HTMLOListElement;
-    renderStepList(steps, ["Clicked Save"], null);
-    expect(steps.querySelector(".steps__item")?.textContent).toBe("Clicked Save");
+    renderStepList(steps, [{ at: "2026-10-18T00:00:00Z", kind: "click", url: "https://crm.example.test/", seq: 1, step: { id: "click-1", action: "click", name: "Click Save", targets: [{ by: "role", role: "button", name: "Save" }] } }] as never, { recording: false, warning: null });
+    expect(steps.querySelector(".steps__item")).not.toBeNull();
     expect(steps.querySelector(".steps__warning")).toBeNull();
   });
 
   it("keeps the empty line when there is nothing recorded and no warning", () => {
     const steps = document.getElementById("steps") as HTMLOListElement;
-    renderStepList(steps, [], null);
+    renderStepList(steps, [], { recording: false, warning: null });
     expect(steps.querySelector("li.steps__empty")?.textContent).toBeTruthy();
   });
 

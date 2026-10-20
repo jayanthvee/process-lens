@@ -57,6 +57,9 @@ export type ToWorker =
   | { type: "record:clear" }
   | { type: "record:get" }
   | { type: "record:set-ws"; wsUrl: string }
+  // A step the person deleted from the live list after Stop. The observation recorded right after
+  // the step goes with it, and the worker answers with the recording it now holds.
+  | { type: "record:remove"; seq: number }
   // The document is unloading right after an action it recorded and has not observed yet; the
   // worker keeps that action as the target the arriving page reports against.
   | { type: "record:leaving" }

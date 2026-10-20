@@ -9,6 +9,7 @@
 // Kept as a class with no browser APIs, so every one of those rules is a unit test.
 import type { PendingEvent } from "../shared/events";
 import type { Condition, RecordedEvent } from "../shared/recipe-types";
+import type { RecordingState } from "../shared/messages";
 
 /**
  * How long the page an action navigated to has to report before the action is no longer the
@@ -75,6 +76,17 @@ export function shouldRecordNavigation(
 
 /** The actions that can commit, and so are the ones an observation can be attached to. */
 const OBSERVABLE_KINDS = new Set(["click", "submit"]);
+
+/**
+ * Whether a step may be deleted from the live list (PL-043): only once the recording has stopped.
+ *
+ * While it is running the list is still being built, so a removal would race the page recording
+ * into it. The worker checks this before every removal and the popup hides each step's ×; the
+ * decision lives here so both read the same rule.
+ */
+export function canRemoveStep(state: RecordingState): boolean {
+  return state === "idle";
+}
 
 export class RecorderSession {
   private readonly now: () => number;
@@ -167,6 +179,33 @@ export class RecorderSession {
     this.counters.clear();
     this.idMap.clear();
     this.arrival = null;
+  }
+
+  /**
+   * Delete one recorded step, and the evidence recorded right after it (PL-043).
+   *
+   * The live list offers this only once the recording has stopped (`canRemoveStep`), so this is a
+   * finished recording's mistake being fixed. An `observation` event carries no step of its own:
+   * it belongs to the action recorded just before it — the link the arrival path keeps across a
+   * navigation for the other kind of observation — so it goes with that action. Evidence attached
+   * to the action itself (`event.observation`) goes with the event. Nothing else is touched, and
+   * the sequence keeps counting from where it was: ids are never re-minted for a new step.
+   *
+   * Returns the removed step, or null when no event carries that seq.
+   */
+  remove(seq: number): RecordedEvent | null {
+    const index = this.stored.findIndex((event) => event.seq === seq);
+    if (index < 0) return null;
+    const [removed] = this.stored.splice(index, 1);
+    if (!removed) return null;
+    // The observation recorded straight after the action is that action's evidence.
+    if (removed.kind !== "observation" && this.stored[index]?.kind === "observation") {
+      this.stored.splice(index, 1);
+    }
+    // A removed step cannot be the target of the page a navigation is still owed to.
+    const stepId = removed.step?.id;
+    if (stepId !== undefined && this.arrival?.stepId === stepId) this.arrival = null;
+    return removed;
   }
 
   /** Forget what a navigation was owed. A new recording owes nothing to the last one. */
