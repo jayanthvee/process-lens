@@ -188,9 +188,31 @@ def test_a_code_page_pauses_the_run_and_the_person_s_code_carries_it_on(
     assert sent.get("entered") is True, sent
     assert CODE not in json.dumps(sent), "the answer echoed the code"
 
-    # 6. Resume, let the recorded steps finish, and check the row and the site.
+    # 6. Resume, approve the task's first save as a person would, and check the row and the site.
     harness.api_post(f"/api/v1/runs/{run_id}/resume")
-    records = harness.wait_for_terminal(run_id, timeout=240)
+    # The compiled task holds its first save for a person's approval (PL-027), exactly as every
+    # other golden's settle_run does: approve each open request until the row is out.
+    deadline = time.monotonic() + 240
+    detail = {}
+    records: list[dict[str, Any]] = []
+    while time.monotonic() < deadline:
+        for request in harness.api_get(f"/api/v1/runs/{run_id}/approvals"):
+            harness.api_post(
+                "/api/v1/approvals",
+                {
+                    "request_id": request["id"],
+                    "decision": "approved",
+                    "decided_by": harness.operator_id(),
+                },
+            )
+        detail = harness.api_get(f"/api/v1/runs/{run_id}")
+        records = harness.api_get(f"/api/v1/runs/{run_id}/records")
+        if detail["status"] in {"completed", "cancelled", "failed"} and all(
+            record["state"] in {"verified", "skipped", "parked", "failed", "cancelled"}
+            for record in records
+        ):
+            break
+        time.sleep(0.4)
     (TRACE_DIR / "records.json").write_text(json.dumps(records, indent=1), encoding="utf-8")
     assert [record["state"] for record in records] == ["verified"], records
 

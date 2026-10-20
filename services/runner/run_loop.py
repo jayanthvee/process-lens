@@ -92,6 +92,12 @@ _FAILURE_STATES = frozenset({"parked", "failed"})
 # `verified` is a commit that landed and `skipped` never filled anything, so neither is guarded.
 _ABANDONED_OUTCOMES = frozenset({"parked", "failed", "cancelled", "paused", "awaiting_approval"})
 
+# PL-074: the pause reasons whose page a person still has to answer. The code page is where the
+# person's one-time code is typed, so the bound tab must stay on it; the abandon guard's retirement
+# would navigate the tab to `about:blank` and take the field away. Every other pause still arms the
+# guard: a released record's half-filled form must not autosave on the way out.
+PAGE_KEEPING_PAUSES = frozenset({"code_required"})
+
 # PL-027: the message a person reads on a step event when the abandon guard refused a request.
 BLOCKED_REQUEST_MESSAGE = "blocked an unsaved change from leaving the page"
 
@@ -281,7 +287,11 @@ class RunLoop:
             # before the next record's navigate can unload the page; that navigate's arrival
             # releases it, and so does the end of the run. A record a precheck rule parked never
             # opened a page, so nothing is armed for it.
-            if outcome in _ABANDONED_OUTCOMES and self._browser_touched:
+            if (
+                outcome in _ABANDONED_OUTCOMES
+                and self._browser_touched
+                and not self._keeps_the_page(conn, run)
+            ):
                 self._arm_guard()
             if self._canary == record.id and outcome in _FAILURE_STATES:
                 with conn.transaction():
@@ -347,6 +357,16 @@ class RunLoop:
         except Exception as exc:  # noqa: BLE001 - a defence that fails must not stop the run
             logger.warning("the abandon guard %s failed: %s", action, exc)
             return []
+
+    def _keeps_the_page(self, conn: psycopg.Connection, run: RunClaim) -> bool:
+        """Whether the run paused on a page a person still has to answer (PL-074).
+
+        The run's own ``pause_reason`` is the source of truth, because it is what the ledger just
+        recorded and what the run page shows: only a pause the person resolves in the bound tab --
+        today, the site's one-time-code prompt -- leaves that page open.
+        """
+        current = get_run(conn, run.id)
+        return current is not None and current.pause_reason in PAGE_KEEPING_PAUSES
 
     def _arm_guard(self) -> None:
         """A record has left the tab without committing: hold its unsaved changes in."""
