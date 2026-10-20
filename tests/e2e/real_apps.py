@@ -225,6 +225,54 @@ class Odoo:
             )
         return found[0]
 
+    def partner_id(self, name: str) -> int:
+        """The id of the `res.partner` whose name is exactly `name` (a seeded customer)."""
+        found = self.search("res.partner", [("name", "=", name)], limit=1)
+        if not found:
+            raise AssertionError(
+                f"Odoo has no res.partner named {name!r}; "
+                "run `python infra/test-apps/reset.py odoo` to seed the customers"
+            )
+        return found[0]
+
+    def product_id(self, name: str) -> int:
+        """The id of the `product.product` whose name is exactly `name` (a seeded product)."""
+        found = self.search("product.product", [("name", "=", name)], limit=1)
+        if not found:
+            raise AssertionError(
+                f"Odoo has no product.product named {name!r}; "
+                "run `python infra/test-apps/reset.py odoo` to seed the products"
+            )
+        return found[0]
+
+    def product_code(self, name: str) -> str:
+        """The `default_code` of the seeded product whose name is exactly `name`."""
+        found = self.search_read(
+            "product.product", [("name", "=", name)], ["default_code"], limit=1
+        )
+        if not found:
+            raise AssertionError(
+                f"Odoo has no product.product named {name!r}; "
+                "run `python infra/test-apps/reset.py odoo` to seed the products"
+            )
+        return str(found[0].get("default_code") or "")
+
+    def orders_by_partner(self, partner: int) -> list[dict[str, Any]]:
+        """Every `sale.order` of one customer, with the fields the quotation golden asserts."""
+        return self.search_read(
+            "sale.order",
+            [("partner_id", "=", partner)],
+            ["name", "state", "order_line"],
+        )
+
+    def order_lines(self, order: int) -> list[dict[str, Any]]:
+        """Every `sale.order.line` of one order, with its product and quantity."""
+        return self.search_read(
+            "sale.order.line",
+            [("order_id", "=", order)],
+            ["product_id", "product_uom_qty"],
+        )
+
 
 def login_odoo(page: Any, env: dict[str, str], *, base: str | None = None) -> None:
     """Log the page into Odoo, as a person does, through the real login form."""

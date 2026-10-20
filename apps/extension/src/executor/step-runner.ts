@@ -362,18 +362,7 @@ function readyWaitMs(step: ExecutorStep): number {
 }
 
 /**
- * Whether a failed climb found nothing at all, which is what "the page is not ready yet" looks
- * like. A rung that matched something and refused it -- two elements for one role, a hidden or a
- * disabled control -- is an answer, not a race, so it is never waited on.
- */
-function nothingMatched(result: ResolveResult): boolean {
-  const attempts = (result as { attempts?: unknown }).attempts;
-  if (!Array.isArray(attempts) || attempts.length === 0) return false;
-  return attempts.every((entry) => Number((entry as { found?: unknown }).found ?? 0) === 0);
-}
-
-/**
- * Climb the ladder, and climb it again while the page has nothing to match at all.
+ * Climb the ladder, and climb it again until it resolves to one element or the ready wait is over.
  *
  * The climb itself is `resolveStep`; this is only the patience around it. It is used for a step's
  * own target ladder and never for the ladder built to read an autocomplete's suggestions -- that one
@@ -391,7 +380,12 @@ async function resolveWhenReady(
   const deadline = Date.now() + readyWaitMs(step);
   for (;;) {
     const attempt = await resolveStep(cdp, step, deps, contextId, ladder);
-    if (attempt.result.ok || !nothingMatched(attempt.result) || Date.now() >= deadline) {
+    // PL-048: every refusal is waited on, an ambiguous or disabled match included. Odoo draws an
+    // order line ~170 ms after "Add a product", and until it does a css rung matches the customer's
+    // autocomplete and one other; stopping at that first answer parked the record a moment before
+    // the row's own input existed. Waiting never acts on an ambiguous target, it only delays the
+    // same refusal by at most the ready wait when the page really is ambiguous.
+    if (attempt.result.ok || Date.now() >= deadline) {
       return attempt;
     }
     await delay(Math.min(READY_WAIT_POLL_MS, Math.max(1, deadline - Date.now())));

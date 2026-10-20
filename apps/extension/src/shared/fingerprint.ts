@@ -166,6 +166,107 @@ function textOf(label: Element | null): string {
   return label ? nodeTextExcludingHelp(label) : "";
 }
 
+/** Elements whose text is a glyph or a control affordance, never part of a column name. */
+const HEADER_GLYPH_SELECTOR =
+  "i, svg, [aria-hidden='true'], .o_list_sortable_caret, .o_resize, .o_list_header_label_spacer";
+
+const CELL_ROLES = new Set(["cell", "gridcell"]);
+const HEADER_CELL_ROLES = new Set(["columnheader"]);
+
+function isCellLike(el: Element): boolean {
+  const tag = el.tagName.toUpperCase();
+  if (tag === "TD") return true;
+  return CELL_ROLES.has((el.getAttribute("role") ?? "").trim().toLowerCase());
+}
+
+function isHeaderCellLike(el: Element): boolean {
+  const tag = el.tagName.toUpperCase();
+  if (tag === "TH") return true;
+  return HEADER_CELL_ROLES.has((el.getAttribute("role") ?? "").trim().toLowerCase());
+}
+
+function indexAttribute(el: Element, name: string): number | null {
+  const raw = normalizeText(el.getAttribute(name));
+  return /^\d+$/.test(raw) ? parseInt(raw, 10) : null;
+}
+
+/**
+ * The name of the column header a table cell belongs to, or "" when the element does not sit
+ * in one. A control inside a `td` (or `role=cell`/`role=gridcell`) that carries no label of
+ * its own is called by its column: the `th` (or `role=columnheader`) at the same column
+ * position, counting `colspan` (`aria-colspan` in a grid), or the column named by the cell's
+ * `aria-colindex`. The header's text is trimmed, with sort arrows and icon glyphs left out.
+ *
+ * This is PL-048: Odoo's editable order-line fields have no accessible name at all -- only a
+ * placeholder, or nothing -- so the recorder had nothing better than rungs that cannot resolve
+ * (PL-046). The column header is what a person calls those fields.
+ *
+ * The resolver (`accessibleNameOf`/role rungs in `executor/ladder.ts`) cannot import this: it
+ * is serialized into the page as a self-contained function. It mirrors this rule, and
+ * `tests/order-line-names.test.ts` runs the same elements through both sides to pin the
+ * agreement.
+ */
+export function columnHeaderName(el: Element): string {
+  const cell =
+    el.parentElement && isCellLike(el)
+      ? el
+      : el.closest?.("td, [role='cell'], [role='gridcell']");
+  if (!cell) return "";
+  const table = cell.closest?.("table, [role='table'], [role='grid']");
+  if (!table) return "";
+
+  // The column the cell sits in: its own aria-colindex, else its position among the row's
+  // cells. The leading handle/selector column of Odoo's lists is a cell like any other, so
+  // positions line up with the header row's positions.
+  let column: number | null = null;
+  const colIndex = indexAttribute(cell, "aria-colindex");
+  if (colIndex !== null) {
+    column = colIndex - 1;
+  } else {
+    const row = cell.parentElement;
+    if (!row) return "";
+    const cells = Array.from(row.children).filter(isCellLike);
+    column = cells.indexOf(cell);
+  }
+  if (column === null || column < 0) return "";
+
+  // The header row: thead's first row, else the first row of the table/grid.
+  const thead = table.querySelector("thead");
+  const headerRow =
+    thead?.children[0] ??
+    (table.tagName.toUpperCase() === "TR" ? table : table.querySelector("tr, [role='row']"));
+  if (!headerRow) return "";
+
+  // Walk the header cells to the one covering `column`: each carries its own aria-colindex,
+  // else it starts where the previous one ended, spanning colspan (aria-colspan in a grid).
+  let cursor = 0;
+  let header: Element | null = null;
+  for (const candidate of Array.from(headerRow.children).filter(isHeaderCellLike)) {
+    const own = indexAttribute(candidate, "aria-colindex");
+    const spanValue = indexAttribute(candidate, "aria-colspan");
+    const start = own !== null ? own - 1 : cursor;
+    const span = Math.max(
+      1,
+      own !== null ? (spanValue ?? 1) : (indexAttribute(candidate, "colspan") ?? 1),
+    );
+    if (column >= start && column < start + span) {
+      header = candidate;
+      break;
+    }
+    cursor = start + span;
+  }
+  if (!header) return "";
+
+  // Header text, trimmed, with sort arrows and icon glyphs left out: Odoo's caret is an <i>
+  // (its glyph is a font, but a page can put a character in one), and a resize handle or an
+  // aria-hidden decoration is never part of the name.
+  const clone = header.cloneNode(true) as Element;
+  for (const glyph of Array.from(clone.querySelectorAll(HEADER_GLYPH_SELECTOR))) {
+    glyph.remove();
+  }
+  return normalizeText(clone.textContent);
+}
+
 /** The text of the `<label>` associated by `for` or by wrapping, if any. */
 export function labelText(el: Element): string {
   const id = el.getAttribute("id");
@@ -209,6 +310,13 @@ export function accessibleName(el: Element): string {
   const isFieldControl =
     el.tagName === "INPUT" || el.tagName === "SELECT" || el.tagName === "TEXTAREA";
   if (isFieldControl) {
+    // A field inside a table cell with no label of its own is named by its column header,
+    // BEFORE the placeholder (PL-048): the product cell of an Odoo order line then records as
+    // role combobox, name "Product", and the quantity as "Quantity", instead of rungs that
+    // cannot resolve. The resolver accepts the header name as well as the placeholder, so a
+    // recipe pinned with the placeholder name keeps resolving.
+    const header = columnHeaderName(el);
+    if (header) return truncate(header, 200);
     const fromValue = el.tagName === "INPUT" ? submittableValue(el) : "";
     if (fromValue) return truncate(fromValue, 200);
     const placeholder = normalizeText(el.getAttribute("placeholder"));

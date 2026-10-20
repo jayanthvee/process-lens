@@ -652,8 +652,19 @@ export function resolveTargetInPage(query: ResolveQuery): ResolveResult {
   };
 
   const roleOf = (el: Element): string => {
-    const explicit = lower(el.getAttribute("role"));
-    if (explicit) return explicit.split(" ")[0] ?? "";
+    // This must agree with `semanticRole` in shared/fingerprint.ts, which spells the rung: a
+    // recorded role is the role the resolver must read (PL-048). That side skips role="label"
+    // (the recorder never emits it -- a click on a label is recorded against the control the
+    // label names) and any role that could not be a recipe rung, falling back to the implicit
+    // role of the tag; so does this.
+    const explicit = norm(el.getAttribute("role"));
+    if (explicit) {
+      const first = explicit.split(" ")[0];
+      if (first) {
+        const role = first.toLowerCase();
+        if (role !== "label" && /^[a-z][a-z0-9-]*$/.test(role)) return role;
+      }
+    }
     const tag = el.tagName.toUpperCase();
     if (tag === "INPUT") {
       const type = (el.getAttribute("type") ?? "text").toLowerCase();
@@ -694,7 +705,9 @@ export function resolveTargetInPage(query: ResolveQuery): ResolveResult {
       DIALOG: "dialog",
       FIELDSET: "group",
       OPTION: "option",
-      LABEL: "label",
+      // Deliberately absent: LABEL. `label` is a tag, not a role; the recorder records a click
+      // on a label against the control the label names and never emits `role: "label"`, so a
+      // label is `generic` here exactly as it is there.
       // The table trio, which is what a results table is made of. A search result is a cell, and
       // rung 1 -- role plus accessible name -- is the rung a recipe should be able to use for one.
       // Without them a cell is `generic` and the only rung left is a CSS selector into someone
@@ -765,6 +778,84 @@ export function resolveTargetInPage(query: ResolveQuery): ResolveResult {
     if (title) return title;
     if (el.getAttribute("contenteditable") === "true") return "";
     return norm(el.textContent);
+  };
+
+  /**
+   * The name of the column header a table cell belongs to, or "" when the element does not
+   * sit in one: the `th` (or `role=columnheader`) at the cell's column, counting `colspan`
+   * (`aria-colspan` in a grid) or matched by `aria-colindex`, its text trimmed with sort
+   * arrows and icon glyphs left out.
+   *
+   * This mirrors `columnHeaderName` in shared/fingerprint.ts (PL-048): the resolver is
+   * serialized into the page as a self-contained function and cannot import the recorder's
+   * code, so the rule lives here too, and tests/order-line-names.test.ts runs the same
+   * elements through both sides to pin the agreement. A role rung named by the recorder's
+   * header name must resolve here.
+   */
+  const HEADER_GLYPH_SELECTOR =
+    "i, svg, [aria-hidden='true'], .o_list_sortable_caret, .o_resize, .o_list_header_label_spacer";
+  const CELL_ROLES = ["cell", "gridcell"];
+  const HEADER_CELL_ROLES = ["columnheader"];
+  const indexAttrOf = (el: Element, name: string): number | null => {
+    const raw = norm(el.getAttribute(name));
+    return /^\d+$/.test(raw) ? parseInt(raw, 10) : null;
+  };
+  const isCellLike = (el: Element): boolean =>
+    el.tagName.toUpperCase() === "TD" ||
+    CELL_ROLES.includes((el.getAttribute("role") ?? "").trim().toLowerCase());
+  const isHeaderCellLike = (el: Element): boolean =>
+    el.tagName.toUpperCase() === "TH" ||
+    HEADER_CELL_ROLES.includes((el.getAttribute("role") ?? "").trim().toLowerCase());
+  const columnHeaderNameOf = (el: Element): string => {
+    const cell =
+      el.parentElement && isCellLike(el)
+        ? el
+        : el.closest?.("td, [role='cell'], [role='gridcell']");
+    if (!cell) return "";
+    const table = cell.closest?.("table, [role='table'], [role='grid']");
+    if (!table) return "";
+
+    let column: number | null = null;
+    const colIndex = indexAttrOf(cell, "aria-colindex");
+    if (colIndex !== null) {
+      column = colIndex - 1;
+    } else {
+      const row = cell.parentElement;
+      if (!row) return "";
+      const cells = Array.from(row.children).filter(isCellLike);
+      column = cells.indexOf(cell);
+    }
+    if (column === null || column < 0) return "";
+
+    const thead = table.querySelector("thead");
+    const headerRow =
+      thead?.children[0] ??
+      (table.tagName.toUpperCase() === "TR" ? table : table.querySelector("tr, [role='row']"));
+    if (!headerRow) return "";
+
+    let cursor = 0;
+    let header: Element | null = null;
+    for (const candidate of Array.from(headerRow.children).filter(isHeaderCellLike)) {
+      const own = indexAttrOf(candidate, "aria-colindex");
+      const spanValue = indexAttrOf(candidate, "aria-colspan");
+      const start = own !== null ? own - 1 : cursor;
+      const span = Math.max(
+        1,
+        own !== null ? (spanValue ?? 1) : (indexAttrOf(candidate, "colspan") ?? 1),
+      );
+      if (column >= start && column < start + span) {
+        header = candidate;
+        break;
+      }
+      cursor = start + span;
+    }
+    if (!header) return "";
+
+    const clone = header.cloneNode(true) as Element;
+    for (const glyph of Array.from(clone.querySelectorAll(HEADER_GLYPH_SELECTOR))) {
+      glyph.remove();
+    }
+    return norm(clone.textContent);
   };
 
   // The fuzzy rung reads a *label*, never a value: an input's current text is
@@ -923,7 +1014,14 @@ export function resolveTargetInPage(query: ResolveQuery): ResolveResult {
         (el) =>
           inScope(el, scope) &&
           roleOf(el) === role &&
-          (name === "" || lower(accessibleNameOf(el)) === lower(name)),
+          // The rung's name matches the element's accessible name, or the name of the column
+          // header its cell belongs to (PL-048). The recorder names an unlabeled row field by
+          // its header BEFORE the placeholder, so the recorded rung says "Product" where the
+          // element's own accessible name is the placeholder "Search a product"; accepting
+          // either keeps recipes pinned with placeholder names resolving.
+          (name === "" ||
+            lower(accessibleNameOf(el)) === lower(name) ||
+            lower(columnHeaderNameOf(el)) === lower(name)),
       );
     } else if (by === "testid") {
       const value = norm(target.value);
