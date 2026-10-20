@@ -58,6 +58,10 @@ def test_home_answers_the_frozen_shape(
     assert set(body) == {
         "window_days",
         "counts",
+        "manual_seconds",
+        "automated_seconds",
+        "saved_seconds",
+        "estimated_rows",
         "minutes_saved",
         "needs_help",
         "running",
@@ -65,7 +69,10 @@ def test_home_answers_the_frozen_shape(
     }
     assert body["window_days"] == 7
     assert body["counts"] == {"done": 4, "already_there": 1, "needs_help": 2}
-    # Four rows at three minutes each, minus a run that has taken no measurable wall clock.
+    # Four rows at the three-minute fallback, minus a run that has taken no measurable wall clock.
+    # The task here has no measurement of its own, so every row is an estimate (PL-061).
+    assert body["manual_seconds"] == 4 * 180
+    assert body["estimated_rows"] == 4
     assert body["minutes_saved"] == 12
 
     assert set(body["counts"]) == {"done", "already_there", "needs_help"}
