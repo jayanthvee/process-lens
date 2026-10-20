@@ -50,3 +50,36 @@ def setting(env: Mapping[str, str], key: str, default: str | None = None) -> str
     if default is None:
         raise KeyError(f"{key} is missing from {env_file_in_use().name}")
     return default
+
+
+# PL-069: OrangeHRM's settings, with the defaults a fresh clone needs.
+#
+# `seed_orangehrm.py`, `tests/e2e/real_apps.py` and `reset.py` all read through this, so the test
+# login lives in one place. `infra/test-apps/.env.example` carries the same values, and a `.env`
+# may override any of them. Nothing above reads these keys, so adding them changes no other app.
+ORANGEHRM_DEFAULTS: dict[str, str] = {
+    "ORANGEHRM_HTTP_PORT": "8070",
+    "ORANGEHRM_DB_NAME": "orangehrm_test",
+    "ORANGEHRM_DB_USER": "orangehrm",
+    "ORANGEHRM_DB_PASSWORD": "orangehrm-test-password",
+    "ORANGEHRM_DB_ROOT_PASSWORD": "orangehrm-test-root",
+    # The admin login the installer creates. The password must satisfy OrangeHRM's own strength
+    # check at install time: upper case, lower case, a digit and a symbol.
+    "ORANGEHRM_ADMIN_USER": "Admin",
+    "ORANGEHRM_ADMIN_PASSWORD": "ProcessLensTest57!",
+    "ORANGEHRM_ADMIN_EMAIL": "admin@processlens.test",
+    "ORANGEHRM_ORGANIZATION": "ProcessLens Test",
+    "ORANGEHRM_COUNTRY": "US",
+    # The people the seeder creates, and the password every one of them signs in with.
+    "ORANGEHRM_EMPLOYEE_PASSWORD": "EmployeeTest57!",
+}
+
+
+def orangehrm_settings(env: Mapping[str, str]) -> dict[str, str]:
+    """OrangeHRM's settings: the file's own values where present, the defaults everywhere else."""
+    settings = dict(ORANGEHRM_DEFAULTS)
+    for key in settings:
+        value = str(env.get(key, "") or "").strip()
+        if value:
+            settings[key] = value
+    return settings
