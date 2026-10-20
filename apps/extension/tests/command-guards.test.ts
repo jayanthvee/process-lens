@@ -166,6 +166,17 @@ describe("checkDestructive", () => {
     expect(result.ok).toBe(true);
   });
 
+  it("a dropdown option is never destructive, whatever its name says", () => {
+    // PL-063, on Odoo: picking the product "Noise-Cancelling Headset" from an invoice line's
+    // autocomplete parked the row as a "cancel" control. Choosing an entry from a list deletes,
+    // cancels, refunds and pays nothing; the button that would is judged on its own click.
+    const { cdp } = fakeCdp();
+    const ctx = { cdp, step: step({ name: "Click Noise-Cancelling Headset" }), allowedOrigins: [] };
+    expect(checkDestructive(ctx, "[PL-AUD-8001] Noise-Cancelling Headset", "option").ok).toBe(true);
+    expect(checkDestructive(ctx, "Cancel order", "button").ok).toBe(false);
+    expect(checkDestructive(ctx, "Cancel order").ok).toBe(false);
+  });
+
   it("the destructive match is a word prefix, so Payment is refused", () => {
     expect(destructiveMatch("Payment")).toBe("pay");
     expect(destructiveMatch("Cancel order")).toBe("cancel");

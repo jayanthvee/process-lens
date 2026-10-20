@@ -29,6 +29,11 @@ export const POLICY_BLOCKED_MESSAGE = "your administrator's Chrome policy blocks
  */
 const DESTRUCTIVE_PREFIX = /\b(delete|cancel|refund|pay|transfer)/i;
 
+/** Whether a resolved element's role is a list entry, which a click only picks. */
+export function isOption(role: string | undefined): boolean {
+  return (role ?? "").toLowerCase() === "option";
+}
+
 /** The matched prefix of a destructive verb in an accessible name, or null. */
 export function destructiveMatch(accessibleName: string): string | null {
   const matched = DESTRUCTIVE_PREFIX.exec(accessibleName ?? "");
@@ -192,8 +197,15 @@ function declaredName(step: ExecutorStep): string {
  * reading the page sees — which the caller passes once it has resolved the target. The step's own
  * declared name is the fallback, for a caller that has not resolved one yet.
  */
-export function checkDestructive(ctx: GuardContext, accessibleName?: string): GuardResult {
+export function checkDestructive(
+  ctx: GuardContext,
+  accessibleName?: string,
+  role?: string,
+): GuardResult {
   if (ctx.step.action !== "click") return { ok: true };
+  // PL-066: choosing an entry from a list deletes, cancels and pays nothing -- "Noise-Cancelling
+  // Headset" is a product, not a Cancel button. Only the matched element's own role exempts it.
+  if (isOption(role)) return { ok: true };
   if (allowsDestructive(ctx.step)) return { ok: true };
   const declared = ctx.step.name ?? declaredName(ctx.step);
   const name = accessibleName || declared;
