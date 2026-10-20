@@ -756,7 +756,7 @@ def site_rows_submitted_today(conn: psycopg.Connection, tenant_id: uuid.UUID, or
         "JOIN runs r ON r.id = rr.run_id "
         "JOIN recipe_versions rv ON rv.id = r.recipe_version_id "
         "WHERE t.tenant_id = %s AND t.to_state = 'submitting' "
-        "AND t.at >= date_trunc('day', now() AT TIME ZONE 'utc') "
+        "AND t.at >= date_trunc('day', now() AT TIME ZONE 'utc') AT TIME ZONE 'utc' "
         "AND rv.recipe->'meta'->'allowed_origins' ? %s",
         (tenant_id, origin),
     ).fetchone()

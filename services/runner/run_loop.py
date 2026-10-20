@@ -418,9 +418,9 @@ class RunLoop:
             0.0 if self._last_step_at is None else max(0.0, self.clock.time() - self._last_step_at)
         )
         remaining = self.min_seconds_between_steps - elapsed
-        if remaining <= 0:
-            return True
-        if self._pace(conn, run, epoch, remaining):
+        # Every command that goes out restarts the gap, waited for or not: a slow step must not
+        # let the step after it go out back to back.
+        if remaining <= 0 or self._pace(conn, run, epoch, remaining):
             self._last_step_at = self.clock.time()
             return True
         # The run stopped during the wait: the record leaves the tab exactly as it does at the
