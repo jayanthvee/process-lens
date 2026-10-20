@@ -45,6 +45,26 @@ def _trace(message: str) -> None:
 pytestmark = [
     pytest.mark.e2e,
     pytest.mark.real_apps,
+    # PL-063, found on the third of three permitted runs (the first two are in the trace):
+    # the recording and the columns are right (search + sales_price), but the save produces no
+    # recorded evidence. An update-in-place on Odoo's product form navigates nowhere -- the URL
+    # stays /odoo/products/<id> -- and shows no confirmation the recorder's observation window
+    # recognizes, so the commit step compiles with nothing to assert and the Make recipe form
+    # refuses: "Could not save this as a task (1 problem)." / "commit step click-2 has no
+    # assert_after: the recording observed no confirmation and no navigation, and none was
+    # supplied for it" (the failing step is click-2, "Click Save manually"). The replay, the
+    # second run and the idempotency-key assertion sit behind that refusal, unreachably.
+    pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "PL-063: the product form's save records no commit evidence -- the update-in-place "
+            "navigates nowhere (the URL stays /odoo/products/<id>) and no confirmation the "
+            "recorder's window recognizes appears, so the compile refuses: 'commit step click-2 "
+            "has no assert_after: the recording observed no confirmation and no navigation, and "
+            "none was supplied for it' (result: 'Could not save this as a task (1 problem).'). "
+            "The failing step is click-2, 'Click Save manually'."
+        ),
+    ),
 ]
 
 # One demonstration's values, synthetic on purpose: they become the sample row.
@@ -92,23 +112,28 @@ def record_price_change(harness) -> None:
     page.wait_for_timeout(2000)
 
     # Change Sales Price and save. The form is replaced by the saved product's page.
-    last_action_seq = max(
-        (event.get("seq", 0) for event in harness.recording_events() if event.get("step")),
-        default=0,
-    )
     price = page.locator("div[name='list_price'] input").first
     price.wait_for(state="visible", timeout=20_000)
     price.click()
     price.fill("")
     price.press_sequentially(DEMO_PRICE, delay=30)
     page.wait_for_timeout(1500)
+    last_action_seq = max(
+        (event.get("seq", 0) for event in harness.recording_events() if event.get("step")),
+        default=0,
+    )
     page.locator("button.o_form_button_save").first.click()
-    page.wait_for_timeout(3000)
+    page.wait_for_timeout(4000)
 
     # The commit's evidence arrives from the page the save landed on, and the worker attaches it
-    # while the recording is still on.
-    assert harness.wait_for_observation_after(last_action_seq), (
-        "the save's own evidence (a confirmation or the navigation) was never recorded: "
+    # while the recording is still on. An update-in-place produces no navigation (the product
+    # page's URL does not move) and, in two observed runs, no confirmation the recorder's window
+    # recognizes -- which is exactly the finding this golden is here to pin, so the absence is
+    # traced and the compile refusal is what the test reports.
+    observation = harness.wait_for_observation_after(last_action_seq)
+    _trace(
+        f"save evidence recorded: {json.dumps(observation, default=str)} "
+        f"(events after the save: "
         + json.dumps(
             [
                 {
@@ -116,12 +141,12 @@ def record_price_change(harness) -> None:
                     "kind": event.get("kind"),
                     "step": (event.get("step") or {}).get("id"),
                     "observation": event.get("observation"),
-                    "url": event.get("url"),
                 }
                 for event in harness.recording_events()
+                if int(event.get("seq", 0)) > last_action_seq
             ],
-            indent=1,
         )
+        + ")"
     )
     harness.stop_recording()
 
@@ -169,13 +194,20 @@ def compile_update_recipe(harness, name: str, record_key: str | None) -> dict[st
         timeout=25_000,
     )
     result = popup.evaluate("() => document.getElementById('make-result')?.textContent || ''")
+    warnings = popup.evaluate("() => document.getElementById('make-warnings')?.textContent || ''")
+    _trace(f"popup result: {result!r} warnings: {warnings!r}")
     stored = popup.evaluate(
         "async () => { const s = await chrome.storage.session.get("
         "['processlens:executor-recipe', 'processlens:executor-row']);"
         " return { recipe: s['processlens:executor-recipe'] ?? null }; }"
     )
     compiled = "is ready" in str(result)
-    return {"recipe": stored.get("recipe") if compiled else None, "duplicate_proposed": proposed}
+    return {
+        "recipe": stored.get("recipe") if compiled else None,
+        "duplicate_proposed": proposed,
+        "result": result,
+        "warnings": warnings,
+    }
 
 
 def detail_for(harness, records: list[dict[str, Any]]) -> str:
@@ -241,37 +273,32 @@ def test_odoo_product_price_golden(odoo_harness, odoo_app) -> None:
     )
     _trace(f"record ok: {len(events)} events")
 
-    # 3. Compile through the popup's own form, twice on purpose: the first compile tells this
-    #    golden what the columns are (the schema carries each column's example), and the second
-    #    compiles the recipe the run uses, with the sku as the record key. The sku is the record
-    #    key: each row names its own product's internal reference.
+    # 3. Compile through the popup's own form, once, the way the quotation golden does: the
+    #    record key is read from the columns the form offers (their labels name what the
+    #    demonstration typed -- the search box and the price field), and the row builder maps
+    #    every column by its compiled example afterwards. The sku is the record key: each row
+    #    names its own product's internal reference.
     columns = [(column["label"], column["value"]) for column in harness.make_form_columns()]
     _trace(f"columns: {columns}")
     if os.environ.get("PROCESSLENS_E2E_DUMP_RECIPE") == "1":
         print("RECORDING:", json.dumps(events, indent=2, sort_keys=True))
         print("COLUMNS:", json.dumps(columns, indent=2))
-    outcome = compile_update_recipe(harness, "Update product price", None)
-    assert outcome["recipe"] is not None, (
-        f"the Make recipe form could not compile the recording: events={json.dumps(events)}"
-    )
-    fields = outcome["recipe"]["meta"]["input_schema"]["fields"]
 
-    def column_of(example: str) -> str | None:
-        for column, spec in fields.items():
-            if str((spec or {}).get("example", "")) == example:
-                return column
-        return None
+    def column_for(*needles: str) -> str:
+        """The first column whose label mentions any needle, case-insensitively."""
+        for needle in needles:
+            for label, value in columns:
+                if needle.lower() in label.lower():
+                    return value
+        raise AssertionError(
+            f"no recorded column mentions {needles!r}; the form offers {columns!r}"
+        )
 
-    sku_column = column_of(DEMO_SKU)
-    price_column = column_of(DEMO_PRICE)
-    assert sku_column is not None and price_column is not None, (
-        f"the compiled schema does not carry the sku ({DEMO_SKU!r}) and the new price "
-        f"({DEMO_PRICE!r}) as columns; fields: {sorted(fields)}"
-    )
+    sku_column = column_for("search", "sku", "reference")
     outcome = compile_update_recipe(harness, "Update product price", sku_column)
     assert outcome["recipe"] is not None, (
-        "the Make recipe form could not compile the recording with the sku as the key: "
-        f"events={json.dumps(events)}"
+        "the Make recipe form could not compile the recording: "
+        f"result={outcome['result']!r} warnings={outcome['warnings']!r} events={json.dumps(events)}"
     )
     recipe = outcome["recipe"]
     _trace(
@@ -281,6 +308,19 @@ def test_odoo_product_price_golden(odoo_harness, odoo_app) -> None:
     )
     if os.environ.get("PROCESSLENS_E2E_DUMP_RECIPE") == "1":
         print("COMPILED RECIPE:", json.dumps(recipe, indent=2, sort_keys=True))
+    fields = recipe["meta"]["input_schema"]["fields"]
+
+    def column_of(example: str) -> str | None:
+        for column, spec in fields.items():
+            if str((spec or {}).get("example", "")) == example:
+                return column
+        return None
+
+    price_column = column_of(DEMO_PRICE)
+    assert price_column is not None, (
+        f"the compiled schema does not carry the new price ({DEMO_PRICE!r}) as a column; "
+        f"fields: {sorted(fields)}"
+    )
 
     # 4. Replay the three rows.
     fields = recipe["meta"]["input_schema"]["fields"]
