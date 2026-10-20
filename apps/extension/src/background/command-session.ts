@@ -235,14 +235,27 @@ export class CommandSession {
 
     const fetchFn = (globalThis as { fetch?: typeof fetch }).fetch;
     if (typeof fetchFn !== "function") throw new Error("fetch is unavailable in this context");
-    const response = await fetchFn(`${trimBase(hubUrl)}/api/v1/executor/sessions`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "X-ProcessLens-Client": "extension",
-      },
-      body: JSON.stringify({ tab_url: info.url, tab_title: info.title }),
-    });
+    let response: Response;
+    try {
+      response = await fetchFn(`${trimBase(hubUrl)}/api/v1/executor/sessions`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "X-ProcessLens-Client": "extension",
+        },
+        body: JSON.stringify({ tab_url: info.url, tab_title: info.title }),
+      });
+    } catch (error) {
+      // Nothing listening at that address (the popup's auto-connect to 127.0.0.1:8000 before the
+      // demo is started) used to leave the session in "pairing" for good: the popup said
+      // "Connecting to ProcessLens" forever and Connect stayed disabled. Back to idle, so it can be
+      // pressed again.
+      this.stopped = true;
+      this.setState("idle");
+      throw new Error(
+        `ProcessLens is not answering at ${trimBase(hubUrl)} (${error instanceof Error ? error.message : String(error)})`,
+      );
+    }
     if (!response || response.status !== 201) {
       this.stopped = true;
       this.setState("idle");
