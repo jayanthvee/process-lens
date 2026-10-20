@@ -89,3 +89,124 @@
     padding: 4px 16px 18px;
   }
 }
+
+/* ---------------------------------------------------------------- */
+/* PL-062: editing a task's steps                                    */
+/* ---------------------------------------------------------------- */
+
+.task-detail .saved-note {
+  margin: 0;
+  padding: 12px 18px;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--gold) 45%, transparent);
+  background: var(--gold-soft);
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.task-detail .panel-h .count {
+  margin-left: auto;
+}
+
+.task-detail ol.steps.editing li.edit-row {
+  padding: 14px 20px 16px;
+}
+
+.task-detail .edit-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.task-detail .edit-head small {
+  display: block;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.task-detail .edit-remove {
+  margin-left: auto;
+}
+
+.task-detail .edit-controls {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+.task-detail .edit-controls label {
+  display: grid;
+  gap: 4px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.task-detail .edit-controls input,
+.task-detail .edit-controls select {
+  font: 400 13.5px var(--font);
+  color: var(--ink);
+  background: var(--glass-strong);
+  border: 1px solid var(--hair-2);
+  border-radius: 8px;
+  padding: 7px 10px;
+  min-width: 180px;
+  max-width: 320px;
+}
+
+.task-detail .edit-refusal {
+  margin: 10px 0 0;
+  color: var(--help);
+  font-size: 13.5px;
+}
+
+.task-detail .edit-problems {
+  margin: 0 20px 12px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--stop) 40%, transparent);
+  background: color-mix(in srgb, var(--stop) 8%, transparent);
+}
+
+.task-detail .edit-problems b {
+  font-weight: 600;
+}
+
+.task-detail .edit-problems ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  color: var(--ink-2);
+  font-size: 13.5px;
+}
+
+.task-detail .edit-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 4px 20px 16px;
+}
+
+/* The save is the action of this mode; it carries the accent without becoming a second primary. */
+.task-detail .edit-save {
+  background: var(--gold);
+  border-color: var(--gold);
+  color: var(--on-primary);
+}
+
+.task-detail .edit-save:hover:not(:disabled) {
+  background: var(--gold-deep);
+}
+
+@media (max-width: 780px) {
+  .task-detail .edit-controls label {
+    width: 100%;
+  }
+
+  .task-detail .edit-controls input,
+  .task-detail .edit-controls select {
+    max-width: none;
+    width: 100%;
+  }
+}

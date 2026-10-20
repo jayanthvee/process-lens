@@ -80,6 +80,7 @@ describe("apiPost", () => {
       {
         method: "POST",
         path: "/api/v1/records/rec-1/requeue",
+        search: "",
         body: { destination_checked_by: "operator-1" },
       },
     ]);

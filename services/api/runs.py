@@ -121,6 +121,14 @@ class RunDetail(BaseModel):
     # a worker claims the run; ``finished_at`` is null until it ends.
     started_at: datetime | None = None
     finished_at: datetime | None = None
+    # PL-061: the real comparison for one row of this run. All three are null while the run is open
+    # or has not finished a row. ``manual_seconds_per_row`` is what the task's own demonstration
+    # measured, so it is null for a task that never measured itself; ``automated_seconds_per_row``
+    # is the run's wall clock shared across its done rows; ``saved_seconds`` is the whole run's
+    # manual time less its wall clock, never below zero.
+    manual_seconds_per_row: float | None = None
+    automated_seconds_per_row: float | None = None
+    saved_seconds: int | None = None
     counts: RunCounts
     open_approval: OpenApproval | None = None
     # Set only while this run is queued and another run on the same app is running or paused.
@@ -236,6 +244,7 @@ def get_run_endpoint(run_id: uuid.UUID) -> RunDetail:
     with connection() as conn:
         run = _fetch_run(conn, run_id)
         summary = reads.run_summary(conn, run_id)
+        run_time = reads.run_time(conn, run_id)
         approval = open_approval_for_run(conn, run_id)
         blocking = reads.run_blocking(conn, run_id)
 
@@ -247,6 +256,17 @@ def get_run_endpoint(run_id: uuid.UUID) -> RunDetail:
         failed=summary.failed if summary else 0,
         in_progress=summary.in_progress if summary else 0,
     )
+    manual_per_row: float | None = None
+    automated_per_row: float | None = None
+    saved_seconds: int | None = None
+    if run_time is not None and run.status not in _OPEN_STATUSES and run_time.done > 0:
+        manual_per_row = run_time.manual_seconds_per_row
+        if run_time.automated_seconds is not None:
+            automated_per_row = round(run_time.automated_seconds / run_time.done, 1)
+            if manual_per_row is not None:
+                saved_seconds = max(
+                    0, round(run_time.done * manual_per_row - run_time.automated_seconds)
+                )
     return RunDetail(
         id=run.id,
         tenant_id=run.tenant_id,
@@ -259,6 +279,9 @@ def get_run_endpoint(run_id: uuid.UUID) -> RunDetail:
         cancel_requested_at=run.cancel_requested_at,
         started_at=run.started_at,
         finished_at=run.finished_at,
+        manual_seconds_per_row=manual_per_row,
+        automated_seconds_per_row=automated_per_row,
+        saved_seconds=saved_seconds,
         counts=counts,
         open_approval=(
             OpenApproval(
