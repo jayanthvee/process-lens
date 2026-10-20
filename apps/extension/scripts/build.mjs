@@ -1,69 +1,31 @@
 // Builds the loadable extension into dist/.
 //
 // The content script is bundled as a classic script (content scripts are not
-// ES modules); the service worker and popup are bundled as ES modules.
-import { build } from "esbuild";
-import { cp, mkdir, rm } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+// ES modules); the service worker and the popup are bundled as ES modules.
+//
+// A build can carry two things a handed-out copy needs:
+//   - the public key in `extension-key.pub`, which fixes the extension's id (PL-052);
+//   - PROCESSLENS_HUB_URL, which becomes the popup's starting address.
+// With neither, this is the build the e2e harness loads, unchanged.
+import { DEFAULT_HUB_URL, buildExtension, hubUrlFromEnv } from "./release-lib.mjs";
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const dist = resolve(root, "dist");
-
-async function run() {
-  await rm(dist, { recursive: true, force: true });
-  await mkdir(dist, { recursive: true });
-
-  await build({
-    entryPoints: [resolve(root, "src/content/recorder.ts")],
-    outfile: resolve(dist, "content/recorder.js"),
-    bundle: true,
-    format: "iife",
-    target: "chrome116",
-    sourcemap: true,
-    logLevel: "info",
-  });
-
-  await build({
-    entryPoints: [resolve(root, "src/background/service-worker.ts")],
-    outfile: resolve(dist, "background/service-worker.js"),
-    bundle: true,
-    format: "esm",
-    target: "chrome116",
-    sourcemap: true,
-    logLevel: "info",
-  });
-
-  await build({
-    entryPoints: [resolve(root, "src/popup/popup.ts")],
-    outfile: resolve(dist, "popup/popup.js"),
-    bundle: true,
-    format: "esm",
-    target: "chrome116",
-    sourcemap: true,
-    logLevel: "info",
-  });
-
-  await cp(resolve(root, "manifest.json"), resolve(dist, "manifest.json"));
-  await cp(resolve(root, "src/popup/popup.html"), resolve(dist, "popup/popup.html"));
-  await cp(resolve(root, "src/popup/popup.css"), resolve(dist, "popup/popup.css"));
-
-  // The popup's design tokens sit next to its stylesheet, and its fonts are bundled, never
-  // fetched: the four Public Sans weights are copied out of @fontsource/public-sans so the
-  // popup's CSP never has to allow a remote font.
-  await cp(resolve(root, "src/popup/tokens.css"), resolve(dist, "popup/tokens.css"));
-
-  const fontFiles = resolve(root, "node_modules/@fontsource/public-sans/files");
-  await mkdir(resolve(dist, "popup/fonts"), { recursive: true });
-  for (const weight of [300, 400, 500, 600]) {
-    const file = `public-sans-latin-${weight}-normal.woff2`;
-    await cp(resolve(fontFiles, file), resolve(dist, "popup/fonts", file));
-  }
-
-  console.log(`built extension into ${dist}`);
+const hub = hubUrlFromEnv();
+if (!hub.ok) {
+  console.error(hub.problem);
+  process.exit(2);
 }
 
-run().catch((error) => {
-  console.error(error);
-  process.exit(1);
-});
+buildExtension({ hubUrl: hub.url })
+  .then((built) => {
+    console.log(`built extension into ${built.dist}`);
+    console.log(`hub address: ${built.hubUrl === DEFAULT_HUB_URL ? `${built.hubUrl} (default)` : built.hubUrl}`);
+    console.log(
+      built.extensionId === null
+        ? "extension key: none, so Chrome picks the id from the folder (the e2e harness's build)"
+        : `extension key: ${built.extensionId}`,
+    );
+  })
+  .catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });

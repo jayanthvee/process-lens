@@ -28,7 +28,20 @@ interface SessionInfo {
   detail?: string;
 }
 
-const DEFAULT_HUB_URL = "http://127.0.0.1:8000";
+/**
+ * Where the popup points when the person has not typed an address.
+ *
+ * A handed-out build bakes in the hub it was built for: `npm run build` replaces
+ * `__PROCESSLENS_HUB_URL__` with the address it was given (`PROCESSLENS_HUB_URL`), so a
+ * coworker's copy already knows where ProcessLens is. A build given no address -- the e2e
+ * harness's own, and a developer's -- keeps this machine.
+ */
+declare const __PROCESSLENS_HUB_URL__: string | undefined;
+
+const DEFAULT_HUB_URL: string =
+  typeof __PROCESSLENS_HUB_URL__ === "string" && __PROCESSLENS_HUB_URL__.trim() !== ""
+    ? __PROCESSLENS_HUB_URL__.trim()
+    : "http://127.0.0.1:8000";
 
 function element<T extends HTMLElement>(id: string): T {
   const found = document.getElementById(id);
