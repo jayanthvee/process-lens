@@ -16,6 +16,7 @@ import {
   rowOutcome,
   runActions,
   runStatusWords,
+  timeComparisonWords,
 } from "../lib/words";
 import type { ExecutorSession, OperatorInfo, RecordRow, RunDetail as RunDetailPayload } from "../types";
 import {
@@ -27,6 +28,16 @@ import {
 import "./runs.css";
 
 type RunAction = "pause" | "resume" | "cancel";
+
+/**
+ * PL-061: the time comparison the API now sends on a finished run. Declared on top of the shared
+ * payload type here, so this screen can read the new fields while the rest of the app catches up.
+ */
+type RunDetailTime = RunDetailPayload & {
+  manual_seconds_per_row?: number | null;
+  automated_seconds_per_row?: number | null;
+  saved_seconds?: number | null;
+};
 
 /** The blur-in stagger for the sections (DESIGN.md §7). */
 function slot(index: number): CSSProperties {
@@ -76,7 +87,7 @@ export function RunDetail(): JSX.Element {
   // is already finished one more request two seconds after the page loaded, for nothing
   // (PL-015's "does not poll a run that is already finished", carried forward).
   const [pollMs, setPollMs] = useState<number | null>(null);
-  const run = useJson<RunDetailPayload>(runPath, pollMs);
+  const run = useJson<RunDetailTime>(runPath, pollMs);
   const records = useJson<RecordRow[]>(recordsPath, pollMs);
   // Whether Chrome is attached right now: a queued run with no session is waiting for the person
   // to open the extension, not for the engine (PL-033 requirement 4).
@@ -85,6 +96,11 @@ export function RunDetail(): JSX.Element {
   const detail = run.data;
   const rows = records.data ?? [];
   const open = isOpenStatus(detail?.status ?? null);
+  const time = {
+    manualSecondsPerRow: detail?.manual_seconds_per_row ?? null,
+    automatedSecondsPerRow: detail?.automated_seconds_per_row ?? null,
+    savedSeconds: detail?.saved_seconds ?? null,
+  };
 
   useEffect(() => {
     const next = isOpenStatus(detail?.status ?? null) ? POLL_INTERVAL_MS : null;
@@ -249,7 +265,24 @@ export function RunDetail(): JSX.Element {
     detail.started_at != null && detail.finished_at != null
       ? (new Date(detail.finished_at).getTime() - new Date(detail.started_at).getTime()) / 60000
       : null;
-  const saved = !open && minutes !== null ? minutesSavedWords(done * 3 - minutes) : null;
+  // PL-061: the API measures both sides, so the figures come from it when it sent them. The old
+  // three-minute arithmetic stays only as the fallback for a payload that predates the fields.
+  const saved =
+    !open && time.savedSeconds !== null
+      ? minutesSavedWords(time.savedSeconds / 60)
+      : !open && minutes !== null
+        ? minutesSavedWords(done * 3 - minutes)
+        : null;
+  // The one comparison line, under the outcome: by hand, ProcessLens, and the saving. A finished
+  // run that has done no row has nothing to compare yet.
+  const comparison =
+    open || done === 0
+      ? null
+      : timeComparisonWords({
+          manualSecondsPerRow: time.manualSecondsPerRow,
+          automatedSecondsPerRow: time.automatedSecondsPerRow,
+          savedSeconds: time.savedSeconds,
+        });
 
   return (
     <div className="run-detail">
@@ -279,6 +312,9 @@ export function RunDetail(): JSX.Element {
             <span className={`res ${status.tone}`}>{status.label}</span>
             <span>{alreadyThere} already there</span>
           </div>
+          {comparison === null ? null : (
+            <p className="times time-compare">{comparison}</p>
+          )}
         </div>
         <p className="pause-reason">{pauseReason ?? "Not paused."}</p>
         {started === null && finished === null ? null : (
@@ -358,7 +394,11 @@ export function RunDetail(): JSX.Element {
         <section className="saved-fig in" style={slot(2)}>
           <b>{saved}</b>
           <span>Time saved</span>
-          <small>vs. about 3 minutes a row by hand</small>
+          <small>
+            {time.manualSecondsPerRow === null
+              ? "vs. about 3 minutes a row by hand (estimated)"
+              : "vs. the time each row took by hand"}
+          </small>
         </section>
       )}
 
