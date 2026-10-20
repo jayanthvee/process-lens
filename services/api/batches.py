@@ -6,7 +6,8 @@ never from the caller, and a cross-tenant pin is not even acknowledged.
 
 The three routes are the three steps of "Run this task":
 
-1. ``POST /api/v1/batches`` reads a ``.csv`` or ``.xlsx`` file into a batch and its rows;
+1. ``POST /api/v1/batches`` reads a ``.csv``, ``.xlsx`` or ``.docx`` file into a batch and its
+   rows (a Word document is read and cleaned first);
 2. ``GET /api/v1/batches/{id}/check`` matches the spreadsheet's columns to the task's own columns,
    decides which rows are ready, and writes that verdict onto the rows (``create_run`` builds
    ledger rows only for ``status = 'ready'`` rows, so the verdict has to land before a run can
@@ -33,8 +34,9 @@ import openpyxl
 import psycopg
 from fastapi import APIRouter, Body, File, Form, HTTPException, Query, UploadFile
 from psycopg.rows import dict_row
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+from packages.documents import DocumentRefused, clean, read_docx
 from packages.ledger import (
     BatchRow,
     get_batch,
@@ -57,6 +59,7 @@ MAX_ALTERNATIVES = 5
 
 CSV_SUFFIX = ".csv"
 XLSX_SUFFIX = ".xlsx"
+DOCX_SUFFIX = ".docx"
 
 _SELECT_WORKFLOW = """
 SELECT id, tenant_id, archived_at FROM workflows WHERE id = %(id)s
@@ -88,6 +91,8 @@ class BatchUploadResponse(BaseModel):
     batch_id: uuid.UUID
     row_count: int
     columns: list[str]
+    # What the cleaner changed in a Word document, in the sentences a person reads.
+    notes: list[str] = Field(default_factory=list)
 
 
 class ColumnMapping(BaseModel):
@@ -476,8 +481,11 @@ async def upload_batch(
     rows are all refused before anything is written.
     """
     suffix = Path((file.filename or "").strip()).suffix.lower()
-    if suffix not in {CSV_SUFFIX, XLSX_SUFFIX}:
-        raise HTTPException(status_code=422, detail="Only a .csv or .xlsx file can be added here.")
+    if suffix not in {CSV_SUFFIX, XLSX_SUFFIX, DOCX_SUFFIX}:
+        raise HTTPException(
+            status_code=422,
+            detail="Only a .csv, .xlsx or .docx file can be added here.",
+        )
 
     content = await file.read(MAX_UPLOAD_BYTES + 1)
     if len(content) > MAX_UPLOAD_BYTES:
@@ -485,7 +493,17 @@ async def upload_batch(
             status_code=413, detail="This file is larger than 5 MB; split it and add it in parts."
         )
 
-    columns, raw_rows = _read_rows(suffix, content)
+    notes: list[str] = []
+    if suffix == DOCX_SUFFIX:
+        try:
+            columns, raw = read_docx(content)
+        except DocumentRefused as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        columns, raw_rows, notes = clean(
+            columns, [[row.get(column, "") for column in columns] for row in raw]
+        )
+    else:
+        columns, raw_rows = _read_rows(suffix, content)
     if not raw_rows:
         raise HTTPException(status_code=422, detail="This file has no rows.")
     if len(raw_rows) > MAX_ROWS:
@@ -501,7 +519,9 @@ async def upload_batch(
                 conn,
                 tenant_id=workflow["tenant_id"],
                 workflow_id=workflow_id,
-                kind=suffix.lstrip("."),
+                # A Word document is stored as the cleaned CSV it became: the rows are the
+                # cleaned rows, and no new batch kind is invented for them.
+                kind="csv" if suffix == DOCX_SUFFIX else suffix.lstrip("."),
                 rows=[
                     BatchRow(
                         row_index=index,
@@ -513,7 +533,12 @@ async def upload_batch(
                 ],
             )
         conn.commit()
-    return BatchUploadResponse(batch_id=batch_id, row_count=len(raw_rows), columns=columns)
+    return BatchUploadResponse(
+        batch_id=batch_id,
+        row_count=len(raw_rows),
+        columns=columns,
+        notes=notes,
+    )
 
 
 @router.get("/batches/{batch_id}/check", response_model=CheckResponse)
