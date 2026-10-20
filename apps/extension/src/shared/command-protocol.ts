@@ -40,12 +40,13 @@ export type EventKind =
   | "tab_closed"
   | "login_required"
   | "challenge"
+  | "code_required"
   | "policy_blocked"
   | "window_hidden"
   | "off_origin";
 
 /** The kinds of command the runner sends. */
-export type CommandKind = "prepare" | "dispatch" | "check" | "guard";
+export type CommandKind = "prepare" | "dispatch" | "check" | "guard" | "enter_code";
 
 /** What every command from the runner carries. */
 export interface CommandEnvelope {
@@ -105,7 +106,24 @@ export interface GuardCommandMessage extends CommandEnvelope {
   action: "arm" | "disarm";
 }
 
-export type CommandMessage = StepCommandMessage | CheckCommandMessage | GuardCommandMessage;
+/**
+ * `enter_code` (PL-068): the person supplied the site's one-time code on the run page, and the
+ * hub forwards it here once.
+ *
+ * The code is carried in memory for this one command and is never stored, logged or recorded. The
+ * command is not a step and carries no lease of its own: it acts on the page the paused run was
+ * holding, exactly where the code field is.
+ */
+export interface EnterCodeCommandMessage extends CommandEnvelope {
+  type: "enter_code";
+  code: string;
+}
+
+export type CommandMessage =
+  | StepCommandMessage
+  | CheckCommandMessage
+  | GuardCommandMessage
+  | EnterCodeCommandMessage;
 
 /** Sent the moment a commit's trusted input event has been dispatched. */
 export interface AckMessage {
@@ -198,12 +216,13 @@ export type OutgoingMessage =
   | PingMessage
   | PongMessage;
 
-const COMMAND_TYPES = new Set(["prepare", "dispatch", "check", "guard"]);
+const COMMAND_TYPES = new Set(["prepare", "dispatch", "check", "guard", "enter_code"]);
 const EVENT_KINDS = new Set<EventKind>([
   "detached",
   "tab_closed",
   "login_required",
   "challenge",
+  "code_required",
   "policy_blocked",
   "window_hidden",
   "off_origin",
@@ -237,6 +256,13 @@ export function parseIncoming(raw: unknown): { message: IncomingMessage } | { er
     if (type === "guard" && record["action"] !== "arm" && record["action"] !== "disarm") {
       // Fail-closed: a guard command says what to do, and an unknown action is not a default.
       return { error: `unknown guard action ${JSON.stringify(record["action"])}` };
+    }
+    if (type === "enter_code") {
+      // A code is 4-10 letters or digits. Anything else is refused here, before it reaches a page.
+      const code = record["code"];
+      if (typeof code !== "string" || !/^[0-9A-Za-z]{4,10}$/.test(code)) {
+        return { error: "enter_code has no usable code" };
+      }
     }
     return { message: record as unknown as CommandMessage };
   }

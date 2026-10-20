@@ -292,6 +292,10 @@ async def _read_loop(session: Session, peer: Peer) -> None:
 
     The frame is forwarded exactly as it arrived, so ids, whitespace and key order are the
     sender's, not the hub's. Nothing about a command is interpreted beyond its ``protocol``.
+
+    PL-068: one exception. A reply to a code the *API* sent (``enter_code``) has no runner waiting
+    for it -- the run is paused and its worker has gone -- so the hub resolves the pending call
+    instead of relaying. The reply never contains the code; only ``entered``/``not_found``.
     """
     while True:
         message = await peer.websocket.receive()
@@ -301,12 +305,94 @@ async def _read_loop(session: Session, peer: Peer) -> None:
         if not isinstance(text, str) or not _is_protocol_message(text):
             await _close_peer(peer, PROTOCOL_ERROR_CODE)
             return
+        if _resolve_enter_code(text):
+            continue
         other = _other_peer(session, peer)
         if other is None:
             await _send_frame(peer, _hub_error(_command_id(text)))
             continue
         if not _enqueue(other, text):
             await _close_peer(other, QUEUE_OVERFLOW_CODE)
+
+
+# ---------------------------------------------------------------- PL-068: the code a person types
+
+# One pending `enter_code` per command id: what the API waits on while the person's code is being
+# typed into the page. It lives in memory only -- the same rule as the code itself.
+_pending_codes: dict[str, asyncio.Future[dict[str, Any]]] = {}
+
+ENTER_CODE_TIMEOUT_SECONDS = 15.0
+
+
+def _resolve_enter_code(text: str) -> bool:
+    """Resolve a pending code delivery from the extension's reply; True when it was one."""
+    try:
+        frame = json.loads(text)
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(frame, dict) or frame.get("type") != "result":
+        return False
+    command_id = frame.get("command_id")
+    if not isinstance(command_id, str):
+        return False
+    waiter = _pending_codes.pop(command_id, None)
+    if waiter is None or waiter.done():
+        return False
+    observed = frame.get("observed")
+    entered = bool(
+        frame.get("status") == "ok" and isinstance(observed, dict) and observed.get("entered")
+    )
+    # The extension's own reason (``not_found``, a refusal's sentence) is kept so the run page can
+    # say what happened; it is the extension's words about the page, never the code.
+    reason = observed.get("reason") if isinstance(observed, dict) else None
+    if not entered and not reason:
+        reason = frame.get("error") or frame.get("status")
+    waiter.set_result(
+        {"entered": entered, "reason": "submitted" if entered else str(reason or "not_found")[:200]}
+    )
+    return True
+
+
+async def send_enter_code(
+    code: str, *, run_id: str | uuid.UUID, lease_epoch: int = 0
+) -> dict[str, Any]:
+    """Forward a person's code to the attached extension, once, and wait for what it did.
+
+    The code is carried in this frame and nowhere else: not in a database row, not in a log line,
+    not in the answer. The answer says only whether the page's code field was found.
+    """
+    async with _sessions_lock:
+        _purge_expired(time.time())
+        session = next(
+            (row for row in reversed(_sessions.values()) if row.extension is not None),
+            None,
+        )
+        peer = session.extension if session is not None else None
+    if peer is None:
+        return {"entered": False, "reason": "no_extension"}
+
+    command_id = f"code:{uuid.uuid4()}"
+    loop = asyncio.get_running_loop()
+    waiter: asyncio.Future[dict[str, Any]] = loop.create_future()
+    _pending_codes[command_id] = waiter
+    frame = _frame(
+        "enter_code",
+        command_id=command_id,
+        step_ref="enter_code",
+        run_id=str(run_id),
+        run_record_id="",
+        lease_epoch=lease_epoch,
+        expires_at=(time.time() + ENTER_CODE_TIMEOUT_SECONDS) * 1000,
+        code=code,
+    )
+    if not _enqueue(peer, _encode(frame)):
+        _pending_codes.pop(command_id, None)
+        return {"entered": False, "reason": "no_extension"}
+    try:
+        return await asyncio.wait_for(waiter, timeout=ENTER_CODE_TIMEOUT_SECONDS)
+    except TimeoutError:
+        _pending_codes.pop(command_id, None)
+        return {"entered": False, "reason": "not_found"}
 
 
 async def _write_loop(peer: Peer) -> None:

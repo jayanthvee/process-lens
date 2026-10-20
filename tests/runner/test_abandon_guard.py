@@ -16,9 +16,27 @@ from typing import Any
 import psycopg
 
 from services.runner.run_loop import ABANDON_GUARD_STEP_ID, BLOCKED_REQUEST_MESSAGE
-from services.runner.testing import ScriptedRun
+from services.runner.testing import EventDrain, ScriptedRun
 from services.runner.worker import Worker
 from tests.runner.conftest import Seed, recipe
+
+
+def _queue_during(scripted: ScriptedRun, method: str, kind: str, detail: str) -> None:
+    """Queue a run-level event the moment the named executor call returns.
+
+    An event pushed before the run starts is handled between records, where nothing is armed; a
+    pause that arrives *while* a record is filling the page is the case these tests are about.
+    """
+    drain = scripted.events
+    assert isinstance(drain, EventDrain)
+    original = getattr(scripted.executor, method)
+
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        result = original(*args, **kwargs)
+        drain.push(kind, detail)
+        return result
+
+    setattr(scripted.executor, method, wrapper)  # type: ignore[method-assign]
 
 
 def _step_events(conn: psycopg.Connection, run_id: Any) -> list[dict[str, Any]]:
@@ -100,6 +118,54 @@ def test_a_precheck_park_does_not_arm_the_guard(
 
     assert base.states(run_id)["k1"] == "parked"
     assert "arm" not in scripted.executor.guard_calls, "the browser never opened this record"
+
+
+def test_a_code_prompt_pause_keeps_the_page_open(
+    seed: Callable[..., Seed],
+    make_worker: Callable[..., Worker],
+    conn: psycopg.Connection,
+) -> None:
+    """PL-074: the code page is where the person answers, so the guard must not retire it.
+
+    The guard's retirement navigates the bound tab to ``about:blank``. For every other abandoned
+    record that is the point; for a one-time-code prompt it takes the field away before the run
+    page's code can reach it, and the run answers ``not_found`` forever.
+    """
+    base = seed(recipe())
+    base.add_input_record(key="k1", email="k1@x.com")
+    run_id = base.create_run()
+
+    scripted = ScriptedRun.build()
+    _queue_during(scripted, "prepare", "code_required", "Enter the 6-digit code we emailed you")
+    worker = make_worker(scripted)
+    assert worker.run_once() is True
+
+    assert base.run_status(run_id) == ("paused", "code_required")
+    assert base.states(run_id) == {"k1": "pending"}, "the record is released for the resume"
+    assert "arm" not in scripted.executor.guard_calls, (
+        "the guard would navigate the code page to about:blank"
+    )
+
+
+def test_a_login_pause_still_arms_the_guard(
+    seed: Callable[..., Seed],
+    make_worker: Callable[..., Worker],
+    conn: psycopg.Connection,
+) -> None:
+    """PL-074 narrowed nothing else: a login wall still retires the half-filled form."""
+    base = seed(recipe())
+    base.add_input_record(key="k1", email="k1@x.com")
+    run_id = base.create_run()
+
+    scripted = ScriptedRun.build()
+    _queue_during(scripted, "prepare", "login_required", "a sign-in page appeared")
+    worker = make_worker(scripted)
+    assert worker.run_once() is True
+
+    assert base.run_status(run_id) == ("paused", "login_required")
+    assert "arm" in scripted.executor.guard_calls, (
+        "every other pause leaves a half-filled form that must not autosave"
+    )
 
 
 def test_what_the_guard_refused_reaches_the_ledger(
