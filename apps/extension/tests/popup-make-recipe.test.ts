@@ -7,7 +7,9 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+  compileRecording,
   createMakeRecipeForm,
+  saveTask,
   commitChoices,
   defaultCommitStepId,
   defaultRecordKeyColumn,
@@ -1125,5 +1127,29 @@ describe("the wording of the search rule (PL-077)", () => {
       .closest("label")
       ?.querySelector(".field__label");
     expect(label?.textContent).toBe(SKIP_IF_THERE);
+  });
+});
+
+describe("the team access code on compile and save (PL-086)", () => {
+  it("rides on both calls when there is one, and is absent when there is none", async () => {
+    const seen: Array<Record<string, string>> = [];
+    const fetchImpl = (async (_url: string, init: RequestInit) => {
+      seen.push(init.headers as Record<string, string>);
+      return new Response(JSON.stringify({ recipe: { steps: [] }, workflow_id: "wf-1" }), {
+        status: 200,
+      });
+    }) as unknown as typeof fetch;
+    const request = { recording: [] } as unknown as Parameters<typeof compileRecording>[0];
+
+    await compileRecording(request, { fetchImpl, baseUrl: "https://h.example", accessCode: "c" });
+    await saveTask(
+      { name: "t", recipe: {} } as Parameters<typeof saveTask>[0],
+      { fetchImpl, baseUrl: "https://h.example", accessCode: "c" },
+    );
+    await compileRecording(request, { fetchImpl, baseUrl: "http://127.0.0.1:8000" });
+
+    expect(seen[0]?.["authorization"]).toBe("Bearer c");
+    expect(seen[1]?.["authorization"]).toBe("Bearer c");
+    expect(seen[2]).not.toHaveProperty("authorization");
   });
 });

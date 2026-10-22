@@ -44,6 +44,7 @@ import uvicorn  # noqa: E402
 
 from db.migrate import apply_migrations  # noqa: E402
 from packages.ledger import OpenRunRow, list_open_runs  # noqa: E402
+from services.api import access  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -53,6 +54,8 @@ RUNNER_SECRET_KEY = "PROCESSLENS_RUNNER_SECRET"
 EXTENSION_ID_KEY = "PROCESSLENS_EXTENSION_ID"
 API_URL_KEY = "PROCESSLENS_API_URL"
 PORT_KEY = "PORT"
+# PL-086: a hosted API (services.api.access) requires the team's access code.
+ACCESS_CODE_KEY = "PROCESSLENS_ACCESS_CODE"
 
 DEFAULT_PORT = 8000
 
@@ -233,6 +236,9 @@ def api_command() -> int:
     dsn = require_setting(DATABASE_URL_KEY)
     require_setting(RUNNER_SECRET_KEY)
     require_setting(EXTENSION_ID_KEY)
+    if access.hosted():
+        # Hosted, the access code is the only door: never start one that is open to everyone.
+        require_setting(ACCESS_CODE_KEY)
 
     print("Applying migrations...")
     apply_migrations(dsn)
@@ -268,12 +274,19 @@ def hub_ws_url(api_url: str) -> str:
     return base
 
 
-def attached_session(api_url: str) -> str | None:
-    """The attached extension session's id, or ``None`` when the popup has not connected."""
+def attached_session(api_url: str, runner_secret: str | None = None) -> str | None:
+    """The attached extension session's id, or ``None`` when the popup has not connected.
+
+    A hosted API (PL-086) answers only a caller with a credential, so the supervisor presents the
+    runner secret it already holds; a local API ignores the header.
+    """
+    secret = runner_secret if runner_secret is not None else os.environ.get(RUNNER_SECRET_KEY, "")
+    headers = {"Authorization": f"Bearer {secret.strip()}"} if secret.strip() else {}
+    request = urllib.request.Request(
+        f"{supervisor_api_base(api_url)}/api/v1/executor/session", headers=headers
+    )
     try:
-        with urllib.request.urlopen(
-            f"{supervisor_api_base(api_url)}/api/v1/executor/session", timeout=5
-        ) as response:
+        with urllib.request.urlopen(request, timeout=5) as response:
             body = json.loads(response.read())
     except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError, ValueError):
         return None

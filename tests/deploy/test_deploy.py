@@ -71,6 +71,47 @@ def test_missing_runner_secret_is_refused_not_generated(
     assert "PROCESSLENS_RUNNER_SECRET" in printed[0]
 
 
+def test_a_hosted_api_without_an_access_code_refuses_to_start(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], deploy_env: None
+) -> None:
+    """PL-086: hosted, the access code is the only door, so a missing one stops start-up."""
+    monkeypatch.setenv("RENDER_EXTERNAL_URL", "https://processlens-api.onrender.com")
+    monkeypatch.delenv("PROCESSLENS_ACCESS_CODE", raising=False)
+    monkeypatch.setattr(deploy, "apply_migrations", lambda dsn: None)
+
+    assert deploy.main(["api"]) == 1
+    printed = [line for line in capsys.readouterr().out.splitlines() if line.strip()]
+    assert len(printed) == 1
+    assert "PROCESSLENS_ACCESS_CODE" in printed[0]
+
+
+def test_the_supervisor_presents_the_runner_secret_when_it_reads_the_session(
+    monkeypatch: pytest.MonkeyPatch, deploy_env: None
+) -> None:
+    """PL-086: a hosted API answers the supervisor only with a credential."""
+    seen: list[Any] = []
+
+    class Answer:
+        def __enter__(self) -> Answer:
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return b'{"attached": true, "session_id": "abc"}'
+
+    def urlopen(request: Any, timeout: float) -> Answer:
+        seen.append(request)
+        return Answer()
+
+    monkeypatch.setattr(deploy.urllib.request, "urlopen", urlopen)
+
+    assert deploy.attached_session("https://api.example.test/") == "abc"
+    assert seen[0].full_url == "https://api.example.test/api/v1/executor/session"
+    assert seen[0].get_header("Authorization") == "Bearer <generate one>"
+
+
 def test_api_command_migrates_then_ensures_the_operator_then_serves(
     monkeypatch: pytest.MonkeyPatch, deploy_env: None
 ) -> None:

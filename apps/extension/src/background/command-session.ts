@@ -22,6 +22,7 @@ import {
   type EventKind,
   type OutgoingMessage,
 } from "../shared/command-protocol";
+import { accessHeaders } from "../shared/access";
 import type { BlockedRequest } from "../executor/abandon-guard";
 import type { StepReport } from "../executor/types";
 import { ExecutorError } from "../executor/types";
@@ -46,6 +47,8 @@ export type SessionState =
 /** The parts of a session that survive a worker restart. */
 export interface StoredSession {
   hubUrl: string;
+  /** PL-086: the team access code a hosted hub asks for; absent or empty on a laptop. */
+  accessCode?: string;
   sessionId: string;
   resumeToken: string;
   boundTabId: number;
@@ -147,6 +150,10 @@ export interface SessionDeps {
 const RECONNECT_SCHEDULE_MS = [500, 1000, 2000, 4000];
 
 /** Trim trailing slashes so a hub URL composes cleanly. */
+/** What the popup shows when a hosted ProcessLens refuses the team access code (PL-086). */
+export const ACCESS_REFUSED =
+  "ProcessLens needs the team access code. Open More and check Team access code.";
+
 function trimBase(hubUrl: string): string {
   return hubUrl.replace(/\/+$/, "");
 }
@@ -234,7 +241,7 @@ export class CommandSession {
    * Pair with the hub and open the socket. The hub creates the session from the
    * active tab, and the extension opens the socket with the token it was given.
    */
-  async connect(hubUrl: string): Promise<void> {
+  async connect(hubUrl: string, accessCode = ""): Promise<void> {
     this.stopped = true; // refuse a competing reconnect while pairing
     this.setState("pairing");
     const info = await this.activeTabInfo();
@@ -249,6 +256,7 @@ export class CommandSession {
         headers: {
           "content-type": "application/json",
           "X-ProcessLens-Client": "extension",
+          ...accessHeaders(accessCode),
         },
         body: JSON.stringify({ tab_url: info.url, tab_title: info.title }),
       });
@@ -263,6 +271,12 @@ export class CommandSession {
         `ProcessLens is not answering at ${trimBase(hubUrl)} (${error instanceof Error ? error.message : String(error)})`,
       );
     }
+    if (response?.status === 401) {
+      // PL-086: a hosted ProcessLens without the right team access code.
+      this.stopped = true;
+      this.setState("idle");
+      throw new Error(ACCESS_REFUSED);
+    }
     if (!response || response.status !== 201) {
       this.stopped = true;
       this.setState("idle");
@@ -276,7 +290,7 @@ export class CommandSession {
       throw new Error("the hub did not return a session id");
     }
     this.sessionToken = typeof body["session_token"] === "string" ? body["session_token"] : "";
-    this.stored = { hubUrl, sessionId, resumeToken: "", boundTabId };
+    this.stored = { hubUrl, accessCode, sessionId, resumeToken: "", boundTabId };
     await this.deps.storage.set(this.stored);
     this.stopped = false;
     this.reconnectAttempt = 0;

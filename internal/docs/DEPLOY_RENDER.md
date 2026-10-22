@@ -37,15 +37,33 @@ what each variable means.
 
 6. Open `<api address>/health`. It answers `{"status": "ok", "db": true}` when the API is up and
    Postgres is reachable.
-7. Open `<api address>` itself: the dashboard loads.
+7. Open `<api address>` itself: it asks for the team access code (PL-086). The code is on
+   **processlens-api → Environment → PROCESSLENS_ACCESS_CODE**, which Render generated. Paste it
+   once; this browser stays signed in for 30 days.
 8. In the supervisor's **Logs**, a line every few seconds says it's watching for runs, with no
    errors.
 
-## 4. Point the extension at it
+## 4. Build the extension for it
 
-9. In the ProcessLens popup, open **More**, set the address to `https://<api address>`, and press
-   **Connect**. The extension switches `https://` to `wss://` for the hub by itself
-   (`socketBase` in `apps/extension/src/background/command-session.ts`).
+9. Build the copy you hand out with the address and the access code baked in, so nobody types
+   either:
+
+   ```bash
+   PROCESSLENS_HUB_URL=https://<api address> PROCESSLENS_ACCESS_CODE=<the code> npm --prefix apps/extension run package
+   ```
+
+   The zip lands in `apps/extension/release/` (git ignores it; it holds the code, so share it only
+   with the team). Unzip it and use **Load unpacked**. The popup connects by itself; the address
+   and the code are also under **More** if they ever change. The extension switches `https://`
+   to `wss://` for the hub by itself.
+
+## Hosted mode, in one paragraph
+
+On a laptop the API answers only this machine. Hosted, it answers only its public address
+(`RENDER_EXTERNAL_URL`, or `PROCESSLENS_PUBLIC_URL` for your own domain), and only callers with a
+credential: the dashboard's cookie, the extension's access code, or the supervisor's runner
+secret. `/health` stays open for Render's check. Rotating `PROCESSLENS_ACCESS_CODE` signs everyone
+out; rebuild the extension with the new one.
 
 ## What it costs
 

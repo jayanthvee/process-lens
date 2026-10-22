@@ -13,6 +13,7 @@ import {
   type RecorderStatus,
   type ToWorker,
 } from "../shared/messages";
+import { accessHeaders } from "../shared/access";
 import type { PendingEvent } from "../shared/events";
 import type { Condition, RecordedEvent } from "../shared/recipe-types";
 import type { EventKind } from "../shared/command-protocol";
@@ -825,7 +826,8 @@ async function reportExtensionVersion(): Promise<void> {
   try {
     const version = chrome.runtime?.getManifest?.().version;
     if (typeof version !== "string" || version === "") return;
-    const hubUrl = (await commandStorage().get())?.hubUrl;
+    const stored = await commandStorage().get();
+    const hubUrl = stored?.hubUrl;
     if (typeof hubUrl !== "string" || hubUrl === "") return;
     const fetchFn = (globalThis as { fetch?: typeof fetch }).fetch;
     if (typeof fetchFn !== "function") return;
@@ -834,6 +836,7 @@ async function reportExtensionVersion(): Promise<void> {
       headers: {
         "content-type": "application/json",
         "X-ProcessLens-Client": "extension",
+        ...accessHeaders(stored?.accessCode),
       },
       body: JSON.stringify({ version }),
     });
@@ -968,7 +971,7 @@ async function handleExecutor(message: ToWorker): Promise<unknown> {
       steerExecutor("abort");
       break;
     case "executor:connect":
-      await getCommandSession().connect(message.hubUrl);
+      await getCommandSession().connect(message.hubUrl, message.accessCode ?? "");
       break;
     case "executor:disconnect":
       await getCommandSession().disconnect();

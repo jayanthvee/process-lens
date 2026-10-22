@@ -31,6 +31,12 @@ services:
       # The extension's id from chrome://extensions; the hub refuses every other origin.
       - key: PROCESSLENS_EXTENSION_ID
         sync: false
+      # The team's access code (PL-086). Hosted, the API answers nobody without it: the dashboard
+      # asks for it once per browser, and the extension build carries it. Render makes it once;
+      # read it on this service's Environment page. The API's public address needs no setting
+      # here: Render provides RENDER_EXTERNAL_URL.
+      - key: PROCESSLENS_ACCESS_CODE
+        generateValue: true
       - fromGroup: processlens-shared
 
   - type: worker

@@ -3,6 +3,7 @@
 
 export const EXTENSION_ROOT: string;
 export const HUB_URL_ENV: string;
+export const ACCESS_CODE_ENV: string;
 export const DEFAULT_HUB_URL: string;
 export const HUB_URL_PROBLEM: string;
 
@@ -21,12 +22,15 @@ export interface BuildOptions {
   root?: string;
   dist?: string;
   hubUrl?: string;
+  /** PL-086: the hosted ProcessLens's team access code, baked into the popup. */
+  accessCode?: string;
   publicKeyPath?: string;
 }
 
 export interface BuildResult {
   dist: string;
   hubUrl: string;
+  hasAccessCode: boolean;
   publicKey: string | null;
   extensionId: string | null;
 }

@@ -37,6 +37,10 @@ Four checks, each answering 403 with the check it refused named in ``detail``:
   origin check above refuses every ``Origin`` that is not this API's own. The exception is one path
   wide for that reason, and every other state-changing request keeps the JSON-only rule.
 
+Hosted (PL-086, ``services.api.access``), the ``host`` check names the public address instead, the
+``loopback`` check gives way to an access credential (401 without one), and the public address's
+origin counts as this API's own. ``GET /health`` passes untouched, for the platform's check.
+
 A non-``http`` scope passes straight through, so ``/api/v1/executor/ws`` and ``/api/v1/runner/ws``
 keep their own, stricter checks: the hub refuses a socket by close code, not by 403.
 """
@@ -47,6 +51,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from . import access
 from .hub import host_header_is_local, is_loopback, origin_is_extension
 
 STATE_CHANGING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
@@ -57,6 +62,7 @@ JSON_MEDIA_TYPE = "application/json"
 FORM_MEDIA_TYPE = "multipart/form-data"
 UPLOAD_PATH = "/api/v1/batches"
 FORBIDDEN_STATUS = 403
+UNAUTHORIZED_STATUS = 401
 # The four routes a browser page never calls and the extension does, so the four routes where an
 # origin other than this API's own is meaningful: the service worker opens a session and reports its
 # manifest version, and the popup compiles the recording it just captured and saves the task it
@@ -77,13 +83,17 @@ EXTENSION_ORIGIN_PATHS = frozenset(
 HOST_DETAIL = "refused by the host check: Host must be 127.0.0.1:<port> or localhost:<port>"
 LOOPBACK_DETAIL = "refused by the loopback check: the client is not this machine's loopback address"
 ORIGIN_DETAIL = "refused by the origin check: Origin must be this API's own origin"
+HOSTED_HOST_DETAIL = "refused by the host check: Host must be this API's public address"
 CONTENT_TYPE_DETAIL = (
     "refused by the content-type check: a request with a body must be application/json"
 )
 
 
 def _host_refusal(request: Request) -> str | None:
-    """The ``Host`` header must name the local interface (DNS rebinding)."""
+    """The ``Host`` header must name the local interface (DNS rebinding), or, hosted, the public
+    address and nothing else."""
+    if access.hosted():
+        return None if access.host_is_public(request.headers.get("host")) else HOSTED_HOST_DETAIL
     if host_header_is_local(request.headers.get("host")):
         return None
     return HOST_DETAIL
@@ -114,6 +124,11 @@ def _origin_refusal(request: Request) -> str | None:
     if origin is None:
         return None  # a CLI, a worker or a test client sends none
     if origin.strip().lower() == _own_origin(request).lower():
+        return None
+    # Hosted, the proxy speaks plain HTTP to us, so the scheme above is not the page's: the page's
+    # origin is the public address itself.
+    public = access.public_origin()
+    if public is not None and origin.strip().lower() == public:
         return None
     # Opening a session, reporting a version, compiling a recording and saving the task it
     # compiled into are the four things the extension does over HTTP, and it can present no origin
@@ -175,10 +190,32 @@ class FrontDoorMiddleware:
             return
 
         request = Request(scope, receive)
+        hosted = access.hosted()
+        if hosted and access.open_without_credential(request.method, request.url.path):
+            if request.url.path == access.HEALTH_PATH:
+                # The platform's health check may name an internal host; it reads nothing private.
+                await self.app(scope, receive, send)
+                return
+        elif hosted:
+            # Hosted, a loopback peer proves nothing (every request comes through the proxy), so
+            # the access credential takes the loopback check's place. Host first, so a rebound name
+            # is still told which check refused it.
+            refusal = _host_refusal(request)
+            if refusal is None and not access.has_credential(request):
+                unauthorized = JSONResponse(
+                    {"detail": access.ACCESS_DETAIL}, status_code=UNAUTHORIZED_STATUS
+                )
+                await unauthorized(scope, receive, send)
+                return
+
         # A body no header announces can only be seen by reading the first message. The peek is put
         # back in front of the stream, so the route still receives everything, in order.
         held: list[Message] = []
-        detail = _host_refusal(request) or _loopback_refusal(request) or _origin_refusal(request)
+        detail = (
+            _host_refusal(request)
+            or (None if hosted else _loopback_refusal(request))
+            or _origin_refusal(request)
+        )
         if detail is None and _needs_a_body_peek(request):
             held.append(await receive())
         if detail is None:
