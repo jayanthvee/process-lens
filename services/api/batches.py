@@ -252,9 +252,15 @@ def _excel_text(value: Any) -> str:
     return _raw_text(value)
 
 
-def _row_from(cells: list[Any], headers: list[str]) -> dict[str, str]:
-    """One row as a dict: every value a string, a missing cell an empty string."""
-    values = [_raw_text(cell) for cell in cells]
+def _row_from(
+    cells: list[Any], headers: list[str], format_cell: Callable[[Any], str] | None = None
+) -> dict[str, str]:
+    """One row as a dict: every value a string, a missing cell an empty string.
+
+    A workbook's cells are written the way a person reads them (``_excel_text``), untrimmed: a
+    mapped run reads this row, so Python's ``00:00:00`` and ``1.0`` must never be what it holds.
+    """
+    values = [(format_cell or _raw_text)(cell) for cell in cells]
     values += [""] * max(0, len(headers) - len(values))
     return dict(zip(headers, values, strict=False))
 
@@ -349,7 +355,7 @@ def _read_xlsx(
         headers = _headers(header_cells)
         return (
             headers,
-            [_row_from(cells, headers) for cells in body],
+            [_row_from(cells, headers, _excel_text) for cells in body],
             [_clean_row(cells, headers, _excel_text) for cells in body],
         )
     finally:
@@ -525,8 +531,13 @@ def _values_for(raw: dict[str, Any], mapping: dict[str, str | None]) -> dict[str
         if not spreadsheet_column:
             continue
         value = raw.get(spreadsheet_column)
-        values[recipe_column] = "" if value is None else value
+        # Trimmed, as `clean` is (PL-088): the check judges, and shows, what a run will type.
+        values[recipe_column] = "" if value is None else _trimmed(value)
     return values
+
+
+def _trimmed(value: Any) -> Any:
+    return value.strip() if isinstance(value, str) else value
 
 
 def _rule_reasons(document: dict[str, Any], values: dict[str, Any]) -> list[str]:

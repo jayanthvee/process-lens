@@ -465,14 +465,9 @@ def test_excel_values_are_written_the_way_a_person_reads_them(
         "Active": "FALSE",
         "Time": "17:00",
     }
-    # Raw is the cell as read, so Excel's own string forms stay there.
-    assert rows[0]["raw"] == {
-        "Day": "2024-02-29 00:00:00",
-        "Stamp": "2023-11-01 14:30:00",
-        "Count": "1",
-        "Active": "True",
-        "Time": "09:05:00",
-    }
+    # Raw is the cell as a person reads it too: the mapping a run uses reads raw (T1 review), so
+    # Python's own forms (`00:00:00`, `1.0`, `True`) must not be what it holds.
+    assert rows[0]["raw"] == rows[0]["clean"]
 
 
 def test_values_are_trimmed_in_clean_but_not_in_raw(
@@ -852,6 +847,49 @@ def test_a_mapped_run_carries_the_tasks_own_column_names(
         assert cur.fetchone()[0] == {"email": "a@x.com", "interest": "Data course"}
         cur.execute("SELECT raw FROM input_records WHERE batch_id = %s", (batch_id,))
         assert cur.fetchone()[0] == {"E-mail": "a@x.com", "Interest": "Data course"}
+
+
+def test_a_mapped_run_types_trimmed_readable_values(
+    connected: TestClient, conn: psycopg.Connection, ledger: Ledger
+) -> None:
+    """T1 review of PL-088: the run page always saves a mapping, and a mapped run reads the
+    uploaded row. What it types must still be trimmed, with Excel's dates and whole numbers
+    readable -- in the check's first ready row and in the run's own rows."""
+    document = recipe_document(
+        fields={
+            "email": {"type": "string", "required": True},
+            "day": {"type": "string"},
+            "count": {"type": "string"},
+        }
+    )
+    workflow_id, version_id = add_task(conn, ledger.tenant_id, document=document)
+    content = xlsx_bytes([["E-mail", "Day", "Count"], ["  a@x.com ", datetime(2024, 2, 29), 3.0]])
+    batch_id = upload(connected, workflow_id, content, filename="leads.xlsx").json()["batch_id"]
+    saved = connected.put(
+        f"/api/v1/batches/{batch_id}/mapping",
+        json={"mapping": {"email": "E-mail", "day": "Day", "count": "Count"}},
+    )
+    assert saved.status_code == 200, saved.text
+
+    first = check(connected, batch_id, version_id)["first_ready"]
+    assert first == {
+        "row": 1,
+        "values": {"email": "a@x.com", "day": "2024-02-29", "count": "3"},
+    }
+
+    created = connected.post(
+        "/api/v1/runs",
+        json={
+            "workflow_id": str(workflow_id),
+            "recipe_version_id": str(version_id),
+            "input_batch_id": batch_id,
+            "mode": "batch",
+        },
+    )
+    assert created.status_code == 201, created.text
+    with conn.cursor() as cur:
+        cur.execute("SELECT clean FROM input_records WHERE batch_id = %s", (batch_id,))
+        assert cur.fetchone()[0] == {"email": "a@x.com", "day": "2024-02-29", "count": "3"}
 
 
 # --- the check honours the mapping a person saved -------------------------------------------------
