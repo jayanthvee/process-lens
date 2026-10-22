@@ -15,6 +15,8 @@ SET status = 'running', worker_id = $1, started_at = coalesce(started_at, now())
 WHERE id = (
   SELECT id FROM runs
   WHERE status = 'queued'
+    -- PL-087: a worker for one Chrome ($2) takes its own runs and unbound ones; NULL takes any.
+    AND ($2::text IS NULL OR runs.browser_id IS NULL OR runs.browser_id = $2)
     AND NOT EXISTS (
       SELECT 1 FROM runs active
       WHERE active.tenant_id = runs.tenant_id

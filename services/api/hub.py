@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, Header, HTTPException, Request, WebSocket
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from . import access
 
@@ -180,6 +180,9 @@ class Session:
     tab_url: str
     tab_title: str
     expires_at: float
+    # PL-087: the extension install's own id, so a run started from that browser's dashboard tab is
+    # driven by that browser's Chrome. Empty for an extension from before PL-087.
+    browser_id: str = ""
     claimed: bool = False
     extension: Peer | None = None
     runner: Peer | None = None
@@ -519,6 +522,8 @@ class SessionCreateRequest(BaseModel):
 
     tab_url: str = ""
     tab_title: str = ""
+    # PL-087: the extension install's id. A routing label, not a credential.
+    browser_id: Annotated[str, Field(pattern=r"^[A-Za-z0-9_-]{8,64}$")] | None = None
 
 
 @router.post("/executor/sessions", status_code=201)
@@ -539,6 +544,7 @@ async def create_executor_session(
         tab_url=payload.tab_url,
         tab_title=payload.tab_title,
         expires_at=time.time() + SESSION_TTL_SECONDS,
+        browser_id=payload.browser_id or "",
     )
     async with _sessions_lock:
         _purge_expired(time.time())
@@ -579,7 +585,7 @@ async def detach_executor_session(
 
 
 @router.get("/executor/session")
-async def read_executor_session(request: Request) -> dict[str, Any]:
+async def read_executor_session(request: Request, browser: str | None = None) -> dict[str, Any]:
     """Whether an extension session is attached right now, and which one it is.
 
     Read-only, so nothing here touches a socket, a frame, a token check or the protocol version.
@@ -593,13 +599,37 @@ async def read_executor_session(request: Request) -> dict[str, Any]:
     """
     if not _request_is_local(request):
         raise _forbidden("the executor API answers only on the local interface")
+    # PL-087: a dashboard tab asks about its own Chrome (`?browser=`), so one person's connected
+    # Chrome never tells another person "connected".
+    wanted = (browser or "").strip()
     async with _sessions_lock:
         _purge_expired(time.time())
         attached_id = next(
-            (row.session_id for row in reversed(_sessions.values()) if row.extension is not None),
+            (
+                row.session_id
+                for row in reversed(_sessions.values())
+                if row.extension is not None and (not wanted or row.browser_id == wanted)
+            ),
             None,
         )
     return {"attached": attached_id is not None, "session_id": attached_id}
+
+
+@router.get("/executor/sessions/attached")
+async def list_attached_sessions(request: Request) -> list[dict[str, Any]]:
+    """Every session with the extension attached, newest first, with its browser (PL-087).
+
+    The supervisor gives each its own worker, which takes only that browser's runs.
+    """
+    if not _request_is_local(request):
+        raise _forbidden("the executor API answers only on the local interface")
+    async with _sessions_lock:
+        _purge_expired(time.time())
+        return [
+            {"session_id": row.session_id, "browser_id": row.browser_id or None}
+            for row in reversed(_sessions.values())
+            if row.extension is not None
+        ]
 
 
 @router.websocket("/executor/ws")

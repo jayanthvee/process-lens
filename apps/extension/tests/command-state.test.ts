@@ -88,6 +88,7 @@ interface HarnessOptions {
   enterCode?: (code: string) => Promise<{ entered: boolean; reason: string }>;
   now?: () => number;
   storageValue?: StoredSession | null;
+  browserId?: string;
 }
 
 function makeHarness(options: HarnessOptions = {}): Harness {
@@ -123,6 +124,7 @@ function makeHarness(options: HarnessOptions = {}): Harness {
       };
     },
     bindActiveTab: async () => 7,
+    ...(options.browserId ? { browserId: async () => options.browserId ?? "" } : {}),
     restoreBoundTab: async (tabId: number) => {
       restoredTabs.push(tabId);
       if (options.restoreBoundTab) return options.restoreBoundTab(tabId);
@@ -929,5 +931,21 @@ describe("a hosted ProcessLens and its team access code (PL-086)", () => {
       ACCESS_REFUSED,
     );
     expect(harness.states.at(-1)).toBe("idle");
+  });
+});
+
+describe("the browser this session belongs to (PL-087)", () => {
+  it("rides on the session call, so the hub knows which Chrome this is", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    globalThis.fetch = (async (_url: string, init: RequestInit) => {
+      bodies.push(JSON.parse(String(init.body)) as Record<string, unknown>);
+      return { status: 201, json: async () => ({ session_id: "sess-b", session_token: "tok-b" }) };
+    }) as unknown as typeof fetch;
+
+    await makeHarness({ browserId: "browser-anna-0001" }).session.connect("http://127.0.0.1:8000");
+    await makeHarness().session.connect("http://127.0.0.1:8000");
+
+    expect(bodies[0]?.["browser_id"]).toBe("browser-anna-0001");
+    expect(bodies[1]).not.toHaveProperty("browser_id");
   });
 });

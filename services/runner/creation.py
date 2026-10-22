@@ -214,8 +214,11 @@ def create_run(
     input_batch_id: uuid.UUID,
     mode: str = "batch",
     limit: int | None = None,
+    browser_id: str | None = None,
 ) -> uuid.UUID:
     """Create a run pinned to one recipe version and one input batch; return its id.
+
+    ``browser_id`` is the Chrome that should drive it (PL-087); ``None`` lets any Chrome take it.
 
     ``limit`` caps the ready rows the run takes, in the person's row order, so a preview of one row
     (``mode='preview', limit=1``) runs exactly the first row that is ready.
@@ -309,6 +312,7 @@ def create_run(
             mode=mode,
             destination_key=workflow["destination_key"],
             approval_policy=approval_policy,
+            browser_id=browser_id,
         )
         for input_record_id, _row_index, record_key, idempotency_key in rendered:
             ledger_create.insert_run_record(

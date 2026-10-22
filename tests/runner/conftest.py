@@ -228,7 +228,7 @@ class Seed:
             ),
         )
 
-    def create_run(self, *, mode: str = "batch") -> uuid.UUID:
+    def create_run(self, *, mode: str = "batch", browser_id: str | None = None) -> uuid.UUID:
         """Create a run through the real ``create_run``, pinned to this seed's latest version."""
         with self.conn.transaction():
             return create_run(
@@ -237,6 +237,7 @@ class Seed:
                 recipe_version_id=self.recipe_version_id,
                 input_batch_id=self.batch_id,
                 mode=mode,
+                browser_id=browser_id,
             )
 
     def record_ids(self, run_id: uuid.UUID) -> list[uuid.UUID]:

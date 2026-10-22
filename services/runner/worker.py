@@ -133,6 +133,7 @@ class Worker:
         events: Callable[[], list[tuple[str, str]]] | None = None,
         reconnect: Callable[[], bool] | None = None,
         gate_wait_seconds: float = DEFAULT_GATE_WAIT_SECONDS,
+        browser_id: str | None = None,
     ) -> None:
         self.dsn = dsn
         self.worker_id = worker_id
@@ -152,6 +153,8 @@ class Worker:
         self.reconnect = reconnect
         # PL-027: how long a record may hold the tab while a person decides its commit gate.
         self.gate_wait_seconds = gate_wait_seconds
+        # PL-087: the Chrome this worker drives; it takes that browser's runs and unbound ones.
+        self.browser_id = browser_id
 
     def run_once(self) -> bool:
         """Claim or take over one run and process it. Returns False when there is nothing to do."""
@@ -167,13 +170,15 @@ class Worker:
 
         with self.connect(self.dsn) as conn:
             with conn.transaction():
-                run = claim_run(conn, self.worker_id)
+                run = claim_run(conn, self.worker_id, browser_id=self.browser_id)
 
             epoch: int | None = None
             if run is not None:
                 epoch = run.lease_epoch
             else:
-                stale = find_stale_run(conn, heartbeat_timeout=self.heartbeat_timeout)
+                stale = find_stale_run(
+                    conn, heartbeat_timeout=self.heartbeat_timeout, browser_id=self.browser_id
+                )
                 if stale is None:
                     return False
                 with conn.transaction():
@@ -316,6 +321,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--session", default=None, help="The hub session id (browser executor).")
     parser.add_argument(
+        "--browser",
+        default=None,
+        help="PL-087: the Chrome's browser id; claim only its runs and unbound ones.",
+    )
+    parser.add_argument(
         "--hub-url",
         default="ws://127.0.0.1:8000",
         help="The hub's base URL; the runner channel is derived from it.",
@@ -404,6 +414,7 @@ def main(argv: list[str] | None = None) -> int:
         heartbeat_interval=args.heartbeat_interval,
         events=executor.take_events,
         reconnect=reconnect,
+        browser_id=(args.browser or "").strip() or None,
     )
     try:
         processed = _run_with_polling(

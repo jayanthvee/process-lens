@@ -83,3 +83,49 @@ def test_an_expired_session_is_not_reported_as_attached(client: TestClient) -> N
     hub._sessions[row.session_id] = row
 
     assert client.get(SESSION_STATE_PATH).json() == {"attached": False, "session_id": None}
+
+
+def _attached(session_id: str, browser_id: str) -> None:
+    row = _session(session_id)
+    row.browser_id = browser_id
+    row.extension = Peer(role=hub.ROLE_EXTENSION, websocket=cast(WebSocket, None))
+    hub._sessions[row.session_id] = row
+
+
+def test_a_dashboard_tab_asks_about_its_own_chrome(client: TestClient) -> None:
+    """PL-087: Ben's connected Chrome does not tell Anna's dashboard "connected"."""
+    _attached("session-ben", "browser-ben-00001")
+
+    mine = client.get(SESSION_STATE_PATH, params={"browser": "browser-anna-0001"})
+    his = client.get(SESSION_STATE_PATH, params={"browser": "browser-ben-00001"})
+
+    assert mine.json() == {"attached": False, "session_id": None}
+    assert his.json() == {"attached": True, "session_id": "session-ben"}
+
+
+def test_the_supervisor_sees_every_attached_chrome_with_its_browser(client: TestClient) -> None:
+    _attached("session-anna", "browser-anna-0001")
+    _attached("session-ben", "browser-ben-00001")
+    hub._sessions["session-idle"] = _session("session-idle")
+
+    response = client.get("/api/v1/executor/sessions/attached")
+
+    assert response.status_code == 200, response.text
+    assert response.json() == [
+        {"session_id": "session-ben", "browser_id": "browser-ben-00001"},
+        {"session_id": "session-anna", "browser_id": "browser-anna-0001"},
+    ]
+
+
+def test_the_session_call_keeps_the_browser_it_was_given(
+    monkeypatch: MonkeyPatch, client: TestClient
+) -> None:
+    monkeypatch.setenv("PROCESSLENS_EXTENSION_ID", "abcdefghijklmnopabcdefghijklmnop")
+    created = client.post(
+        "/api/v1/executor/sessions",
+        json={"tab_url": "", "tab_title": "", "browser_id": "browser-anna-0001"},
+        headers=EXTENSION_CLIENT,
+    )
+
+    assert created.status_code == 201, created.text
+    assert hub._sessions[created.json()["session_id"]].browser_id == "browser-anna-0001"

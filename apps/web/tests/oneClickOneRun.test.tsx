@@ -13,6 +13,8 @@
 import { act, fireEvent, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { resetBrowserForTests } from "../src/lib/browser";
+
 import type {
   BatchCheck,
   BatchUpload,
@@ -150,6 +152,27 @@ async function readyToTry(): Promise<void> {
   });
   await settle();
 }
+
+describe("a run goes to the Chrome of the person who started it (PL-087)", () => {
+  afterEach(() => resetBrowserForTests(null));
+
+  it("carries this browser's id once the extension has said which it is", async () => {
+    resetBrowserForTests("browser-anna-0001");
+    await readyToTry();
+
+    await doubleClick(button("Try it"));
+
+    expect(posts("/api/v1/runs")[0]?.body).toMatchObject({ browser_id: "browser-anna-0001" });
+  });
+
+  it("carries none in a browser without the extension", async () => {
+    await readyToTry();
+
+    await doubleClick(button("Try it"));
+
+    expect(posts("/api/v1/runs")[0]?.body).not.toHaveProperty("browser_id");
+  });
+});
 
 describe("the run flow's buttons start one run each", () => {
   it("a double click on Try it sends one preview run, not two", async () => {

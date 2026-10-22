@@ -5,6 +5,7 @@ import { ApprovalPanel } from "../components/ApprovalPanel";
 import { KeepsFailingWarning } from "../components/KeepsFailingWarning";
 import { WaitingRun } from "../components/WaitingRun";
 import { apiGet, apiPost, apiPostFile, apiPut, errorText } from "../lib/api";
+import { knownBrowser, useSessionPath } from "../lib/browser";
 import { POLL_INTERVAL_MS, useJson } from "../lib/useJson";
 import {
   DOCUMENT_ROWS_GONE,
@@ -134,7 +135,7 @@ export function TaskRun(): JSX.Element {
   const [pollMs, setPollMs] = useState<number | null>(null);
   const runPath = runId === null ? null : `/api/v1/runs/${runId}`;
   const run = useJson<RunDetailPayload>(runPath, pollMs);
-  const session = useJson<ExecutorSession>("/api/v1/executor/session", pollMs);
+  const session = useJson<ExecutorSession>(useSessionPath(), pollMs);
   useEffect(() => {
     const next = isOpenStatus(run.data?.status ?? null) ? POLL_INTERVAL_MS : null;
     setPollMs((current) => (current === next ? current : next));
@@ -233,6 +234,9 @@ export function TaskRun(): JSX.Element {
       mode,
     };
     if (mode === "preview") body.limit = 1;
+    // PL-087: the run goes to this browser's Chrome, when the extension has said which it is.
+    const browser = knownBrowser();
+    if (browser !== null) body.browser_id = browser;
     try {
       const created = await apiPost<RunCreated>("/api/v1/runs", body);
       return created.run_id;

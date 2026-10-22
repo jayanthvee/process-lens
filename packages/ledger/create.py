@@ -16,10 +16,10 @@ from psycopg.types.json import Jsonb
 _INSERT_RUN = """
 INSERT INTO runs
   (tenant_id, workflow_id, recipe_version_id, input_batch_id, mode, status,
-   destination_key, approval_policy)
+   destination_key, approval_policy, browser_id)
 VALUES
   (%(tenant)s, %(workflow)s, %(recipe)s, %(batch)s, %(mode)s, 'queued',
-   %(destination)s, %(policy)s)
+   %(destination)s, %(policy)s, %(browser)s)
 RETURNING id
 """
 
@@ -42,8 +42,12 @@ def insert_run(
     mode: str,
     destination_key: str,
     approval_policy: dict[str, Any],
+    browser_id: str | None = None,
 ) -> uuid.UUID:
-    """Insert a ``queued`` run and return its id."""
+    """Insert a ``queued`` run and return its id.
+
+    ``browser_id`` is the Chrome that should drive it (PL-087); ``None`` lets any Chrome take it.
+    """
     with conn.cursor() as cur:
         cur.execute(
             _INSERT_RUN,
@@ -55,6 +59,7 @@ def insert_run(
                 "mode": mode,
                 "destination": destination_key,
                 "policy": Jsonb(approval_policy),
+                "browser": browser_id,
             },
         )
         return cur.fetchone()[0]

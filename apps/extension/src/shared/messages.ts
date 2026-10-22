@@ -74,7 +74,9 @@ export type ToWorker =
   | { type: "executor:connect"; hubUrl: string; accessCode?: string }
   | { type: "executor:disconnect" }
   | { type: "executor:session" }
-  | { type: "executor:get" };
+  | { type: "executor:get" }
+  // PL-087: a dashboard tab's content script asking for this install's browser id.
+  | { type: "executor:whoami" };
 
 /** Sent from the service worker to content scripts and the popup. */
 export type FromWorker =

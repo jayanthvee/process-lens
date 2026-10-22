@@ -2,6 +2,7 @@ import { type CSSProperties } from "react";
 import { Link } from "react-router-dom";
 
 import { useJson } from "../lib/useJson";
+import { useSessionPath } from "../lib/browser";
 import { relativeTime, runStatusWords } from "../lib/words";
 import type { AppRow, ExecutorSession } from "../types";
 import "./apps.css";
@@ -35,7 +36,7 @@ function lastRunWords(app: AppRow): string {
 export function Apps(): JSX.Element {
   const { data, error } = useJson<AppRow[]>("/api/v1/apps");
   // The same session read the sidebar's status line uses: one source, and no new route.
-  const session = useJson<ExecutorSession>("/api/v1/executor/session");
+  const session = useJson<ExecutorSession>(useSessionPath());
   // A refusal (or a stubbed answer that is not a list) shows one sentence instead of throwing.
   const rows = Array.isArray(data) ? data : null;
   const attached = session.data?.attached === true;
