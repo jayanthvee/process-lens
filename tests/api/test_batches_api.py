@@ -321,6 +321,10 @@ def test_upload_a_tsv_file(connected: TestClient, conn: psycopg.Connection, ledg
     assert body["columns"] == ["Name", "Email", "Note"]
     rows = stored_rows(conn, body["batch_id"])
     assert rows[0]["raw"] == {"Name": "Ana", "Email": "ana@x.com", "Note": "first"}
+    # The database's kind enum has no separate tsv, so a tab-separated file is stored as csv.
+    with conn.cursor() as cur:
+        cur.execute("SELECT kind FROM input_batches WHERE id = %s", (body["batch_id"],))
+        assert cur.fetchone()[0] == "csv"
 
 
 def test_blank_comma_rows_are_dropped_and_do_not_count_toward_the_limit(
@@ -502,6 +506,53 @@ def test_an_old_xls_file_is_refused_with_what_to_do(
     with conn.cursor() as cur:
         cur.execute("SELECT count(*) FROM input_batches WHERE workflow_id = %s", (workflow_id,))
         assert cur.fetchone()[0] == 0
+
+
+def test_a_header_with_a_blank_cell_is_still_the_header(
+    connected: TestClient, conn: psycopg.Connection, ledger: Ledger
+) -> None:
+    """An untitled column is a blank header, not a title above the headers (PL-088).
+
+    A leading index column with no name, or a trailing column the person left nameless, used to
+    upload with a generated name. Reading a one-cell row above the headers as a title must not
+    turn the first data row into the header and throw the real header away.
+    """
+    workflow_id, _ = add_task(conn, ledger.tenant_id)
+
+    leading = upload(connected, workflow_id, b",Name\n1,Ana\n2,Ben\n")
+    trailing = upload(connected, workflow_id, b"Name,\nAna,ana@x.com\n")
+
+    assert leading.status_code == 201, leading.text
+    leading_body = leading.json()
+    assert leading_body["columns"] == ["Column 1", "Name"]
+    assert leading_body["row_count"] == 2
+    assert [row["raw"] for row in stored_rows(conn, leading_body["batch_id"])] == [
+        {"Column 1": "1", "Name": "Ana"},
+        {"Column 1": "2", "Name": "Ben"},
+    ]
+
+    assert trailing.status_code == 201, trailing.text
+    trailing_body = trailing.json()
+    assert trailing_body["columns"] == ["Name", "Column 2"]
+    assert [row["raw"] for row in stored_rows(conn, trailing_body["batch_id"])] == [
+        {"Name": "Ana", "Column 2": "ana@x.com"}
+    ]
+
+
+def test_a_truncated_utf16_file_is_not_a_server_error(
+    connected: TestClient, conn: psycopg.Connection, ledger: Ledger
+) -> None:
+    """A half-downloaded "Unicode Text" file is a person's problem, not a 500 (PL-088).
+
+    Its byte count is odd, so decoding it as UTF-16 fails; the encoding is never a refusal, and
+    whatever comes out is read as text like every other file.
+    """
+    workflow_id, _ = add_task(conn, ledger.tenant_id)
+    content = b"\xff\xfe" + "Name\tEmail\r\nAna\tana@x.com\r\n".encode("utf-16-le")[:-1]
+
+    response = upload(connected, workflow_id, content, filename="contacts.tsv")
+
+    assert response.status_code != 500, response.text
 
 
 # --- the check --------------------------------------------------------------------------------
