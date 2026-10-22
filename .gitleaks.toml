@@ -11,8 +11,13 @@ description = "Placeholders and synthetic fixtures that are not secrets."
 paths = [
   '''(^|/)\.env\.example$''',
 ]
+# Matched against the whole line, so a recipe template next to the word "key" is recognised
+# as what it is.
+regexTarget = "line"
 # Values that look like credentials but are documented placeholders.
 regexes = [
   '''change-me-locally''',
   '''processlens:processlens''',
+  # A recipe's idempotency or record key template ("{{row.sku}}:{{row.price}}") is never a secret.
+  '''\{\{\s*row\.''',
 ]
