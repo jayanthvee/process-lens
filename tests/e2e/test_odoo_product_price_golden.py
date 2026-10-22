@@ -1,12 +1,11 @@
-"""PL-063 part 2: record and replay a product price update on real Odoo 18.
+"""PL-063 part 2 and PL-079: record and replay a product price update on real Odoo 18.
 
 The chain a person uses: Sales -> Products -> search for one product by its
 internal reference -> open it -> change **Sales Price** -> Save. The sheet has
-`sku` and `new_price` columns; the record key is the sku. This is the brief's
-"update workflow" case, where the idempotency key carries the new value
-(``internal/docs/RECIPE_SPEC.md``: ``{{row.sku}}:{{row.new_price}}``) so the
-same change applies once while a later change to the same record is still a
-new key.
+`sku` and `new_price` columns; the record key is the sku, and the idempotency key
+is the record key **and the price it writes** (``{{row.sku | lower}}:{{row.new_price}}``,
+``internal/docs/RECIPE_SPEC.md``): the same change applies once, while a later change
+to the same product is new work.
 
 The search here is a real search (the search view, Enter applied). PL-077
 tells the two searched shapes apart: this recording opens the result the search
@@ -15,8 +14,20 @@ the popup words its rule "Park a row when the search finds nothing" -- a skip
 rule would end every row `skipped`, since the product always exists. The golden
 leaves the rule as the popup offers it and asserts that wording.
 
-The requirement: three rows, each product's `list_price` equals its row's
-price, all rows `verified`, and a second run of the same sheet changes nothing.
+PL-079 adds the second half: an Odoo form keeps Save hidden while it is clean, so
+a row whose values the page already shows has nothing to save. The recipe carries
+a compiled branch, right before the commit click, that ends such a row `skipped`
+with "Already had these values, so nothing was changed." -- the recipe's own step,
+never a runner special case (D-017).
+
+The requirement, in three runs of one compiled recipe:
+
+1. three rows, each product's `list_price` equals its row's price, all `verified`;
+2. the same sheet in the same tenant: all three `skipped` as already committed;
+3. one row changed to a new price and the other two exactly what Odoo already has,
+   in a fresh tenant so no committed keys apply: the changed row `verified`, the
+   other two `skipped` by the new branch.
+
 The app is reset by `infra/test-apps/reset.py odoo` before the test runs
 (``odoo_reset``), so the golden can be run again.
 """
@@ -57,6 +68,12 @@ ROWS = (
     ("PL-CHR-2002", "949.00"),
     ("PL-MON-3001", "459.00"),
 )
+
+# PL-079 run 3: one row gets a new price, and the other two ask for exactly the price Odoo already
+# holds -- in a fresh tenant, so nothing is skipped as already committed and every row is the
+# recipe's own decision. The branch's sentence is pinned here, from the golden's side.
+CHANGED_PRICE = "779.00"
+ALREADY_REASON = "Already had these values, so nothing was changed."
 
 
 # --------------------------------------------------------------- the demonstration
@@ -199,6 +216,35 @@ def compile_update_recipe(harness, name: str, record_key: str | None) -> dict[st
     }
 
 
+def rows_for(
+    fields: dict[str, Any], rows: tuple[tuple[str, str], ...] | list[tuple[str, str]]
+) -> list[dict[str, str]]:
+    """One row per sheet row, valued for *every* field the compiled schema carries.
+
+    The compiled schema, not the popup's labels, is the source of truth: what a row must fill is
+    exactly what the recipe's steps read. Each field's ``example`` is the value the demonstration
+    typed for it, so the row's answer is that value's stand-in: the demonstration's sku becomes the
+    row's sku, the demonstration's price becomes the row's price. A field whose example matches
+    nothing this golden knows about fails here instead of being silently left blank.
+    """
+    built: list[dict[str, str]] = []
+    for sku, price in rows:
+        row: dict[str, str] = {}
+        for column, spec in fields.items():
+            sample = str((spec or {}).get("example", ""))
+            if sample == DEMO_SKU:
+                row[column] = sku
+            elif sample == DEMO_PRICE:
+                row[column] = price
+            else:
+                raise AssertionError(
+                    f"the compiled schema carries a field this golden does not know how to fill: "
+                    f"{column!r} (example {sample!r}; all fields: {sorted(fields)})"
+                )
+        built.append(row)
+    return built
+
+
 def detail_for(harness, records: list[dict[str, Any]]) -> str:
     """Each record with its own steps, in order, so a failure says where the run went."""
     import psycopg
@@ -297,7 +343,7 @@ def test_odoo_product_price_golden(odoo_harness, odoo_app) -> None:
     )
     _trace(
         f"compile ok: steps={[step.get('id') for step in recipe['steps']]} "
-        f"idempotency_key={recipe.get('idempotency_key')!r} "
+        f"idempotency_key={(recipe.get('meta') or {}).get('idempotency_key')!r} "
         f"duplicate_proposed={outcome['duplicate_proposed']}"
     )
     if os.environ.get("PROCESSLENS_E2E_DUMP_RECIPE") == "1":
@@ -318,21 +364,7 @@ def test_odoo_product_price_golden(odoo_harness, odoo_app) -> None:
 
     # 4. Replay the three rows.
     fields = recipe["meta"]["input_schema"]["fields"]
-    rows = []
-    for sku, price in ROWS:
-        row: dict[str, str] = {}
-        for column, spec in fields.items():
-            sample = str((spec or {}).get("example", ""))
-            if sample == DEMO_SKU:
-                row[column] = sku
-            elif sample == DEMO_PRICE:
-                row[column] = price
-            else:
-                raise AssertionError(
-                    f"the compiled schema carries a field this golden does not know how to fill: "
-                    f"{column!r} (example {sample!r}; all fields: {sorted(fields)})"
-                )
-        rows.append(row)
+    rows = rows_for(fields, ROWS)
     _trace(f"rows: {json.dumps(rows)}")
     run_id = harness.make_run(rows, recipe=recipe, key_column=sku_column)
     _trace(f"run {run_id} created")
@@ -354,10 +386,9 @@ def test_odoo_product_price_golden(odoo_harness, odoo_app) -> None:
         got = odoo_app.product_list_price(sku)
         assert got == float(price), f"{sku!r} list_price is {got}, expected {price} ({detail})"
 
-    # 6. A second run of the same sheet changes nothing: the ledger's own idempotency. The rows
-    #    end skipped (already-committed keys) or verified without a second write, whichever the
-    #    ledger's rule gives; what actually happened goes in the trace and the report.
-    #    The second run belongs to the same tenant: a tenant's committed keys are its own, and a
+    # 6. PL-079 run 2: the same sheet, in the same tenant. Every key was committed by run 1, so the
+    #    ledger skips all three before the browser is touched -- the idempotency the key is for.
+    #    A tenant's committed keys are its own, so the run is made in run 1's tenant on purpose: a
     #    fresh tenant (the harness default) would have none to skip.
     import psycopg
 
@@ -374,31 +405,68 @@ def test_odoo_product_price_golden(odoo_harness, odoo_app) -> None:
     detail2 = detail_for(harness, records2)
     _trace("second run settled: " + detail2)
     counts2 = Counter(record["state"] for record in records2)
-    assert all(state in {"skipped", "verified"} for state in counts2), (
-        f"the second run wrote again: {detail2}"
-    )
+    assert counts2["skipped"] == 3, f"the second run was not skipped outright: {detail2}"
+    for record in records2:
+        assert "already committed" in str(record.get("reason") or ""), detail2
     for sku, price in ROWS:
         assert odoo_app.product_list_price(sku) == float(price), (
             f"the second run changed {sku!r}'s price ({detail2})"
         )
     _trace(f"second run states: {dict(counts2)}")
 
-    # 7. The update workflow's idempotency key. PL-063 asked for BOTH the sku and the new price
-    #    (RECIPE_SPEC: {{row.sku}}:{{row.new_price}}), so the same change applies once while a
-    #    later change to the same product is still a new key. What the popup's form compiles is the
-    #    record key it was given, so today the key is the sku alone: the second run of the same
-    #    sheet skips (asserted above), but a later price change to the same product would be
-    #    skipped too. The gap is recorded here rather than hidden; it is PL-063's finding, not
-    #    PL-075's, and the ticket leaves it out of scope.
+    # 7. PL-079 run 3: one row changed to a new price and the other two exactly the price Odoo
+    #    already holds, in a fresh tenant so no committed key applies to any row. The changed row
+    #    must be written and verified. The other two have nothing to write: Odoo keeps Save hidden
+    #    on a clean form, so the recipe's own branch -- compiled right before the commit click, and
+    #    only for an update whose proof is a disappearing control -- finds the control absent and
+    #    ends them `skipped` with its own sentence. Which of the two outcomes the unchanged rows get
+    #    is Odoo's answer to "does a same-value fill dirty the form?", and the trace keeps it.
+    run3_rows = rows_for(fields, ((ROWS[0][0], CHANGED_PRICE), *ROWS[1:]))
+    _trace(f"third run rows: {json.dumps(run3_rows)}")
+    run3 = harness.make_run(run3_rows, recipe=recipe, key_column=sku_column)
+    _trace(f"run {run3} created")
+    try:
+        records3 = harness.settle_run(run3, timeout=700, max_seconds=680)
+    except Exception:
+        _trace(f"settle_run FAILED on run {run3}: {harness.describe(run3)}")
+        raise
+    detail3 = detail_for(harness, records3)
+    _trace("third run settled: " + detail3)
+    counts3 = Counter(record["state"] for record in records3)
+    by_key = {record["record_key"]: record for record in records3}
+    changed = by_key.get(ROWS[0][0].lower())
+    assert changed is not None, detail3
+    assert changed["state"] == "verified", (
+        f"the row with a new price was not written and verified: {detail3}"
+    )
+    for sku, _price in ROWS[1:]:
+        record = by_key.get(sku.lower())
+        assert record is not None, detail3
+        assert record["state"] == "skipped", (
+            f"the row that already matched was not skipped by the recipe's branch: {detail3}"
+        )
+        assert record.get("reason") == ALREADY_REASON, (
+            f"the skipped row's reason is not the branch's own sentence: {detail3}"
+        )
+    assert odoo_app.product_list_price(ROWS[0][0]) == float(CHANGED_PRICE), detail3
+    for sku, price in ROWS[1:]:
+        assert odoo_app.product_list_price(sku) == float(price), (
+            f"the third run changed {sku!r}'s price, which it had no reason to ({detail3})"
+        )
+    _trace(f"third run states: {dict(counts3)}")
+
+    # 8. The update workflow's idempotency key (PL-063's finding, PL-079's fix). The key is the
+    #    record key's own template, then ':', then every column the update's fills write -- here the
+    #    sku and the new price -- so the same change applies once while a later change to the same
+    #    product is a new key.
     meta = recipe.get("meta") if isinstance(recipe.get("meta"), dict) else {}
     idempotency_key = str(meta.get("idempotency_key") or "")
     _trace(f"idempotency_key: {idempotency_key!r} (sku {sku_column!r}, price {price_column!r})")
-    assert sku_column in idempotency_key, (
-        f"the compiled idempotency_key {idempotency_key!r} does not carry the sku column "
-        f"{sku_column!r}"
+    assert idempotency_key == f"{meta.get('record_key')}:{{{{row.{price_column}}}}}", (
+        f"the compiled idempotency_key {idempotency_key!r} is not the record key "
+        f"{meta.get('record_key')!r} followed by the price column {price_column!r}"
     )
-    if price_column not in idempotency_key:
-        _trace(
-            "PL-063 gap: the key is the record key alone, so a later price change to the same "
-            f"product would not be a new key (price column {price_column!r} is not in it)"
-        )
+    assert sku_column in idempotency_key and price_column in idempotency_key, (
+        f"the compiled idempotency_key {idempotency_key!r} does not carry both columns "
+        f"({sku_column!r}, {price_column!r})"
+    )
