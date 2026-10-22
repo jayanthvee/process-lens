@@ -194,15 +194,18 @@ def _is_blank(cells: list[Any]) -> bool:
 def _split_header(rows: list[list[Any]]) -> tuple[list[Any], list[list[Any]]]:
     """The header row and the data below it, skipping a title row above the header.
 
-    The header is the first row with at least two non-blank cells. When no row has two cells (a
-    one-column file), the first non-blank row is the header, as before.
+    The header is the first row with at least two non-blank cells, which a title row is not. A row
+    that spans the table's whole width is a header too: an untitled first or last column leaves
+    its header cell blank without making the row a title, and reading it as one would promote the
+    first data row into the header. When no row qualifies (a one-column file), the first non-blank
+    row is the header, as before.
     """
+    width = max((len(cells) for cells in rows), default=0)
     for index, cells in enumerate(rows):
-        if sum(1 for value in cells if value is not None and str(value).strip()) >= 2:
+        non_blank = sum(1 for value in cells if value is not None and str(value).strip())
+        if non_blank >= 2 or len(cells) == width:
             return cells, rows[index + 1 :]
-    if not rows:
-        return [], []
-    return rows[0], rows[1:]
+    return [], []
 
 
 def _raw_text(value: Any) -> str:
@@ -249,15 +252,23 @@ def _clean_row(
 
 
 def _decode_text(content: bytes) -> str:
-    """The file's text, whatever encoding Excel used; a file is never refused for it."""
+    """The file's text, whatever encoding Excel used; a file is never refused for it.
+
+    Excel's "Unicode Text" carries a UTF-16 BOM, and a plain CSV from Excel on Windows is written
+    in the Windows code page, not in UTF-8. A truncated UTF-16 file has no text left to lose, so
+    it decodes with replacement characters rather than raising.
+    """
     if content.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
-        return content.decode("utf-16")
-    for encoding in ("utf-8-sig", "cp1252", "latin-1"):
-        try:
-            return content.decode(encoding)
-        except UnicodeDecodeError:
-            continue
-    return content.decode("latin-1")  # unreachable: latin-1 decodes every byte
+        return content.decode("utf-16", errors="replace")
+    try:
+        return content.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        pass
+    try:
+        return content.decode("cp1252")
+    except UnicodeDecodeError:
+        pass
+    return content.decode("latin-1")
 
 
 def _delimiter(text: str) -> str:
@@ -276,7 +287,7 @@ def _read_csv(
     delimiter = "\t" if suffix == TSV_SUFFIX else _delimiter(text)
     rows = [
         cells
-        for cells in csv.reader(io.StringIO(text), delimiter=delimiter)
+        for cells in csv.reader(io.StringIO(text, newline=""), delimiter=delimiter)
         if not _is_blank(cells)
     ]
     if not rows:
@@ -299,8 +310,11 @@ def _read_xlsx(
         raise HTTPException(status_code=422, detail="this .xlsx file could not be read") from exc
     try:
         sheet = workbook.worksheets[0]
-        rows = [list(cells) for cells in sheet.iter_rows(values_only=True)]
-        rows = [cells for cells in rows if not _is_blank(cells)]
+        rows: list[list[Any]] = []
+        for cells in sheet.iter_rows(values_only=True):
+            row = list(cells)
+            if not _is_blank(row):
+                rows.append(row)
         if not rows:
             return [], [], []
         header_cells, body = _split_header(rows)
