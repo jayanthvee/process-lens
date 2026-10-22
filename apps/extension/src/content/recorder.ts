@@ -86,6 +86,8 @@ export const UNRECORDABLE_CHIP_WARNING =
  * typed prefix has to be seen — and undoing it at the click would see the chip instead.
  */
 const GESTURE_CHECKPOINT_WINDOW_MS = 700;
+/** How long after a recorded option press a click on that option is the same choice (PL-078). */
+const OPTION_PRESS_CLICK_WINDOW_MS = 1000;
 
 /** A control whose accessible name begins with this verb is the chip's remove button. */
 const REMOVE_NAME = /^remove\b/i;
@@ -535,6 +537,11 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
   let lastGestureCheckpoint = 0;
   /** The element the last fill was emitted for: the fallback owner of an unowned chip list. */
   let lastFillElement: Element | null = null;
+  /** The option whose press is just being judged, and the list it came from (PL-078). */
+  let pendingOption: { element: Element; listbox: Element; control: Element; value: string } | null =
+    null;
+  /** The option whose press was just recorded as a select, and when (PL-078). */
+  let lastOptionPress: { element: Element; at: number } | null = null;
   /**
    * The last *typed* fill's id per field. A chip-add fill supersedes one of these and never another
    * chip-add fill: superseding one chip with the next would drop a real recipient from the fold.
@@ -817,10 +824,76 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
   }
 
   /** A pointer gesture's own checkpoint: many autocompletes accept a suggestion on the press. */
-  function onPointerDown(): void {
+  function onPointerDown(event: Event): void {
     if (!active()) return;
     checkpoint();
     lastGestureCheckpoint = Date.now();
+    recordOptionPress(event);
+  }
+
+  /**
+   * The control an open listbox belongs to.
+   *
+   * ARIA's own answer comes first: a control that names the list in `aria-controls`/`aria-owns`.
+   * Widgets that never say it (OrangeHRM's OXD select does not) are read from the list's own
+   * wrapper: the focusable element beside the list is what shows the choice and what a replay
+   * clicks to open the list again.
+   */
+  function comboControlOf(listbox: Element): Element | null {
+    const id = normalizeText(listbox.getAttribute("id"));
+    if (id) {
+      const named = Array.from(
+        doc.querySelectorAll("[aria-controls], [aria-owns]"),
+      ).filter((el) =>
+        `${el.getAttribute("aria-controls") ?? ""} ${el.getAttribute("aria-owns") ?? ""}`
+          .split(/\s+/)
+          .includes(id),
+      );
+      if (named.length === 1) return named[0] ?? null;
+    }
+    const wrapper = listbox.parentElement;
+    if (!wrapper) return null;
+    return wrapper.querySelector("[role='combobox'], [tabindex], input, select");
+  }
+
+  /**
+   * PL-078: the choice a press makes when the widget acts on the press, not the click.
+   *
+   * OrangeHRM's OXD select selects on `mousedown` and closes the list before `mouseup`, so the
+   * browser never dispatches a `click`: a recorder that only listens for clicks loses the whole
+   * selection, and the replayed row is saved with no activity at all. The press on an option in an
+   * open listbox therefore records the `select` itself, against the control the list belongs to —
+   * which is exactly what the executor's custom-combobox path replays (open the control, click the
+   * option named by the value). A widget that also fires a click for the same option has that click
+   * dropped below, so one choice stays one step.
+   */
+  function recordOptionPress(event: Event): void {
+    const start = elementFrom(realTarget(event));
+    const option = start?.closest?.("[role='option']") ?? null;
+    if (!option) return;
+    const listbox = option.closest?.("[role='listbox']") ?? null;
+    if (!listbox || !isShown(option)) return;
+    const control = comboControlOf(listbox);
+    const value = normalizeText(option.textContent);
+    if (!control || !value) return;
+    // An autocomplete built on an input or a real combobox already records the value it takes:
+    // the page sets the field's value, and that fill is the step. Only a widget with no such
+    // control (OrangeHRM's OXD select is a plain div) needs the press itself.
+    if (control.matches("input, select, textarea, [role='combobox']")) return;
+    // The choice is real only when the list goes away with the press: that is what a widget that
+    // acts on `mousedown` does, and what a list of already-chosen values (a chip list) never does.
+    // A press the person drags away from leaves the list open and records nothing. The check runs
+    // once the page has settled its own update, which Vue and React both do before a timer.
+    pendingOption = { element: option, listbox, control, value };
+    setTimeout(() => {
+      const pending = pendingOption;
+      if (!pending || pending.element !== option) return;
+      pendingOption = null;
+      if (!active() || listbox.isConnected) return;
+      lastEmitted.set(control, value);
+      lastOptionPress = { element: option, at: Date.now() };
+      emitStep("select", selectStep(control, value), isRequiredField(control));
+    }, 0);
   }
 
   function onKeyDown(event: KeyboardEvent): void {
@@ -1222,6 +1295,26 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
     const start = elementFrom(realTarget(event));
     if (!start) return;
     const { element: el, viaLabel } = resolveClickTarget(start);
+    // A press on an option is judged by whether the list left with it (PL-078). If the list is
+    // still there, the widget did not choose on the press and this click is the ordinary action;
+    // if the list is gone, the press already chose and the deferred select is the step.
+    if (pendingOption && (el === pendingOption.element || start === pendingOption.element)) {
+      if (pendingOption.listbox.isConnected) {
+        pendingOption = null;
+      } else {
+        return;
+      }
+    }
+    // A press already recorded this choice (PL-078); the click that some widgets still dispatch
+    // afterwards is the same action, not a second one.
+    if (
+      lastOptionPress !== null &&
+      Date.now() - lastOptionPress.at < OPTION_PRESS_CLICK_WINDOW_MS &&
+      (el === lastOptionPress.element || start === lastOptionPress.element)
+    ) {
+      lastOptionPress = null;
+      return;
+    }
     if (isPasswordField(el) || isPasswordField(start)) return;
 
     const role = semanticRole(el);

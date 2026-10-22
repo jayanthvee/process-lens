@@ -583,6 +583,47 @@ def _input_labels(candidates: list[Candidate]) -> set[str]:
     return labels
 
 
+def _shares_a_target(left: Candidate, right: Candidate) -> bool:
+    """Whether two steps name the same element: one rung of their ladders is identical."""
+    right_rungs = right.targets or []
+    return any(rung in right_rungs for rung in (left.targets or []))
+
+
+def _fold_select_control_clicks(
+    candidates: list[Candidate],
+) -> tuple[list[Candidate], list[str]]:
+    """Drop a click on the control the very next select opens by itself (PL-078).
+
+    A custom dropdown is opened by clicking its control and chosen by pressing the option. The
+    recorder sees both, and records the click on the control as a click step and the press as a
+    select of that control. On replay the select already opens the control, so keeping the click
+    first toggles the list open and the select's own click closes it again -- OrangeHRM's timesheet
+    parked every row that way. Dropping the click leaves one step per action; a click that opened
+    a list nobody then chose from has no select after it and is kept.
+    """
+    warnings: list[str] = []
+    kept: list[Candidate] = []
+    index = 0
+    while index < len(candidates):
+        current = candidates[index]
+        following = candidates[index + 1] if index + 1 < len(candidates) else None
+        if (
+            following is not None
+            and current.action == "click"
+            and following.action == "select"
+            and _shares_a_target(current, following)
+        ):
+            warnings.append(
+                f"folded the click at event {current.seq} into the select at event "
+                f"{following.seq}: the select opens that control itself"
+            )
+            index += 1
+            continue
+        kept.append(current)
+        index += 1
+    return kept, warnings
+
+
 def _drop_container_clicks(
     candidates: list[Candidate],
 ) -> tuple[list[Candidate], list[str]]:
@@ -1441,6 +1482,8 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
     warnings.extend(chip_warnings)
     candidates, option_warnings = _fold_option_fills(candidates)
     warnings.extend(option_warnings)
+    candidates, select_click_warnings = _fold_select_control_clicks(candidates)
+    warnings.extend(select_click_warnings)
     candidates, container_warnings = _drop_container_clicks(candidates)
     warnings.extend(container_warnings)
     candidates, retried_warnings = _fold_retried_fills(candidates)

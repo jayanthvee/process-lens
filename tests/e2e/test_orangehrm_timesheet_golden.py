@@ -32,14 +32,18 @@ import pytest
 
 pytestmark = [pytest.mark.e2e, pytest.mark.real_apps]
 
-# PL-069's finding is fixed in the recorder (PL-073): the save check is now "Successfully Saved",
-# which OrangeHRM really shows. The demonstration records and compiles cleanly. The replay's
-# canary row then parks at the save: the page never showed that text within 8 seconds (PL-078).
-# `strict=True` means the run that passes turns into a failing XPASS, which is the signal to
-# remove this marker.
+# PL-078: the save never showed "Successfully Saved" because the replay saved a timesheet row with
+# no activity: OrangeHRM's activity dropdown selects on `mousedown` and removes its list before
+# `mouseup`, so no `click` fired and the recorder lost the choice entirely. The recorder now records
+# the option press as a select of the control, the executor scopes to the list a widget opens even
+# when the page gave it no id, and the compiler folds away the click that opened the dropdown (the
+# select opens it itself). The run budget this ticket allowed (three) was spent before that last
+# fold could be exercised end to end, so the marker stays: `strict=True` turns the passing run into
+# a failing XPASS, which is the signal to remove it.
 XFAIL_REASON = (
-    "the replay's canary parks at the save: OrangeHRM never showed 'Successfully Saved' within "
-    "8 seconds (PL-078)"
+    "the replay saves and all three rows verify, but OrangeHRM's week holds one row: each record "
+    "re-filled the grid's first line instead of adding a row, and the project stayed the first "
+    "one; a save toast is no proof of which line changed (PL-081)"
 )
 
 
@@ -321,15 +325,25 @@ def test_orangehrm_weekly_timesheet_golden(
     project_column = next(
         (value for label, value in columns if "project" in label.lower()), columns[0][1]
     )
-    activity_column = next(
-        (value for label, value in columns if "activity" in label.lower()), columns[-1][1]
-    )
     outcome = harness.compile_via_popup("Weekly timesheet", record_key=project_column)
     assert outcome["recipe"] is not None, (
         f"the Make recipe form could not compile the recording: {outcome['result']!r} "
         f"warnings={outcome['warnings']!r} events={json.dumps(events)[:4000]}"
     )
     recipe = outcome["recipe"]
+    # The activity is the compiled select: the demonstration pressed an option in the dropdown and
+    # the recorder made that a select of the control, so its column is the one that step reads.
+    activity_column = next(
+        (
+            step["value"]["column"]
+            for step in recipe.get("steps", [])
+            if step.get("action") == "select"
+            and isinstance(step.get("value"), dict)
+            and step["value"].get("kind") == "input"
+        ),
+        None,
+    )
+    assert activity_column, f"the compiled recipe selects no activity: {recipe.get('steps')}"
 
     # The record key is the project and the activity together, so two rows on one project stay two
     # rows. The popup offers one column, so the template is set here, on the compiled document.
@@ -338,21 +352,36 @@ def test_orangehrm_weekly_timesheet_golden(
     recipe["meta"]["idempotency_key"] = key_template
 
     # 3. Replay the sheet's three rows.
-    batch = [
-        {
-            project_column: row["project"],
-            activity_column: row["activity"],
-            "mon": as_text(sheet_hours(row)["mon"]),
-            "tue": as_text(sheet_hours(row)["tue"]),
-            "wed": as_text(sheet_hours(row)["wed"]),
-            "thu": as_text(sheet_hours(row)["thu"]),
-            "fri": as_text(sheet_hours(row)["fri"]),
-        }
-        for row in rows
-    ]
-    for entry in batch:
-        for _label, column in columns:
-            entry.setdefault(column, entry.get(project_column, ""))
+    #
+    # The compiled day columns are named after the week's own column headers (`f_19mon`,
+    # `f_20tue`, ...), so the sheet's `mon`..`fri` hours are mapped by the column's *label*, not
+    # by key. Every other input column carries the row's project, which is what a person's sheet
+    # repeats for a row that names only one project.
+    def day_of(label: str, column: str) -> str | None:
+        for day in ("mon", "tue", "wed", "thu", "fri"):
+            if label.lower().endswith(day) or column.lower().endswith(day):
+                return day
+        return None
+
+    batch: list[dict[str, str]] = []
+    for row in rows:
+        hours = sheet_hours(row)
+        entry: dict[str, str] = {}
+        for label, column in columns:
+            day = day_of(label, column)
+            if "project" in label.lower():
+                entry[column] = row["project"]
+            elif "activity" in label.lower():
+                entry[column] = row["activity"]
+            elif day is not None:
+                entry[column] = as_text(hours[day])
+            else:
+                entry[column] = row["project"]
+        # The project and the activity are named by the recipe's own steps, whatever the form's
+        # labels happen to be.
+        entry[project_column] = row["project"]
+        entry[activity_column] = row["activity"]
+        batch.append(entry)
 
     run_id = harness.make_run(batch, recipe=recipe, key_column=project_column)
     records = harness.settle_run(

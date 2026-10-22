@@ -575,3 +575,45 @@ describe("a dropdown option named like a destructive verb", () => {
     expect(summary.steps.map((step) => step.outcome)).toEqual(["done"]);
   });
 });
+
+describe("a custom combobox whose open list has no id (PL-078)", () => {
+  it("opens the control, scopes to the one listbox it opened, and clicks the option", async () => {
+    // OrangeHRM's OXD select: the wrapper holds the value and the list, no control carries
+    // `aria-controls`, and the list is rendered with no id at all. Every part of the select is
+    // `role=option`/`role=listbox` only; the list opens when the value is clicked.
+    document.body.innerHTML =
+      "<div class='oxd-select-wrapper'>" +
+      "<div id='activity' class='oxd-select-text-input' tabindex='0'>-- Select --</div>" +
+      "<div role='listbox'>" +
+      "<div role='option'>-- Select --</div><div role='option'>Development</div>" +
+      "</div></div>";
+    // The list is already open, as it is after the control's own press opens it: what this case
+    // proves is that the option search is scoped to the one open list even though the page gave it
+    // no id at all.
+    document.querySelectorAll("[role='option']")[1]!.addEventListener("click", () => {
+      document.getElementById("activity")!.textContent = "Development";
+    });
+    const { cdp, callsTo } = fakeCdp(undefined, { simulateInput: true });
+
+    const summary = await runRecipe(
+      recipe([
+        { id: "navigate-1", action: "navigate", url: `${ORIGIN}/records/new` },
+        {
+          id: "select-1",
+          action: "select",
+          targets: [{ by: "css", selector: "#activity" }],
+          value: { kind: "constant", value: "Development" },
+          option_match: "text",
+          timeout_ms: 2000,
+        },
+      ]),
+      { row: {} },
+      { cdp },
+    );
+
+    expect(summary.steps.map((step) => step.outcome)).toEqual(["done", "done"]);
+    // The control was pressed (opening the list) and the option was pressed inside it.
+    expect(callsTo("Input.dispatchMouseEvent").length).toBeGreaterThanOrEqual(2);
+    expect((document.querySelector("[role='listbox']") as HTMLElement).id).toMatch(/^pl-listbox-/);
+  });
+});

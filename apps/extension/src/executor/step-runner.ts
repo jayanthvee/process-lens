@@ -269,7 +269,11 @@ async function resolveListboxDescriptor(
     if (open.length > 1) return { ok: false, reason: "more than one listbox is open" };
     const box = open[0];
     if (!box.id) {
-      return { ok: false, reason: "the open listbox has no id to scope the option search to" };
+      // PL-078: a widget may open its list with no id at all (OrangeHRM's OXD select does). The
+      // caller has already clicked the control, so this is the list that click opened; stamping an
+      // id of our own keeps the option search scoped to this one list, exactly as a page id does.
+      // Nothing else reads the id, and the option lookup below searches inside it only.
+      box.id = "pl-listbox-" + Math.random().toString(36).slice(2, 10);
     }
     return { ok: true, descriptor: "listbox:" + box.id };
   })()`;
