@@ -202,7 +202,10 @@ def _values_as_the_recipe_sees_them(
         if not spreadsheet_column:
             continue
         value = uploaded.get(spreadsheet_column)
-        values[str(recipe_column)] = "" if value is None else value
+        # Trimmed, as the upload's own `clean` is (PL-088): ` Acme ` is typed as `Acme`.
+        values[str(recipe_column)] = (
+            "" if value is None else value.strip() if isinstance(value, str) else value
+        )
     return values
 
 

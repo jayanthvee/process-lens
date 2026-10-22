@@ -11,6 +11,7 @@ from __future__ import annotations
 import io
 import json
 import uuid
+from datetime import datetime, time
 
 import psycopg
 from fastapi.testclient import TestClient
@@ -93,7 +94,7 @@ def csv_bytes(rows: list[list[str]]) -> bytes:
     return ("\n".join(",".join(row) for row in rows) + "\n").encode("utf-8")
 
 
-def xlsx_bytes(rows: list[list[str]]) -> bytes:
+def xlsx_bytes(rows: list[list[object]]) -> bytes:
     """An XLSX file, built here so the upload's reader is the thing under test."""
     book = Workbook()
     sheet = book.active
@@ -255,6 +256,379 @@ def test_upload_of_an_unknown_task_is_not_found(connected: TestClient) -> None:
     response = upload(connected, uuid.uuid4(), csv_bytes([["Email"], ["a@x.com"]]))
 
     assert response.status_code == 404, response.text
+
+
+# --- messy spreadsheets ----------------------------------------------------------------------
+
+
+def test_upload_a_cp1252_csv_keeps_its_euro_signs(
+    connected: TestClient, conn: psycopg.Connection, ledger: Ledger
+) -> None:
+    """Excel's Windows CSV is Windows-1252: ``é`` and ``£`` are text, not a refusal (PL-088)."""
+    workflow_id, _ = add_task(conn, ledger.tenant_id)
+    content = "Name,Email,Note\nAndré,andre@x.com,£5 deposit\n".encode("cp1252")
+
+    response = upload(connected, workflow_id, content)
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["columns"] == ["Name", "Email", "Note"]
+    rows = stored_rows(conn, body["batch_id"])
+    assert rows[0]["raw"] == {"Name": "André", "Email": "andre@x.com", "Note": "£5 deposit"}
+
+
+def test_upload_a_utf16_tab_file(
+    connected: TestClient, conn: psycopg.Connection, ledger: Ledger
+) -> None:
+    """Excel's "Unicode Text" is UTF-16 with a BOM and tabs between the cells (PL-088)."""
+    workflow_id, _ = add_task(conn, ledger.tenant_id)
+    content = "Name\tEmail\r\nZoë\tzoe@x.com\r\n".encode("utf-16")
+
+    response = upload(connected, workflow_id, content, filename="contacts.tsv")
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["columns"] == ["Name", "Email"]
+    rows = stored_rows(conn, body["batch_id"])
+    assert rows[0]["raw"] == {"Name": "Zoë", "Email": "zoe@x.com"}
+
+
+def test_a_semicolon_csv_gives_three_columns(
+    connected: TestClient, conn: psycopg.Connection, ledger: Ledger
+) -> None:
+    """European Excel separates cells with semicolons, not commas (PL-088)."""
+    workflow_id, _ = add_task(conn, ledger.tenant_id)
+    content = b"Name;Email;Note\nAna;ana@x.com;first\n"
+
+    response = upload(connected, workflow_id, content)
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["columns"] == ["Name", "Email", "Note"]
+    rows = stored_rows(conn, body["batch_id"])
+    assert rows[0]["raw"] == {"Name": "Ana", "Email": "ana@x.com", "Note": "first"}
+
+
+def test_upload_a_tsv_file(connected: TestClient, conn: psycopg.Connection, ledger: Ledger) -> None:
+    """A tab-separated file is a spreadsheet here, with tabs between its cells (PL-088)."""
+    workflow_id, _ = add_task(conn, ledger.tenant_id)
+    content = b"Name\tEmail\tNote\nAna\tana@x.com\tfirst\n"
+
+    response = upload(connected, workflow_id, content, filename="inquiries.tsv")
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["columns"] == ["Name", "Email", "Note"]
+    rows = stored_rows(conn, body["batch_id"])
+    assert rows[0]["raw"] == {"Name": "Ana", "Email": "ana@x.com", "Note": "first"}
+    # The database's kind enum has no separate tsv, so a tab-separated file is stored as csv.
+    with conn.cursor() as cur:
+        cur.execute("SELECT kind FROM input_batches WHERE id = %s", (body["batch_id"],))
+        assert cur.fetchone()[0] == "csv"
+
+
+def test_blank_comma_rows_are_dropped_and_do_not_count_toward_the_limit(
+    connected: TestClient, conn: psycopg.Connection, ledger: Ledger
+) -> None:
+    """``,,,`` is an empty row, not a row of blanks that uses up the 2,000-row budget (PL-088)."""
+    workflow_id, _ = add_task(conn, ledger.tenant_id)
+    body_rows = [f"row{index}@x.com,note {index}" for index in range(2000)]
+    content = ("Email,Note\n" + "\n".join(body_rows) + "\n,,,\n,,,\n").encode("utf-8")
+
+    response = upload(connected, workflow_id, content)
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["row_count"] == 2000
+    rows = stored_rows(conn, body["batch_id"])
+    assert len(rows) == 2000
+    assert [row["row_index"] for row in rows] == list(range(1, 2001))
+    assert rows[-1]["raw"] == {"Email": "row1999@x.com", "Note": "note 1999"}
+
+
+def test_a_title_row_above_the_headers_is_skipped(
+    connected: TestClient, conn: psycopg.Connection, ledger: Ledger
+) -> None:
+    """``Q4 customers`` in A1 is a title, so the header is the row below it (PL-088)."""
+    workflow_id, _ = add_task(conn, ledger.tenant_id)
+    content = b"Q4 customers\nName,Email\nAna,ana@x.com\n"
+
+    response = upload(connected, workflow_id, content)
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["columns"] == ["Name", "Email"]
+    assert body["row_count"] == 1
+    rows = stored_rows(conn, body["batch_id"])
+    assert rows[0]["raw"] == {"Name": "Ana", "Email": "ana@x.com"}
+
+
+def test_a_one_column_file_keeps_its_first_row_as_the_header(
+    connected: TestClient, conn: psycopg.Connection, ledger: Ledger
+) -> None:
+    """When no row has two cells, today's rule stands: the first row is the header (PL-088)."""
+    workflow_id, _ = add_task(conn, ledger.tenant_id)
+    content = b"Email\nana@x.com\nbo@x.com\n"
+
+    response = upload(connected, workflow_id, content)
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["columns"] == ["Email"]
+    assert body["row_count"] == 2
+    rows = stored_rows(conn, body["batch_id"])
+    assert [row["raw"] for row in rows] == [
+        {"Email": "ana@x.com"},
+        {"Email": "bo@x.com"},
+    ]
+
+
+def test_repeated_headers_are_kept_apart_and_every_value_survives(
+    connected: TestClient, conn: psycopg.Connection, ledger: Ledger
+) -> None:
+    """``Name, Name`` becomes ``Name`` and ``Name 2``, with both columns' values (PL-088)."""
+    workflow_id, _ = add_task(conn, ledger.tenant_id)
+    content = b"Name,Name\nFirst,Last\n"
+
+    response = upload(connected, workflow_id, content)
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["columns"] == ["Name", "Name 2"]
+    rows = stored_rows(conn, body["batch_id"])
+    assert rows[0]["raw"] == {"Name": "First", "Name 2": "Last"}
+    assert rows[0]["clean"] == {"Name": "First", "Name 2": "Last"}
+
+
+def test_a_generated_column_name_never_collides_with_a_real_header(
+    connected: TestClient, conn: psycopg.Connection, ledger: Ledger
+) -> None:
+    """A blank header beside a real ``Column 1`` gets another number, not its name (PL-088)."""
+    workflow_id, _ = add_task(conn, ledger.tenant_id)
+    content = b",Column 1,Name\nblank,real,value\n"
+
+    response = upload(connected, workflow_id, content)
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert len(set(body["columns"])) == 3
+    assert body["columns"][1] == "Column 1"
+    assert body["columns"][0] != "Column 1"
+    rows = stored_rows(conn, body["batch_id"])
+    assert rows[0]["raw"] == {
+        body["columns"][0]: "blank",
+        "Column 1": "real",
+        "Name": "value",
+    }
+
+
+def test_excel_values_are_written_the_way_a_person_reads_them(
+    connected: TestClient, conn: psycopg.Connection, ledger: Ledger
+) -> None:
+    """Nine o'clock, a bare day, a whole number and a boolean lose Excel's noise (PL-088)."""
+    workflow_id, _ = add_task(conn, ledger.tenant_id)
+    content = xlsx_bytes(
+        [
+            ["Day", "Stamp", "Count", "Active", "Time"],
+            [
+                datetime(2024, 2, 29),
+                datetime(2023, 11, 1, 14, 30),
+                1.0,
+                True,
+                time(9, 5),
+            ],
+            [
+                datetime(2023, 11, 1),
+                datetime(2023, 11, 1, 0, 0, 30),
+                2.0,
+                False,
+                time(17, 0),
+            ],
+        ]
+    )
+
+    response = upload(connected, workflow_id, content, filename="inquiries.xlsx")
+
+    assert response.status_code == 201, response.text
+    rows = stored_rows(conn, response.json()["batch_id"])
+    assert rows[0]["clean"] == {
+        "Day": "2024-02-29",
+        "Stamp": "2023-11-01 14:30",
+        "Count": "1",
+        "Active": "TRUE",
+        "Time": "09:05",
+    }
+    assert rows[1]["clean"] == {
+        "Day": "2023-11-01",
+        "Stamp": "2023-11-01 00:00",
+        "Count": "2",
+        "Active": "FALSE",
+        "Time": "17:00",
+    }
+    # Raw is the cell as a person reads it too: the mapping a run uses reads raw (T1 review), so
+    # Python's own forms (`00:00:00`, `1.0`, `True`) must not be what it holds.
+    assert rows[0]["raw"] == rows[0]["clean"]
+
+
+def test_values_are_trimmed_in_clean_but_not_in_raw(
+    connected: TestClient, conn: psycopg.Connection, ledger: Ledger
+) -> None:
+    """`` Acme `` is what the file holds and ``Acme`` is what a run should type (PL-088)."""
+    workflow_id, _ = add_task(conn, ledger.tenant_id)
+    content = b"Name,Email,Note\n Acme , acme@x.com ,  hi  \n"
+
+    response = upload(connected, workflow_id, content)
+
+    assert response.status_code == 201, response.text
+    rows = stored_rows(conn, response.json()["batch_id"])
+    assert rows[0]["raw"] == {"Name": " Acme ", "Email": " acme@x.com ", "Note": "  hi  "}
+    assert rows[0]["clean"] == {"Name": "Acme", "Email": "acme@x.com", "Note": "hi"}
+
+
+def test_an_old_xls_file_is_refused_with_what_to_do(
+    connected: TestClient, conn: psycopg.Connection, ledger: Ledger
+) -> None:
+    """A .xls is refused with the exact Save As step, and nothing is written (PL-088)."""
+    workflow_id, _ = add_task(conn, ledger.tenant_id)
+
+    response = upload(connected, workflow_id, b"old workbook", filename="customers.xls")
+
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"] == (
+        "This is an old Excel file (.xls). In Excel, choose File > Save As > "
+        "Excel Workbook (.xlsx), then add that file."
+    )
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM input_batches WHERE workflow_id = %s", (workflow_id,))
+        assert cur.fetchone()[0] == 0
+
+
+def test_a_header_with_a_blank_cell_is_still_the_header(
+    connected: TestClient, conn: psycopg.Connection, ledger: Ledger
+) -> None:
+    """An untitled first column is a blank header, not a title above the headers (PL-088).
+
+    A leading index column with no name used to upload with a generated name. Reading a one-cell
+    row above the headers as a title must not turn the first data row into the header.
+    """
+    workflow_id, _ = add_task(conn, ledger.tenant_id)
+
+    leading = upload(connected, workflow_id, b",Name\n1,Ana\n2,Ben\n")
+
+    assert leading.status_code == 201, leading.text
+    leading_body = leading.json()
+    assert leading_body["columns"] == ["Column 1", "Name"]
+    assert leading_body["row_count"] == 2
+    assert [row["raw"] for row in stored_rows(conn, leading_body["batch_id"])] == [
+        {"Column 1": "1", "Name": "Ana"},
+        {"Column 1": "2", "Name": "Ben"},
+    ]
+
+
+def test_a_title_row_as_wide_as_the_table_is_still_skipped(
+    connected: TestClient, conn: psycopg.Connection, ledger: Ledger
+) -> None:
+    """A title merged across the table's own width is a title, not the header (PL-088).
+
+    Excel writes a merged title with the cells beside it empty, and a saved CSV carries those
+    empty cells as delimiters. Reading such a row as the header would store the real header as a
+    data row and name the columns after the title.
+    """
+    workflow_id, _ = add_task(conn, ledger.tenant_id)
+
+    wide = upload(connected, workflow_id, b"Q4 customers,,\nName,Email,Note\nAna,ana@x.com,first\n")
+    merged = upload(connected, workflow_id, b"Q4 customers,\nName,Email\nAna,ana@x.com\n")
+
+    assert wide.status_code == 201, wide.text
+    wide_body = wide.json()
+    assert wide_body["columns"] == ["Name", "Email", "Note"]
+    assert wide_body["row_count"] == 1
+    assert stored_rows(conn, wide_body["batch_id"])[0]["raw"] == {
+        "Name": "Ana",
+        "Email": "ana@x.com",
+        "Note": "first",
+    }
+
+    assert merged.status_code == 201, merged.text
+    merged_body = merged.json()
+    assert merged_body["columns"] == ["Name", "Email"]
+    assert stored_rows(conn, merged_body["batch_id"])[0]["raw"] == {
+        "Name": "Ana",
+        "Email": "ana@x.com",
+    }
+
+
+def test_a_title_row_in_a_workbook_is_skipped(
+    connected: TestClient, conn: psycopg.Connection, ledger: Ledger
+) -> None:
+    """A title in A1 of a sheet is a title; openpyxl pads its row, it is still not the header."""
+    workflow_id, _ = add_task(conn, ledger.tenant_id)
+    content = xlsx_bytes(
+        [["Q4 customers"], ["Name", "Email", "Note"], ["Ana", "ana@x.com", "first"]]
+    )
+
+    response = upload(connected, workflow_id, content, filename="inquiries.xlsx")
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["columns"] == ["Name", "Email", "Note"]
+    assert body["row_count"] == 1
+    assert stored_rows(conn, body["batch_id"])[0]["raw"] == {
+        "Name": "Ana",
+        "Email": "ana@x.com",
+        "Note": "first",
+    }
+
+
+def test_a_nul_byte_in_a_cell_does_not_break_the_upload(
+    connected: TestClient, conn: psycopg.Connection, ledger: Ledger
+) -> None:
+    """A binary file renamed ``.csv`` is a person's mistake, not a 500 (PL-088).
+
+    A NUL is valid UTF-8, so it reaches the database, whose jsonb column refuses it.
+    """
+    workflow_id, _ = add_task(conn, ledger.tenant_id)
+
+    response = upload(connected, workflow_id, b"Name,Email\nAna\x00,ana@x.com\n")
+
+    assert response.status_code == 201, response.text
+    rows = stored_rows(conn, response.json()["batch_id"])
+    assert rows[0]["raw"] == {"Name": "Ana", "Email": "ana@x.com"}
+    assert "\x00" not in json.dumps(rows[0]["raw"])
+
+
+def test_a_cell_too_long_to_read_is_refused_readably(
+    connected: TestClient, conn: psycopg.Connection, ledger: Ledger
+) -> None:
+    """A cell past ``csv``'s own field limit is a 422 with a message, not a 500 (PL-088)."""
+    workflow_id, _ = add_task(conn, ledger.tenant_id)
+    content = b"Name,Email\n" + b"A" * 140_000 + b",ana@x.com\n"
+
+    response = upload(connected, workflow_id, content)
+
+    assert response.status_code == 422, response.text
+    assert "cell" in response.json()["detail"]
+
+
+def test_a_truncated_utf16_file_is_not_a_server_error(
+    connected: TestClient, conn: psycopg.Connection, ledger: Ledger
+) -> None:
+    """A half-downloaded "Unicode Text" file keeps its real rows, and is not a 500 (PL-088).
+
+    Its byte count is odd, so the last character is cut in half; the encoding is never a refusal,
+    and the half character is not data, so no junk row is written for it.
+    """
+    workflow_id, _ = add_task(conn, ledger.tenant_id)
+    content = b"\xff\xfe" + "Name\tEmail\r\nAna\tana@x.com\r\n".encode("utf-16-le")[:-1]
+
+    response = upload(connected, workflow_id, content, filename="contacts.tsv")
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["row_count"] == 1
+    assert [row["raw"] for row in stored_rows(conn, body["batch_id"])] == [
+        {"Name": "Ana", "Email": "ana@x.com"}
+    ]
 
 
 # --- the check --------------------------------------------------------------------------------
@@ -473,6 +847,49 @@ def test_a_mapped_run_carries_the_tasks_own_column_names(
         assert cur.fetchone()[0] == {"email": "a@x.com", "interest": "Data course"}
         cur.execute("SELECT raw FROM input_records WHERE batch_id = %s", (batch_id,))
         assert cur.fetchone()[0] == {"E-mail": "a@x.com", "Interest": "Data course"}
+
+
+def test_a_mapped_run_types_trimmed_readable_values(
+    connected: TestClient, conn: psycopg.Connection, ledger: Ledger
+) -> None:
+    """T1 review of PL-088: the run page always saves a mapping, and a mapped run reads the
+    uploaded row. What it types must still be trimmed, with Excel's dates and whole numbers
+    readable -- in the check's first ready row and in the run's own rows."""
+    document = recipe_document(
+        fields={
+            "email": {"type": "string", "required": True},
+            "day": {"type": "string"},
+            "count": {"type": "string"},
+        }
+    )
+    workflow_id, version_id = add_task(conn, ledger.tenant_id, document=document)
+    content = xlsx_bytes([["E-mail", "Day", "Count"], ["  a@x.com ", datetime(2024, 2, 29), 3.0]])
+    batch_id = upload(connected, workflow_id, content, filename="leads.xlsx").json()["batch_id"]
+    saved = connected.put(
+        f"/api/v1/batches/{batch_id}/mapping",
+        json={"mapping": {"email": "E-mail", "day": "Day", "count": "Count"}},
+    )
+    assert saved.status_code == 200, saved.text
+
+    first = check(connected, batch_id, version_id)["first_ready"]
+    assert first == {
+        "row": 1,
+        "values": {"email": "a@x.com", "day": "2024-02-29", "count": "3"},
+    }
+
+    created = connected.post(
+        "/api/v1/runs",
+        json={
+            "workflow_id": str(workflow_id),
+            "recipe_version_id": str(version_id),
+            "input_batch_id": batch_id,
+            "mode": "batch",
+        },
+    )
+    assert created.status_code == 201, created.text
+    with conn.cursor() as cur:
+        cur.execute("SELECT clean FROM input_records WHERE batch_id = %s", (batch_id,))
+        assert cur.fetchone()[0] == {"email": "a@x.com", "day": "2024-02-29", "count": "3"}
 
 
 # --- the check honours the mapping a person saved -------------------------------------------------
