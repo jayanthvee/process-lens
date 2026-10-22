@@ -1,5 +1,5 @@
 import { type CSSProperties, useEffect, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 
 import {
   columnsOf,
@@ -141,6 +141,17 @@ function columnOf(step: Step): string {
  */
 export function TaskDetail(): JSX.Element {
   const { id } = useParams<{ id: string }>();
+  // PL-076: a cleaned document's token (and its name) travels from the task list through this
+  // chooser into the run flow, where the rows are uploaded as if the file had been picked.
+  const [params] = useSearchParams();
+  const csv = params.get("csv");
+  const csvName = params.get("name");
+  const csvQuery =
+    csv === null
+      ? ""
+      : `csv=${encodeURIComponent(csv)}${
+          csvName === null ? "" : `&name=${encodeURIComponent(csvName)}`
+        }`;
 
   // Whether an admin has paused runs, or this person's extension is too old. The page's one
   // primary action stands down while that is true; the shell's banner is what says why.
@@ -275,7 +286,14 @@ export function TaskDetail(): JSX.Element {
             Run this task
           </button>
         ) : (
-          <Link className="btn primary task-run-link" to={`/tasks/${task.workflow_id}/run`}>
+          <Link
+            className="btn primary task-run-link"
+            // PL-076: a cleaned document's token rides through the chooser into the run flow, so
+            // picking a task still lands with its rows already there.
+            to={`/tasks/${task.workflow_id}/run${
+              csvQuery === "" ? "" : `?${csvQuery}`
+            }`}
+          >
             Run this task
           </Link>
         )}

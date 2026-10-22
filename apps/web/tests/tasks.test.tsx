@@ -127,3 +127,27 @@ describe("the task list", () => {
     expect(screen.getByText(/will appear here/)).toBeTruthy();
   });
 });
+
+describe("a cleaned document waiting for a task (PL-076)", () => {
+  it("says which document's rows are waiting, and passes the token to the task's run link", async () => {
+    stub = createFetchStub({ ...SHELL, "/api/v1/tasks": { body: [task()] } });
+    renderApp("/tasks?csv=tok-123&name=spring%20leads.docx");
+    await settle();
+
+    expect(
+      screen.getByText("Pick the task to use spring leads.docx's rows with."),
+    ).toBeTruthy();
+    const tryOne = screen.getByRole("link", { name: "Try one row" }) as HTMLAnchorElement;
+    const href = tryOne.getAttribute("href") ?? "";
+    expect(href).toContain("/tasks/wf-1");
+    expect(href).toContain("csv=tok-123");
+  });
+
+  it("falls back to document.csv when the link carried no name", async () => {
+    stub = createFetchStub({ ...SHELL, "/api/v1/tasks": { body: [task()] } });
+    renderApp("/tasks?csv=tok-123");
+    await settle();
+
+    expect(screen.getByText("Pick the task to use document.csv's rows with.")).toBeTruthy();
+  });
+});

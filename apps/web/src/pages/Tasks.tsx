@@ -1,8 +1,8 @@
 import { type CSSProperties } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 
 import { useJson } from "../lib/useJson";
-import { isOpenStatus, relativeTime, runStatusWords } from "../lib/words";
+import { isOpenStatus, pickTaskForCsv, relativeTime, runStatusWords } from "../lib/words";
 import { KeepsFailingWarning } from "../components/KeepsFailingWarning";
 import type { TaskRow } from "../types";
 import "./tasks.css";
@@ -45,6 +45,23 @@ function taskResult(task: TaskRow): { label: string; tone: string } {
 
 /** Every task that has been taught, in one table. */
 export function Tasks(): JSX.Element {
+  // PL-076: a cleaned document from the Spreadsheets page arrives as ?csv=<token> (and the
+  // document's name, so the line can say which rows are waiting). The token rides along into the
+  // task a person picks; the run page then uploads those rows as if the file had been picked.
+  const [params] = useSearchParams();
+  const csv = params.get("csv");
+  const csvName = params.get("name") ?? "document.csv";
+  const csvQuery =
+    csv === null ? "" : `?csv=${encodeURIComponent(csv)}&name=${encodeURIComponent(csvName)}`;
+  const csvLine =
+    csv === null ? null : (
+      <p className="csv-note in" style={slot(0)}>
+        {pickTaskForCsv(csvName)}
+      </p>
+    );
+  const carryOn = (to: string): string =>
+    csvQuery !== "" && to.startsWith("/tasks/") ? `${to}${csvQuery}` : to;
+
   const { data, error } = useJson<TaskRow[]>("/api/v1/tasks");
   // A refusal (or a stubbed answer that is not a list) shows one sentence instead of throwing.
   const rows = Array.isArray(data) ? data : null;
@@ -62,6 +79,7 @@ export function Tasks(): JSX.Element {
   if (rows.length === 0) {
     return (
       <div className="tasks">
+        {csvLine}
         <section className="panel in" style={slot(1)}>
           <div className="empty">
             <p className="empty-sentence">The tasks you teach will appear here.</p>
@@ -78,6 +96,7 @@ export function Tasks(): JSX.Element {
 
   return (
     <div className="tasks">
+      {csvLine}
       <section className="panel in" style={slot(1)}>
         <div className="panel-h">
           <h3>Your tasks</h3>
@@ -114,7 +133,7 @@ export function Tasks(): JSX.Element {
                     <span className={`res ${result.tone}`}>{result.label}</span>
                   </td>
                   <td className="act">
-                    <Link className="btn quiet" to={action.to}>
+                    <Link className="btn quiet" to={carryOn(action.to)}>
                       {action.label}
                     </Link>
                   </td>
