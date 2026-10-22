@@ -14,7 +14,7 @@ from datetime import datetime
 from typing import Annotated, Any, Literal
 
 import psycopg
-from fastapi import APIRouter, Body, HTTPException, Query
+from fastapi import APIRouter, Body, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
@@ -38,6 +38,7 @@ from . import hub
 from .admin import require_runs_allowed
 from .db import connection
 from .operator import require_operator_user
+from .settings import may_change_site_limits
 
 router = APIRouter(prefix="/api/v1", tags=["runs"])
 
@@ -49,7 +50,7 @@ RUN_LIST_LIMIT = 50
 
 
 class CreateRunRequest(BaseModel):
-    """The three pins a run needs, the mode, and how many rows it may take."""
+    """The three pins a run needs, the mode, how many rows it may take, and its pace."""
 
     workflow_id: uuid.UUID
     recipe_version_id: uuid.UUID
@@ -57,6 +58,10 @@ class CreateRunRequest(BaseModel):
     mode: Literal["preview", "batch"] = "batch"
     # "Try one row" is a preview of exactly one row: the first row that is ready.
     limit: Annotated[int, Field(ge=1)] | None = None
+    # PL-080: the pace chosen on the start screen, in seconds. Both unset is "as fast as the site
+    # allows" -- today's behaviour. The database CHECK is the same 0..3600 range.
+    min_seconds_between_rows: Annotated[int, Field(ge=0, le=3600)] | None = None
+    min_seconds_between_steps: Annotated[int, Field(ge=0, le=3600)] | None = None
 
 
 class CreateRunResponse(BaseModel):
@@ -131,6 +136,10 @@ class RunDetail(BaseModel):
     manual_seconds_per_row: float | None = None
     automated_seconds_per_row: float | None = None
     saved_seconds: int | None = None
+    # PL-080: the pace the run was started with, in seconds. 0 is "as fast as the site allows"; a
+    # run created before pacing existed reads as 0 too.
+    min_seconds_between_rows: int = 0
+    min_seconds_between_steps: int = 0
     counts: RunCounts
     open_approval: OpenApproval | None = None
     # PL-067: set while a `site_daily_cap` pause stands, so the run page can name the site, the
@@ -230,6 +239,8 @@ def create_run_endpoint(payload: Annotated[CreateRunRequest, Body()]) -> CreateR
                 input_batch_id=payload.input_batch_id,
                 mode=payload.mode,
                 limit=payload.limit,
+                min_seconds_between_rows=payload.min_seconds_between_rows,
+                min_seconds_between_steps=payload.min_seconds_between_steps,
             )
         except CreationError as exc:
             conn.rollback()
@@ -261,7 +272,7 @@ def list_runs_endpoint() -> list[RunListEntry]:
 
 
 @router.get("/runs/{run_id}", response_model=RunDetail)
-def get_run_endpoint(run_id: uuid.UUID) -> RunDetail:
+def get_run_endpoint(run_id: uuid.UUID, request: Request) -> RunDetail:
     """A run's status, pause reason, counts, any open approval request, and what it waits behind."""
     with connection() as conn:
         run = _fetch_run(conn, run_id)
@@ -269,10 +280,16 @@ def get_run_endpoint(run_id: uuid.UUID) -> RunDetail:
         run_time = reads.run_time(conn, run_id)
         approval = open_approval_for_run(conn, run_id)
         blocking = reads.run_blocking(conn, run_id)
-        # PL-067: the cap a `site_daily_cap` pause stands at, for the run page's sentence.
+        # PL-080: the pace the run was started with, so the page can name it in one line.
+        pacing = reads.run_pacing_settings(conn, run_id)
+        # PL-067: the cap a `site_daily_cap` pause stands at, for the run page's sentence. PL-080:
+        # the same answer says whether this person may change that limit, so the page shows its
+        # "Change the limit" link to an admin only and nowhere else.
         site_cap = (
             reads.run_site_cap(conn, run_id) if run.pause_reason == "site_daily_cap" else None
         )
+        if site_cap is not None:
+            site_cap = {**site_cap, "can_change": may_change_site_limits(conn, request)}
 
     counts = RunCounts(
         total=summary.total if summary else 0,
@@ -308,6 +325,8 @@ def get_run_endpoint(run_id: uuid.UUID) -> RunDetail:
         manual_seconds_per_row=manual_per_row,
         automated_seconds_per_row=automated_per_row,
         saved_seconds=saved_seconds,
+        min_seconds_between_rows=pacing[0],
+        min_seconds_between_steps=pacing[1],
         counts=counts,
         site_cap=site_cap,
         open_approval=(
@@ -400,7 +419,7 @@ def list_transitions_endpoint(
 
 
 @router.post("/runs/{run_id}/pause", response_model=RunDetail)
-def pause_run_endpoint(run_id: uuid.UUID) -> RunDetail:
+def pause_run_endpoint(run_id: uuid.UUID, request: Request) -> RunDetail:
     """Ask a run to pause at its next step boundary.
 
     PL-039: ``runs_one_active_per_destination`` covers ``running`` and ``paused``, so pausing a
@@ -423,11 +442,11 @@ def pause_run_endpoint(run_id: uuid.UUID) -> RunDetail:
                 ),
             ) from exc
         conn.commit()
-    return get_run_endpoint(run_id)
+    return get_run_endpoint(run_id, request)
 
 
 @router.post("/runs/{run_id}/resume", response_model=RunDetail)
-def resume_run_endpoint(run_id: uuid.UUID) -> RunDetail:
+def resume_run_endpoint(run_id: uuid.UUID, request: Request) -> RunDetail:
     """Resume a paused run.
 
     PL-026: the same gate as starting one -- a person whose access is off, a frozen workspace, or an
@@ -439,11 +458,11 @@ def resume_run_endpoint(run_id: uuid.UUID) -> RunDetail:
         if not resume_run(conn, run_id):
             raise HTTPException(status_code=409, detail=f"run {run_id} is {run.status}, not paused")
         conn.commit()
-    return get_run_endpoint(run_id)
+    return get_run_endpoint(run_id, request)
 
 
 @router.post("/runs/{run_id}/cancel", response_model=RunDetail)
-def cancel_run_endpoint(run_id: uuid.UUID) -> RunDetail:
+def cancel_run_endpoint(run_id: uuid.UUID, request: Request) -> RunDetail:
     """Ask a run to stop. A worker reconciles the commit window before the run ends."""
     with connection() as conn:
         run = _fetch_run(conn, run_id)
@@ -451,7 +470,7 @@ def cancel_run_endpoint(run_id: uuid.UUID) -> RunDetail:
             raise HTTPException(status_code=409, detail=f"run {run_id} is {run.status}")
         request_cancel(conn, run_id)
         conn.commit()
-    return get_run_endpoint(run_id)
+    return get_run_endpoint(run_id, request)
 
 
 @router.post("/runs/{run_id}/code", response_model=EnterCodeResult)

@@ -6,6 +6,7 @@ import { Home } from "./pages/Home";
 import { NeedsHelp } from "./pages/NeedsHelp";
 import { RunDetail } from "./pages/RunDetail";
 import { Runs } from "./pages/Runs";
+import { Settings } from "./pages/Settings";
 import { Spreadsheets } from "./pages/Spreadsheets";
 import { TaskDetail } from "./pages/TaskDetail";
 import { TaskRun } from "./pages/TaskRun";
@@ -37,7 +38,7 @@ export function App(): JSX.Element {
         <Route path="/documents" element={<ComingSoon />} />
         <Route path="/saved-answers" element={<ComingSoon />} />
         <Route path="/apps" element={<Apps />} />
-        <Route path="/settings" element={<ComingSoon />} />
+        <Route path="/settings" element={<Settings />} />
         <Route path="/help" element={<ComingSoon />} />
         <Route path="*" element={<ComingSoon />} />
       </Route>

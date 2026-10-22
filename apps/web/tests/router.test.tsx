@@ -27,7 +27,6 @@ const PATHS = [
 const COMING_SOON = [
   "/documents",
   "/saved-answers",
-  "/settings",
   "/help",
 ];
 

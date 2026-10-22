@@ -238,22 +238,40 @@ RETURNING *;
 
 ## Create a run and its ledger rows
 
-A run is born `queued` carrying its destination and approval policy; its ledger rows are born
+A run is born `queued` carrying its destination, approval policy and pace; its ledger rows are born
 `pending` with an `idempotency_key` (the insert guard requires it). Creation refuses unless the recipe
 version, the input batch and the workflow belong together under one tenant, and only input rows whose
 `status = 'ready'` become ledger rows.
 
+The two pacing columns (PL-080) are the person's choice on the run's start screen. `NULL` is unset,
+which the runner reads as 0; the `runs_pacing_range` CHECK holds both to 0..3600.
+
 ```sql
 INSERT INTO runs
   (tenant_id, workflow_id, recipe_version_id, input_batch_id, mode, status,
-   destination_key, approval_policy)
-VALUES ($tenant, $workflow, $recipe, $batch, $mode, 'queued', $destination, $policy)
+   destination_key, approval_policy, min_seconds_between_rows, min_seconds_between_steps)
+VALUES ($tenant, $workflow, $recipe, $batch, $mode, 'queued', $destination, $policy,
+        $rows_pace, $steps_pace)
 RETURNING id;
 
 INSERT INTO run_records
   (tenant_id, run_id, input_record_id, record_key, idempotency_key, state, max_attempts)
 VALUES ($tenant, $run, $input, $record_key, $idempotency_key, 'pending', 3)
 RETURNING id;
+```
+
+## Replace a tenant's daily limits per site
+
+`tenants.settings` holds other keys besides `site_daily_caps`, so the caps are replaced with one
+`jsonb_set` on that one path (PL-080): every other setting is left exactly as it was. The whole map is
+written at once, because the Settings page saves one list -- a per-row write would leave caps the
+person removed still standing. `create_if_missing` makes the first save work on a tenant that has
+never had a cap, and `settings` is `NOT NULL`, so no separate insert is needed.
+
+```sql
+UPDATE tenants
+SET settings = jsonb_set(settings, '{site_daily_caps}', $caps::jsonb, true)
+WHERE id = $tenant;
 ```
 
 ## Open and resolve an approval request

@@ -91,6 +91,31 @@ class AdminState(BaseModel):
     min_extension_version: str | None = None
 
 
+def _presented_token(request: Request) -> str:
+    """The admin token this request carries, whichever header spelling it used, or ``""``."""
+    for header in ADMIN_TOKEN_HEADERS:
+        value = request.headers.get(header)
+        if value:
+            return value.strip()
+    return ""
+
+
+def admin_token_matches(request: Request) -> bool:
+    """Whether this request carries the configured admin token. Never raises, never writes.
+
+    :func:`require_admin_token` is the guard; this is the same comparison as a yes-or-no answer, for
+    a route that has to tell an admin apart from everyone else without turning anyone away (the
+    Settings page's `can_change`, PL-080). An unset or non-ASCII configured token matches nothing.
+    """
+    configured = os.environ.get(ADMIN_TOKEN_ENV_VAR, "").strip()
+    presented = _presented_token(request)
+    if not configured or not configured.isascii():
+        return False
+    if not presented or not presented.isascii():
+        return False
+    return secrets.compare_digest(presented, configured)
+
+
 def require_admin_token(request: Request) -> None:
     """Refuse an admin request without the shared token (a dependency on every admin route).
 
@@ -104,12 +129,7 @@ def require_admin_token(request: Request) -> None:
         raise HTTPException(status_code=503, detail=TOKEN_NOT_SET_DETAIL)
     if not configured.isascii():
         raise HTTPException(status_code=503, detail=TOKEN_NOT_ASCII_DETAIL)
-    presented = ""
-    for header in ADMIN_TOKEN_HEADERS:
-        value = request.headers.get(header)
-        if value:
-            presented = value.strip()
-            break
+    presented = _presented_token(request)
     if not presented or not presented.isascii():
         raise HTTPException(status_code=403, detail=TOKEN_REFUSED_DETAIL)
     if not secrets.compare_digest(presented, configured):
@@ -318,6 +338,7 @@ __all__ = [
     "ADMIN_TOKEN_ENV_VAR",
     "EXTENSION_FLOOR_TEMPLATE",
     "RUNS_FROZEN_DETAIL",
+    "admin_token_matches",
     "extension_floor_detail",
     "require_active_operator",
     "require_active_person",

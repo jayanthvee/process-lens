@@ -35,6 +35,7 @@ from .middleware import FrontDoorMiddleware
 from .operator import operator_id
 from .recipes import router as recipes_router
 from .runs import router as runs_router
+from .settings import router as settings_router
 from .spreadsheets import router as spreadsheets_router
 from .tasks import router as tasks_router
 from .workspace import router as workspace_router
@@ -58,6 +59,7 @@ app.include_router(compile_router)
 app.include_router(batches_router)
 app.include_router(documents_router)
 app.include_router(runs_router)
+app.include_router(settings_router)
 app.include_router(approvals_router)
 app.include_router(admin_router)
 app.include_router(executor_router)

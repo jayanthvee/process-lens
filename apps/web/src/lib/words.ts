@@ -415,3 +415,69 @@ export function pickTaskForCsv(fileName: string): string {
 
 export const DOCUMENT_ROWS_GONE =
   "That document's rows are no longer here. Add the Word document again, or pick a file.";
+
+/*
+ * PL-080: the pace a run goes at, and the daily limit per site.
+ *
+ * The three paces are the whole vocabulary: one label and one line about what it does, in the
+ * person's terms. "As fast as the site allows" is the default because it is what every run did
+ * before this ticket, and a run with no numbers reads as that pace on the run page.
+ */
+
+export interface PaceChoice {
+  id: "fast" | "steady" | "careful";
+  label: string;
+  explanation: string;
+  /** The two gaps, in seconds: between rows, then between steps. */
+  rows: number;
+  steps: number;
+}
+
+export const PACE_CHOICES: PaceChoice[] = [
+  {
+    id: "fast",
+    label: "As fast as the site allows",
+    explanation: "No waiting between rows. This is the default.",
+    rows: 0,
+    steps: 0,
+  },
+  {
+    id: "steady",
+    label: "Steady",
+    explanation: "10 seconds between rows, 2 seconds between steps.",
+    rows: 10,
+    steps: 2,
+  },
+  {
+    id: "careful",
+    label: "Careful",
+    explanation: "30 seconds between rows, 5 seconds between steps.",
+    rows: 30,
+    steps: 5,
+  },
+];
+
+/** The pace a run was started with, in one short line for the run page. */
+export function paceWords(rows: number, steps: number): string {
+  const choice = PACE_CHOICES.find((entry) => entry.rows === rows && entry.steps === steps);
+  if (rows <= 0 && steps <= 0) return "Pace: as fast as the site allows.";
+  if (choice === undefined) {
+    return `Pace: ${rows} s between rows, ${steps} s between steps.`;
+  }
+  return `Pace: ${choice.label} \u00b7 ${rows} s between rows, ${steps} s between steps.`;
+}
+
+/* The Settings page's one section: a site and how many rows may go to it in a day. */
+
+export const SETTINGS_TITLE = "Settings";
+export const DAILY_LIMITS_TITLE = "Daily limits per site";
+export const DAILY_LIMITS_SENTENCE =
+  "How many rows ProcessLens may add to each site in a day. A run stops at the limit and carries on the next day.";
+export const SITE_LABEL = "Site";
+export const ROWS_PER_DAY_LABEL = "Rows per day";
+export const ADD_A_SITE = "Add a site";
+export const SAVE_LIMITS = "Save changes";
+export const LIMITS_READ_ONLY = "Only an admin can change the daily limits.";
+export const LIMITS_SAVED = "Saved.";
+export const NO_LIMITS = "No daily limits yet. Every site is worked on until the rows run out.";
+export const CHANGE_THE_LIMIT = "Change the limit";

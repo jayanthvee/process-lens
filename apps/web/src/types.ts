@@ -23,10 +23,19 @@ export interface RunDetail {
   pause_reason: string | null;
   counts: Record<string, number>;
   open_approval: ApprovalRequest | null;
-  /** PL-067: set while a `site_daily_cap` pause stands, so the page can name the site and limit. */
-  site_cap?: { origin: string; limit: number; used: number } | null;
+  /** PL-067: set while a `site_daily_cap` pause stands, so the page can name the site and limit.
+   *  PL-080: `can_change` is the API's answer to "is this person an admin", for the link. */
+  site_cap?: {
+    origin: string;
+    limit: number;
+    used: number;
+    can_change?: boolean;
+  } | null;
   started_at?: string | null;
   finished_at?: string | null;
+  /** PL-080: the pace the run was started with, in seconds. 0 is "as fast as the site allows". */
+  min_seconds_between_rows?: number;
+  min_seconds_between_steps?: number;
   /**
    * The run this one is waiting behind: set only while it is queued and another run on the same
    * app is running or paused (PL-041).
@@ -277,4 +286,17 @@ export interface StepWords {
   title: string;
   /** An optional second line, such as the value a step fills in. */
   detail?: string;
+}
+
+/** One row of the Settings page: a site and its number of rows per day (PL-080). */
+export interface SiteLimit {
+  origin: string;
+  limit: number;
+}
+
+/** `GET`/`PUT /api/v1/settings/site-limits`: this tenant's caps, and whether they may be changed. */
+export interface SiteLimits {
+  tenant_id: string;
+  sites: SiteLimit[];
+  can_change: boolean;
 }

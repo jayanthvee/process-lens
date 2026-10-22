@@ -53,6 +53,15 @@ _SET_MIN_EXTENSION_VERSION = """
 UPDATE tenants SET min_extension_version = %(version)s WHERE id = %(tenant)s
 """
 
+# PL-080: one `jsonb_set` replaces `site_daily_caps` and leaves every other settings key exactly
+# as it was. The key is created when it is not there yet (`create_if_missing`), and `settings`
+# itself is NOT NULL, so no separate insert is ever needed.
+_SET_SITE_DAILY_CAPS = """
+UPDATE tenants
+SET settings = jsonb_set(settings, '{site_daily_caps}', %(caps)s::jsonb, true)
+WHERE id = %(tenant)s
+"""
+
 _SELECT_USER = """
 SELECT id, tenant_id, role::text AS role, deactivated_at
 FROM users
@@ -137,6 +146,20 @@ def set_min_extension_version(
         return cur.rowcount > 0
 
 
+def set_site_daily_caps(
+    conn: psycopg.Connection, tenant_id: uuid.UUID, caps: dict[str, int]
+) -> bool:
+    """Replace this tenant's `site_daily_caps`; every other settings key is untouched.
+
+    The whole map is written at once, through one `jsonb_set`, because the Settings page saves one
+    list: a partial write would leave caps the person removed still standing. Returns ``True`` when
+    the tenant was there to change.
+    """
+    with conn.cursor() as cur:
+        cur.execute(_SET_SITE_DAILY_CAPS, {"tenant": tenant_id, "caps": Jsonb(caps)})
+        return cur.rowcount > 0
+
+
 def get_user(conn: psycopg.Connection, user_id: uuid.UUID) -> UserRow | None:
     """One person's tenant, role and deactivation, or ``None`` when there is no such person."""
     with conn.cursor(row_factory=dict_row) as cur:
@@ -205,6 +228,7 @@ __all__ = [
     "record_admin_action",
     "record_extension_report",
     "set_min_extension_version",
+    "set_site_daily_caps",
     "tenant_is_frozen",
     "unfreeze_runs",
 ]

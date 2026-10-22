@@ -16,10 +16,10 @@ from psycopg.types.json import Jsonb
 _INSERT_RUN = """
 INSERT INTO runs
   (tenant_id, workflow_id, recipe_version_id, input_batch_id, mode, status,
-   destination_key, approval_policy)
+   destination_key, approval_policy, min_seconds_between_rows, min_seconds_between_steps)
 VALUES
   (%(tenant)s, %(workflow)s, %(recipe)s, %(batch)s, %(mode)s, 'queued',
-   %(destination)s, %(policy)s)
+   %(destination)s, %(policy)s, %(rows_pace)s, %(steps_pace)s)
 RETURNING id
 """
 
@@ -42,8 +42,14 @@ def insert_run(
     mode: str,
     destination_key: str,
     approval_policy: dict[str, Any],
+    min_seconds_between_rows: int | None = None,
+    min_seconds_between_steps: int | None = None,
 ) -> uuid.UUID:
-    """Insert a ``queued`` run and return its id."""
+    """Insert a ``queued`` run and return its id.
+
+    The two pacing values are the person's choice on the run's start screen (PL-080); ``None`` is
+    unset, which the runner reads as 0 -- the pace the product had before pacing existed.
+    """
     with conn.cursor() as cur:
         cur.execute(
             _INSERT_RUN,
@@ -55,6 +61,8 @@ def insert_run(
                 "mode": mode,
                 "destination": destination_key,
                 "policy": Jsonb(approval_policy),
+                "rows_pace": min_seconds_between_rows,
+                "steps_pace": min_seconds_between_steps,
             },
         )
         return cur.fetchone()[0]

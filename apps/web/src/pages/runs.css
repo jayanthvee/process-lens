@@ -139,3 +139,20 @@
     padding: 4px 16px 18px;
   }
 }
+
+/* PL-080: the run's pace, and the admin's way to the limit that paused it. */
+.run-detail .pace-note {
+  margin: 0;
+  padding: 0 20px 12px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.run-detail .cap-change {
+  padding-bottom: 8px;
+}
+
+.run-detail .cap-change a {
+  color: var(--gold-deep);
+  font-weight: 600;
+}

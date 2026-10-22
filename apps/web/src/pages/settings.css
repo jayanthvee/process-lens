@@ -1,0 +1,106 @@
+/* The Settings page's own placement. The panels, buttons and the blur-in entrance are already in
+   styles/global.css, so nothing here duplicates them (PL-080). */
+
+.settings {
+  display: grid;
+  gap: 30px;
+  align-content: start;
+}
+
+.settings .run-note {
+  margin: 0;
+  padding: 6px 20px 14px;
+  color: var(--ink-2);
+  font-size: 14px;
+}
+
+.settings .run-count {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.settings table.limits-table {
+  width: calc(100% - 40px);
+  margin: 2px 20px 14px;
+  border-collapse: collapse;
+}
+
+.settings table.limits-table th {
+  padding: 0 8px 6px;
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 500;
+  text-align: left;
+}
+
+.settings table.limits-table td {
+  padding: 6px 8px;
+  border-top: 1px solid var(--hair);
+  vertical-align: middle;
+}
+
+.settings table.limits-table input[type="text"] {
+  width: 100%;
+  font: 400 14px var(--font);
+  color: var(--ink);
+  background: var(--glass-strong);
+  border: 1px solid var(--hair-2);
+  border-radius: 8px;
+  padding: 7px 10px;
+}
+
+.settings table.limits-table input[type="number"] {
+  width: 110px;
+  font: 400 14px var(--font);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+  background: var(--glass-strong);
+  border: 1px solid var(--hair-2);
+  border-radius: 8px;
+  padding: 7px 10px;
+}
+
+.settings table.limits-table input:disabled {
+  opacity: 0.6;
+}
+
+.settings ul.limits-read {
+  margin: 0;
+  padding: 0 20px 14px;
+  list-style: none;
+}
+
+.settings ul.limits-read li {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 9px 0;
+  border-top: 1px solid var(--hair);
+}
+
+.settings ul.limits-read span {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.settings .actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 4px 20px 20px;
+}
+
+.settings .refusal.limits-problem {
+  margin: 0;
+  padding: 0 20px 20px;
+  color: var(--help);
+  font-size: 13.5px;
+}
+
+@media (max-width: 780px) {
+  .settings table.limits-table {
+    width: calc(100% - 32px);
+    margin: 2px 16px 14px;
+  }
+}

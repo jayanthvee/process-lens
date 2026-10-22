@@ -13,6 +13,7 @@ import {
   codePromptWords,
   isOpenStatus,
   minutesSavedWords,
+  paceWords,
   pauseReasonWords,
   plainReason,
   refusalWords,
@@ -22,6 +23,7 @@ import {
   runActions,
   runStatusWords,
   timeComparisonWords,
+  CHANGE_THE_LIMIT,
 } from "../lib/words";
 import type { ExecutorSession, OperatorInfo, RecordRow, RunDetail as RunDetailPayload } from "../types";
 import {
@@ -260,6 +262,12 @@ export function RunDetail(): JSX.Element {
   const siteCap = detail.site_cap ?? null;
   const capSentence = siteCap ? siteCapWords(siteCap) : null;
   const capReached = siteCap !== null && siteCapReached(siteCap);
+  // PL-080: the API says whether this person may change the limit; only then is the link shown.
+  const canChangeCap = siteCap?.can_change === true;
+  const pace = paceWords(
+    detail.min_seconds_between_rows ?? 0,
+    detail.min_seconds_between_steps ?? 0,
+  );
   const wantsCode = detail.pause_reason === "code_required";
   const runId = detail.id;
 
@@ -354,6 +362,13 @@ export function RunDetail(): JSX.Element {
           )}
         </div>
         <p className="pause-reason">{capSentence ?? pauseReason ?? "Not paused."}</p>
+        {!canChangeCap ? null : (
+          <p className="pause-reason cap-change">
+            <Link to="/settings#daily-limits">{CHANGE_THE_LIMIT}</Link>
+          </p>
+        )}
+        {/* PL-080: one short line, so a person can see how fast this run is going. */}
+        <p className="pace-note">{pace}</p>
         {capReached ? (
           <p className="pause-reason cap-note">
             The count resets at midnight UTC. This button works again then.

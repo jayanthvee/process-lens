@@ -214,11 +214,17 @@ def create_run(
     input_batch_id: uuid.UUID,
     mode: str = "batch",
     limit: int | None = None,
+    min_seconds_between_rows: int | None = None,
+    min_seconds_between_steps: int | None = None,
 ) -> uuid.UUID:
     """Create a run pinned to one recipe version and one input batch; return its id.
 
     ``limit`` caps the ready rows the run takes, in the person's row order, so a preview of one row
     (``mode='preview', limit=1``) runs exactly the first row that is ready.
+
+    ``min_seconds_between_rows`` and ``min_seconds_between_steps`` are the pace the person chose on
+    the start screen (PL-080). ``None`` leaves them unset, which the runner reads as 0: as fast as
+    the site allows, the behaviour the product had before pacing existed.
 
     When the batch carries the mapping a person confirmed, each ready row's values are the recipe's
     own columns, so the keys are rendered from them and the runner -- which reads ``clean`` -- sees
@@ -309,6 +315,8 @@ def create_run(
             mode=mode,
             destination_key=workflow["destination_key"],
             approval_policy=approval_policy,
+            min_seconds_between_rows=min_seconds_between_rows,
+            min_seconds_between_steps=min_seconds_between_steps,
         )
         for input_record_id, _row_index, record_key, idempotency_key in rendered:
             ledger_create.insert_run_record(

@@ -9,6 +9,7 @@ import { POLL_INTERVAL_MS, useJson } from "../lib/useJson";
 import {
   DOCUMENT_ROWS_GONE,
   isOpenStatus,
+  PACE_CHOICES,
   pauseReasonWords,
   refusalWords,
   runStatusWords,
@@ -108,6 +109,10 @@ export function TaskRun(): JSX.Element {
   // because the second click of a double click arrives before a state update re-renders the page.
   const tryingIt = useRef(false);
   const runningRest = useRef(false);
+  // PL-080: the pace this flow's runs go at. Chosen once, before the first row is tried, and the
+  // same for the preview and the rest of the batch; the choices are locked once a run exists.
+  const [pace, setPace] = useState<string>(PACE_CHOICES[0]?.id ?? "fast");
+  const chosenPace = PACE_CHOICES.find((entry) => entry.id === pace) ?? PACE_CHOICES[0];
 
   // Step 2 is one request: the API matches the columns and decides which rows are ready.
   const checkPath =
@@ -233,6 +238,12 @@ export function TaskRun(): JSX.Element {
       mode,
     };
     if (mode === "preview") body.limit = 1;
+    // As fast as the site allows is 0/0, which the API already treats as unset; nothing is sent,
+    // so the request for the default pace is exactly the one this page always sent.
+    if (chosenPace !== undefined && (chosenPace.rows > 0 || chosenPace.steps > 0)) {
+      body.min_seconds_between_rows = chosenPace.rows;
+      body.min_seconds_between_steps = chosenPace.steps;
+    }
     try {
       const created = await apiPost<RunCreated>("/api/v1/runs", body);
       return created.run_id;
@@ -488,6 +499,30 @@ export function TaskRun(): JSX.Element {
               <span className={`res ${outcome.tone}`}>{outcome.label}</span>
             )}
           </div>
+          {/* PL-080: the pace, before the first row goes. One choice for this whole flow, so the
+              preview and the rest of the batch cannot end up going at different speeds. */}
+          <fieldset className="run-pace">
+            <legend>Pace</legend>
+            {PACE_CHOICES.map((choice) => (
+              <label
+                key={choice.id}
+                className={`run-pace-choice${pace === choice.id ? " on" : ""}`}
+              >
+                <input
+                  type="radio"
+                  name="pace"
+                  value={choice.id}
+                  checked={pace === choice.id}
+                  disabled={runId !== null}
+                  onChange={() => setPace(choice.id)}
+                />
+                <span>
+                  <b>{choice.label}</b>
+                  <small>{choice.explanation}</small>
+                </span>
+              </label>
+            ))}
+          </fieldset>
           {/* PL-041: the row is queued behind another task's run on this app. The card says which
               one, and offers the one action that unblocks it, without leaving this page. */}
           {run.data?.waiting_behind == null ? null : (

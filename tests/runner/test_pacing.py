@@ -14,10 +14,19 @@ import uuid
 from collections.abc import Callable
 
 import psycopg
+import pytest
+from fastapi.testclient import TestClient
 
+from packages.compiler.assertions import origin_of
+from packages.ledger import reads
+from services.api.admin import ADMIN_TOKEN_ENV_VAR
+from services.api.main import app
+from services.api.operator import OPERATOR_ENV_VAR
 from services.runner.testing import ScriptedRun
 from services.runner.worker import Worker
 from tests.runner.conftest import ORIGIN, Seed, recipe
+
+ADMIN_TOKEN = "admin-token-for-tests"
 
 
 def _wrap_pauses(clock: object, hook: Callable[[int], None]) -> object:
@@ -262,3 +271,66 @@ def test_a_cap_counts_only_its_own_site(
 
     status, reason = base.run_status(run_id)
     assert (status, reason) == ("completed", None)
+
+
+# --- the cap a person set on screen is the cap the runner counts (PL-080) ----
+
+LINKEDIN = "https://www.linkedin.com"
+
+
+def _linkedin_recipe() -> dict:
+    """A runnable recipe whose own ``allowed_origins`` names LinkedIn.
+
+    The origin is written the way the compiler writes it: ``origin_of`` of a recorded URL, so no
+    trailing slash and ``www.`` kept.
+    """
+    document = recipe()
+    document["meta"]["allowed_origins"] = [origin_of("https://www.linkedin.com/feed/")]
+    return document
+
+
+def test_a_cap_saved_through_the_api_is_the_one_the_runner_counts(
+    seed: Callable[..., Seed],
+    conn: psycopg.Connection,
+    make_worker: Callable[..., Worker],
+    database_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PL-080: a limit saved on the Settings page pauses the run it is meant to pause.
+
+    The whole path: the API stores the origin exactly as the recipe writes it, the runner reads the
+    same text back, today's count on that origin reaches the limit, and the run pauses before
+    claiming. If either side normalised the origin differently the count would be 0 and the run
+    would complete.
+    """
+    base = seed(_linkedin_recipe())
+    for email in ("a@x.com", "b@x.com", "c@x.com"):
+        base.add_input_record(email=email)
+    person = conn.execute(
+        "INSERT INTO users (tenant_id, email, name, role) "
+        "VALUES (%s, %s, 'A person', 'builder') RETURNING id",
+        (base.tenant_id, f"{uuid.uuid4().hex[:8]}@example.com"),
+    ).fetchone()[0]
+    monkeypatch.setenv("DATABASE_URL", database_url)
+    monkeypatch.setenv(ADMIN_TOKEN_ENV_VAR, ADMIN_TOKEN)
+    monkeypatch.setenv(OPERATOR_ENV_VAR, str(person))
+
+    client = TestClient(app, base_url="http://127.0.0.1:8000", client=("127.0.0.1", 51234))
+    saved = client.put(
+        "/api/v1/settings/site-limits",
+        json={"sites": [{"origin": "https://www.linkedin.com/", "limit": 2}]},
+        headers={"X-ProcessLens-Admin-Token": ADMIN_TOKEN},
+    )
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["sites"] == [{"origin": LINKEDIN, "limit": 2}]
+
+    run_id = base.create_run()
+    _count_submitting(conn, base.tenant_id, 2)
+    assert reads.site_rows_submitted_today(conn, base.tenant_id, LINKEDIN) == 2
+
+    worker = make_worker(ScriptedRun.build())
+    worker.run_once()
+
+    status, reason = base.run_status(run_id)
+    assert (status, reason) == ("paused", "site_daily_cap")
+    assert list(_states(conn, run_id).values()).count("pending") == 3

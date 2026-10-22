@@ -12,7 +12,6 @@ const SENTENCES: Record<string, string> = {
   "/documents": "Your PDFs, and what was read from them, will appear here.",
   "/saved-answers": "The answers you save for later runs will appear here.",
   "/apps": "The sites each task may use will appear here.",
-  "/settings": "Your workspace, your people and how long screenshots are kept will appear here.",
   "/help": "Short guides for each screen will appear here.",
 };
 

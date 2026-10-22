@@ -201,7 +201,9 @@ const PAGES: { name: string; path: string; shows: string[] }[] = [
   { name: "Teach", path: "/teach", shows: ["Open the app you want to automate in Chrome."] },
   { name: "Run this task", path: "/tasks/task-1/run", shows: ["Add your spreadsheet"] },
   // A route that is still a placeholder, so the ComingSoon sample stays covered too.
-  { name: "ComingSoon", path: "/settings", shows: ["Your workspace, your people"] },
+  { name: "ComingSoon", path: "/documents", shows: ["Your PDFs, and what was read from them"] },
+  // PL-080: Settings is a real page now, and its one section speaks in plain words.
+  { name: "Settings", path: "/settings", shows: ["Daily limits per site"] },
 ];
 
 /* ------------------------------------------------------------------ */

@@ -16,6 +16,7 @@ from .admin import (
     record_admin_action,
     record_extension_report,
     set_min_extension_version,
+    set_site_daily_caps,
     tenant_is_frozen,
     unfreeze_runs,
 )
@@ -228,6 +229,7 @@ __all__ = [
     "tenant_site_caps",
     "set_batch_mapping",
     "set_min_extension_version",
+    "set_site_daily_caps",
     "set_row_clean",
     "set_row_verdict",
     "set_run_status",
