@@ -1227,7 +1227,12 @@ def _already_matches_branch(commit_control: Any) -> dict[str, Any] | None:
     return {
         "action": "branch",
         "name": "Skip a record whose values are already there",
-        "when": {"element_absent": {"targets": [dict(rung) for rung in targets]}},
+        # T1 review: a row with work waits this long for Save to go away before carrying on, so the
+        # wait is short; a page that already matches shows no Save at once.
+        "when": {
+            "element_absent": {"targets": [dict(rung) for rung in targets]},
+            "timeout_ms": 1000,
+        },
         "then": [
             {
                 "id": "end-record-1",

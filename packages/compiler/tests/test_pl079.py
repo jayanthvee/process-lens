@@ -204,7 +204,7 @@ def test_an_update_skips_a_row_that_is_already_right_before_it_saves() -> None:
     # The condition is the same element_absent on the commit control PL-075 uses as the proof:
     # absent before the click means the page has nothing to save.
     commit = steps[commit_index]
-    assert branch["when"] == {"element_absent": {"targets": SAVE_TARGETS}}
+    assert branch["when"] == {"element_absent": {"targets": SAVE_TARGETS}, "timeout_ms": 1000}
     assert branch["when"]["element_absent"] == commit["assert_after"]["element_absent"]
     assert branch["then"] == [
         {
