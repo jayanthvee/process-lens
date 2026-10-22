@@ -155,8 +155,13 @@ class MappingResponse(BaseModel):
 
 
 def _header_text(value: Any) -> str:
-    """A header's text, stripped; a blank header is named by its position later."""
-    return "" if value is None else str(value).strip()
+    """A header's text, stripped; a blank header is named by its position later.
+
+    A NUL is valid UTF-8 but not valid text: PostgreSQL refuses it in a ``text`` or ``jsonb``
+    column, so a binary file renamed ``.csv`` would be a 500 rather than an upload.
+    """
+    text = "" if value is None else str(value)
+    return text.replace("\x00", "").strip()
 
 
 def _headers(names: list[Any]) -> list[str]:
@@ -191,26 +196,38 @@ def _is_blank(cells: list[Any]) -> bool:
     return not any(value is not None and str(value).strip() for value in cells)
 
 
-def _split_header(rows: list[list[Any]]) -> tuple[list[Any], list[list[Any]]]:
-    """The header row and the data below it, skipping a title row above the header.
+def _is_title(cells: list[Any]) -> bool:
+    """A title row: at most one non-blank cell, and it is the row's first cell.
 
-    The header is the first row with at least two non-blank cells, which a title row is not. A row
-    that spans the table's whole width is a header too: an untitled first or last column leaves
-    its header cell blank without making the row a title, and reading it as one would promote the
-    first data row into the header. When no row qualifies (a one-column file), the first non-blank
-    row is the header, as before.
+    A title is written in the sheet's first cell, so Excel pads the cells beside a merged title
+    with empty ones and a saved CSV carries them as delimiters. A row whose first cell is blank
+    but which names a column later is a header whose first column the person left unnamed, not a
+    title: reading it as one would promote the first data row into the header.
     """
-    width = max((len(cells) for cells in rows), default=0)
+    filled = [
+        index for index, value in enumerate(cells) if value is not None and str(value).strip()
+    ]
+    return len(filled) <= 1 and (not filled or filled[0] == 0)
+
+
+def _split_header(rows: list[list[Any]]) -> tuple[list[Any], list[list[Any]]]:
+    """The header row and the data below it, skipping the title rows above the header.
+
+    The header is the first row that is not a title. When every row is title-shaped (a one-column
+    file), the first row is the header, as before.
+    """
     for index, cells in enumerate(rows):
-        non_blank = sum(1 for value in cells if value is not None and str(value).strip())
-        if non_blank >= 2 or len(cells) == width:
+        if not _is_title(cells):
             return cells, rows[index + 1 :]
-    return [], []
+    # Every row is title-shaped: a one-column file, where the first row is the header.
+    if not rows:
+        return [], []
+    return rows[0], rows[1:]
 
 
 def _raw_text(value: Any) -> str:
-    """A cell as ``str()`` has always written it: what the file held."""
-    return "" if value is None else str(value)
+    """A cell as ``str()`` has always written it: what the file held, minus any NUL."""
+    return "" if value is None else str(value).replace("\x00", "")
 
 
 def _clean_text(value: Any) -> str:
@@ -285,11 +302,20 @@ def _read_csv(
     """A comma- or tab-separated file: its encoding decoded, its header found, its cells kept."""
     text = _decode_text(content)
     delimiter = "\t" if suffix == TSV_SUFFIX else _delimiter(text)
-    rows = [
-        cells
-        for cells in csv.reader(io.StringIO(text, newline=""), delimiter=delimiter)
-        if not _is_blank(cells)
-    ]
+    try:
+        rows = [
+            cells
+            for cells in csv.reader(io.StringIO(text, newline=""), delimiter=delimiter)
+            if not _is_blank(cells)
+        ]
+    except csv.Error as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "This file has a cell that is too long to read; split it into two files "
+                "and add them one at a time."
+            ),
+        ) from exc
     if not rows:
         return [], [], []
     header_cells, body = _split_header(rows)
