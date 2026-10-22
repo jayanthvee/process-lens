@@ -18,6 +18,7 @@ import {
   semanticRole,
 } from "../shared/fingerprint";
 import { makeEvent, nextStepId, resetStepIds, type PendingEvent } from "../shared/events";
+import { installBrowserBridge, type Whoami } from "./browser-bridge";
 import {
   chipAncestorOf,
   chipListAncestor,
@@ -1606,3 +1607,14 @@ function bootstrap(): void {
 }
 
 bootstrap();
+
+// PL-087: the ProcessLens dashboard asks which Chrome it is in, so its runs come here.
+const bridgeExt = (globalThis as { chrome?: typeof chrome }).chrome;
+if (typeof window !== "undefined" && bridgeExt?.runtime?.id) {
+  installBrowserBridge(window, async () => {
+    const answer = (await bridgeExt.runtime.sendMessage({ type: "executor:whoami" })) as
+      | Whoami
+      | undefined;
+    return answer ?? {};
+  });
+}

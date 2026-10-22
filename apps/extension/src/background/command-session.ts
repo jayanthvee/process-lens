@@ -88,6 +88,8 @@ export interface SessionDeps {
   /** Returns a cancel for the timer. */
   setInterval: (fn: () => void, ms: number) => () => void;
   bindActiveTab: () => Promise<number | null>;
+  /** PL-087: this install's browser id, sent with the session so its runs come to this Chrome. */
+  browserId?: () => Promise<string>;
   /**
    * Wraps step-runner: guard, and either resolve only (`prepare`) or resolve and perform
    * (`dispatch`). `sentInput` fires after the trusted input event.
@@ -249,6 +251,7 @@ export class CommandSession {
 
     const fetchFn = (globalThis as { fetch?: typeof fetch }).fetch;
     if (typeof fetchFn !== "function") throw new Error("fetch is unavailable in this context");
+    const browser = this.deps.browserId ? await this.deps.browserId().catch(() => "") : "";
     let response: Response;
     try {
       response = await fetchFn(`${trimBase(hubUrl)}/api/v1/executor/sessions`, {
@@ -258,7 +261,11 @@ export class CommandSession {
           "X-ProcessLens-Client": "extension",
           ...accessHeaders(accessCode),
         },
-        body: JSON.stringify({ tab_url: info.url, tab_title: info.title }),
+        body: JSON.stringify({
+          tab_url: info.url,
+          tab_title: info.title,
+          ...(browser ? { browser_id: browser } : {}),
+        }),
       });
     } catch (error) {
       // Nothing listening at that address (the popup's auto-connect to 127.0.0.1:8000 before the

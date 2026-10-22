@@ -296,6 +296,65 @@ def attached_session(api_url: str, runner_secret: str | None = None) -> str | No
     return session_id if isinstance(session_id, str) and session_id else None
 
 
+@dataclass(frozen=True)
+class AttachedSession:
+    """One Chrome with the extension attached to the hub, and the browser it belongs to."""
+
+    session_id: str
+    browser_id: str | None
+
+
+def attached_sessions(api_url: str, runner_secret: str | None = None) -> list[AttachedSession]:
+    """Every attached Chrome, newest first (PL-087); empty when the API cannot be read."""
+    secret = runner_secret if runner_secret is not None else os.environ.get(RUNNER_SECRET_KEY, "")
+    headers = {"Authorization": f"Bearer {secret.strip()}"} if secret.strip() else {}
+    request = urllib.request.Request(
+        f"{supervisor_api_base(api_url)}/api/v1/executor/sessions/attached", headers=headers
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            body = json.loads(response.read())
+    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError, ValueError):
+        return []
+    if not isinstance(body, list):
+        return []
+    found: list[AttachedSession] = []
+    for row in body:
+        if not isinstance(row, dict) or not isinstance(row.get("session_id"), str):
+            continue
+        browser = row.get("browser_id")
+        found.append(
+            AttachedSession(row["session_id"], browser if isinstance(browser, str) else None)
+        )
+    return found
+
+
+def _waiting(row: OpenRunRow) -> bool:
+    """A run no live worker holds: queued, or running with a lapsed lease."""
+    return row.status == "queued" or (row.status == "running" and not row.worker_live)
+
+
+def sessions_to_start(
+    runs: Sequence[OpenRunRow], sessions: Sequence[AttachedSession], busy: set[str]
+) -> list[AttachedSession]:
+    """The attached Chromes that should get a worker now (PL-087).
+
+    A Chrome gets one when it has no worker yet and a waiting run is its own (the run's
+    ``browser_id`` is this Chrome's) or nobody's (unbound). So a run started from one person's
+    dashboard never reaches another person's Chrome, and each person's run starts at once instead
+    of waiting for someone else's worker. A run bound to a Chrome that is not attached waits.
+    """
+    return [
+        session
+        for session in sessions
+        if session.session_id not in busy
+        and any(
+            _waiting(row) and (row.browser_id is None or row.browser_id == session.browser_id)
+            for row in runs
+        )
+    ]
+
+
 def open_runs(dsn: str) -> list[OpenRunRow]:
     """The runs a worker could take, read fresh each tick so a database restart heals itself."""
     try:
@@ -307,7 +366,12 @@ def open_runs(dsn: str) -> list[OpenRunRow]:
 
 
 def start_worker(
-    api_url: str, runner_secret: str, session_id: str, *, number: int
+    api_url: str,
+    runner_secret: str,
+    session_id: str,
+    *,
+    number: int,
+    browser_id: str | None = None,
 ) -> subprocess.Popen:
     """One runner worker, with the harness's own ``start_worker`` arguments.
 
@@ -337,6 +401,8 @@ def start_worker(
             str(WORKER_POLL_SECONDS),
             "--max-seconds",
             str(WORKER_MAX_SECONDS),
+            # PL-087: this Chrome's runs and unbound ones, nobody else's.
+            *(["--browser", browser_id] if browser_id else []),
         ],
         cwd=str(REPO_ROOT),
         env=env,
@@ -356,58 +422,53 @@ def stop_process(process: subprocess.Popen | None) -> None:
 
 
 def supervisor_command() -> int:
-    """The demo's watch loop: a worker for a waiting run when Chrome is attached, one at a time."""
+    """One worker per attached Chrome, each taking only its own browser's runs (PL-087)."""
     dsn = require_setting(DATABASE_URL_KEY)
     api_url = require_setting(API_URL_KEY)
     runner_secret = require_setting(RUNNER_SECRET_KEY)
 
-    print("Supervisor watching: a run waiting for Chrome gets a worker.")
-    worker: subprocess.Popen | None = None
+    print("Supervisor watching: each connected Chrome gets a worker for its own runs.")
+    workers: dict[str, subprocess.Popen] = {}
     worker_number = 0
-    worker_session: str | None = None
-    worker_run_id: str | None = None
-    last_exit: int | None = None
-    previous = State(
-        session_attached=False, waiting_run=None, worker_running_for=None, last_exit=None
-    )
+    attached_before = 0
     try:
         while True:
-            if worker is not None and worker.poll() is not None:
-                last_exit = worker.returncode
-                worker = None
-                worker_run_id = None
-            session_id = attached_session(api_url)
-            # A worker talks to the one Chrome session it was started for. When Chrome reconnects,
-            # that session is gone and the worker would pause every run it touches, so it is
-            # stopped and the next tick starts one for the new session.
-            if worker is not None and worker_session is not None and session_id != worker_session:
-                stop_process(worker)
-                worker = None
-                worker_run_id = None
-            runs = open_runs(dsn)
-            waiting_run = waiting_run_id(runs)
-            decision = worker_decision(runs, session_id, worker_alive=worker is not None)
-            if decision == START and session_id is not None and waiting_run is not None:
+            for session_id, process in list(workers.items()):
+                if process.poll() is not None:
+                    code = process.returncode
+                    print(
+                        f"  The runner for Chrome {session_id[:8]} stopped with code {code}."
+                        if code
+                        else f"  The runner for Chrome {session_id[:8]} finished."
+                    )
+                    del workers[session_id]
+            sessions = attached_sessions(api_url, runner_secret)
+            live = {session.session_id for session in sessions}
+            # A worker talks to the one Chrome session it was started for. When that Chrome goes
+            # (it reconnected, or the person disconnected), its worker would pause every run it
+            # touches, so it is stopped; a reconnected Chrome gets a new one on the next tick.
+            for session_id in [sid for sid in workers if sid not in live]:
+                stop_process(workers.pop(session_id))
+            if len(sessions) != attached_before:
+                print(f"  {len(sessions)} Chrome window(s) connected.")
+                attached_before = len(sessions)
+            for session in sessions_to_start(open_runs(dsn), sessions, set(workers)):
                 worker_number += 1
-                worker = start_worker(api_url, runner_secret, session_id, number=worker_number)
-                worker_session = session_id
-                worker_run_id = waiting_run
-                last_exit = None
-            current = State(
-                session_attached=session_id is not None,
-                waiting_run=waiting_run,
-                worker_running_for=worker_run_id,
-                last_exit=last_exit,
-            )
-            for line in status_lines(previous, current):
-                print(f"  {line}")
-            previous = current
+                workers[session.session_id] = start_worker(
+                    api_url,
+                    runner_secret,
+                    session.session_id,
+                    number=worker_number,
+                    browser_id=session.browser_id,
+                )
+                print(f"  Started a runner for Chrome {session.session_id[:8]}.")
             time.sleep(SUPERVISOR_POLL_SECONDS)
     except KeyboardInterrupt:
         print()
         print("Stopping.")
     finally:
-        stop_process(worker)
+        for process in workers.values():
+            stop_process(process)
     return 0
 
 

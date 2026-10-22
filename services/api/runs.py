@@ -57,6 +57,9 @@ class CreateRunRequest(BaseModel):
     mode: Literal["preview", "batch"] = "batch"
     # "Try one row" is a preview of exactly one row: the first row that is ready.
     limit: Annotated[int, Field(ge=1)] | None = None
+    # PL-087: the Chrome the dashboard tab sits in, as its extension reported it. The run goes to
+    # that Chrome only. Absent (no extension in this browser), any Chrome may take it.
+    browser_id: Annotated[str, Field(pattern=r"^[A-Za-z0-9_-]{8,64}$")] | None = None
 
 
 class CreateRunResponse(BaseModel):
@@ -230,6 +233,7 @@ def create_run_endpoint(payload: Annotated[CreateRunRequest, Body()]) -> CreateR
                 input_batch_id=payload.input_batch_id,
                 mode=payload.mode,
                 limit=payload.limit,
+                browser_id=payload.browser_id,
             )
         except CreationError as exc:
             conn.rollback()

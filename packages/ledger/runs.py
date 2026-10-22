@@ -20,6 +20,8 @@ from .models import RunClaim, _row
 # already has an active run, so it does not collide with runs_one_active_per_destination.
 # The claim also increments `lease_epoch` (B1): every new holder fences out any previous one, so a
 # worker that lost a race can never write under a lease it no longer owns.
+# PL-087: a worker for one Chrome (`browser`) claims that browser's runs and unbound ones; a worker
+# with no browser (the harness, a laptop's single worker) claims as before.
 _CLAIM_RUN = """
 UPDATE runs
 SET status = 'running', worker_id = %(worker)s, lease_epoch = lease_epoch + 1,
@@ -27,6 +29,7 @@ SET status = 'running', worker_id = %(worker)s, lease_epoch = lease_epoch + 1,
 WHERE id = (
   SELECT id FROM runs
   WHERE status = 'queued'
+    AND (%(browser)s::text IS NULL OR runs.browser_id IS NULL OR runs.browser_id = %(browser)s)
     AND NOT EXISTS (
       SELECT 1 FROM runs active
       WHERE active.tenant_id = runs.tenant_id
@@ -44,6 +47,7 @@ _FIND_STALE_RUN = """
 SELECT * FROM runs
 WHERE status IN ('running', 'paused')
   AND heartbeat_at < now() - %(timeout)s::interval
+  AND (%(browser)s::text IS NULL OR browser_id IS NULL OR browser_id = %(browser)s)
 ORDER BY heartbeat_at
 LIMIT 1
 """
@@ -112,25 +116,31 @@ DEFAULT_HEARTBEAT_TIMEOUT = "365 seconds"
 _TERMINAL_STATUSES = frozenset({"completed", "cancelled", "failed"})
 
 
-def claim_run(conn: psycopg.Connection, worker_id: str) -> RunClaim | None:
+def claim_run(
+    conn: psycopg.Connection, worker_id: str, *, browser_id: str | None = None
+) -> RunClaim | None:
     """Claim the oldest queued run whose destination has no active run.
+
+    With ``browser_id``, only that Chrome's runs and unbound ones are candidates (PL-087).
 
     A ``23505`` on ``runs_one_active_per_destination`` is a lost race: another worker took the
     destination between the subquery and the update. It means "nothing to claim", not an error.
     """
     try:
         with conn.transaction(), conn.cursor(row_factory=dict_row) as cur:
-            cur.execute(_CLAIM_RUN, {"worker": worker_id})
+            cur.execute(_CLAIM_RUN, {"worker": worker_id, "browser": browser_id})
             row = cur.fetchone()
     except psycopg.errors.UniqueViolation:
         return None
     return _row(RunClaim, row) if row is not None else None
 
 
-def find_stale_run(conn: psycopg.Connection, *, heartbeat_timeout: str) -> RunClaim | None:
-    """The oldest running or paused run whose heartbeat lapsed, if any."""
+def find_stale_run(
+    conn: psycopg.Connection, *, heartbeat_timeout: str, browser_id: str | None = None
+) -> RunClaim | None:
+    """The oldest running or paused run whose heartbeat lapsed, if any (of ``browser_id``'s)."""
     with conn.cursor(row_factory=dict_row) as cur:
-        cur.execute(_FIND_STALE_RUN, {"timeout": heartbeat_timeout})
+        cur.execute(_FIND_STALE_RUN, {"timeout": heartbeat_timeout, "browser": browser_id})
         row = cur.fetchone()
     return _row(RunClaim, row) if row is not None else None
 

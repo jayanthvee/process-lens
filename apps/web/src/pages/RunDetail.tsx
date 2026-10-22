@@ -5,6 +5,7 @@ import { ApprovalPanel } from "../components/ApprovalPanel";
 import { DestinationCheck } from "../components/DestinationCheck";
 import { WaitingRun } from "../components/WaitingRun";
 import { apiPost, errorText } from "../lib/api";
+import { useSessionPath } from "../lib/browser";
 import { POLL_INTERVAL_MS, useJson } from "../lib/useJson";
 import {
   RUNNING_AGAIN,
@@ -96,7 +97,7 @@ export function RunDetail(): JSX.Element {
   const records = useJson<RecordRow[]>(recordsPath, pollMs);
   // Whether Chrome is attached right now: a queued run with no session is waiting for the person
   // to open the extension, not for the engine (PL-033 requirement 4).
-  const session = useJson<ExecutorSession>("/api/v1/executor/session", pollMs);
+  const session = useJson<ExecutorSession>(useSessionPath(), pollMs);
 
   const detail = run.data;
   const rows = records.data ?? [];

@@ -634,7 +634,7 @@ def list_spreadsheets(
 # and a running run's lease is live only while its heartbeat is fresh. The lease rule is the one
 # ``find_stale_run`` applies, so a takeover and this read can never disagree about "live".
 _LIST_OPEN_RUNS = """
-SELECT id AS run_id, status::text AS status,
+SELECT id AS run_id, status::text AS status, browser_id,
        (worker_id IS NOT NULL AND heartbeat_at IS NOT NULL
         AND heartbeat_at >= now() - (%(timeout)s)::interval) AS worker_live
 FROM runs

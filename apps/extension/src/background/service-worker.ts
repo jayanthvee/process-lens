@@ -14,6 +14,7 @@ import {
   type ToWorker,
 } from "../shared/messages";
 import { accessHeaders } from "../shared/access";
+import { LAST_HUB_KEY, browserId, originOf } from "./browser-id";
 import type { PendingEvent } from "../shared/events";
 import type { Condition, RecordedEvent } from "../shared/recipe-types";
 import type { EventKind } from "../shared/command-protocol";
@@ -851,6 +852,7 @@ function getCommandSession(): CommandSession {
     createSocket: (url: string, protocols: string[]): WebSocketLike =>
       new WebSocket(url, protocols) as unknown as WebSocketLike,
     storage: commandStorage(),
+    browserId: () => browserId(chrome.storage?.local),
     now: () => Date.now(),
     setInterval: (fn: () => void, ms: number) => {
       const id: ReturnType<typeof setInterval> = setInterval(fn, ms);
@@ -971,8 +973,16 @@ async function handleExecutor(message: ToWorker): Promise<unknown> {
       steerExecutor("abort");
       break;
     case "executor:connect":
+      // PL-087: remember the address, so its dashboard -- and only its dashboard -- may ask
+      // which Chrome it is in.
+      await chrome.storage?.local?.set({ [LAST_HUB_KEY]: message.hubUrl });
       await getCommandSession().connect(message.hubUrl, message.accessCode ?? "");
       break;
+    case "executor:whoami": {
+      const local = chrome.storage?.local;
+      const lastHub = local ? (await local.get([LAST_HUB_KEY]))[LAST_HUB_KEY] : undefined;
+      return { ok: true, browserId: await browserId(local), hubOrigin: originOf(lastHub) };
+    }
     case "executor:disconnect":
       await getCommandSession().disconnect();
       break;

@@ -164,24 +164,67 @@ def test_supervisor_requires_the_api_address(
     assert "PROCESSLENS_API_URL" in printed[0]
 
 
-def test_supervisor_decides_with_the_demo_decision_and_never_binds(
+def _open(status: str, browser: str | None, *, live: bool = False) -> Any:
+    return deploy.OpenRunRow(
+        run_id=uuid.uuid4(), status=status, worker_live=live, browser_id=browser
+    )
+
+
+ANNA = deploy.AttachedSession("session-anna", "browser-anna")
+BEN = deploy.AttachedSession("session-ben", "browser-ben")
+
+
+def test_a_run_goes_only_to_the_chrome_that_started_it() -> None:
+    """PL-087: Anna's run starts a worker for Anna's Chrome, never for Ben's."""
+    runs = [_open("queued", "browser-anna")]
+
+    assert deploy.sessions_to_start(runs, [BEN, ANNA], busy=set()) == [ANNA]
+
+
+def test_each_person_gets_a_worker_at_once() -> None:
+    """Two people, two runs: two workers, side by side, instead of one waiting for the other."""
+    runs = [_open("queued", "browser-anna"), _open("queued", "browser-ben")]
+
+    assert deploy.sessions_to_start(runs, [ANNA, BEN], busy=set()) == [ANNA, BEN]
+    assert deploy.sessions_to_start(runs, [ANNA, BEN], busy={"session-anna"}) == [BEN]
+
+
+def test_an_unbound_run_may_go_to_any_chrome_and_a_bound_one_waits_for_its_own() -> None:
+    assert deploy.sessions_to_start([_open("queued", None)], [BEN], busy=set()) == [BEN]
+    assert deploy.sessions_to_start([_open("queued", "browser-anna")], [BEN], busy=set()) == []
+
+
+def test_a_run_a_live_worker_holds_starts_nothing_but_a_lapsed_one_does() -> None:
+    held = [_open("running", "browser-anna", live=True)]
+    lapsed = [_open("running", "browser-anna", live=False)]
+
+    assert deploy.sessions_to_start(held, [ANNA], busy=set()) == []
+    assert deploy.sessions_to_start(lapsed, [ANNA], busy=set()) == [ANNA]
+
+
+def test_supervisor_starts_one_worker_per_chrome_and_never_binds(
     monkeypatch: pytest.MonkeyPatch, deploy_env: None
 ) -> None:
-    """Two ticks: the decision is the demo's own function, and no port is ever bound."""
-    real_decision = deploy.worker_decision
-    decisions: list[tuple[list[Any], str | None, bool]] = []
+    """Two ticks with two attached Chromes and a run each: one worker each, started once."""
+    runs = [_open("queued", "browser-anna"), _open("queued", "browser-ben")]
+    monkeypatch.setattr(deploy, "open_runs", lambda dsn: runs)
+    monkeypatch.setattr(deploy, "attached_sessions", lambda api_url, secret=None: [ANNA, BEN])
+    started: list[tuple[str, str | None]] = []
 
-    def spy(runs: Any, session: str | None, *, worker_alive: bool) -> str:
-        decisions.append((list(runs), session, worker_alive))
-        return real_decision(runs, session, worker_alive=worker_alive)
+    class Alive:
+        returncode = None
 
-    monkeypatch.setattr(deploy, "worker_decision", spy)
-    monkeypatch.setattr(deploy, "open_runs", lambda dsn: [])
-    monkeypatch.setattr(deploy, "attached_session", lambda api_url: None)
+        def poll(self) -> None:
+            return None
 
+    def fake_start(api_url: str, secret: str, session_id: str, *, number: int, browser_id=None):
+        started.append((session_id, browser_id))
+        return Alive()
+
+    monkeypatch.setattr(deploy, "start_worker", fake_start)
+    monkeypatch.setattr(deploy, "stop_process", lambda process: None)
     binds: list[Any] = []
     monkeypatch.setattr(socket.socket, "bind", lambda self, address: binds.append(address))
-
     ticks = {"n": 0}
 
     def fake_sleep(seconds: float) -> None:
@@ -192,8 +235,7 @@ def test_supervisor_decides_with_the_demo_decision_and_never_binds(
     monkeypatch.setattr(deploy.time, "sleep", fake_sleep)
 
     assert deploy.main(["supervisor"]) == 0
-    assert len(decisions) == 2
-    assert all(session is None for _runs, session, _alive in decisions)
+    assert started == [("session-anna", "browser-anna"), ("session-ben", "browser-ben")]
     assert binds == []
 
 

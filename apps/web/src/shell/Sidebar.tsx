@@ -1,6 +1,7 @@
 import { NavLink } from "react-router-dom";
 
 import { useJson } from "../lib/useJson";
+import { useSessionPath } from "../lib/browser";
 import type { ExecutorSession, NeedsHelpRow } from "../types";
 import { Icon, type IconName } from "./Icons";
 
@@ -75,7 +76,7 @@ function Logo(): JSX.Element {
  */
 export function Sidebar(): JSX.Element {
   const help = useJson<NeedsHelpRow[]>("/api/v1/needs-help");
-  const session = useJson<ExecutorSession>("/api/v1/executor/session");
+  const session = useJson<ExecutorSession>(useSessionPath());
   const count = help.data?.length ?? 0;
   const attached = session.data?.attached === true;
 

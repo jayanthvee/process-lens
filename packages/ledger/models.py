@@ -135,6 +135,8 @@ class OpenRunRow:
     run_id: uuid.UUID
     status: str
     worker_live: bool
+    # PL-087: the Chrome that should drive it; None lets any Chrome take it.
+    browser_id: str | None = None
 
 
 @dataclass(frozen=True)
