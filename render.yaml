@@ -1,0 +1,59 @@
+# ProcessLens on Render: one Blueprint for the API and hub, the supervisor, and Postgres.
+#
+# Render reads this file when you choose New -> Blueprint and pick this repository. The api and
+# the supervisor build the same Dockerfile; the api runs its default command
+# (`python -m services.deploy api`: migrations, the operator row, then the API on $PORT) and the
+# supervisor runs `python -m services.deploy supervisor`. See internal/docs/DEPLOY_RENDER.md.
+
+envVarGroups:
+  - name: processlens-shared
+    envVars:
+      # The runner workers authenticate to the hub with this. Render generates it once, and
+      # both services read the same value from this group. Never commit it.
+      - key: PROCESSLENS_RUNNER_SECRET
+        generateValue: true
+
+services:
+  - type: web
+    name: processlens-api
+    runtime: docker
+    region: ohio
+    # 0.5c-512mb (the old "Starter") is always on. The free tier sleeps after inactivity, which
+    # drops the extension's WebSocket to the hub, so it is not used here.
+    plan: 0.5c-512mb
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: processlens-db
+          property: connectionString
+      # The extension's id from chrome://extensions; the hub refuses every other origin.
+      - key: PROCESSLENS_EXTENSION_ID
+        sync: false
+      - fromGroup: processlens-shared
+
+  - type: worker
+    name: processlens-supervisor
+    runtime: docker
+    region: ohio
+    plan: 0.5c-512mb
+    dockerfilePath: ./Dockerfile
+    dockerCommand: python -m services.deploy supervisor
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: processlens-db
+          property: connectionString
+      # The api's public address, https://processlens-api.onrender.com or your own domain.
+      # Render shows it on the api service's page after the first deploy.
+      - key: PROCESSLENS_API_URL
+        sync: false
+      - fromGroup: processlens-shared
+
+databases:
+  - name: processlens-db
+    region: ohio
+    plan: 0.1c-256mb
+    databaseName: processlens
+    user: processlens
