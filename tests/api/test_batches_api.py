@@ -511,16 +511,14 @@ def test_an_old_xls_file_is_refused_with_what_to_do(
 def test_a_header_with_a_blank_cell_is_still_the_header(
     connected: TestClient, conn: psycopg.Connection, ledger: Ledger
 ) -> None:
-    """An untitled column is a blank header, not a title above the headers (PL-088).
+    """An untitled first column is a blank header, not a title above the headers (PL-088).
 
-    A leading index column with no name, or a trailing column the person left nameless, used to
-    upload with a generated name. Reading a one-cell row above the headers as a title must not
-    turn the first data row into the header and throw the real header away.
+    A leading index column with no name used to upload with a generated name. Reading a one-cell
+    row above the headers as a title must not turn the first data row into the header.
     """
     workflow_id, _ = add_task(conn, ledger.tenant_id)
 
     leading = upload(connected, workflow_id, b",Name\n1,Ana\n2,Ben\n")
-    trailing = upload(connected, workflow_id, b"Name,\nAna,ana@x.com\n")
 
     assert leading.status_code == 201, leading.text
     leading_body = leading.json()
@@ -531,12 +529,90 @@ def test_a_header_with_a_blank_cell_is_still_the_header(
         {"Column 1": "2", "Name": "Ben"},
     ]
 
-    assert trailing.status_code == 201, trailing.text
-    trailing_body = trailing.json()
-    assert trailing_body["columns"] == ["Name", "Column 2"]
-    assert [row["raw"] for row in stored_rows(conn, trailing_body["batch_id"])] == [
-        {"Name": "Ana", "Column 2": "ana@x.com"}
-    ]
+
+def test_a_title_row_as_wide_as_the_table_is_still_skipped(
+    connected: TestClient, conn: psycopg.Connection, ledger: Ledger
+) -> None:
+    """A title merged across the table's own width is a title, not the header (PL-088).
+
+    Excel writes a merged title with the cells beside it empty, and a saved CSV carries those
+    empty cells as delimiters. Reading such a row as the header would store the real header as a
+    data row and name the columns after the title.
+    """
+    workflow_id, _ = add_task(conn, ledger.tenant_id)
+
+    wide = upload(connected, workflow_id, b"Q4 customers,,\nName,Email,Note\nAna,ana@x.com,first\n")
+    merged = upload(connected, workflow_id, b"Q4 customers,\nName,Email\nAna,ana@x.com\n")
+
+    assert wide.status_code == 201, wide.text
+    wide_body = wide.json()
+    assert wide_body["columns"] == ["Name", "Email", "Note"]
+    assert wide_body["row_count"] == 1
+    assert stored_rows(conn, wide_body["batch_id"])[0]["raw"] == {
+        "Name": "Ana",
+        "Email": "ana@x.com",
+        "Note": "first",
+    }
+
+    assert merged.status_code == 201, merged.text
+    merged_body = merged.json()
+    assert merged_body["columns"] == ["Name", "Email"]
+    assert stored_rows(conn, merged_body["batch_id"])[0]["raw"] == {
+        "Name": "Ana",
+        "Email": "ana@x.com",
+    }
+
+
+def test_a_title_row_in_a_workbook_is_skipped(
+    connected: TestClient, conn: psycopg.Connection, ledger: Ledger
+) -> None:
+    """A title in A1 of a sheet is a title; openpyxl pads its row, it is still not the header."""
+    workflow_id, _ = add_task(conn, ledger.tenant_id)
+    content = xlsx_bytes(
+        [["Q4 customers"], ["Name", "Email", "Note"], ["Ana", "ana@x.com", "first"]]
+    )
+
+    response = upload(connected, workflow_id, content, filename="inquiries.xlsx")
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["columns"] == ["Name", "Email", "Note"]
+    assert body["row_count"] == 1
+    assert stored_rows(conn, body["batch_id"])[0]["raw"] == {
+        "Name": "Ana",
+        "Email": "ana@x.com",
+        "Note": "first",
+    }
+
+
+def test_a_nul_byte_in_a_cell_does_not_break_the_upload(
+    connected: TestClient, conn: psycopg.Connection, ledger: Ledger
+) -> None:
+    """A binary file renamed ``.csv`` is a person's mistake, not a 500 (PL-088).
+
+    A NUL is valid UTF-8, so it reaches the database, whose jsonb column refuses it.
+    """
+    workflow_id, _ = add_task(conn, ledger.tenant_id)
+
+    response = upload(connected, workflow_id, b"Name,Email\nAna\x00,ana@x.com\n")
+
+    assert response.status_code == 201, response.text
+    rows = stored_rows(conn, response.json()["batch_id"])
+    assert rows[0]["raw"] == {"Name": "Ana", "Email": "ana@x.com"}
+    assert "\x00" not in json.dumps(rows[0]["raw"])
+
+
+def test_a_cell_too_long_to_read_is_refused_readably(
+    connected: TestClient, conn: psycopg.Connection, ledger: Ledger
+) -> None:
+    """A cell past ``csv``'s own field limit is a 422 with a message, not a 500 (PL-088)."""
+    workflow_id, _ = add_task(conn, ledger.tenant_id)
+    content = b"Name,Email\n" + b"A" * 140_000 + b",ana@x.com\n"
+
+    response = upload(connected, workflow_id, content)
+
+    assert response.status_code == 422, response.text
+    assert "cell" in response.json()["detail"]
 
 
 def test_a_truncated_utf16_file_is_not_a_server_error(
