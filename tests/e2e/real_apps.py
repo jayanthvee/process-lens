@@ -619,9 +619,7 @@ class OrangeHRM:
         return None
 
     def timesheet_entries(self, employee: int, timesheet_id: int) -> list[dict[str, Any]]:
-        found = self.call(
-            "GET", f"/time/employees/{employee}/timesheets/{timesheet_id}/entries?limit=200"
-        )
+        found = self.call("GET", f"/time/employees/timesheets/{timesheet_id}/entries")
         return list((found or {}).get("data", []))
 
 
@@ -657,11 +655,13 @@ def orangehrm_timesheet_rows(
     if timesheet is None:
         return []
     grouped: dict[tuple[str, str], dict[str, float]] = {}
+    # The API answers one entry per row (a project and an activity) with its days under `dates`.
     for entry in app.timesheet_entries(emp_number, int(timesheet["id"])):
         project = str((entry.get("project") or {}).get("name") or "")
         activity = str((entry.get("activity") or {}).get("name") or "")
-        hours = _hours(entry.get("duration"))
-        if hours == 0:
-            continue
-        grouped.setdefault((project, activity), {})[_day_key(str(entry.get("date")))] = hours
+        for day, cell in (entry.get("dates") or {}).items():
+            hours = _hours((cell or {}).get("duration"))
+            if hours == 0:
+                continue
+            grouped.setdefault((project, activity), {})[_day_key(str(day))] = hours
     return [(project, activity, days) for (project, activity), days in grouped.items()]

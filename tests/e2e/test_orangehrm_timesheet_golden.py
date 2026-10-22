@@ -41,9 +41,9 @@ pytestmark = [pytest.mark.e2e, pytest.mark.real_apps]
 # fold could be exercised end to end, so the marker stays: `strict=True` turns the passing run into
 # a failing XPASS, which is the signal to remove it.
 XFAIL_REASON = (
-    "the last run parked every row at the activity select: a recorded click opened the dropdown "
-    "and the select step's own click closed it again (the compiler fold that drops that click is "
-    "in place but has not been run end to end); PL-078"
+    "the replay saves and all three rows verify, but OrangeHRM's week holds one row: each record "
+    "re-filled the grid's first line instead of adding a row, and the project stayed the first "
+    "one; a save toast is no proof of which line changed (PL-081)"
 )
 
 
