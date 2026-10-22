@@ -276,7 +276,9 @@ def _decode_text(content: bytes) -> str:
     it decodes with replacement characters rather than raising.
     """
     if content.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
-        return content.decode("utf-16", errors="replace")
+        # A truncated file leaves a replacement character where a character was cut in half;
+        # it is not data, and keeping it would make a junk row.
+        return content.decode("utf-16", errors="replace").replace("\ufffd", "")
     try:
         return content.decode("utf-8-sig")
     except UnicodeDecodeError:

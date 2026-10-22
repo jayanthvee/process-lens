@@ -618,17 +618,22 @@ def test_a_cell_too_long_to_read_is_refused_readably(
 def test_a_truncated_utf16_file_is_not_a_server_error(
     connected: TestClient, conn: psycopg.Connection, ledger: Ledger
 ) -> None:
-    """A half-downloaded "Unicode Text" file is a person's problem, not a 500 (PL-088).
+    """A half-downloaded "Unicode Text" file keeps its real rows, and is not a 500 (PL-088).
 
-    Its byte count is odd, so decoding it as UTF-16 fails; the encoding is never a refusal, and
-    whatever comes out is read as text like every other file.
+    Its byte count is odd, so the last character is cut in half; the encoding is never a refusal,
+    and the half character is not data, so no junk row is written for it.
     """
     workflow_id, _ = add_task(conn, ledger.tenant_id)
     content = b"\xff\xfe" + "Name\tEmail\r\nAna\tana@x.com\r\n".encode("utf-16-le")[:-1]
 
     response = upload(connected, workflow_id, content, filename="contacts.tsv")
 
-    assert response.status_code != 500, response.text
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["row_count"] == 1
+    assert [row["raw"] for row in stored_rows(conn, body["batch_id"])] == [
+        {"Name": "Ana", "Email": "ana@x.com"}
+    ]
 
 
 # --- the check --------------------------------------------------------------------------------
