@@ -237,7 +237,10 @@ export function recordedValues(events: RecordedEvent[]): RecordedValue[] {
   // PL-042: a recording that saves twice offers only its first entry's values.
   events = entryEvents(events);
   const values: RecordedValue[] = [];
-  const seenValues = new Set<string>();
+  // PL-078: one column per *field* and value. Two different fields taught the same value (a
+  // timesheet's Monday and Tuesday are both "2:00") are two columns; the same field recorded twice
+  // with one value (a chip fill, a page-set repeat) is still one.
+  const seenFields = new Set<string>();
   const takenColumns = new Map<string, number>();
 
   // A fill another event's envelope names in `supersedes` is the typed prefix an accepted
@@ -283,8 +286,8 @@ export function recordedValues(events: RecordedEvent[]): RecordedValue[] {
     if (event.page_set === true) continue;
     const value = constantValue(step);
     if (value === null) continue;
-    if (seenValues.has(value)) continue;
-    seenValues.add(value);
+    if (seenFields.has(`${JSON.stringify(step.targets ?? [])}|${value}`)) continue;
+    seenFields.add(`${JSON.stringify(step.targets ?? [])}|${value}`);
 
     const name = humanName(step);
     const column = allocate(slug(name ?? String(step.id ?? "")), takenColumns);

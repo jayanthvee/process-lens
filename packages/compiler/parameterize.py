@@ -36,22 +36,63 @@ def _cells(sample_row: dict[str, Any]) -> list[tuple[str, str]]:
     return cells
 
 
-def match_column(value: Any, sample_row: dict[str, Any]) -> str | None:
-    """The input column whose sample value equals this literal, if any."""
+def match_column(
+    value: Any, sample_row: dict[str, Any], *, prefer: tuple[str, ...] = ()
+) -> str | None:
+    """The input column whose sample value equals this literal, if any.
+
+    PL-078: two fields can be taught the same value -- a timesheet's Monday and Tuesday are both
+    ``2:00`` in the demonstration -- so the value alone does not say which column a fill belongs
+    to. ``prefer`` carries the step's own field names (its step name and its target rungs,
+    squashed); when more than one column matches the value, the one whose name is part of this
+    step's own name wins. A step that names no matching field keeps the first match, as before.
+    """
     if not isinstance(value, str):
         return None
     text = value.strip()
     if not text:
         return None
     matches = [column for column, cell in _cells(sample_row) if cell == text]
+    if len(matches) > 1 and prefer:
+        owned = [
+            column
+            for column in matches
+            if _column_token(column) and any(_column_token(column) in token for token in prefer)
+        ]
+        if len(owned) == 1:
+            return owned[0]
     return matches[0] if matches else None
 
 
-def parameterize_value(value: Any, sample_row: dict[str, Any]) -> tuple[Any, str | None]:
+def _squash(text: str) -> str:
+    """Lowercase letters and digits only: `Fill 20Tue` and `f_20tue` become `fill20tue`, `20tue`."""
+    return "".join(char for char in text.lower() if char.isalnum())
+
+
+def _column_token(column: str) -> str:
+    """A column's name without the popup's `f_` prefix, squashed for comparison."""
+    base = column[2:] if column.startswith("f_") else column
+    return _squash(base)
+
+
+def _field_tokens(candidate: Candidate) -> tuple[str, ...]:
+    """The names this step's own field carries, squashed: its step name and its target rungs."""
+    texts = [candidate.name or ""]
+    for rung in candidate.targets or []:
+        for key in ("name", "text", "value"):
+            text = rung.get(key)
+            if isinstance(text, str):
+                texts.append(text)
+    return tuple(_squash(text) for text in texts if _squash(text))
+
+
+def parameterize_value(
+    value: Any, sample_row: dict[str, Any], *, prefer: tuple[str, ...] = ()
+) -> tuple[Any, str | None]:
     """Replace a literal value with a reference to the input column it came from."""
     if not isinstance(value, dict) or value.get("kind") != "constant":
         return value, None
-    column = match_column(value.get("value"), sample_row)
+    column = match_column(value.get("value"), sample_row, prefer=prefer)
     if column is None:
         return value, None
     return {"kind": "input", "column": column}, f"bound a literal value to column {column!r}"
@@ -124,7 +165,7 @@ def parameterize_candidate(
 
     value = candidate.value
     if value is not None:
-        value, note = parameterize_value(value, sample_row)
+        value, note = parameterize_value(value, sample_row, prefer=_field_tokens(candidate))
         if note:
             warnings.append(note)
 

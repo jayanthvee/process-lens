@@ -248,3 +248,77 @@ describe("a step inside a same-origin iframe (PL-018b)", () => {
     }
   });
 });
+
+describe("a choice made by pressing an option (PL-078)", () => {
+  function dropdown(): void {
+    // OrangeHRM's OXD select: the value and the list share one wrapper, no `role=combobox`, no
+    // `aria-controls`, and the list is a plain `role=listbox` with no id.
+    document.body.innerHTML =
+      "<div class='oxd-select-wrapper'>" +
+      "<div class='oxd-select-text'>" +
+      "<div id='activity' class='oxd-select-text-input' tabindex='0'>-- Select --</div>" +
+      "</div>" +
+      "<div role='listbox' class='oxd-select-dropdown'>" +
+      "<div role='option'>-- Select --</div><div role='option'>Development</div>" +
+      "</div></div>";
+  }
+
+  it("records the press as a select of the list's control, because no click ever fires", async () => {
+    dropdown();
+    const recorded = harness();
+    const option = document.querySelectorAll("[role='option']")[1]!;
+    const listbox = document.querySelector("[role='listbox']")!;
+
+    // The widget selects on the press and closes the list before the release, so the browser
+    // dispatches no click at all -- exactly what OrangeHRM does (a capture listener on the real
+    // page saw pointerdown and mousedown on the option, and nothing after them).
+    option.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    listbox.remove();
+    document.body.dispatchEvent(new Event("mouseup", { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const steps = recorded.events.filter((event) => event.step !== null);
+    expect(steps).toHaveLength(1);
+    expect(steps[0]!.kind).toBe("select");
+    expect(steps[0]!.step).toMatchObject({
+      action: "select",
+      value: { kind: "constant", value: "Development" },
+      option_match: "text",
+    });
+    expect(JSON.stringify(steps[0]!.step!.targets)).toContain("#activity");
+  });
+
+  it("does not record the click a widget dispatches after the same press a second time", async () => {
+    dropdown();
+    const recorded = harness();
+    const option = document.querySelectorAll("[role='option']")[1]!;
+
+    option.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    document.querySelector("[role='listbox']")!.remove();
+    (option as HTMLElement).click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const steps = recorded.events.filter((event) => event.step !== null);
+    expect(steps).toHaveLength(1);
+    expect(steps[0]!.kind).toBe("select");
+  });
+
+  it("does not read a chip (a list of chosen values) as a choice being made", async () => {
+    // The messy composer's recipients list: `role=listbox` whose options are the chips already
+    // chosen. It stays open, so the press chose nothing new.
+    document.body.innerHTML =
+      "<div class='composer'>" +
+      "<input id='to' role='combobox'>" +
+      "<div role='listbox' aria-label='Selected recipients'>" +
+      "<div class='chip' role='option' aria-selected='false'>alice@example.test</div>" +
+      "</div></div>";
+    const recorded = harness();
+
+    document
+      .querySelector("[role='option']")!
+      .dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(recorded.events.filter((event) => event.step !== null)).toHaveLength(0);
+  });
+});

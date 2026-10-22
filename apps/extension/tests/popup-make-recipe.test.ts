@@ -363,6 +363,17 @@ describe("recorded values", () => {
     ]);
   });
 
+  it("offers a column for each of two fields taught the same value (PL-078)", () => {
+    // A timesheet's Monday and Tuesday both hold 2:00 in the demonstration. One column would bind
+    // both fills to one cell, and a row whose Tuesday is 1:00 would replay Monday's hours into it.
+    const events = [
+      fillEvent(1, "fill-1", "19Mon", "2:00"),
+      fillEvent(2, "fill-2", "20Tue", "2:00"),
+    ];
+
+    expect(recordedValues(events).map((value) => value.column)).toEqual(["f_19mon", "f_20tue"]);
+  });
+
   it("leaves out a value the page set itself", () => {
     // PL-027: Odoo renders computed defaults (0.00 in Expected Revenue, the resolved salesperson)
     // into a form as it opens. The recorder witnesses the value and marks it; the form must not
