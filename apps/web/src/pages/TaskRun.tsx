@@ -339,7 +339,7 @@ export function TaskRun(): JSX.Element {
               if (dropped !== undefined) void add(dropped);
             }}
           >
-            <p className="run-note">A .csv or .xlsx file, up to 2,000 rows and 5 MB.</p>
+            <p className="run-note">A .csv, .tsv or .xlsx file, up to 2,000 rows and 5 MB.</p>
             <p className="run-choose">
               <button
                 type="button"
@@ -359,7 +359,7 @@ export function TaskRun(): JSX.Element {
         <input
           className="run-file"
           type="file"
-          accept=".csv,.xlsx"
+          accept=".csv,.tsv,.xlsx"
           aria-label="Your spreadsheet"
           ref={fileInput}
           onChange={(event) => {

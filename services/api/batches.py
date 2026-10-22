@@ -6,8 +6,8 @@ never from the caller, and a cross-tenant pin is not even acknowledged.
 
 The three routes are the three steps of "Run this task":
 
-1. ``POST /api/v1/batches`` reads a ``.csv``, ``.xlsx`` or ``.docx`` file into a batch and its
-   rows (a Word document is read and cleaned first);
+1. ``POST /api/v1/batches`` reads a ``.csv``, ``.tsv``, ``.xlsx`` or ``.docx`` file into a batch
+   and its rows (a Word document is read and cleaned first);
 2. ``GET /api/v1/batches/{id}/check`` matches the spreadsheet's columns to the task's own columns,
    decides which rows are ready, and writes that verdict onto the rows (``create_run`` builds
    ledger rows only for ``status = 'ready'`` rows, so the verdict has to land before a run can
@@ -22,11 +22,14 @@ small synonym table. Normalising keeps digits, so ``Phone 1`` and ``Phone 2`` ne
 
 from __future__ import annotations
 
+import codecs
 import csv
 import io
 import json
 import re
 import uuid
+from collections.abc import Callable
+from datetime import date, datetime, time
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -58,8 +61,10 @@ MAX_ROWS = 2000
 MAX_ALTERNATIVES = 5
 
 CSV_SUFFIX = ".csv"
+TSV_SUFFIX = ".tsv"
 XLSX_SUFFIX = ".xlsx"
 DOCX_SUFFIX = ".docx"
+XLS_SUFFIX = ".xls"
 
 _SELECT_WORKFLOW = """
 SELECT id, tenant_id, archived_at FROM workflows WHERE id = %(id)s
@@ -149,55 +154,171 @@ class MappingResponse(BaseModel):
 # --- reading the file -------------------------------------------------------------------------
 
 
-def _header(name: Any, position: int) -> str:
-    """A spreadsheet header: stripped, and named by position when the person left it blank."""
-    text = "" if name is None else str(name).strip()
-    return text or f"Column {position}"
+def _header_text(value: Any) -> str:
+    """A header's text, stripped; a blank header is named by its position later."""
+    return "" if value is None else str(value).strip()
+
+
+def _headers(names: list[Any]) -> list[str]:
+    """Headers stripped, named by position when blank, and made unique.
+
+    A generated ``Column N`` steps past every real header's name, so it never takes one; a
+    repeated name gets " 2", " 3", the same rule ``packages.documents.clean`` uses.
+    """
+    real = {_header_text(name) for name in names if _header_text(name)}
+    used: set[str] = set()
+    result: list[str] = []
+    for position, name in enumerate(names, start=1):
+        base = _header_text(name)
+        if not base:
+            number = position
+            base = f"Column {number}"
+            while base in real or base in used:
+                number += 1
+                base = f"Column {number}"
+        candidate = base
+        suffix = 2
+        while candidate in used:
+            candidate = f"{base} {suffix}"
+            suffix += 1
+        used.add(candidate)
+        result.append(candidate)
+    return result
+
+
+def _is_blank(cells: list[Any]) -> bool:
+    """A row whose cells are all empty or whitespace, which no spreadsheet keeps."""
+    return not any(value is not None and str(value).strip() for value in cells)
+
+
+def _split_header(rows: list[list[Any]]) -> tuple[list[Any], list[list[Any]]]:
+    """The header row and the data below it, skipping a title row above the header.
+
+    The header is the first row with at least two non-blank cells. When no row has two cells (a
+    one-column file), the first non-blank row is the header, as before.
+    """
+    for index, cells in enumerate(rows):
+        if sum(1 for value in cells if value is not None and str(value).strip()) >= 2:
+            return cells, rows[index + 1 :]
+    if not rows:
+        return [], []
+    return rows[0], rows[1:]
+
+
+def _raw_text(value: Any) -> str:
+    """A cell as ``str()`` has always written it: what the file held."""
+    return "" if value is None else str(value)
+
+
+def _clean_text(value: Any) -> str:
+    """A cell a run can type: the same text, trimmed."""
+    return _raw_text(value).strip()
+
+
+def _excel_text(value: Any) -> str:
+    """An Excel cell as a person reads it, not as ``str()`` prints its Python type."""
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    if isinstance(value, datetime):
+        if value.time() == time(0, 0):
+            return value.strftime("%Y-%m-%d")
+        return value.strftime("%Y-%m-%d %H:%M")
+    if isinstance(value, date):
+        return value.strftime("%Y-%m-%d")
+    if isinstance(value, time):
+        return value.strftime("%H:%M")
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return _raw_text(value)
 
 
 def _row_from(cells: list[Any], headers: list[str]) -> dict[str, str]:
     """One row as a dict: every value a string, a missing cell an empty string."""
-    values = ["" if cell is None else str(cell) for cell in cells]
+    values = [_raw_text(cell) for cell in cells]
     values += [""] * max(0, len(headers) - len(values))
     return dict(zip(headers, values, strict=False))
 
 
-def _read_csv(content: bytes) -> tuple[list[str], list[dict[str, str]]]:
+def _clean_row(
+    cells: list[Any], headers: list[str], format_cell: Callable[[Any], str]
+) -> dict[str, str]:
+    """The row a run types: every value trimmed, and Excel's own values made readable."""
+    values = [format_cell(cell).strip() for cell in cells]
+    values += [""] * max(0, len(headers) - len(values))
+    return dict(zip(headers, values, strict=False))
+
+
+def _decode_text(content: bytes) -> str:
+    """The file's text, whatever encoding Excel used; a file is never refused for it."""
+    if content.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
+        return content.decode("utf-16")
+    for encoding in ("utf-8-sig", "cp1252", "latin-1"):
+        try:
+            return content.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return content.decode("latin-1")  # unreachable: latin-1 decodes every byte
+
+
+def _delimiter(text: str) -> str:
+    """The separator a CSV uses, sniffed from its first 4 KB; comma when there is no answer."""
     try:
-        text = content.decode("utf-8-sig")
-    except UnicodeDecodeError as exc:
-        raise HTTPException(status_code=422, detail="this .csv file is not UTF-8 text") from exc
-    lines = [line for line in csv.reader(io.StringIO(text)) if line]
-    if not lines:
-        return [], []
-    headers = [_header(name, index) for index, name in enumerate(lines[0], start=1)]
-    return headers, [_row_from(cells, headers) for cells in lines[1:]]
+        return csv.Sniffer().sniff(text[:4096], delimiters=",;\t|").delimiter
+    except csv.Error:
+        return ","
 
 
-def _read_xlsx(content: bytes) -> tuple[list[str], list[dict[str, str]]]:
+def _read_csv(
+    content: bytes, suffix: str
+) -> tuple[list[str], list[dict[str, str]], list[dict[str, str]]]:
+    """A comma- or tab-separated file: its encoding decoded, its header found, its cells kept."""
+    text = _decode_text(content)
+    delimiter = "\t" if suffix == TSV_SUFFIX else _delimiter(text)
+    rows = [
+        cells
+        for cells in csv.reader(io.StringIO(text), delimiter=delimiter)
+        if not _is_blank(cells)
+    ]
+    if not rows:
+        return [], [], []
+    header_cells, body = _split_header(rows)
+    headers = _headers(header_cells)
+    return (
+        headers,
+        [_row_from(cells, headers) for cells in body],
+        [_clean_row(cells, headers, _clean_text) for cells in body],
+    )
+
+
+def _read_xlsx(
+    content: bytes,
+) -> tuple[list[str], list[dict[str, str]], list[dict[str, str]]]:
     try:
         workbook = openpyxl.load_workbook(io.BytesIO(content), read_only=True, data_only=True)
     except Exception as exc:  # noqa: BLE001 - openpyxl raises several unrelated types
         raise HTTPException(status_code=422, detail="this .xlsx file could not be read") from exc
     try:
         sheet = workbook.worksheets[0]
-        rows = sheet.iter_rows(values_only=True)
-        first = next(rows, None)
-        if first is None:
-            return [], []
-        headers = [_header(name, index) for index, name in enumerate(first, start=1)]
-        return headers, [
-            _row_from(list(cells), headers)
-            for cells in rows
-            if any(cell is not None and str(cell).strip() for cell in cells)
-        ]
+        rows = [list(cells) for cells in sheet.iter_rows(values_only=True)]
+        rows = [cells for cells in rows if not _is_blank(cells)]
+        if not rows:
+            return [], [], []
+        header_cells, body = _split_header(rows)
+        headers = _headers(header_cells)
+        return (
+            headers,
+            [_row_from(cells, headers) for cells in body],
+            [_clean_row(cells, headers, _excel_text) for cells in body],
+        )
     finally:
         workbook.close()
 
 
-def _read_rows(suffix: str, content: bytes) -> tuple[list[str], list[dict[str, str]]]:
-    if suffix == CSV_SUFFIX:
-        return _read_csv(content)
+def _read_rows(
+    suffix: str, content: bytes
+) -> tuple[list[str], list[dict[str, str]], list[dict[str, str]]]:
+    if suffix in {CSV_SUFFIX, TSV_SUFFIX}:
+        return _read_csv(content, suffix)
     return _read_xlsx(content)
 
 
@@ -473,7 +594,7 @@ def _columns_of(rows: list[Any]) -> list[str]:
 @router.post("/batches", response_model=BatchUploadResponse, status_code=201)
 async def upload_batch(
     workflow_id: Annotated[uuid.UUID, Form(description="The task this spreadsheet is for.")],
-    file: Annotated[UploadFile, File(description="A .csv or .xlsx file.")],
+    file: Annotated[UploadFile, File(description="A .csv, .tsv or .xlsx file.")],
 ) -> BatchUploadResponse:
     """Read a spreadsheet into a batch and its rows, all in one transaction.
 
@@ -481,10 +602,18 @@ async def upload_batch(
     rows are all refused before anything is written.
     """
     suffix = Path((file.filename or "").strip()).suffix.lower()
-    if suffix not in {CSV_SUFFIX, XLSX_SUFFIX, DOCX_SUFFIX}:
+    if suffix == XLS_SUFFIX:
         raise HTTPException(
             status_code=422,
-            detail="Only a .csv, .xlsx or .docx file can be added here.",
+            detail=(
+                "This is an old Excel file (.xls). In Excel, choose File > Save As > "
+                "Excel Workbook (.xlsx), then add that file."
+            ),
+        )
+    if suffix not in {CSV_SUFFIX, TSV_SUFFIX, XLSX_SUFFIX, DOCX_SUFFIX}:
+        raise HTTPException(
+            status_code=422,
+            detail="Only a .csv, .tsv, .xlsx or .docx file can be added here.",
         )
 
     content = await file.read(MAX_UPLOAD_BYTES + 1)
@@ -496,14 +625,16 @@ async def upload_batch(
     notes: list[str] = []
     if suffix == DOCX_SUFFIX:
         try:
-            columns, raw = read_docx(content)
+            columns, document_rows = read_docx(content)
         except DocumentRefused as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        columns, raw_rows, notes = clean(
-            columns, [[row.get(column, "") for column in columns] for row in raw]
+        columns, document_rows, notes = clean(
+            columns, [[row.get(column, "") for column in columns] for row in document_rows]
         )
+        raw_rows = document_rows
+        clean_rows = [dict(row) for row in document_rows]
     else:
-        columns, raw_rows = _read_rows(suffix, content)
+        columns, raw_rows, clean_rows = _read_rows(suffix, content)
     if not raw_rows:
         raise HTTPException(status_code=422, detail="This file has no rows.")
     if len(raw_rows) > MAX_ROWS:
@@ -519,17 +650,19 @@ async def upload_batch(
                 conn,
                 tenant_id=workflow["tenant_id"],
                 workflow_id=workflow_id,
-                # A Word document is stored as the cleaned CSV it became: the rows are the
-                # cleaned rows, and no new batch kind is invented for them.
-                kind="csv" if suffix == DOCX_SUFFIX else suffix.lstrip("."),
+                # A Word document is stored as the cleaned CSV it became, and a TSV as the CSV
+                # it is: the rows are the cleaned rows, and no new batch kind is invented.
+                kind="csv" if suffix in {DOCX_SUFFIX, TSV_SUFFIX} else suffix.lstrip("."),
                 rows=[
                     BatchRow(
                         row_index=index,
                         raw=row,
-                        clean=dict(row),
+                        clean=cleaned,
                         record_key=_record_key(row, index),
                     )
-                    for index, row in enumerate(raw_rows, start=1)
+                    for index, (row, cleaned) in enumerate(
+                        zip(raw_rows, clean_rows, strict=True), start=1
+                    )
                 ],
             )
         conn.commit()
