@@ -294,6 +294,8 @@ def _resolve_meta(
     recording_urls: list[str],
     options: CompileOptions,
     warnings: list[str],
+    *,
+    update_columns: list[str] | None = None,
 ) -> dict[str, Any]:
     origins = list(options.allowed_origins or derive_origins(candidates, recording_urls))
     if not origins:
@@ -334,12 +336,24 @@ def _resolve_meta(
     if rules:
         input_schema["rules"] = rules
 
+    # PL-079: an update is keyed by the record *and* the values it writes, so a later change to the
+    # same record is new work; a create keeps the record key alone. Both halves are the record key's
+    # own template, so a custom key keeps its own normalisation.
+    idempotency_key = options.idempotency_key or record_key
+    if not options.idempotency_key and update_columns:
+        values = ":".join(f"{{{{row.{column}}}}}" for column in update_columns)
+        idempotency_key = f"{record_key}:{values}"
+        warnings.append(
+            "the idempotency key carries the values this update writes, so a later change to the "
+            "same record is new work"
+        )
+
     return {
         "name": options.name,
         "when_to_use": options.when_to_use,
         "input_schema": input_schema,
         "record_key": record_key,
-        "idempotency_key": options.idempotency_key or record_key,
+        "idempotency_key": idempotency_key,
         "approval_policy": options.approval_policy or {"commit": "first_record"},
         "allowed_origins": origins,
     }
@@ -928,6 +942,8 @@ def _render_steps(
     *,
     duplicate_branch_after: int | None = None,
     duplicate_branch: dict[str, Any] | None = None,
+    already_branch_before: int | None = None,
+    already_branch: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     bodies: list[dict[str, Any]] = []
 
@@ -942,6 +958,9 @@ def _render_steps(
             )
 
     for index, candidate in enumerate(candidates):
+        # PL-079: the "nothing to save" check goes immediately before the commit click.
+        if already_branch is not None and index == already_branch_before:
+            bodies.append(already_branch)
         bodies.append(_render_candidate(candidate))
         # PL-017: the duplicate check goes straight after the click that ran the search.
         if duplicate_branch is not None and index == duplicate_branch_after:
@@ -1185,6 +1204,91 @@ def _not_found_branch(value_template: str, key_column: str) -> dict[str, Any]:
     }
 
 
+def _already_matches_branch(commit_control: Any) -> dict[str, Any] | None:
+    """A branch that ends a record ``skipped`` when its values are already on the page (PL-079).
+
+    A form keeps its Save control hidden while it is clean, so a row whose values the page already
+    shows has nothing to save: the commit click cannot be prepared, and the record would park. The
+    condition is the same ``element_absent`` on the commit control that PL-075 reads as the
+    commit's proof -- absent *before* the click means the page has nothing to save.
+
+    ``commit_control`` is the ``element_absent`` selector that commit's assertion carries, or
+    ``None`` when the commit proves itself another way; a commit that never watches a control
+    disappear cannot say whether there was anything to save, so it gets no branch.
+
+    The branch is the recipe's own step, visible in the recipe. The runner has no special case for
+    it (D-017): an ``end_record`` in a ``branch`` is machinery the schema already has.
+    """
+    if not isinstance(commit_control, dict):
+        return None
+    targets = commit_control.get("targets")
+    if not isinstance(targets, list) or not targets:
+        return None
+    return {
+        "action": "branch",
+        "name": "Skip a record whose values are already there",
+        # T1 review: a row with work waits this long for Save to go away before carrying on, so the
+        # wait is short; a page that already matches shows no Save at once.
+        "when": {
+            "element_absent": {"targets": [dict(rung) for rung in targets]},
+            "timeout_ms": 1000,
+        },
+        "then": [
+            {
+                "id": "end-record-1",
+                "action": "end_record",
+                "outcome": "skipped",
+                "reason": "Already had these values, so nothing was changed.",
+            }
+        ],
+    }
+
+
+def _already_matches_placement(
+    candidates: list[Candidate], search_kind: str | None
+) -> tuple[int | None, dict[str, Any] | None]:
+    """Where the "already matches" branch goes, and the branch itself (PL-079).
+
+    Only an update has one: its commit is the Save on the record's own page, and a page that
+    already shows the row's values keeps that Save hidden. The place is immediately before the
+    first commit whose assertion is PL-075's disappeared-control proof.
+    """
+    if search_kind != "update":
+        return None, None
+    for index, candidate in enumerate(candidates):
+        if not candidate.commit:
+            continue
+        assertion = candidate.assert_after if isinstance(candidate.assert_after, dict) else {}
+        branch = _already_matches_branch(assertion.get("element_absent"))
+        if branch is not None:
+            return index, branch
+    return None, None
+
+
+def _update_columns(candidates: list[Candidate], search_run: int) -> list[str]:
+    """The columns the update's own fills write, in step order (PL-079).
+
+    Only the fills after the step that ran the search and before the commit are the update's own:
+    the search field is how the record is found, not a value the workflow writes. A fill whose
+    value stayed a literal -- a column the sample row does not carry -- is not a column the key can
+    read, so it is left out rather than guessed at.
+    """
+    first_commit = next(
+        (index for index in range(search_run + 1, len(candidates)) if candidates[index].commit),
+        len(candidates),
+    )
+    columns: list[str] = []
+    for candidate in candidates[search_run + 1 : first_commit]:
+        if candidate.action != "fill" or not isinstance(candidate.value, dict):
+            continue
+        if candidate.value.get("kind") != "input":
+            continue
+        column = candidate.value.get("column")
+        if isinstance(column, str) and column and column not in columns:
+            columns.append(column)
+    return columns
+
+
 def _resolve_commit_assertion(
     candidate: Candidate, options: CompileOptions
 ) -> dict[str, Any] | None:
@@ -1356,8 +1460,6 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
 
     parameterized = _expand_create_option(parameterized)
 
-    meta = _resolve_meta(parameterized, recording_urls, options, warnings)
-
     # PL-017: a search for a record's value is a fill followed by the step that runs it. A search
     # button submits its own form, so the recorder collapses it into a commit; it changes nothing in
     # the destination, so it is demoted before any assertion is required of it, and the branch that
@@ -1375,6 +1477,20 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
         if shape_search is not None
         else None
     )
+
+    # PL-079: an update is keyed by the values it writes, so a later change to the same record is
+    # new work. The columns come from the parameterized fills, so only a column the sample row
+    # carries can enter the key; a create's key is the record key, unchanged.
+    update_columns = (
+        _update_columns(parameterized, shape_search[0])
+        if search_kind == "update" and shape_search is not None
+        else []
+    )
+
+    meta = _resolve_meta(
+        parameterized, recording_urls, options, warnings, update_columns=update_columns
+    )
+
     search_branch: dict[str, Any] | None = None
     if search is not None:
         search_run, searched_column = search
@@ -1485,6 +1601,9 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
         )
 
     _check_navigate_origins(parameterized, meta["allowed_origins"])
+    # PL-079: an update whose Save disappears is the one shape where "the control is absent before
+    # the click" means "nothing to save", so the recipe ends that row ``skipped`` itself.
+    already_branch_before, already_branch = _already_matches_placement(parameterized, search_kind)
     recipe: dict[str, Any] = {
         "format_version": 1,
         "meta": meta,
@@ -1493,6 +1612,8 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
             options,
             duplicate_branch_after=search[0] if search is not None else None,
             duplicate_branch=search_branch,
+            already_branch_before=already_branch_before,
+            already_branch=already_branch,
         ),
     }
 

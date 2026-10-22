@@ -1114,7 +1114,7 @@ def api_server(database_url: str, extension_id: str) -> Iterator[dict[str, Any]]
     try:
         _wait_until(
             lambda: _health_ok(base),
-            timeout=30.0,
+            timeout=90.0,  # a cold import alone takes ~15 s on a loaded machine
             message="the API never answered /health",
         )
         yield {"base": base, "port": port, "operator_id": operator}
