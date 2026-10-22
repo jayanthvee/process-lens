@@ -3,6 +3,7 @@
 // fake timer seam. No real Chrome, no real socket, no real network.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  ACCESS_REFUSED,
   CommandSession,
   type CheckAnswer,
   type SessionDeps,
@@ -886,5 +887,47 @@ describe("a verification code from the run page", () => {
     const result = socket.lastResult();
     expect(result?.["status"]).toBe("ok");
     expect(JSON.stringify(result)).not.toContain("246810");
+  });
+});
+
+describe("a hosted ProcessLens and its team access code (PL-086)", () => {
+  it("sends the code with the session call and keeps it for the version report", async () => {
+    const seen: Array<Record<string, string>> = [];
+    globalThis.fetch = (async (_url: string, init: RequestInit) => {
+      seen.push(init.headers as Record<string, string>);
+      return { status: 201, json: async () => ({ session_id: "sess-h", session_token: "tok-h" }) };
+    }) as unknown as typeof fetch;
+    const harness = makeHarness();
+
+    await harness.session.connect("https://processlens-api.onrender.com", "team-code");
+
+    expect(seen[0]?.["authorization"]).toBe("Bearer team-code");
+    expect(harness.storagePeek()?.accessCode).toBe("team-code");
+    expect(harness.sockets[0]?.url).toBe(
+      "wss://processlens-api.onrender.com/api/v1/executor/ws?session=sess-h",
+    );
+  });
+
+  it("sends no authorization header on a laptop", async () => {
+    const seen: Array<Record<string, string>> = [];
+    globalThis.fetch = (async (_url: string, init: RequestInit) => {
+      seen.push(init.headers as Record<string, string>);
+      return { status: 201, json: async () => ({ session_id: "sess-l", session_token: "tok-l" }) };
+    }) as unknown as typeof fetch;
+    const harness = makeHarness();
+
+    await harness.session.connect("http://127.0.0.1:8000");
+
+    expect(seen[0]).not.toHaveProperty("authorization");
+  });
+
+  it("says plainly that the code is missing or wrong, and goes back to idle", async () => {
+    globalThis.fetch = (async () => ({ status: 401, json: async () => ({}) })) as unknown as typeof fetch;
+    const harness = makeHarness();
+
+    await expect(harness.session.connect("https://processlens-api.onrender.com", "")).rejects.toThrow(
+      ACCESS_REFUSED,
+    );
+    expect(harness.states.at(-1)).toBe("idle");
   });
 });

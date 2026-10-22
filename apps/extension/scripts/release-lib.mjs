@@ -19,6 +19,13 @@ export const EXTENSION_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "
 /** The address a build takes, when the owner wants a handed-out copy to know where ProcessLens is. */
 export const HUB_URL_ENV = "PROCESSLENS_HUB_URL";
 
+/**
+ * PL-086: the team access code a hosted ProcessLens asks for. A handed-out build carries it, so
+ * the coworker never types it. It is a secret: it lands only in `dist` and the zip, which git
+ * ignores, and the build never prints it.
+ */
+export const ACCESS_CODE_ENV = "PROCESSLENS_ACCESS_CODE";
+
 /** Where the popup points when the build is given nothing: the API on this machine. */
 export const DEFAULT_HUB_URL = "http://127.0.0.1:8000";
 
@@ -101,6 +108,7 @@ export async function buildExtension(options = {}) {
   const root = options.root ?? EXTENSION_ROOT;
   const dist = options.dist ?? join(root, "dist");
   const hubUrl = options.hubUrl ?? DEFAULT_HUB_URL;
+  const accessCode = String(options.accessCode ?? "").trim();
   const publicKeyPath = options.publicKeyPath ?? join(root, "extension-key.pub");
 
   await rm(dist, { recursive: true, force: true });
@@ -117,7 +125,12 @@ export async function buildExtension(options = {}) {
       logLevel: "silent",
       // Only the popup reads the address; the worker is told it by the popup.
       define:
-        outfile === "popup/popup.js" ? { __PROCESSLENS_HUB_URL__: JSON.stringify(hubUrl) } : {},
+        outfile === "popup/popup.js"
+          ? {
+              __PROCESSLENS_HUB_URL__: JSON.stringify(hubUrl),
+              __PROCESSLENS_ACCESS_CODE__: JSON.stringify(accessCode),
+            }
+          : {},
     });
 
   // A content script is not an ES module; the worker and the popup are.
@@ -152,7 +165,7 @@ export async function buildExtension(options = {}) {
     await cp(resolve(fontFiles, file), resolve(dist, "popup/fonts", file));
   }
 
-  return { dist, hubUrl, publicKey, extensionId: publicKey === null ? null : extensionIdFromPublicKey(publicKey) };
+  return { dist, hubUrl, hasAccessCode: accessCode !== "", publicKey, extensionId: publicKey === null ? null : extensionIdFromPublicKey(publicKey) };
 }
 
 const CRC_TABLE = (() => {

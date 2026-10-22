@@ -43,6 +43,15 @@ const DEFAULT_HUB_URL: string =
     ? __PROCESSLENS_HUB_URL__.trim()
     : "http://127.0.0.1:8000";
 
+/**
+ * PL-086: the team access code a hosted ProcessLens asks for. A handed-out build bakes it in
+ * (`PROCESSLENS_ACCESS_CODE`), so the person never types it; a laptop build has none and sends none.
+ */
+declare const __PROCESSLENS_ACCESS_CODE__: string | undefined;
+
+const DEFAULT_ACCESS_CODE: string =
+  typeof __PROCESSLENS_ACCESS_CODE__ === "string" ? __PROCESSLENS_ACCESS_CODE__.trim() : "";
+
 function element<T extends HTMLElement>(id: string): T {
   const found = document.getElementById(id);
   if (!found) throw new Error(`the popup is missing #${id}`);
@@ -62,6 +71,11 @@ const exportButton = element<HTMLButtonElement>("export");
 // The hub session controls: a hub URL, connect and disconnect, and the state the
 // worker reports. The session itself lives in the service worker.
 const hubEl = element<HTMLInputElement>("hub");
+const accessEl = element<HTMLInputElement>("access");
+// The page's own field says 127.0.0.1:8000, so a baked address only reaches the person -- and
+// Connect -- if it is put in the field. Done at load, before anything can type into it.
+hubEl.value = DEFAULT_HUB_URL;
+accessEl.value = DEFAULT_ACCESS_CODE;
 const connectButton = element<HTMLButtonElement>("connect");
 const disconnectButton = element<HTMLButtonElement>("disconnect");
 const sessionStateEl = element<HTMLParagraphElement>("session-state");
@@ -77,6 +91,7 @@ const makeRecipeDeps = {
   root: document,
   storage: sessionStorageAdapter(),
   baseUrl: DEFAULT_HUB_URL,
+  accessCode: DEFAULT_ACCESS_CODE,
   onNotice: (message: string) => {
     noteEl.textContent = message;
   },
@@ -250,6 +265,7 @@ clearButton.addEventListener("click", () => {
 
 makeGoButton.addEventListener("click", () => {
   makeRecipeDeps.baseUrl = hubEl.value.trim() || DEFAULT_HUB_URL;
+  makeRecipeDeps.accessCode = accessEl.value.trim();
   void makeRecipeForm.submit();
 });
 
@@ -305,7 +321,11 @@ async function connectOnOpen(): Promise<void> {
   const connected = await autoConnect({
     sessionState: async () => sessionNow,
     connect: async (hubUrl) => {
-      const response = await sendExecutor({ type: "executor:connect", hubUrl });
+      const response = await sendExecutor({
+        type: "executor:connect",
+        hubUrl,
+        accessCode: accessEl.value.trim(),
+      });
       if (response.error) noteEl.textContent = response.error;
     },
     hubUrl: () => hubEl.value.trim() || DEFAULT_HUB_URL,
@@ -315,7 +335,8 @@ async function connectOnOpen(): Promise<void> {
 
 connectButton.addEventListener("click", () => {
   const hubUrl = hubEl.value.trim() || DEFAULT_HUB_URL;
-  void sendExecutor({ type: "executor:connect", hubUrl }).then((response) => {
+  const accessCode = accessEl.value.trim();
+  void sendExecutor({ type: "executor:connect", hubUrl, accessCode }).then((response) => {
     renderSession(response.session);
     if (response.error) noteEl.textContent = response.error;
   });

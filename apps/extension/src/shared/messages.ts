@@ -71,7 +71,7 @@ export type ToWorker =
   | { type: "executor:pause" }
   | { type: "executor:resume" }
   | { type: "executor:abort" }
-  | { type: "executor:connect"; hubUrl: string }
+  | { type: "executor:connect"; hubUrl: string; accessCode?: string }
   | { type: "executor:disconnect" }
   | { type: "executor:session" }
   | { type: "executor:get" };

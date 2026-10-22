@@ -6,6 +6,7 @@
 //
 // Every sentence a person reads is spelled out here rather than built from an id:
 // the engine's words (DESIGN.md §2) never reach the screen.
+import { accessHeaders } from "../shared/access";
 import type { RecordedEvent, RecordedStep } from "../shared/recipe-types";
 import { DUPLICATES_BLOCKED, UNNAMED_CLICK, UNNAMED_STEP, plainSaveNotes, plainSentences } from "./words";
 import { taskUrl } from "./flow";
@@ -563,13 +564,13 @@ function problemsFrom(status: number, body: unknown): string[] {
  */
 export async function compileRecording(
   request: CompileRequestBody,
-  deps: { fetchImpl?: typeof fetch; baseUrl: string },
+  deps: { fetchImpl?: typeof fetch; baseUrl: string; accessCode?: string },
 ): Promise<CompileOutcome> {
   const fetchImpl = deps.fetchImpl ?? fetch;
   const baseUrl = deps.baseUrl.replace(/\/+$/, "");
   const response = await fetchImpl(`${baseUrl}${COMPILE_PATH}`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...accessHeaders(deps.accessCode) },
     body: JSON.stringify(request),
   });
 
@@ -610,13 +611,13 @@ export async function compileRecording(
  */
 export async function saveTask(
   request: SaveTaskBody,
-  deps: { fetchImpl?: typeof fetch; baseUrl: string },
+  deps: { fetchImpl?: typeof fetch; baseUrl: string; accessCode?: string },
 ): Promise<SaveTaskOutcome> {
   const fetchImpl = deps.fetchImpl ?? fetch;
   const baseUrl = deps.baseUrl.replace(/\/+$/, "");
   const response = await fetchImpl(`${baseUrl}${SAVE_TASK_PATH}`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...accessHeaders(deps.accessCode) },
     body: JSON.stringify(request),
   });
 
@@ -643,6 +644,8 @@ export interface MakeRecipeFormDeps {
   storage: FormStorage;
   fetchImpl?: typeof fetch;
   baseUrl: string;
+  /** PL-086: the team access code a hosted ProcessLens asks for; empty on a laptop. */
+  accessCode?: string;
   onNotice?: (message: string) => void;
   /** PL-033: the saved task's address on the dashboard, for the Open in ProcessLens step. */
   onSaved?: (taskUrl: string) => void;
@@ -946,6 +949,7 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
       const outcome = await compileRecording(request, {
         fetchImpl: deps.fetchImpl,
         baseUrl: deps.baseUrl,
+        accessCode: deps.accessCode,
       });
       if (!outcome.ok) {
         showProblems(outcome.problems);
@@ -959,7 +963,7 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
       // keys above are already written, so Try one row keeps working whatever happens here.
       const saved = await saveTask(
         { name, recipe: outcome.recipe },
-        { fetchImpl: deps.fetchImpl, baseUrl: deps.baseUrl },
+        { fetchImpl: deps.fetchImpl, baseUrl: deps.baseUrl, accessCode: deps.accessCode },
       );
       if (!saved.ok) {
         notice(`${SAVE_TASK_REFUSAL}: ${plainReason(saved.problems)}`);

@@ -31,6 +31,8 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Body, Header, HTTPException, Request, WebSocket
 from pydantic import BaseModel
 
+from . import access
+
 router = APIRouter(prefix="/api/v1", tags=["hub"])
 
 PROTOCOL_VERSION = 1
@@ -115,14 +117,26 @@ def _bearer_matches(authorization: str | None) -> bool:
 
 
 def _request_is_local(request: Request) -> bool:
-    """Loopback peer and a local ``Host`` header, for the HTTP routes."""
+    """Loopback peer and a local ``Host`` header, for the HTTP routes.
+
+    Hosted (PL-086) there is no local peer: the public ``Host`` and an access credential stand in.
+    """
+    if access.hosted():
+        return access.connection_is_allowed(request)
     client = request.client
     host = client.host if client is not None else None
     return is_loopback(host) and host_header_is_local(request.headers.get("host"))
 
 
 def _socket_is_local(websocket: WebSocket) -> bool:
-    """Loopback peer and a local ``Host`` header, for the WebSocket routes."""
+    """Loopback peer and a local ``Host`` header, for the WebSocket routes.
+
+    Hosted (PL-086), the ``Host`` must be the public address. No access credential is asked here:
+    each socket already proves itself -- the extension's with the session token its access-checked
+    ``POST /executor/sessions`` returned, the runner's with the runner secret.
+    """
+    if access.hosted():
+        return access.host_is_public(websocket.headers.get("host"))
     client = websocket.client
     host = client.host if client is not None else None
     return is_loopback(host) and host_header_is_local(websocket.headers.get("host"))

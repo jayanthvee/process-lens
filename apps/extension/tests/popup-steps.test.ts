@@ -172,6 +172,7 @@ describe("More", () => {
       "stream",
       // The ProcessLens address, Connect and Disconnect.
       "hub",
+      "access",
       "connect",
       "disconnect",
       // The popup's own note, and the support notes.

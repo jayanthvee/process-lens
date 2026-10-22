@@ -106,6 +106,17 @@ describe("the hub address baked into the popup", () => {
     expect(popup).toContain('"https://processlens.up.railway.app"');
   });
 
+  it("carries the team access code when the build is given one, and none otherwise (PL-086)", async () => {
+    const hosted = join(scratchDir(), "hosted-code");
+    await buildExtension({ dist: hosted, hubUrl: "https://x.example", accessCode: " team-code " });
+    expect(readFileSync(join(hosted, "popup/popup.js"), "utf8")).toContain('"team-code"');
+
+    const local = join(scratchDir(), "local-code");
+    const built = await buildExtension({ dist: local });
+    expect(built.hasAccessCode).toBe(false);
+    expect(readFileSync(join(local, "popup/popup.js"), "utf8")).not.toContain("team-code");
+  });
+
   it("is this machine when no address is given", async () => {
     const dist = join(scratchDir(), "local");
     await buildExtension({ dist });

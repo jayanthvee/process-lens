@@ -22,6 +22,7 @@ from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import Response
 
+from .access import router as access_router
 from .admin import router as admin_router
 from .approvals import router as approvals_router
 from .apps import router as apps_router
@@ -52,6 +53,7 @@ app = FastAPI(title="ProcessLens API", version="0.1.0")
 # The front door covers the routers included below, and every route added after it. The hub routes
 # keep their own, stricter checks on top.
 app.add_middleware(FrontDoorMiddleware)
+app.include_router(access_router)
 app.include_router(recipes_router)
 app.include_router(tasks_router)
 app.include_router(compile_router)

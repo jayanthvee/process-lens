@@ -1,0 +1,16 @@
+/* PL-086: the one card a hosted ProcessLens shows before the access code is given. */
+.access-gate { min-height: 100vh; display: grid; place-items: center; padding: 24px 16px; }
+.access-card { width: 100%; max-width: 400px; padding: 28px 28px 22px; display: grid; gap: 10px; }
+.access-brand { margin: 0; color: var(--gold-deep); font-size: 13px; font-weight: 600; letter-spacing: .02em; }
+.access-title { margin: 0; font-size: 24px; font-weight: 400; letter-spacing: -0.02em; line-height: 1.2; }
+.access-lede { margin: 0 0 8px; color: var(--ink-2); }
+.access-field { display: grid; gap: 6px; font-size: 13.5px; font-weight: 500; }
+.access-field input {
+  font: 400 14.5px var(--font); color: var(--ink); padding: 10px 12px; border-radius: 9px;
+  border: 1px solid var(--hair-2); background: var(--glass-strong);
+}
+.access-field input:focus-visible { outline: 2px solid var(--gold); outline-offset: 1px; border-color: var(--gold-line); }
+.access-field input[aria-invalid="true"] { border-color: var(--help); }
+.access-problem { margin: 0; min-height: 1.4em; color: var(--help); font-size: 13.5px; }
+.access-go { justify-content: center; width: 100%; }
+.access-help { margin: 4px 0 0; color: var(--muted); font-size: 12.5px; }
