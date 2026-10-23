@@ -365,6 +365,19 @@ def open_runs(dsn: str) -> list[OpenRunRow]:
         return []
 
 
+def finish_unheld_cancels(dsn: str) -> list[uuid.UUID]:
+    """PL-089: finish the cancels no live worker holds, so they free their destination."""
+    from services.runner.cancel import finalise_unheld_cancels
+
+    try:
+        # Autocommit, so each run's finish is its own transaction, not a savepoint of one.
+        with psycopg.connect(dsn, autocommit=True, connect_timeout=3) as conn:
+            return finalise_unheld_cancels(conn)
+    except psycopg.Error as exc:
+        print(f"  could not finish the cancelled runs: {exc}")
+        return []
+
+
 def start_worker(
     api_url: str,
     runner_secret: str,
@@ -442,6 +455,8 @@ def supervisor_command() -> int:
                         else f"  The runner for Chrome {session_id[:8]} finished."
                     )
                     del workers[session_id]
+            for run_id in finish_unheld_cancels(dsn):
+                print(f"  Cancelled run {str(run_id)[:8]}: its Chrome was not there to finish it.")
             sessions = attached_sessions(api_url, runner_secret)
             live = {session.session_id for session in sessions}
             # A worker talks to the one Chrome session it was started for. When that Chrome goes
