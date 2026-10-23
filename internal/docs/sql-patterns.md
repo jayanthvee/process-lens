@@ -30,6 +30,23 @@ WHERE id = (
 RETURNING *;
 ```
 
+## Finish a cancel no live worker holds (supervisor, PL-089)
+
+A cancelled run whose Chrome went away has no worker to finish it, and an open run blocks its
+destination. The supervisor takes its lease (no holder, or a lapsed heartbeat: the takeover rule)
+and finishes the cancel the way a worker does: recover, park the commit window, skip the pending
+records, mark the run `cancelled`, all in one transaction under that lease.
+
+```sql
+UPDATE runs
+SET worker_id = $2, lease_epoch = lease_epoch + 1, heartbeat_at = now()
+WHERE id = $1
+  AND cancel_requested_at IS NOT NULL
+  AND status IN ('queued', 'running', 'paused')
+  AND (worker_id IS NULL OR heartbeat_at IS NULL OR heartbeat_at < now() - $3::interval)
+RETURNING lease_epoch;
+```
+
 ## Claim the next record in a run
 
 `attempts` is incremented by the database trigger, never by application code.
