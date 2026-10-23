@@ -63,6 +63,7 @@ from services.deploy import (  # noqa: E402,F401  (re-exported: the demo's tests
     WAIT,
     State,
     ensure_operator_row,
+    finish_unheld_cancels,
     open_runs,
     status_lines,
     stop_process,
@@ -465,6 +466,8 @@ def main(argv: list[str] | None = None) -> int:
                     last_exit = worker.returncode
                     worker = None
                     worker_run_id = None
+                # PL-089: a cancel no live worker holds is finished here, so it frees the app.
+                finish_unheld_cancels(dsn)
                 session_id = attached_session()
                 # PL-037: a worker talks to the one Chrome session it was started for. When
                 # Chrome reconnects, that session is gone and the worker would pause every run it

@@ -125,7 +125,9 @@ from .runs import (
     request_cancel,
     resume_run,
     set_run_status,
+    take_cancelled_run,
     take_over_run,
+    unheld_cancelled_runs,
 )
 from .steps import record_step_event
 from .transitions import COMMIT_WINDOW_STATES, EXIT_STATES, LEGAL_TRANSITIONS, WORKING_STATES
@@ -233,7 +235,9 @@ __all__ = [
     "set_run_status",
     "skip_already_committed",
     "skip_pending_records",
+    "take_cancelled_run",
     "take_over_run",
+    "unheld_cancelled_runs",
     "tenant_is_frozen",
     "unfreeze_runs",
     "verify_commit",

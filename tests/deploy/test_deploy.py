@@ -208,6 +208,8 @@ def test_supervisor_starts_one_worker_per_chrome_and_never_binds(
     """Two ticks with two attached Chromes and a run each: one worker each, started once."""
     runs = [_open("queued", "browser-anna"), _open("queued", "browser-ben")]
     monkeypatch.setattr(deploy, "open_runs", lambda dsn: runs)
+    finished: list[str] = []
+    monkeypatch.setattr(deploy, "finish_unheld_cancels", lambda dsn: finished.append(dsn) or [])
     monkeypatch.setattr(deploy, "attached_sessions", lambda api_url, secret=None: [ANNA, BEN])
     started: list[tuple[str, str | None]] = []
 
@@ -236,6 +238,7 @@ def test_supervisor_starts_one_worker_per_chrome_and_never_binds(
 
     assert deploy.main(["supervisor"]) == 0
     assert started == [("session-anna", "browser-anna"), ("session-ben", "browser-ben")]
+    assert len(finished) == 2, "PL-089: every tick finishes the cancels nobody holds"
     assert binds == []
 
 
