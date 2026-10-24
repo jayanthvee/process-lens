@@ -1,0 +1,11 @@
+reference,customer,product,quantity,expected
+Q-r1-001,Ridgeline Outfitters,Oak Standing Desk,1,verified
+Q-r1-002,Harbourview Dental,Mesh Task Chair,2,verified
+Q-r1-003,Pinewood Preschool,Executive Leather Chair,3,verified
+Q-r1-004,Corner Bakery Group,Drafting Stool,4,verified
+Q-r1-005,Summit Climbing Gym,USB-C Dock 10-in-1,1,verified
+Q-r1-006,Ridgeline Outfitters,Thunderbolt Dock,2,verified
+Q-r1-007,Harbourview Dental,Compact Mechanical Keyboard,3,verified
+Q-r1-008,Pinewood Preschool,Ergonomic Split Keyboard,4,verified
+Q-r1-009,Corner Bakery Group,Vertical Ergonomic Mouse,1,verified
+Q-r1-010,Summit Climbing Gym,Wireless Trackball,2,verified
