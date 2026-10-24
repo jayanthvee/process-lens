@@ -50,6 +50,12 @@ DEFAULT_ACK_BUDGET_SECONDS = 5.0
 DEFAULT_COMMAND_TTL_SECONDS = 60.0
 DEFAULT_CONNECT_TIMEOUT_SECONDS = 10.0
 
+# How long the runner keeps reading for a reply that missed its budget while the socket is still up
+# (PL-090). A page that freezes Chrome past the step's budget is busy, not gone: one late reply is
+# worth waiting for, and only silence past this grace is a lost extension. The wire `expires_at` is
+# not extended, so the extension still refuses a command that expired before any input was sent.
+DEFAULT_LATE_REPLY_GRACE_SECONDS = 45.0
+
 # How long the runner waits for the abandon guard to be armed or released (PL-027). Arming it is one
 # CDP command, so this is generous; a guard that cannot be armed is reported, never retried blindly.
 GUARD_TIMEOUT_SECONDS = 15.0
@@ -92,6 +98,7 @@ class BrowserExecutor:
         now: Callable[[], float] | None = None,
         ack_budget_seconds: float = DEFAULT_ACK_BUDGET_SECONDS,
         command_ttl_seconds: float = DEFAULT_COMMAND_TTL_SECONDS,
+        late_reply_grace_seconds: float = DEFAULT_LATE_REPLY_GRACE_SECONDS,
     ) -> None:
         self.url = url
         self.secret = secret
@@ -104,6 +111,7 @@ class BrowserExecutor:
         self._now = now or time.time
         self.ack_budget_seconds = ack_budget_seconds
         self.command_ttl_seconds = command_ttl_seconds
+        self.late_reply_grace_seconds = late_reply_grace_seconds
         self._socket: Any | None = None
         self._events: deque[tuple[str, str]] = deque()
         self.disconnected = False
@@ -191,7 +199,7 @@ class BrowserExecutor:
         ack_deadline = self._now() + budget
         acked = False
         while not acked:
-            kind, message = self._read(ack_deadline, command_id=wire_id)
+            kind, message = self._read_with_grace(ack_deadline, command_id=wire_id)
             if kind == "ack":
                 # R3: `_read` only returns an ack whose command_id matched.
                 acked = True
@@ -234,7 +242,7 @@ class BrowserExecutor:
             ttl=max(timeout_ms / 1000.0, 0.0) + self.ack_budget_seconds,
         )
         deadline = self._now() + timeout_ms / 1000.0 + self.ack_budget_seconds
-        kind, message = self._read(deadline, command_id=wire_id)
+        kind, message = self._read_with_grace(deadline, command_id=wire_id)
         if kind == "condition":
             # R1: only a real answer counts. `passed=False` here means the extension polled.
             return ConditionResult(passed=bool(message.get("passed")), status="ok")
@@ -374,6 +382,21 @@ class BrowserExecutor:
 
     # -- the reader --------------------------------------------------------
 
+    def _read_with_grace(self, deadline: float, *, command_id: str) -> tuple[str, Any]:
+        """Read an awaited reply, allowing one late window while the socket is still up.
+
+        A page can keep Chrome busy past the step's budget (Odoo rebuilding its assets after a
+        restart) and still answer. When the first read times out but the socket is up, read once
+        more for the same command, until the original deadline plus the grace. A reply in that
+        window is used as if it had come in time; a second timeout is silence and the caller's
+        existing lost path applies. The wire deadline is untouched, so the extension still refuses
+        a command that expired before any input was sent.
+        """
+        kind, message = self._read(deadline, command_id=command_id)
+        if kind != "timeout" or self.disconnected or self._socket is None:
+            return kind, message
+        return self._read(deadline + self.late_reply_grace_seconds, command_id=command_id)
+
     def _read(self, deadline: float, command_id: str | None = None) -> tuple[str, Any]:
         """Read one message, applying R3 and collecting events.
 
@@ -447,7 +470,7 @@ class BrowserExecutor:
 
     def _step_result(self, command_id: str, *, deadline: float) -> StepResult:
         while True:
-            kind, message = self._read(deadline, command_id=command_id)
+            kind, message = self._read_with_grace(deadline, command_id=command_id)
             if kind == "result":
                 return self._status_to_result(message)
             if kind == "ack":
@@ -470,10 +493,12 @@ class BrowserExecutor:
         """Anything that is neither an ack nor a result is a step the runner cannot prove.
 
         R4: a command that ran out of budget with the socket still up means the extension may still
-        be acting on it. The runner must not simply move on — a later command sent to an extension
-        that is still busy is refused ("another command is already executing"), which would turn one
-        slow command into a cascade of parked records. It raises the same detach flag a lost socket
-        does, so the run pauses `executor_disconnected` and a person sees the real cause.
+        be acting on it. The late-reply grace comes first: `_step_result` gives that command one
+        more wait past its deadline while the socket is up, and only silence past that grace reaches
+        here. The runner must not simply move on — a later command sent to an extension that is
+        still busy is refused ("another command is already executing"), which would turn one slow
+        command into a cascade of parked records. It raises the same detach flag a lost socket does,
+        so the run pauses `executor_disconnected` and a person sees the real cause.
         """
         if kind in ("peer_gone", "closed"):
             return StepResult(status="lost", error="the extension is no longer connected")
