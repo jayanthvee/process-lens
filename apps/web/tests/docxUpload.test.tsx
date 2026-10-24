@@ -33,7 +33,7 @@ function choose(name = "contacts.docx"): void {
   const file = new File(["PK"], name, {
     type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   });
-  fireEvent.change(screen.getByLabelText("Add a Word document"), {
+  fireEvent.change(screen.getByLabelText("Add a Word document or PDF"), {
     target: { files: [file] },
   });
 }

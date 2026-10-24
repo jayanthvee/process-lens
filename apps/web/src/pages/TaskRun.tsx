@@ -176,7 +176,7 @@ export function TaskRun(): JSX.Element {
   useEffect(() => {
     if (csvToken === null || task === null || carriedIn.current) return;
     carriedIn.current = true;
-    const name = `${csvName.replace(/\.docx$/i, "") || "document"}.csv`;
+    const name = `${csvName.replace(/\.(docx|pdf)$/i, "") || "document"}.csv`;
     void (async () => {
       setBusy(true);
       setProblem(null);

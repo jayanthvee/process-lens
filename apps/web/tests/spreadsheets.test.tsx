@@ -141,7 +141,7 @@ describe("carrying a cleaned document to a task (PL-076)", () => {
     });
     renderApp("/spreadsheets");
     await settle();
-    const input = screen.getByLabelText("Add a Word document") as HTMLInputElement;
+    const input = screen.getByLabelText("Add a Word document or PDF") as HTMLInputElement;
     const file = new File(["docx-bytes"], "spring leads.docx", {
       type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     });

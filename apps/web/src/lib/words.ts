@@ -397,9 +397,9 @@ export const CODE_NOT_FOUND =
  * PL-072: the Spreadsheets page's Word-document area. A document becomes a CSV, and the two ways
  * on are the download and the task a person already knows.
  */
-export const ADD_WORD_DOCUMENT = "Add a Word document";
+export const ADD_WORD_DOCUMENT = "Add a Word document or PDF";
 export const ADD_WORD_DOCUMENT_SENTENCE =
-  "Choose a Word document and ProcessLens will read its table or list into rows.";
+  "Choose a Word document or a PDF with real text (not a scan), and ProcessLens will read its table, fields or list into rows.";
 export const READING_DOCUMENT = "Reading the document…";
 export const DOWNLOAD_CSV = "Download CSV";
 export const USE_FOR_A_TASK = "Use for a task";

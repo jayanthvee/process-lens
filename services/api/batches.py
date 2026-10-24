@@ -38,6 +38,7 @@ import psycopg
 from fastapi import APIRouter, Body, File, Form, HTTPException, Query, UploadFile
 from psycopg.rows import dict_row
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 from packages.documents import DocumentRefused, clean, read_docx, read_pdf
 from packages.ledger import (
@@ -681,7 +682,9 @@ async def upload_batch(
     if suffix in DOCUMENT_SUFFIXES:
         reader = read_pdf if suffix == PDF_SUFFIX else read_docx
         try:
-            columns, document_rows = reader(content)
+            # Parsing is slow, synchronous work, and this route runs on the event loop the hub's
+            # Chrome sockets share: read on a worker thread so a large file never stalls a run.
+            columns, document_rows = await run_in_threadpool(reader, content)
         except DocumentRefused as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         columns, document_rows, notes = clean(
@@ -690,7 +693,7 @@ async def upload_batch(
         raw_rows = document_rows
         clean_rows = [dict(row) for row in document_rows]
     else:
-        columns, raw_rows, clean_rows = _read_rows(suffix, content)
+        columns, raw_rows, clean_rows = await run_in_threadpool(_read_rows, suffix, content)
     if not raw_rows:
         raise HTTPException(status_code=422, detail="This file has no rows.")
     if len(raw_rows) > MAX_ROWS:
