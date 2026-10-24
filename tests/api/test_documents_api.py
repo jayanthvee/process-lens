@@ -176,11 +176,11 @@ def test_a_document_with_no_table_or_list_is_422_in_one_sentence(connected: Test
     assert response.json()["detail"] == REFUSAL
 
 
-def test_only_a_docx_suffix_is_accepted(connected: TestClient) -> None:
+def test_only_a_docx_or_pdf_suffix_is_accepted(connected: TestClient) -> None:
     response = to_csv(connected, load("clean-table.docx"), filename="contacts.doc")
 
     assert response.status_code == 422
-    assert response.json()["detail"] == "Only a .docx file can be added here."
+    assert response.json()["detail"] == "Only a .docx or .pdf file can be added here."
 
 
 # --- the batch --------------------------------------------------------------------------------
@@ -259,3 +259,100 @@ def test_upload_batch_refuses_a_docx_with_nothing_to_read(
 
     assert response.status_code == 422
     assert response.json()["detail"] == REFUSAL
+
+
+# --- PDFs (PL-091) ----------------------------------------------------------------------------
+
+PDF_MEDIA = "application/pdf"
+
+
+def test_to_csv_reads_a_pdf_of_invoices(connected: TestClient) -> None:
+    response = to_csv(connected, load("invoices-one-per-page.pdf"), filename="invoices.pdf")
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["columns"][:3] == ["Invoice Number", "Invoice Date", "Customer"]
+    assert [row["Invoice Number"] for row in body["rows"]] == [
+        "INV-2026-0101",
+        "INV-2026-0102",
+        "INV-2026-0103",
+    ]
+    assert body["csv_token"]
+
+
+def test_to_csv_refuses_a_scanned_pdf_in_one_sentence(connected: TestClient) -> None:
+    response = to_csv(connected, load("scanned.pdf"), filename="scan.pdf")
+
+    assert response.status_code == 422
+    assert "scanned" in response.json()["detail"]
+
+
+def test_to_csv_refuses_a_docx_renamed_as_a_pdf(connected: TestClient) -> None:
+    response = to_csv(connected, load("clean-table.docx"), filename="contacts.pdf")
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "This file is not a PDF."
+
+
+def test_upload_batch_accepts_a_pdf_and_stores_one_row_per_invoice(
+    connected: TestClient, conn: psycopg.Connection, ledger: Ledger
+) -> None:
+    workflow_id = add_task(conn, ledger.tenant_id)
+
+    response = connected.post(
+        "/api/v1/batches",
+        data={"workflow_id": str(workflow_id)},
+        files={"file": ("invoices.pdf", load("invoices-one-per-page.pdf"), PDF_MEDIA)},
+    )
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["row_count"] == 3
+    assert "Unit Price" in body["columns"]
+
+    rows = stored_rows(conn, body["batch_id"])
+    assert [row["raw"]["Customer"] for row in rows] == [
+        "Ridgeline Outfitters",
+        "Harbourview Dental",
+        "Pinewood Preschool: Main Campus",
+    ]
+    assert rows[1]["raw"]["Unit Price"] == "€1,299.00"
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT kind FROM input_batches WHERE id = %s", (body["batch_id"],))
+        assert cur.fetchone()[0] == "csv"
+
+
+def test_upload_batch_refuses_a_pdf_with_nothing_to_read(
+    connected: TestClient, conn: psycopg.Connection, ledger: Ledger
+) -> None:
+    workflow_id = add_task(conn, ledger.tenant_id)
+
+    response = connected.post(
+        "/api/v1/batches",
+        data={"workflow_id": str(workflow_id)},
+        files={"file": ("letter.pdf", load("letter.pdf"), PDF_MEDIA)},
+    )
+
+    assert response.status_code == 422
+    assert (
+        response.json()["detail"]
+        == "This PDF has no labelled fields or table ProcessLens can read."
+    )
+
+
+def test_upload_batch_names_pdf_among_the_accepted_files(
+    connected: TestClient, conn: psycopg.Connection, ledger: Ledger
+) -> None:
+    workflow_id = add_task(conn, ledger.tenant_id)
+
+    response = connected.post(
+        "/api/v1/batches",
+        data={"workflow_id": str(workflow_id)},
+        files={"file": ("invoices.doc", b"not used", "application/msword")},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == (
+        "Only a .csv, .tsv, .xlsx, .docx or .pdf file can be added here."
+    )

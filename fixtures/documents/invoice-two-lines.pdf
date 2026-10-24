@@ -1,0 +1,50 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [4 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
+endobj
+5 0 obj
+<< /Length 898 >>
+stream
+BT /F1 18 Tf 50.0 790.0 Td (INVOICE) Tj ET
+BT /F1 10 Tf 50.0 750.0 Td (Invoice Number: INV-2026-0201) Tj ET
+BT /F1 10 Tf 50.0 735.0 Td (Invoice Date: 2026-10-23) Tj ET
+BT /F1 10 Tf 50.0 720.0 Td (Customer: Corner Bakery Group) Tj ET
+BT /F1 10 Tf 50.0 680.0 Td (Product) Tj ET
+BT /F1 10 Tf 300.0 680.0 Td (Quantity) Tj ET
+BT /F1 10 Tf 380.0 680.0 Td (Unit Price) Tj ET
+BT /F1 10 Tf 470.0 680.0 Td (Amount) Tj ET
+BT /F1 10 Tf 50.0 662.0 Td (1080p Webcam) Tj ET
+BT /F1 10 Tf 300.0 662.0 Td (3) Tj ET
+BT /F1 10 Tf 380.0 662.0 Td (79.00) Tj ET
+BT /F1 10 Tf 470.0 662.0 Td (237.00) Tj ET
+BT /F1 10 Tf 50.0 646.0 Td (Monitor Light Bar) Tj ET
+BT /F1 10 Tf 300.0 646.0 Td (1) Tj ET
+BT /F1 10 Tf 380.0 646.0 Td (119.00) Tj ET
+BT /F1 10 Tf 470.0 646.0 Td (119.00) Tj ET
+BT /F1 10 Tf 380.0 610.0 Td (Total: 356.00) Tj ET
+BT /F1 8 Tf 50.0 60.0 Td (Thank you for your business. Payment due within 30 days.) Tj ET
+endstream
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000121 00000 n 
+0000000218 00000 n 
+0000000344 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+1293
+%%EOF
