@@ -1,13 +1,13 @@
-"""Write the pilot test files: clean and messy CSVs for quotes, leads and invoices, and 500 leads.
+"""Write the pilot test files for use cases 1, 3 and 4: leads, invoices and product updates.
 
 Every customer, product and salesperson is one `infra/test-apps/seed_odoo.py` creates, except
 the rows that are wrong on purpose (their `expected` column says so).
 
     python internal/pilot/make_csvs.py            # writes into internal/pilot/files/
-    python internal/pilot/make_csvs.py --tag r2   # fresh references and emails for a second round
+    python internal/pilot/make_csvs.py --tag r2   # a second round: new refs, emails, prices
 
-The tag goes into every reference and email, so a second round is not skipped as
-"already committed in an earlier run".
+The tag goes into every reference and email and moves every new price, so a second round is not
+skipped as "already committed in an earlier run".
 """
 
 from __future__ import annotations
@@ -142,106 +142,81 @@ def write_csv(
     (OUT / name).write_bytes(buffer.getvalue().encode(encoding))
 
 
-def clean_quotes(tag: str) -> list[list[str]]:
-    rows = []
-    for i in range(10):
-        product, _ = PRODUCTS[i]
-        rows.append([f"Q-{tag}-{i + 1:03d}", CUSTOMERS[i % 5], product, str(i % 4 + 1), "verified"])
-    return rows
+# Every seeded product's internal reference and list price (seed_data.ODOO_PRODUCTS).
+SKUS = [
+    ("PL-DESK-1001", 749.0),
+    ("PL-DESK-1002", 689.0),
+    ("PL-CHR-2001", 329.0),
+    ("PL-CHR-2002", 899.0),
+    ("PL-CHR-2003", 189.0),
+    ("PL-MON-3001", 429.0),
+    ("PL-MON-3002", 799.0),
+    ("PL-DOC-4001", 199.0),
+    ("PL-DOC-4002", 349.0),
+    ("PL-KEY-5001", 129.0),
+    ("PL-KEY-5002", 179.0),
+    ("PL-MOU-6001", 89.0),
+    ("PL-MOU-6002", 109.0),
+    ("PL-CAM-7001", 79.0),
+    ("PL-CAM-7002", 219.0),
+    ("PL-AUD-8001", 259.0),
+    ("PL-AUD-8002", 189.0),
+    ("PL-LGT-9001", 119.0),
+    ("PL-LGT-9002", 149.0),
+    ("PL-PWR-9500", 99.0),
+]
 
 
-def messy_quotes(tag: str) -> list[list[str]]:
-    ref = lambda n: f"Q-{tag}-M{n:02d}"  # noqa: E731
+def _bump(tag: str) -> int:
+    """A price rise that differs per round, so a new round's prices are new work, not repeats."""
+    return 10 + sum(map(ord, tag)) % 40
+
+
+def clean_products(tag: str) -> list[list[str]]:
+    bump = _bump(tag)
+    return [[sku, f"{price + bump:.2f}", "verified"] for sku, price in SKUS[:10]]
+
+
+def messy_products(tag: str) -> list[list[str]]:
+    bump = _bump(tag)
+    price = dict(SKUS)
+
+    def new(sku: str) -> str:
+        return f"{price[sku] + bump:.2f}"
+
     return [
-        [ref(1), "Ridgeline Outfitters", "Oak Standing Desk", "2", "verified (control row)"],
-        [ref(2), "  Harbourview Dental  ", "Mesh Task Chair ", "1", "verified: spaces trimmed"],
-        [ref(3), "pinewood preschool", "drafting stool", "3", "verified: lower case still matches"],
+        ["PL-MON-3002", new("PL-MON-3002"), "verified (control row)"],
+        ["  PL-DOC-4002 ", f" {new('PL-DOC-4002')} ", "verified: spaces trimmed"],
+        ["pl-key-5002", new("PL-KEY-5002"), "verified: lower-case sku still finds the product"],
+        ["PL-XXX-0000", "99.00", "parked: no product has this sku (search finds nothing)"],
+        ["PL-MOU-600", "95.00", "parked: sku is cut short; must NOT update PL-MOU-6001 or 6002"],
         [
-            ref(4),
-            "Ridgline Outfiters",
-            "Thunderbolt Dock",
-            "1",
-            "must NOT be verified: customer misspelled; no other customer, no new one",
+            "PL-CAM-7001",
+            f"${price['PL-CAM-7001'] + bump:,.2f}",
+            "verified at the number, or flagged; must not become 0",
         ],
         [
-            ref(5),
-            "Acme Widgets Ltd",
-            "Wireless Trackball",
-            "2",
-            "must NOT be verified: customer does not exist; must not 'Create Acme Widgets Ltd'",
+            "PL-CAM-7002",
+            f"{price['PL-CAM-7002'] + bump + 1000:,.2f}",
+            "verified at the full number (thousands comma); must not become 1.2 or 1",
         ],
+        ["PL-AUD-8001", "", "flagged or parked: price empty; price must stay unchanged"],
+        ["PL-AUD-8002", "free", "flagged or fails: price is a word; price must stay unchanged"],
+        ["PL-LGT-9001", "-5.00", "flagged or fails: negative price"],
         [
-            ref(6),
-            "Corner Bakery Group",
-            "Standing Desk",
-            "1",
-            "must NOT silently pick Oak or Birch: 'Standing Desk' matches two products",
+            "PL-LGT-9002",
+            f"{price['PL-LGT-9002']:.2f}",
+            "skipped: Odoo already has this price, nothing to save",
         ],
+        ["PL-PWR-9500", new("PL-PWR-9500"), "verified"],
+        ["PL-PWR-9500", new("PL-PWR-9500"), "flagged as a duplicate of the row above"],
         [
-            ref(7),
-            "Summit Climbing Gym",
-            '27" 4K Monitor',
-            "2",
-            "verified: product name contains a quote mark",
+            "PL-DESK-1001",
+            f"{price['PL-DESK-1001'] + bump:.3f}",
+            "verified; price rounds to 2 places",
         ],
-        [
-            ref(8),
-            "Harbourview Dental",
-            "PL-KEY-5001",
-            "1",
-            "verified as Compact Mechanical Keyboard: searched by product code",
-        ],
-        [ref(9), "Pinewood Preschool", "1080p Webcam", "3.0", "verified with quantity 3"],
-        [
-            ref(10),
-            "Corner Bakery Group",
-            "Monitor Light Bar",
-            "",
-            "flagged in review or parked: quantity empty",
-        ],
-        [
-            ref(11),
-            "Summit Climbing Gym",
-            "USB Conference Speaker",
-            "two",
-            "flagged or fails: quantity is a word",
-        ],
-        [
-            ref(12),
-            "Ridgeline Outfitters",
-            "Drafting Stool",
-            "-1",
-            "flagged or fails: negative quantity",
-        ],
-        [
-            ref(13),
-            "Harbourview Dental",
-            "Ergonomic Split Keyboard",
-            "1,000",
-            "verified with quantity 1000, or flagged; must not become 1",
-        ],
-        [
-            ref(13),
-            "Harbourview Dental",
-            "Ergonomic Split Keyboard",
-            "1,000",
-            "flagged as a duplicate of the row above (same reference)",
-        ],
-        [
-            ref(14),
-            "Pinewood Preschool",
-            "Mesh Task Chiar",
-            "1",
-            "must NOT be verified: product misspelled",
-        ],
-        [
-            "",
-            "Summit Climbing Gym",
-            "Oak Standing Desk",
-            "1",
-            "flagged: no reference (record key empty)",
-        ],
-        [ref(15), "Corner Bakery Group", "Noise-Cancelling Headset", "4", "verified (control row)"],
+        ["", "50.00", "flagged: no sku"],
+        ["PL-CHR-2003", new("PL-CHR-2003"), "verified (control row)"],
     ]
 
 
@@ -504,15 +479,15 @@ def main() -> None:
     tag = parser.parse_args().tag
     OUT.mkdir(parents=True, exist_ok=True)
 
-    quote_header = ["reference", "customer", "product", "quantity", "expected"]
-    write_csv("quotes-clean.csv", quote_header, clean_quotes(tag), encoding="utf-8")
+    product_header = ["sku", "new_price", "expected"]
+    write_csv("products-clean.csv", product_header, clean_products(tag), encoding="utf-8")
     # Excel's "CSV UTF-8": a byte-order mark, a title row above the header, blank rows between.
     write_csv(
-        "quotes-messy.csv",
-        [" Reference", "Customer ", "PRODUCT", "Qty", "expected"],
-        messy_quotes(tag),
+        "products-messy.csv",
+        [" SKU", "New Price ", "expected"],
+        messy_products(tag),
         encoding="utf-8-sig",
-        title="Quotes to enter - October",
+        title="Price changes - November",
         blank_every=5,
     )
 

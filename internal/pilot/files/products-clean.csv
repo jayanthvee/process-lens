@@ -1,0 +1,11 @@
+sku,new_price,expected
+PL-DESK-1001,762.00,verified
+PL-DESK-1002,702.00,verified
+PL-CHR-2001,342.00,verified
+PL-CHR-2002,912.00,verified
+PL-CHR-2003,202.00,verified
+PL-MON-3001,442.00,verified
+PL-MON-3002,812.00,verified
+PL-DOC-4001,212.00,verified
+PL-DOC-4002,362.00,verified
+PL-KEY-5001,142.00,verified

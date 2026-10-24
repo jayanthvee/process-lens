@@ -1,0 +1,22 @@
+﻿Price changes - November
+
+ SKU,New Price ,expected
+PL-MON-3002,812.00,verified (control row)
+  PL-DOC-4002 , 362.00 ,verified: spaces trimmed
+pl-key-5002,192.00,verified: lower-case sku still finds the product
+PL-XXX-0000,99.00,parked: no product has this sku (search finds nothing)
+PL-MOU-600,95.00,parked: sku is cut short; must NOT update PL-MOU-6001 or 6002
+
+PL-CAM-7001,$92.00,"verified at the number, or flagged; must not become 0"
+PL-CAM-7002,"1,232.00",verified at the full number (thousands comma); must not become 1.2 or 1
+PL-AUD-8001,,flagged or parked: price empty; price must stay unchanged
+PL-AUD-8002,free,flagged or fails: price is a word; price must stay unchanged
+PL-LGT-9001,-5.00,flagged or fails: negative price
+
+PL-LGT-9002,149.00,"skipped: Odoo already has this price, nothing to save"
+PL-PWR-9500,112.00,verified
+PL-PWR-9500,112.00,flagged as a duplicate of the row above
+PL-DESK-1001,762.000,verified; price rounds to 2 places
+,50.00,flagged: no sku
+
+PL-CHR-2003,202.00,verified (control row)
