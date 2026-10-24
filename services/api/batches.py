@@ -6,8 +6,8 @@ never from the caller, and a cross-tenant pin is not even acknowledged.
 
 The three routes are the three steps of "Run this task":
 
-1. ``POST /api/v1/batches`` reads a ``.csv``, ``.tsv``, ``.xlsx`` or ``.docx`` file into a batch
-   and its rows (a Word document is read and cleaned first);
+1. ``POST /api/v1/batches`` reads a ``.csv``, ``.tsv``, ``.xlsx``, ``.docx`` or ``.pdf`` file
+   into a batch and its rows (a Word document or PDF is read and cleaned first);
 2. ``GET /api/v1/batches/{id}/check`` matches the spreadsheet's columns to the task's own columns,
    decides which rows are ready, and writes that verdict onto the rows (``create_run`` builds
    ledger rows only for ``status = 'ready'`` rows, so the verdict has to land before a run can
@@ -39,7 +39,7 @@ from fastapi import APIRouter, Body, File, Form, HTTPException, Query, UploadFil
 from psycopg.rows import dict_row
 from pydantic import BaseModel, Field
 
-from packages.documents import DocumentRefused, clean, read_docx
+from packages.documents import DocumentRefused, clean, read_docx, read_pdf
 from packages.ledger import (
     BatchRow,
     get_batch,
@@ -64,7 +64,9 @@ CSV_SUFFIX = ".csv"
 TSV_SUFFIX = ".tsv"
 XLSX_SUFFIX = ".xlsx"
 DOCX_SUFFIX = ".docx"
+PDF_SUFFIX = ".pdf"
 XLS_SUFFIX = ".xls"
+DOCUMENT_SUFFIXES = frozenset({DOCX_SUFFIX, PDF_SUFFIX})
 
 _SELECT_WORKFLOW = """
 SELECT id, tenant_id, archived_at FROM workflows WHERE id = %(id)s
@@ -96,7 +98,7 @@ class BatchUploadResponse(BaseModel):
     batch_id: uuid.UUID
     row_count: int
     columns: list[str]
-    # What the cleaner changed in a Word document, in the sentences a person reads.
+    # What the cleaner changed in a document, in the sentences a person reads.
     notes: list[str] = Field(default_factory=list)
 
 
@@ -647,7 +649,7 @@ def _columns_of(rows: list[Any]) -> list[str]:
 @router.post("/batches", response_model=BatchUploadResponse, status_code=201)
 async def upload_batch(
     workflow_id: Annotated[uuid.UUID, Form(description="The task this spreadsheet is for.")],
-    file: Annotated[UploadFile, File(description="A .csv, .tsv or .xlsx file.")],
+    file: Annotated[UploadFile, File(description="A .csv, .tsv, .xlsx, .docx or .pdf file.")],
 ) -> BatchUploadResponse:
     """Read a spreadsheet into a batch and its rows, all in one transaction.
 
@@ -663,10 +665,10 @@ async def upload_batch(
                 "Excel Workbook (.xlsx), then add that file."
             ),
         )
-    if suffix not in {CSV_SUFFIX, TSV_SUFFIX, XLSX_SUFFIX, DOCX_SUFFIX}:
+    if suffix not in {CSV_SUFFIX, TSV_SUFFIX, XLSX_SUFFIX, DOCX_SUFFIX, PDF_SUFFIX}:
         raise HTTPException(
             status_code=422,
-            detail="Only a .csv, .tsv, .xlsx or .docx file can be added here.",
+            detail="Only a .csv, .tsv, .xlsx, .docx or .pdf file can be added here.",
         )
 
     content = await file.read(MAX_UPLOAD_BYTES + 1)
@@ -676,9 +678,10 @@ async def upload_batch(
         )
 
     notes: list[str] = []
-    if suffix == DOCX_SUFFIX:
+    if suffix in DOCUMENT_SUFFIXES:
+        reader = read_pdf if suffix == PDF_SUFFIX else read_docx
         try:
-            columns, document_rows = read_docx(content)
+            columns, document_rows = reader(content)
         except DocumentRefused as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         columns, document_rows, notes = clean(
@@ -703,9 +706,11 @@ async def upload_batch(
                 conn,
                 tenant_id=workflow["tenant_id"],
                 workflow_id=workflow_id,
-                # A Word document is stored as the cleaned CSV it became, and a TSV as the CSV
-                # it is: the rows are the cleaned rows, and no new batch kind is invented.
-                kind="csv" if suffix in {DOCX_SUFFIX, TSV_SUFFIX} else suffix.lstrip("."),
+                # A Word document or PDF is stored as the cleaned CSV it became, and a TSV as the
+                # CSV it is: the rows are the cleaned rows, and no new batch kind is invented.
+                kind=(
+                    "csv" if suffix in {DOCX_SUFFIX, PDF_SUFFIX, TSV_SUFFIX} else suffix.lstrip(".")
+                ),
                 rows=[
                     BatchRow(
                         row_index=index,
