@@ -158,6 +158,53 @@ def take_over_run(
     return int(row["lease_epoch"]) if row is not None else None
 
 
+# PL-089: a cancel no live worker holds (no holder, or a lapsed heartbeat: the takeover rule).
+# The supervisor takes such a run under a lease of its own and finishes the cancel as a worker does.
+_UNHELD_CANCELS = """
+SELECT id FROM runs
+WHERE cancel_requested_at IS NOT NULL
+  AND status IN ('queued', 'running', 'paused')
+  AND (worker_id IS NULL OR heartbeat_at IS NULL OR heartbeat_at < now() - %(timeout)s::interval)
+ORDER BY created_at, id
+"""
+
+_TAKE_CANCELLED_RUN = """
+UPDATE runs
+SET worker_id = %(worker)s, lease_epoch = lease_epoch + 1, heartbeat_at = now()
+WHERE id = %(run)s
+  AND cancel_requested_at IS NOT NULL
+  AND status IN ('queued', 'running', 'paused')
+  AND (worker_id IS NULL OR heartbeat_at IS NULL OR heartbeat_at < now() - %(timeout)s::interval)
+RETURNING lease_epoch
+"""
+
+
+def unheld_cancelled_runs(
+    conn: psycopg.Connection, *, heartbeat_timeout: str = DEFAULT_HEARTBEAT_TIMEOUT
+) -> list[uuid.UUID]:
+    """Open runs with a cancel request that no live worker holds, oldest first (PL-089)."""
+    with conn.cursor() as cur:
+        cur.execute(_UNHELD_CANCELS, {"timeout": heartbeat_timeout})
+        return [row[0] for row in cur.fetchall()]
+
+
+def take_cancelled_run(
+    conn: psycopg.Connection,
+    run_id: uuid.UUID,
+    worker_id: str,
+    *,
+    heartbeat_timeout: str = DEFAULT_HEARTBEAT_TIMEOUT,
+) -> int | None:
+    """Take a cancelled, unheld run's lease to finish the cancel; the new epoch, or ``None``."""
+    with conn.cursor() as cur:
+        cur.execute(
+            _TAKE_CANCELLED_RUN,
+            {"run": run_id, "worker": worker_id, "timeout": heartbeat_timeout},
+        )
+        row = cur.fetchone()
+    return int(row[0]) if row is not None else None
+
+
 def heartbeat(conn: psycopg.Connection, run_id: uuid.UUID, worker_id: str, epoch: int) -> None:
     """Refresh the lease. Raises :class:`StaleLease` when another worker owns the run now."""
     with conn.cursor() as cur:
