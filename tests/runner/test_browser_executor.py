@@ -473,3 +473,92 @@ def test_connect_refuses_when_the_hub_will_not_have_us() -> None:
         assert type(exc).__name__ == "ExecutorUnavailable"
     else:  # pragma: no cover - the connector always raises here
         raise AssertionError("a refused connection must not look like a connected executor")
+
+
+# --- PL-090: a busy Chrome is not a lost Chrome ---------------------------------------------------
+
+
+def test_a_step_whose_reply_is_late_but_arrives_is_not_lost() -> None:
+    """A page that freezes Chrome (Odoo rebuilding its assets after a restart) answers late. With
+    the socket still up, the runner waits for that late answer instead of pausing the whole run as
+    if Chrome had gone."""
+
+    def replies(message: dict[str, Any]) -> list[Any]:
+        return [
+            TimeoutError("the page kept Chrome busy past the budget"),
+            wire(type="result", command_id=message["command_id"], status="ok", observed={}),
+        ]
+
+    executor, _socket = make_executor(replies)
+    result = executor.prepare(a_command())
+
+    assert result.status == "ok"
+    assert executor.disconnected is False
+
+
+def test_a_late_ack_after_the_budget_still_counts_for_a_dispatch() -> None:
+    def replies(message: dict[str, Any]) -> list[Any]:
+        return [
+            TimeoutError("busy"),
+            wire(type="ack", command_id=message["command_id"]),
+            wire(type="result", command_id=message["command_id"], status="ok", observed={}),
+        ]
+
+    executor, _socket = make_executor(replies)
+    fired: list[str] = []
+    result = executor.dispatch(a_command(commit=True), lambda: fired.append("fired"))
+
+    assert result.status == "ok"
+    assert fired == ["fired"]
+    assert executor.disconnected is False
+
+
+def test_a_late_condition_answer_still_counts() -> None:
+    def replies(message: dict[str, Any]) -> list[Any]:
+        return [
+            TimeoutError("busy"),
+            wire(type="condition", command_id=message["command_id"], passed=True),
+        ]
+
+    executor, _socket = make_executor(replies)
+    answer = executor.check_condition({"url_matches": "x"}, timeout_ms=1000)
+
+    assert answer.status == "ok" and answer.passed is True
+    assert executor.disconnected is False
+
+
+def test_an_extension_silent_past_the_grace_too_is_still_lost() -> None:
+    """The grace is one extension, not forever: silence past it detaches exactly as before."""
+    executor, _socket = make_executor([TimeoutError("busy"), TimeoutError("still busy")])
+    result = executor.prepare(a_command())
+
+    assert result.status == "lost"
+    assert executor.disconnected is True
+
+
+def test_the_grace_waits_on_the_clock_not_on_a_second_timeout() -> None:
+    """The second wait runs to the budget's end plus the grace, read from the executor's clock."""
+    clock = {"now": 1000.0}
+    waits: list[float] = []
+
+    class Clocked(FakeSocket):
+        def recv(self, timeout: float | None = None) -> str:
+            waits.append(float(timeout or 0.0))
+            clock["now"] += float(timeout or 0.0)
+            raise TimeoutError("silent")
+
+    socket = Clocked()
+    executor = BrowserExecutor(
+        url="ws://x",
+        secret="s",
+        session="s1",
+        worker_id="w1",
+        connector=lambda url, secret: socket,
+        now=lambda: clock["now"],
+        ack_budget_seconds=5.0,
+        late_reply_grace_seconds=45.0,
+    )
+    executor.connect()
+    executor.prepare(a_command({"id": "s1", "action": "click", "timeout_ms": 10_000}))
+
+    assert waits == [15.0, 45.0]
