@@ -1047,3 +1047,122 @@ def test_the_extension_is_told_peer_ready_only_with_a_runner(client: TestClient)
         with client.websocket_connect(_runner_url(session_id), headers=_runner_headers()) as runner:
             assert json.loads(runner.receive_text())["type"] == "peer_ready"
             assert json.loads(extension.receive_text())["type"] == "peer_ready"
+
+
+# --- PL-092: one live session per Chrome ------------------------------------------------------
+
+
+def _create_browser_session(client: TestClient, browser_id: str | None) -> dict[str, Any]:
+    """The popup's Connect call from one extension install (``browser_id``), or from an old one."""
+    body: dict[str, Any] = {"tab_url": "https://example.test/leads/new", "tab_title": "New lead"}
+    if browser_id is not None:
+        body["browser_id"] = browser_id
+    response = client.post(
+        "/api/v1/executor/sessions",
+        json=body,
+        headers={**HOST_HEADERS, "x-processlens-client": "extension"},
+    )
+    assert response.status_code == 201, response.text
+    created: dict[str, Any] = response.json()
+    return created
+
+
+def _attached_ids(client: TestClient) -> list[str]:
+    response = client.get("/api/v1/executor/sessions/attached", headers=_detach_headers())
+    assert response.status_code == 200, response.text
+    return [row["session_id"] for row in response.json()]
+
+
+def test_a_new_session_from_the_same_chrome_retires_the_old_one(client: TestClient) -> None:
+    """Connect pressed twice in one Chrome: the runner on the old session must hear it is gone.
+
+    Before PL-092 the old socket stayed attached, the supervisor started a worker for it, and that
+    worker's commands were answered on the new socket: it waited out every budget in silence and
+    paused the run `executor_disconnected`.
+    """
+    old = _create_browser_session(client, "browser-ben-00001")
+    with client.websocket_connect(
+        _extension_url(old["session_id"]),
+        subprotocols=_extension_subprotocols(old["session_token"]),
+        headers=_extension_headers(),
+    ) as old_extension:
+        resume = json.loads(old_extension.receive_text())["resume_token"]
+        with client.websocket_connect(
+            _runner_url(old["session_id"]), headers=_runner_headers()
+        ) as old_runner:
+            assert json.loads(old_runner.receive_text())["type"] == "peer_ready"
+            assert json.loads(old_extension.receive_text())["type"] == "peer_ready"
+
+            new = _create_browser_session(client, "browser-ben-00001")
+            # Creating a session is not enough: the old one stays until the new socket is live.
+            assert old["session_id"] in _attached_ids(client)
+
+            with client.websocket_connect(
+                _extension_url(new["session_id"]),
+                subprotocols=_extension_subprotocols(new["session_token"]),
+                headers=_extension_headers(),
+            ) as new_extension:
+                assert json.loads(new_extension.receive_text())["type"] == "session"
+
+                # Checked on the hub first: a receive on a socket that is never told would block.
+                _wait_for(lambda: hub._sessions[old["session_id"]].extension is None)
+                assert json.loads(old_runner.receive_text()) == {
+                    "protocol": 1,
+                    "type": "peer_gone",
+                }
+                assert _close_code(old_extension) == hub.DETACHED_CODE
+                assert _attached_ids(client) == [new["session_id"]]
+
+                # The retired session cannot be brought back with the token it last issued.
+                again = client.websocket_connect(
+                    _extension_url(old["session_id"]),
+                    subprotocols=_extension_subprotocols(resume),
+                    headers=_extension_headers(),
+                )
+                with pytest.raises(WebSocketDisconnect) as refused, again as socket:
+                    socket.receive_text()
+                assert refused.value.code == hub.UNAUTHORIZED_CODE
+
+
+def test_a_new_session_from_another_chrome_leaves_the_old_one(client: TestClient) -> None:
+    anna = _create_browser_session(client, "browser-anna-0001")
+    with client.websocket_connect(
+        _extension_url(anna["session_id"]),
+        subprotocols=_extension_subprotocols(anna["session_token"]),
+        headers=_extension_headers(),
+    ) as anna_extension:
+        assert json.loads(anna_extension.receive_text())["type"] == "session"
+
+        ben = _create_browser_session(client, "browser-ben-00001")
+        with client.websocket_connect(
+            _extension_url(ben["session_id"]),
+            subprotocols=_extension_subprotocols(ben["session_token"]),
+            headers=_extension_headers(),
+        ) as ben_extension:
+            assert json.loads(ben_extension.receive_text())["type"] == "session"
+
+            assert set(_attached_ids(client)) == {anna["session_id"], ben["session_id"]}
+            assert _pending_frames(anna["session_id"], "extension") == 0
+
+
+def test_an_extension_without_a_browser_id_never_retires_another_session(
+    client: TestClient,
+) -> None:
+    """An extension from before PL-087 names no browser, so nothing says the two are one Chrome."""
+    first = _create_browser_session(client, None)
+    with client.websocket_connect(
+        _extension_url(first["session_id"]),
+        subprotocols=_extension_subprotocols(first["session_token"]),
+        headers=_extension_headers(),
+    ) as first_extension:
+        assert json.loads(first_extension.receive_text())["type"] == "session"
+
+        second = _create_browser_session(client, None)
+        with client.websocket_connect(
+            _extension_url(second["session_id"]),
+            subprotocols=_extension_subprotocols(second["session_token"]),
+            headers=_extension_headers(),
+        ) as second_extension:
+            assert json.loads(second_extension.receive_text())["type"] == "session"
+
+            assert set(_attached_ids(client)) == {first["session_id"], second["session_id"]}

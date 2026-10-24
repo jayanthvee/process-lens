@@ -197,6 +197,9 @@ class Session:
     # wire, so a socket that dies in `accept` leaves the previous token and the slot as they were.
     pending_resume_token: str | None = None
     pending_claim: bool = False
+    # PL-092: a newer session from the same Chrome went live, so this one is over. Its extension
+    # socket was closed and its runner told `peer_gone`; it may never be attached again.
+    superseded: bool = False
 
 
 _sessions: dict[str, Session] = {}
@@ -632,6 +635,30 @@ async def list_attached_sessions(request: Request) -> list[dict[str, Any]]:
         ]
 
 
+def _supersede_older(current: Session) -> list[tuple[Session, Peer]]:
+    """Retire every other session from the same Chrome; the caller holds ``_sessions_lock``.
+
+    One Chrome has one extension, and the extension talks on one socket: its newest. A session it
+    opened before (Connect pressed again, or an auto-connect raced a click) would otherwise stay
+    attached, the supervisor would start a worker for it, and that worker's commands would be
+    answered on the new socket -- a silence that pauses the run `executor_disconnected` (PL-092).
+    An extension from before PL-087 names no browser, so nothing ties its sessions together.
+    Returns the sockets still attached to the retired sessions, for the caller to close.
+    """
+    if not current.browser_id:
+        return []
+    replaced: list[tuple[Session, Peer]] = []
+    for other in _sessions.values():
+        if other is current or other.superseded or other.browser_id != current.browser_id:
+            continue
+        other.superseded = True
+        peer = other.extension
+        if peer is not None:
+            other.extension = None
+            replaced.append((other, peer))
+    return replaced
+
+
 @router.websocket("/executor/ws")
 async def executor_socket(websocket: WebSocket, session: str | None = None) -> None:
     """The extension's socket: one per session, and its first frame carries the resume token."""
@@ -656,7 +683,7 @@ async def executor_socket(websocket: WebSocket, session: str | None = None) -> N
         _purge_expired(time.time())
         row = _sessions.get(session or "")
         matched = None if row is None else _match_token(row, token or "", time.time())
-        if matched is None:
+        if matched is None or row.superseded:
             refusal = UNAUTHORIZED_CODE
         elif row.extension is not None:
             refusal = FORBIDDEN_CODE
@@ -690,7 +717,13 @@ async def executor_socket(websocket: WebSocket, session: str | None = None) -> N
             if row.pending_claim:
                 row.claimed = True
             row.pending_claim = False
+            replaced = _supersede_older(row)
         attached = True
+        # Outside the lock, exactly as the detach endpoint does it: the runner hears first, so it
+        # stops waiting at once, and then the old socket is closed.
+        for old_row, old_peer in replaced:
+            await _announce_gone(old_row, old_peer)
+            await _close_peer(old_peer, DETACHED_CODE)
     finally:
         if not attached:
             # R1: the attach never completed, so nothing about it may stick. The slot goes back and

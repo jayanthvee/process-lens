@@ -304,8 +304,14 @@ class AttachedSession:
     browser_id: str | None
 
 
-def attached_sessions(api_url: str, runner_secret: str | None = None) -> list[AttachedSession]:
-    """Every attached Chrome, newest first (PL-087); empty when the API cannot be read."""
+def attached_sessions(
+    api_url: str, runner_secret: str | None = None
+) -> list[AttachedSession] | None:
+    """Every attached Chrome, newest first (PL-087); ``None`` when the API cannot be read.
+
+    PL-092: a failed read is not an empty list. Read as "nobody is connected", one API restart or
+    timeout would stop every running worker mid-run.
+    """
     secret = runner_secret if runner_secret is not None else os.environ.get(RUNNER_SECRET_KEY, "")
     headers = {"Authorization": f"Bearer {secret.strip()}"} if secret.strip() else {}
     request = urllib.request.Request(
@@ -315,9 +321,9 @@ def attached_sessions(api_url: str, runner_secret: str | None = None) -> list[At
         with urllib.request.urlopen(request, timeout=5) as response:
             body = json.loads(response.read())
     except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError, ValueError):
-        return []
+        return None
     if not isinstance(body, list):
-        return []
+        return None
     found: list[AttachedSession] = []
     for row in body:
         if not isinstance(row, dict) or not isinstance(row.get("session_id"), str):
@@ -457,7 +463,13 @@ def supervisor_command() -> int:
                     del workers[session_id]
             for run_id in finish_unheld_cancels(dsn):
                 print(f"  Cancelled run {str(run_id)[:8]}: its Chrome was not there to finish it.")
-            sessions = attached_sessions(api_url, runner_secret)
+            read = attached_sessions(api_url, runner_secret)
+            if read is None:
+                # The API could not say who is connected. Nothing is known to have changed, so
+                # every worker keeps going and nothing new starts until the next good read.
+                time.sleep(SUPERVISOR_POLL_SECONDS)
+                continue
+            sessions = read
             live = {session.session_id for session in sessions}
             # A worker talks to the one Chrome session it was started for. When that Chrome goes
             # (it reconnected, or the person disconnected), its worker would pause every run it
