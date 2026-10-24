@@ -1,0 +1,23 @@
+﻿Quotes to enter - October
+
+ Reference,Customer ,PRODUCT,Qty,expected
+Q-r1-M01,Ridgeline Outfitters,Oak Standing Desk,2,verified (control row)
+Q-r1-M02,  Harbourview Dental  ,Mesh Task Chair ,1,verified: spaces trimmed
+Q-r1-M03,pinewood preschool,drafting stool,3,verified: lower case still matches
+Q-r1-M04,Ridgline Outfiters,Thunderbolt Dock,1,"must NOT be verified: customer misspelled; no other customer, no new one"
+Q-r1-M05,Acme Widgets Ltd,Wireless Trackball,2,must NOT be verified: customer does not exist; must not 'Create Acme Widgets Ltd'
+
+Q-r1-M06,Corner Bakery Group,Standing Desk,1,must NOT silently pick Oak or Birch: 'Standing Desk' matches two products
+Q-r1-M07,Summit Climbing Gym,"27"" 4K Monitor",2,verified: product name contains a quote mark
+Q-r1-M08,Harbourview Dental,PL-KEY-5001,1,verified as Compact Mechanical Keyboard: searched by product code
+Q-r1-M09,Pinewood Preschool,1080p Webcam,3.0,verified with quantity 3
+Q-r1-M10,Corner Bakery Group,Monitor Light Bar,,flagged in review or parked: quantity empty
+
+Q-r1-M11,Summit Climbing Gym,USB Conference Speaker,two,flagged or fails: quantity is a word
+Q-r1-M12,Ridgeline Outfitters,Drafting Stool,-1,flagged or fails: negative quantity
+Q-r1-M13,Harbourview Dental,Ergonomic Split Keyboard,"1,000","verified with quantity 1000, or flagged; must not become 1"
+Q-r1-M13,Harbourview Dental,Ergonomic Split Keyboard,"1,000",flagged as a duplicate of the row above (same reference)
+Q-r1-M14,Pinewood Preschool,Mesh Task Chiar,1,must NOT be verified: product misspelled
+
+,Summit Climbing Gym,Oak Standing Desk,1,flagged: no reference (record key empty)
+Q-r1-M15,Corner Bakery Group,Noise-Cancelling Headset,4,verified (control row)

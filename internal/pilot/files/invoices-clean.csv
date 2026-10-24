@@ -1,0 +1,11 @@
+reference,customer,product,quantity,unit price,expected
+INV-r1-001,Ridgeline Outfitters,Thunderbolt Dock,1,349.00,verified
+INV-r1-002,Harbourview Dental,Compact Mechanical Keyboard,2,129.00,verified
+INV-r1-003,Pinewood Preschool,Ergonomic Split Keyboard,3,179.00,verified
+INV-r1-004,Corner Bakery Group,Vertical Ergonomic Mouse,1,89.00,verified
+INV-r1-005,Summit Climbing Gym,Wireless Trackball,2,109.00,verified
+INV-r1-006,Ridgeline Outfitters,1080p Webcam,3,79.00,verified
+INV-r1-007,Harbourview Dental,Noise-Cancelling Headset,1,259.00,verified
+INV-r1-008,Pinewood Preschool,USB Conference Speaker,2,189.00,verified
+INV-r1-009,Corner Bakery Group,Monitor Light Bar,3,119.00,verified
+INV-r1-010,Summit Climbing Gym,Standing Desk Power Bar,1,99.00,verified

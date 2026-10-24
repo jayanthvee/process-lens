@@ -1,0 +1,19 @@
+Full Name;E-mail;Phone;Company;Sales Person;expected
+Ana Ruiz;messy.r1.01@pilot-leads.test;+34 91 555 0101;Ruiz Hermanos;Priya Raman;verified (control row)
+  Ben Carter ;  messy.r1.02@pilot-leads.test ;+1 555 0102; Carter Freight ;Marcus Bell;verified: spaces trimmed everywhere
+José Núñez;messy.r1.03@pilot-leads.test;+52 55 5555 0103;Café Olé S.A.;Sofia Duarte;verified: accents survive (file is saved the old Excel way, Windows-1252)
+Zoë Ångström;messy.r1.04@pilot-leads.test;+46 8 555 0104;Smith, Jones & Co;Priya Raman;verified: comma inside the company name
+"Chris ""CJ"" Jones";messy.r1.05@pilot-leads.test;+1 555 0105;Jones Labs;Marcus Bell;verified: quote marks inside the name
+Dee Patel;messy.r1.06@pilot-leads.test;4.47911E+11;Patel Foods;Sofia Duarte;phone Excel turned into 4.47911E+11: note what gets typed
+Eli Moss;messy.r1.07@pilot-leads.test;02079460958;Moss & Daughters;Priya Raman;verified: leading zero in phone kept
+Fay Grant;;+1 555 0108;Grant Studio;Marcus Bell;flagged or parked: no email
+Gus Hale;gus.hale.at.example;+1 555 0109;Hale Supply;Sofia Duarte;flagged: not an email
+Ana Ruiz again;MESSY.R1.01@PILOT-LEADS.TEST;+34 91 555 0110;Ruiz Hermanos;Priya Raman;flagged as a duplicate of row 1 (same email, different case)
+Dana Whitfield;dana.whitfield@northwind-analytics.test;+1 202 555 0141;Northwind Analytics;Marcus Bell;Odoo already has this lead: note if a second copy is created
+Hana Kim;messy.r1.12@pilot-leads.test;+82 2 555 0112;Kim Robotics;Priya Ramen;"must NOT be verified: salesperson misspelled; must not pick someone else"
+Ivo Petrov;messy.r1.13@pilot-leads.test;+359 2 555 0113;Petrov Freight;John Smith;must NOT be verified: salesperson does not exist
+Jo Lee;messy.r1.14@pilot-leads.test;+1 555 0114;Lee Consulting;;salesperson empty: note what happens
+Maximilian Alexander-Alexander-Alexander-Alexander-Alexander-Alexander-Alexander-Alexander-Alexander-Alexander-Alexander-Alexander-Alexander-Alexander-Alexander-Alexander-Alexander-Alexander-Hohenberg;messy.r1.15@pilot-leads.test;+49 30 555 0115;Hohenberg GmbH;Sofia Duarte;verified: very long name typed in full
+"Kai Line
+Break";messy.r1.16@pilot-leads.test;+1 555 0116;Break Media;Priya Raman;name has a line break inside the cell: note what gets typed
+Lou Reed;messy.r1.17@pilot-leads.test;+1 555 0117;Reed Analytics;Marcus Bell;verified (control row)
