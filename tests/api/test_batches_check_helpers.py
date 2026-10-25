@@ -7,12 +7,15 @@ a column's kind from its example and to judge a value, so its edges are tested o
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 import pytest
 
 from services.api.batches import (
     _duplicate_label,
     _is_email,
     _kind,
+    _kind_reasons,
     _number_value,
     _rank,
     _shape,
@@ -114,3 +117,40 @@ def test_an_unmapped_key_column_is_named_by_its_task_label() -> None:
 def test_a_header_that_only_capitalises_the_task_column_keeps_the_task_wording() -> None:
     """The frozen API test pins ``Same email as row 1`` for a file header ``Email``."""
     assert _duplicate_label("email", {"email": "Email"}) == "email"
+
+
+# --- T1 review: what the pilot's files would have got wrong -----------------------------------
+
+
+def test_a_seven_figure_number_with_thousands_commas_is_a_number() -> None:
+    """The six-digit rule is for a plain digit run (a phone, an ID), not for ``1,232,000``."""
+    assert _number_value("1,232,000") == Decimal("1232000")
+    assert _number_value("1232000") is None
+
+
+def test_a_shape_of_words_or_digits_alone_matches_nothing() -> None:
+    """``Ana Ruiz`` and ``Ruiz Hermanos`` share a shape, as do a quantity and a price."""
+    assert _rank("name", "Company", "Ana Ruiz", {"Company": "Ruiz Hermanos"}) == 3
+    assert _rank("quantity", "Unit Price", "2", {"Unit Price": "349"}) == 3
+    assert _rank("search", "SKU", "PL-CHR-2001", {"SKU": "PL-KEY-5002"}) == 2
+
+
+def test_a_one_letter_word_is_not_a_shared_name() -> None:
+    """The 100-lead pilot run matched the lead's name field (``e_g_product_pricing``, from the
+    placeholder "e.g. Product Pricing") to ``E-mail`` because both have an ``e``."""
+    assert _rank("e_g_product_pricing", "E-mail", "Taylor Kowalski", {"E-mail": "t@x.test"}) == 3
+
+
+def test_one_file_column_read_by_two_task_columns_is_flagged_once() -> None:
+    document = {
+        "meta": {
+            "input_schema": {
+                "fields": {
+                    "search": {"type": "string", "example": "ana@x.test"},
+                    "email": {"type": "string", "example": "ana@x.test"},
+                }
+            }
+        }
+    }
+    values = {"search": "gus.hale.at.example", "email": "gus.hale.at.example"}
+    assert _kind_reasons(document, values) == ["“gus.hale.at.example” isn't an email"]

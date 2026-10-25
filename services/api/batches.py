@@ -415,7 +415,8 @@ def _group(normalised: str) -> str | None:
 
 def _tokens(name: Any) -> set[str]:
     """The name's tokens, each replaced by its synonym group so ``contact`` meets ``name``."""
-    return {_group(token) or token for token in _normalise(name).split("_") if token}
+    # A one-letter token ("e" of "E-mail", "g" of "e.g.") is not a word two names can share.
+    return {_group(token) or token for token in _normalise(name).split("_") if len(token) > 1}
 
 
 def _is_close(recipe_column: str, spreadsheet_column: str) -> bool:
@@ -445,7 +446,8 @@ def _number_value(text: str) -> Decimal | None:
     if match is None:
         return None
     digits = match.group("whole").replace(",", "")
-    if match.group("fraction") is None and len(digits) > MAX_PLAIN_DIGITS:
+    plain = "," not in match.group("whole") and match.group("fraction") is None
+    if plain and len(digits) > MAX_PLAIN_DIGITS:
         return None
     sign = "-" if match.group("sign") else ""
     return Decimal(f"{sign}{digits}{match.group('fraction') or ''}")
@@ -483,6 +485,16 @@ def _shape(text: str) -> str:
     return "".join(shape)
 
 
+def _is_code_shape(text: str) -> bool:
+    """A value whose shape says something: letters and digits together, like ``PL-CHR-2001``.
+
+    A shape of words alone (``Ana Ruiz`` and ``Ruiz Hermanos`` are both ``A A``) or digits alone (a
+    quantity and a price) is shared by too many columns to choose one.
+    """
+    shape = _shape(text)
+    return "A" in shape and "9" in shape
+
+
 def _rank(
     recipe_column: str,
     spreadsheet_column: str,
@@ -496,7 +508,7 @@ def _rank(
     value = str(row_one.get(spreadsheet_column, "")).strip()
     if recorded and value == recorded:
         return 1
-    if recorded and _shape(value) == _shape(recorded):
+    if recorded and _is_code_shape(recorded) and _shape(value) == _shape(recorded):
         return 2
     if _is_close(recipe_column, spreadsheet_column):
         return 2
@@ -661,7 +673,8 @@ def _kind_reasons(document: dict[str, Any], values: dict[str, Any]) -> list[str]
             reasons.append(f"\u201c{text}\u201d isn't a number")
         elif number < 0:
             reasons.append(f"\u201c{text}\u201d is below zero")
-    return reasons
+    # Two task columns that read one file column (a lead's search and its email) say it once.
+    return list(dict.fromkeys(reasons))
 
 
 def _duplicate_label(task_column: str, chosen: dict[str, str | None]) -> str:
