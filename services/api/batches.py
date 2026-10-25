@@ -16,8 +16,13 @@ The three routes are the three steps of "Run this task":
    the batch; the task's recipe is never mutated.
 
 Column matching is deterministic -- no model is called anywhere in this module. Exact names come
-first, then a value match against the sample row the task was taught with, then token overlap and a
-small synonym table. Normalising keeps digits, so ``Phone 1`` and ``Phone 2`` never collapse.
+first, then a value match and a shape match against the sample row the task was taught with, then
+token overlap and a small synonym table. Normalising keeps digits, so ``Phone 1`` and ``Phone 2``
+never collapse.
+
+A recorded task has no field types: every field's example is a string, so the check reads the kind
+from the example. A number column flags a value that is not a number and one below zero; an email
+column flags a value that is not an email. Everything else is left to the task's own rules.
 """
 
 from __future__ import annotations
@@ -30,6 +35,7 @@ import re
 import uuid
 from collections.abc import Callable
 from datetime import date, datetime, time
+from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -91,6 +97,14 @@ SYNONYMS: dict[str, frozenset[str]] = {
 }
 
 _ROW_TEMPLATE = re.compile(r"\{\{\s*row\.(?P<column>[A-Za-z0-9_]+)")
+
+# A recorded task has no field types: its only type information is the example the person typed.
+_EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+_NUMBER = re.compile(
+    r"^(?:[\u20ac$\u00a3])?(?P<sign>-)?(?P<whole>\d{1,3}(?:,\d{3})*|\d+)(?P<fraction>\.\d+)?$"
+)
+# More plain digits than this, with no decimal point, is a phone or an ID rather than a number.
+MAX_PLAIN_DIGITS = 6
 
 
 class BatchUploadResponse(BaseModel):
@@ -401,7 +415,8 @@ def _group(normalised: str) -> str | None:
 
 def _tokens(name: Any) -> set[str]:
     """The name's tokens, each replaced by its synonym group so ``contact`` meets ``name``."""
-    return {_group(token) or token for token in _normalise(name).split("_") if token}
+    # A one-letter token ("e" of "E-mail", "g" of "e.g.") is not a word two names can share.
+    return {_group(token) or token for token in _normalise(name).split("_") if len(token) > 1}
 
 
 def _is_close(recipe_column: str, spreadsheet_column: str) -> bool:
@@ -415,18 +430,86 @@ def _is_close(recipe_column: str, spreadsheet_column: str) -> bool:
     return bool(_tokens(recipe_column) & _tokens(spreadsheet_column))
 
 
+def _is_email(text: str) -> bool:
+    """One ``@``, no whitespace, and a dot in the domain: ``local@domain.tld``."""
+    return _EMAIL.fullmatch(text.strip()) is not None
+
+
+def _number_value(text: str) -> Decimal | None:
+    """The value as a number, or ``None`` when it is not one the example taught.
+
+    A number is digits with optional thousands commas and one decimal point, optionally with a
+    currency sign. A leading ``+``, an internal space, or a long digit run with no decimal point
+    (a phone or an ID) is not a number.
+    """
+    match = _NUMBER.fullmatch(text.strip())
+    if match is None:
+        return None
+    digits = match.group("whole").replace(",", "")
+    plain = "," not in match.group("whole") and match.group("fraction") is None
+    if plain and len(digits) > MAX_PLAIN_DIGITS:
+        return None
+    sign = "-" if match.group("sign") else ""
+    return Decimal(f"{sign}{digits}{match.group('fraction') or ''}")
+
+
+def _kind(example: Any) -> str | None:
+    """The kind a task column was taught with: ``email``, ``number``, or nothing to check."""
+    text = "" if example is None else str(example).strip()
+    if not text:
+        return None
+    if _is_email(text):
+        return "email"
+    if _number_value(text) is not None:
+        return "number"
+    return None
+
+
+def _shape(text: str) -> str:
+    """A value's shape: each run of letters is ``A``, each run of digits ``9``; separators kept.
+
+    ``PL-CHR-2001`` and ``PL-KEY-5002`` are both ``A-A-9``, so a key column can be found by the
+    shape of the value the task was taught with even when no name or value matches.
+    """
+    shape: list[str] = []
+    for char in str(text).strip():
+        if char.isalpha():
+            mark = "A"
+        elif char.isdecimal():
+            mark = "9"
+        else:
+            mark = char
+        if mark in {"A", "9"} and shape and shape[-1] == mark:
+            continue
+        shape.append(mark)
+    return "".join(shape)
+
+
+def _is_code_shape(text: str) -> bool:
+    """A value whose shape says something: letters and digits together, like ``PL-CHR-2001``.
+
+    A shape of words alone (``Ana Ruiz`` and ``Ruiz Hermanos`` are both ``A A``) or digits alone (a
+    quantity and a price) is shared by too many columns to choose one.
+    """
+    shape = _shape(text)
+    return "A" in shape and "9" in shape
+
+
 def _rank(
     recipe_column: str,
     spreadsheet_column: str,
     sample_value: Any,
     row_one: dict[str, str],
 ) -> int:
-    """0 exact name, 1 exact value, 2 close, 3 no match. Lower is better."""
+    """0 exact name, 1 exact value, 2 close (by value shape or by name), 3 no match."""
     if _normalise(recipe_column) == _normalise(spreadsheet_column):
         return 0
     recorded = "" if sample_value is None else str(sample_value).strip()
-    if recorded and str(row_one.get(spreadsheet_column, "")).strip() == recorded:
+    value = str(row_one.get(spreadsheet_column, "")).strip()
+    if recorded and value == recorded:
         return 1
+    if recorded and _is_code_shape(recorded) and _shape(value) == _shape(recorded):
+        return 2
     if _is_close(recipe_column, spreadsheet_column):
         return 2
     return 3
@@ -567,14 +650,59 @@ def _rule_reasons(document: dict[str, Any], values: dict[str, Any]) -> list[str]
     return reasons
 
 
+def _kind_reasons(document: dict[str, Any], values: dict[str, Any]) -> list[str]:
+    """Every reason a value cannot be what the task's own example taught, in field order."""
+    reasons: list[str] = []
+    for column, spec in _fields(document).items():
+        if not isinstance(spec, dict):
+            continue
+        kind = _kind(spec.get("example"))
+        if kind is None:
+            continue
+        value = values.get(column)
+        text = "" if value is None else str(value).strip()
+        if not text:
+            # A blank belongs to the task's own `missing` rule, not to this check.
+            continue
+        if kind == "email":
+            if not _is_email(text):
+                reasons.append(f"\u201c{text}\u201d isn't an email")
+            continue
+        number = _number_value(text)
+        if number is None:
+            reasons.append(f"\u201c{text}\u201d isn't a number")
+        elif number < 0:
+            reasons.append(f"\u201c{text}\u201d is below zero")
+    # Two task columns that read one file column (a lead's search and its email) say it once.
+    return list(dict.fromkeys(reasons))
+
+
+def _duplicate_label(task_column: str, chosen: dict[str, str | None]) -> str:
+    """The key column as the person's file names it, else the task column's own label.
+
+    The file's own column is what the person can find: a task column called ``search`` that the
+    file calls ``SKU`` says "Same SKU". A header that is only another capitalisation of the
+    task's own name keeps the task's wording ("Same email as row 1").
+    """
+    mapped = chosen.get(task_column)
+    if mapped and _normalise(mapped) != _normalise(task_column):
+        return str(mapped)
+    return _label(task_column).lower()
+
+
 def _duplicate_reason(
-    template: str, values: dict[str, Any], seen: dict[str, int], row_index: int
+    template: str,
+    values: dict[str, Any],
+    seen: dict[str, int],
+    row_index: int,
+    chosen: dict[str, str | None],
 ) -> str | None:
     """The plain reason a row's key is missing or repeats an earlier row's, else ``None``."""
     if not template or "{{" not in template:
         return None
     match = _ROW_TEMPLATE.search(template)
-    label = f" {_label(match.group('column')).lower()}" if match else ""
+    task_column = match.group("column") if match else ""
+    label = f" {_label(task_column).lower()}" if match else ""
     try:
         key = render(template, row=values, variables={})
     except TemplateError:
@@ -584,7 +712,8 @@ def _duplicate_reason(
         # whole batch for it ("a rendered key is empty"). Flagged here, it simply stays out.
         return f"No{label}"
     if key in seen:
-        return f"Same{label} as row {seen[key]}"
+        repeat = f" {_duplicate_label(task_column, chosen)}" if match else ""
+        return f"Same{repeat} as row {seen[key]}"
     seen[key] = row_index
     return None
 
@@ -595,9 +724,11 @@ def _row_reasons(
     template: str,
     seen: dict[str, int],
     row_index: int,
+    chosen: dict[str, str | None],
 ) -> list[str]:
     reasons = _rule_reasons(document, values)
-    duplicate = _duplicate_reason(template, values, seen, row_index)
+    reasons.extend(_kind_reasons(document, values))
+    duplicate = _duplicate_reason(template, values, seen, row_index, chosen)
     # A missing key a precheck rule already named ("No email") is said once, not twice.
     if duplicate is not None and duplicate not in reasons:
         reasons.append(duplicate)
@@ -813,7 +944,9 @@ def check_batch(
         seen: dict[str, int] = {}
         for row in rows:
             values = _values_for(row.raw, chosen)
-            verdicts.append((row, _row_reasons(document, values, template, seen, row.row_index)))
+            verdicts.append(
+                (row, _row_reasons(document, values, template, seen, row.row_index, chosen))
+            )
 
         with conn.transaction():
             for row, reasons in verdicts:
