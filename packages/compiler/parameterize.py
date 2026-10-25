@@ -24,6 +24,12 @@ TEMPLATE_RUNG_FIELDS = ("name", "value", "text")
 # Short literals ("1", "a") match too much to parameterize safely.
 MIN_MATCH_LENGTH = 3
 
+# A field carrying a value that was templated from the sample row.
+ROW_TEMPLATE_MARKER = "{{row."
+
+# Rung fields whose value is the rung's own description of the element it names.
+_LABEL_FIELDS = ("name", "text", "value", "selector")
+
 
 def _cells(sample_row: dict[str, Any]) -> list[tuple[str, str]]:
     """The sample row's non-empty cells, as (column, text), longest text first."""
@@ -142,6 +148,54 @@ def parameterize_targets(
     return updated, warnings
 
 
+def _rung_names_row(rung: dict[str, Any]) -> bool:
+    """Whether any of a rung's text fields carries a template of the sample row."""
+    return any(
+        isinstance(rung.get(field_name), str) and ROW_TEMPLATE_MARKER in rung[field_name]
+        for field_name in ("name", "text", "value")
+    )
+
+
+def _rung_label(rung: dict[str, Any]) -> str:
+    """A rung named the way the recipe reads it: `css "#user_id_0_0_0"`."""
+    by = str(rung.get("by", ""))
+    for field_name in _LABEL_FIELDS:
+        text = rung.get(field_name)
+        if isinstance(text, str) and text.strip():
+            return f'{by} "{text.strip()}"'
+    return by
+
+
+def _is_option_click(candidate: Candidate) -> bool:
+    """Whether a click's ladder names a suggestion option (as ``compiler._is_option_click``)."""
+    return candidate.action == "click" and any(
+        str(rung.get("role", "")).lower() == "option" for rung in candidate.targets or []
+    )
+
+
+def _drop_fixed_option_rungs(
+    targets: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Keep only the rungs of an option click that name the row's value (PL-096).
+
+    Once the option rung is templated from the row -- ``role option
+    "{{row.salesperson}}"`` -- the ladder's fixed rungs, a css path or a test id, still
+    point at the option that was recorded. A row naming a value the list does not have
+    misses the role rung, and the fixed rung then clicks whichever option sits there: the
+    first one, saving the record with someone else's value. Drop them. An option click
+    with nothing templated ("Search More...") is a fixed choice and keeps its ladder.
+    """
+    if not any(_rung_names_row(rung) for rung in targets):
+        return targets, []
+    kept = [rung for rung in targets if _rung_names_row(rung)]
+    warnings = [
+        f"dropped rung {_rung_label(rung)}: it points at the recorded option, not the row's"
+        for rung in targets
+        if not _rung_names_row(rung)
+    ]
+    return kept, warnings
+
+
 def parameterize_candidate(
     candidate: Candidate, sample_row: dict[str, Any]
 ) -> tuple[Candidate, list[str]]:
@@ -162,6 +216,10 @@ def parameterize_candidate(
         candidate.targets, sample_row, exclude_text=literal
     )
     warnings.extend(target_warnings)
+
+    if _is_option_click(candidate):
+        targets, dropped_warnings = _drop_fixed_option_rungs(targets)
+        warnings.extend(dropped_warnings)
 
     value = candidate.value
     if value is not None:
