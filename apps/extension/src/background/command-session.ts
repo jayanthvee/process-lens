@@ -203,6 +203,13 @@ export class CommandSession {
    * (B3). Cleared in the aborted command's own `finally`, the moment its work actually settles.
    */
   private unwinding: string | null = null;
+  /**
+   * The number of the newest Connect or Disconnect (PL-093). A Connect that is still waiting on the
+   * hub when a newer Connect or a Disconnect arrives is stale: whatever the hub answers it, it opens
+   * nothing and changes nothing. Over the internet pairing takes about a second, long enough for
+   * the popup's own auto-connect and a person's click to overlap.
+   */
+  private pairingAttempt = 0;
   /** True while a restore is in flight, so a second call cannot open a second socket (F6). */
   private restoring = false;
   /** Set when restore found the stored tab gone; announced once the socket is up (B2). */
@@ -244,6 +251,11 @@ export class CommandSession {
    * active tab, and the extension opens the socket with the token it was given.
    */
   async connect(hubUrl: string, accessCode = ""): Promise<void> {
+    const attempt = ++this.pairingAttempt;
+    // PL-093: a newer Connect or a Disconnect took over while this one waited. It must not open a
+    // socket (a zombie session the hub would keep and a worker would talk to) nor touch the state
+    // the newer one owns, so it ends quietly.
+    const overtaken = (): boolean => attempt !== this.pairingAttempt;
     this.stopped = true; // refuse a competing reconnect while pairing
     // PL-092: Connect starts over. A socket left open from an earlier session (an auto-connect the
     // person then pressed Connect over) stayed attached at the hub, a worker was started for it,
@@ -255,11 +267,14 @@ export class CommandSession {
     this.dropSocket();
     this.setState("pairing");
     const info = await this.activeTabInfo();
+    if (overtaken()) return;
     const boundTabId = (await this.deps.bindActiveTab()) ?? info.id ?? -1;
+    if (overtaken()) return;
 
     const fetchFn = (globalThis as { fetch?: typeof fetch }).fetch;
     if (typeof fetchFn !== "function") throw new Error("fetch is unavailable in this context");
     const browser = this.deps.browserId ? await this.deps.browserId().catch(() => "") : "";
+    if (overtaken()) return;
     let response: Response;
     try {
       response = await fetchFn(`${trimBase(hubUrl)}/api/v1/executor/sessions`, {
@@ -276,6 +291,7 @@ export class CommandSession {
         }),
       });
     } catch (error) {
+      if (overtaken()) return;
       // Nothing listening at that address (the popup's auto-connect to 127.0.0.1:8000 before the
       // demo is started) used to leave the session in "pairing" for good: the popup said
       // "Connecting to ProcessLens" forever and Connect stayed disabled. Back to idle, so it can be
@@ -286,6 +302,7 @@ export class CommandSession {
         `ProcessLens is not answering at ${trimBase(hubUrl)} (${error instanceof Error ? error.message : String(error)})`,
       );
     }
+    if (overtaken()) return;
     if (response?.status === 401) {
       // PL-086: a hosted ProcessLens without the right team access code.
       this.stopped = true;
@@ -298,6 +315,7 @@ export class CommandSession {
       throw new Error(`the hub refused the session (status ${response?.status ?? "?"})`);
     }
     const body = (await response.json()) as Record<string, unknown>;
+    if (overtaken()) return;
     const sessionId = typeof body["session_id"] === "string" ? body["session_id"] : "";
     if (!sessionId) {
       this.stopped = true;
@@ -307,8 +325,10 @@ export class CommandSession {
     this.sessionToken = typeof body["session_token"] === "string" ? body["session_token"] : "";
     this.stored = { hubUrl, accessCode, sessionId, resumeToken: "", boundTabId };
     await this.deps.storage.set(this.stored);
+    if (overtaken()) return;
     this.stopped = false;
     this.reconnectAttempt = 0;
+    this.dropSocket();
     this.openSocket();
   }
 
@@ -370,6 +390,7 @@ export class CommandSession {
 
   /** Close the socket, forget the session, and go idle. */
   async disconnect(): Promise<void> {
+    this.pairingAttempt += 1; // PL-093: a Connect still waiting on the hub opens nothing now
     this.stopped = true;
     this.cancelReconnect?.();
     this.cancelReconnect = null;

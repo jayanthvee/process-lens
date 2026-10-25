@@ -1057,3 +1057,125 @@ describe("Connect pressed while a session is already open (PL-092)", () => {
     expect(aborted).toBe(true);
   });
 });
+
+describe("two Connects in flight at once (PL-093)", () => {
+  // Each hub reply is held until the test releases it, so the test decides which Connect hears
+  // back first -- the overlap the popup's auto-connect and a click produce over the internet.
+  function heldHub(): {
+    release: (sessionId: string) => void;
+    releaseNewest: (sessionId: string) => void;
+    calls: () => number;
+  } {
+    const waiting: Array<(sessionId: string) => void> = [];
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls += 1;
+      const sessionId = await new Promise<string>((resolve) => waiting.push(resolve));
+      return {
+        status: 201,
+        json: async () => ({ session_id: sessionId, session_token: `tok-${sessionId}` }),
+      };
+    }) as unknown as typeof fetch;
+    return {
+      release: (sessionId) => {
+        const next = waiting.shift();
+        if (!next) throw new Error("no Connect is waiting on the hub");
+        next(sessionId);
+      },
+      releaseNewest: (sessionId) => {
+        const next = waiting.pop();
+        if (!next) throw new Error("no Connect is waiting on the hub");
+        next(sessionId);
+      },
+      calls: () => calls,
+    };
+  }
+
+  async function waitForCalls(hub: { calls: () => number }, count: number): Promise<void> {
+    for (let tries = 0; tries < 50 && hub.calls() < count; tries += 1) await flush();
+    expect(hub.calls()).toBe(count);
+  }
+
+  it("the older Connect opens nothing when its reply comes back first", async () => {
+    const hub = heldHub();
+    const harness = makeHarness({ browserId: "browser-ben-00001" });
+
+    const older = harness.session.connect("http://127.0.0.1:8000");
+    await waitForCalls(hub, 1);
+    const newer = harness.session.connect("http://127.0.0.1:8000");
+    await waitForCalls(hub, 2);
+
+    hub.release("sess-old");
+    await older;
+    hub.release("sess-new");
+    await newer;
+
+    expect(harness.sockets.map((socket) => socket.url)).toEqual([
+      expect.stringContaining("session=sess-new"),
+    ]);
+    expect(harness.storagePeek()?.sessionId).toBe("sess-new");
+  });
+
+  it("the older Connect opens nothing when its reply comes back last", async () => {
+    const hub = heldHub();
+    const harness = makeHarness({ browserId: "browser-ben-00001" });
+
+    const older = harness.session.connect("http://127.0.0.1:8000");
+    await waitForCalls(hub, 1);
+    const newer = harness.session.connect("http://127.0.0.1:8000");
+    await waitForCalls(hub, 2);
+
+    hub.releaseNewest("sess-new");
+    await newer;
+    harness.sockets.at(-1)?.emit("open");
+    hub.release("sess-old");
+    await older;
+
+    expect(harness.sockets.map((socket) => socket.url)).toEqual([
+      expect.stringContaining("session=sess-new"),
+    ]);
+    expect(harness.sockets[0]?.closed).toBe(false);
+    expect(harness.storagePeek()?.sessionId).toBe("sess-new");
+    expect(harness.states.at(-1)).toBe("ready");
+  });
+
+  it("a Disconnect while a Connect waits on the hub leaves nothing open", async () => {
+    const hub = heldHub();
+    const harness = makeHarness({ browserId: "browser-ben-00001" });
+
+    const pending = harness.session.connect("http://127.0.0.1:8000");
+    await waitForCalls(hub, 1);
+    await harness.session.disconnect();
+    hub.release("sess-late");
+    await pending;
+
+    expect(harness.sockets).toEqual([]);
+    expect(harness.storagePeek()).toBeNull();
+    expect(harness.states.at(-1)).toBe("idle");
+  });
+
+  it("a Connect that fails after being overtaken does not knock the newer one back to idle", async () => {
+    let calls = 0;
+    let failFirst!: (error: Error) => void;
+    globalThis.fetch = (async () => {
+      calls += 1;
+      if (calls === 1) {
+        return new Promise((_resolve, reject) => {
+          failFirst = reject;
+        });
+      }
+      return { status: 201, json: async () => ({ session_id: "sess-new", session_token: "tok" }) };
+    }) as unknown as typeof fetch;
+    const harness = makeHarness({ browserId: "browser-ben-00001" });
+
+    const older = harness.session.connect("http://127.0.0.1:8000").catch(() => undefined);
+    for (let tries = 0; tries < 50 && calls < 1; tries += 1) await flush();
+    await harness.session.connect("http://127.0.0.1:8000");
+    harness.sockets.at(-1)?.emit("open");
+    failFirst(new TypeError("Failed to fetch"));
+    await older;
+
+    expect(harness.states.at(-1)).toBe("ready");
+    expect(harness.sockets).toHaveLength(1);
+  });
+});
