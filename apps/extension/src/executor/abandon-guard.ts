@@ -128,12 +128,19 @@ async function tabHref(cdp: CdpTransport): Promise<string> {
 }
 
 /** Wait until the top frame shows the blank page: its own event, or its URL read back. */
-async function waitForBlank(cdp: CdpTransport, timeoutMs: number): Promise<boolean> {
+async function waitForBlank(
+  cdp: CdpTransport,
+  timeoutMs: number,
+): Promise<boolean> {
   let arrived = false;
   const off =
     cdp.on?.("Page.frameNavigated", (params) => {
-      const frame = (params["frame"] ?? {}) as { parentId?: unknown; url?: unknown };
-      if (frame.parentId === undefined && frame.url === BLANK_URL) arrived = true;
+      const frame = (params["frame"] ?? {}) as {
+        parentId?: unknown;
+        url?: unknown;
+      };
+      if (frame.parentId === undefined && frame.url === BLANK_URL)
+        arrived = true;
     }) ?? null;
   try {
     const deadline = Date.now() + timeoutMs;
@@ -163,7 +170,10 @@ export async function armAbandonGuard(
   if (armed) return;
   const offRequest =
     cdp.on?.("Network.requestWillBeSent", (params) => {
-      const request = (params["request"] ?? {}) as { method?: unknown; url?: unknown };
+      const request = (params["request"] ?? {}) as {
+        method?: unknown;
+        url?: unknown;
+      };
       const method = String(request.method ?? "GET").toUpperCase();
       const url = String(request.url ?? "");
       if (READ_METHODS.has(method) || url === BLANK_URL) return;
@@ -174,14 +184,22 @@ export async function armAbandonGuard(
   const offDialog =
     cdp.on?.("Page.javascriptDialogOpening", (params) => {
       if (String(params["type"] ?? "") !== "beforeunload") return;
-      void cdp.send("Page.handleJavaScriptDialog", { accept: true }).catch(() => undefined);
+      void cdp
+        .send("Page.handleJavaScriptDialog", { accept: true })
+        .catch(() => undefined);
     }) ?? null;
   const offBinding =
     cdp.on?.("Runtime.bindingCalled", (params) => {
       if (params["name"] !== GUARD_BINDING) return;
       try {
-        const sent = JSON.parse(String(params["payload"] ?? "{}")) as { method?: unknown; url?: unknown };
-        remember({ method: String(sent.method ?? "POST"), url: String(sent.url ?? "") });
+        const sent = JSON.parse(String(params["payload"] ?? "{}")) as {
+          method?: unknown;
+          url?: unknown;
+        };
+        remember({
+          method: String(sent.method ?? "POST"),
+          url: String(sent.url ?? ""),
+        });
       } catch {
         remember({ method: "POST", url: "" });
       }
@@ -203,15 +221,21 @@ export async function armAbandonGuard(
     await cdp.send("Network.setBlockedURLs", { urls: ["*"] });
     await cdp.send("Page.navigate", { url: BLANK_URL });
     if (!(await waitForBlank(cdp, timeoutMs))) {
-      throw new Error(`the tab did not reach ${BLANK_URL} within ${timeoutMs}ms`);
+      throw new Error(
+        `the tab did not reach ${BLANK_URL} within ${timeoutMs}ms`,
+      );
     }
     armed = true;
   } finally {
     offDialog?.();
     offRequest?.();
     offBinding?.();
-    await cdp.send("Runtime.removeBinding", { name: GUARD_BINDING }).catch(() => undefined);
-    await cdp.send("Network.setBlockedURLs", { urls: [] }).catch(() => undefined);
+    await cdp
+      .send("Runtime.removeBinding", { name: GUARD_BINDING })
+      .catch(() => undefined);
+    await cdp
+      .send("Network.setBlockedURLs", { urls: [] })
+      .catch(() => undefined);
     // Network events are not needed past the retirement, and every one of them would otherwise
     // be delivered to the service worker for the rest of the run.
     await cdp.send("Network.disable").catch(() => undefined);
@@ -225,7 +249,9 @@ export async function armAbandonGuard(
  * network was already reopened when the blank page arrived, so there is nothing to release here.
  * Idempotent, and never throws.
  */
-export async function disarmAbandonGuard(_cdp: CdpTransport): Promise<BlockedRequest[]> {
+export async function disarmAbandonGuard(
+  _cdp: CdpTransport,
+): Promise<BlockedRequest[]> {
   const collected = [...blocked];
   blocked = [];
   armed = false;

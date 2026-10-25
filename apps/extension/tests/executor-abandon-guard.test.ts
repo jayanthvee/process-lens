@@ -63,12 +63,18 @@ describe("the abandon guard", () => {
       "block []",
       "Network.disable",
     ]);
-    const evaluated = calls.map((call) => String(call.params["expression"] ?? ""));
-    const silence = evaluated.findIndex((expression) => expression.includes("sendBeacon"));
+    const evaluated = calls.map((call) =>
+      String(call.params["expression"] ?? ""),
+    );
+    const silence = evaluated.findIndex((expression) =>
+      expression.includes("sendBeacon"),
+    );
     const navigate = calls.findIndex((call) => call.method === "Page.navigate");
     expect(silence).toBeGreaterThan(-1);
     expect(silence).toBeLessThan(navigate);
-    expect(calls.find((call) => call.method === "Page.navigate")?.params).toEqual({ url: BLANK_URL });
+    expect(
+      calls.find((call) => call.method === "Page.navigate")?.params,
+    ).toEqual({ url: BLANK_URL });
     // The extension never answers requests one by one: that is what starved its worker on Odoo.
     expect(calls.some((call) => call.method.startsWith("Fetch."))).toBe(false);
   });
@@ -77,9 +83,18 @@ describe("the abandon guard", () => {
     const { cdp, emit } = fakeCdp((method) => {
       if (method === "Page.navigate") {
         // The unload handlers run as the page is left, while the network is blocked.
-        emit("Network.requestWillBeSent", sent("GET", "http://127.0.0.1:8069/web/logo.png"));
-        emit("Network.requestWillBeSent", sent("POST", "http://127.0.0.1:8069/web/dataset/call_kw"));
-        emit("Network.requestWillBeSent", sent("POST", "http://127.0.0.1:8069/web/beacon"));
+        emit(
+          "Network.requestWillBeSent",
+          sent("GET", "http://127.0.0.1:8069/web/logo.png"),
+        );
+        emit(
+          "Network.requestWillBeSent",
+          sent("POST", "http://127.0.0.1:8069/web/dataset/call_kw"),
+        );
+        emit(
+          "Network.requestWillBeSent",
+          sent("POST", "http://127.0.0.1:8069/web/beacon"),
+        );
       }
       return undefined;
     });
@@ -116,7 +131,10 @@ describe("the abandon guard", () => {
     const { cdp, emit, callsTo } = fakeCdp((method) => {
       if (method === "Page.navigate") {
         for (let index = 0; index < BLOCKED_LIMIT + 20; index += 1) {
-          emit("Network.requestWillBeSent", sent("POST", `http://127.0.0.1:8069/web/${index}`));
+          emit(
+            "Network.requestWillBeSent",
+            sent("POST", `http://127.0.0.1:8069/web/${index}`),
+          );
         }
       }
       return undefined;
@@ -131,22 +149,32 @@ describe("the abandon guard", () => {
 
   it("fails, and still reopens the network, when the tab never reaches the blank page", async () => {
     const { cdp, callsTo } = fakeCdp((method, params) => {
-      if (method === "Runtime.evaluate" && String(params["expression"]).trim() === "location.href") {
+      if (
+        method === "Runtime.evaluate" &&
+        String(params["expression"]).trim() === "location.href"
+      ) {
         return { result: { value: "http://127.0.0.1:8069/odoo/crm/new" } };
       }
       return undefined;
     });
 
-    await expect(armAbandonGuard(cdp, 250)).rejects.toThrow(/did not reach about:blank/);
+    await expect(armAbandonGuard(cdp, 250)).rejects.toThrow(
+      /did not reach about:blank/,
+    );
 
     expect(guardArmed()).toBe(false);
-    const blocks = callsTo("Network.setBlockedURLs").map((call) => call.params["urls"]);
+    const blocks = callsTo("Network.setBlockedURLs").map(
+      (call) => call.params["urls"],
+    );
     expect(blocks.at(-1)).toEqual([]);
   });
 
   it("fails without navigating when the browser refuses to block", async () => {
     const { cdp, callsTo } = fakeCdp((method, params) => {
-      if (method === "Network.setBlockedURLs" && JSON.stringify(params["urls"]) === '["*"]') {
+      if (
+        method === "Network.setBlockedURLs" &&
+        JSON.stringify(params["urls"]) === '["*"]'
+      ) {
         throw new Error("refused");
       }
       return undefined;
@@ -164,8 +192,9 @@ describe("the abandon guard", () => {
       const fake = fakeCdp((method, params) => {
         if (method === "Runtime.addBinding") {
           const name = String(params["name"]);
-          (window as unknown as Record<string, unknown>)[name] = (payload: string) =>
-            fake.emit("Runtime.bindingCalled", { name, payload });
+          (window as unknown as Record<string, unknown>)[name] = (
+            payload: string,
+          ) => fake.emit("Runtime.bindingCalled", { name, payload });
         }
         if (method === "Page.navigate") onNavigate();
         return undefined;
@@ -197,7 +226,10 @@ describe("the abandon guard", () => {
       expect(sentBeacons).toEqual([]);
       expect(answered).toBe(false);
       expect(blockedRequests()).toEqual([
-        { method: "POST", url: "http://127.0.0.1:8069/web/dataset/call_kw/crm.lead/web_save" },
+        {
+          method: "POST",
+          url: "http://127.0.0.1:8069/web/dataset/call_kw/crm.lead/web_save",
+        },
       ]);
     });
 
@@ -210,7 +242,10 @@ describe("the abandon guard", () => {
       let keepalive: Promise<unknown> | undefined;
       let ordinary: Promise<unknown> | undefined;
       const { cdp } = withBinding(() => {
-        keepalive = window.fetch("http://127.0.0.1:8069/web/save", { method: "post", keepalive: true });
+        keepalive = window.fetch("http://127.0.0.1:8069/web/save", {
+          method: "post",
+          keepalive: true,
+        });
         ordinary = window.fetch("http://127.0.0.1:8069/web/ping");
       });
 
@@ -219,18 +254,25 @@ describe("the abandon guard", () => {
       await expect(keepalive).rejects.toThrow(/refused/);
       await ordinary;
       expect(fetched).toEqual(["http://127.0.0.1:8069/web/ping"]);
-      expect(blockedRequests()).toEqual([{ method: "POST", url: "http://127.0.0.1:8069/web/save" }]);
+      expect(blockedRequests()).toEqual([
+        { method: "POST", url: "http://127.0.0.1:8069/web/save" },
+      ]);
     });
 
     it("does not leave a page it could not silence", async () => {
       const { cdp, callsTo } = fakeCdp((method, params) => {
-        if (method === "Runtime.evaluate" && String(params["expression"]).includes("sendBeacon")) {
+        if (
+          method === "Runtime.evaluate" &&
+          String(params["expression"]).includes("sendBeacon")
+        ) {
           return { exceptionDetails: { text: "Uncaught" } };
         }
         return undefined;
       });
 
-      await expect(armAbandonGuard(cdp)).rejects.toThrow(/could not be silenced/);
+      await expect(armAbandonGuard(cdp)).rejects.toThrow(
+        /could not be silenced/,
+      );
 
       expect(callsTo("Page.navigate")).toHaveLength(0);
       expect(guardArmed()).toBe(false);
