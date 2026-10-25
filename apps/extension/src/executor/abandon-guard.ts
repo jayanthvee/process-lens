@@ -21,6 +21,12 @@
 // until the hub socket timed out. Blocking in the network stack costs the extension nothing per
 // request, and the window it is open for is one navigation to a blank page.
 //
+// PL-098: the network block alone does not hold. Odoo's unload save is `navigator.sendBeacon`, and
+// Chrome sends a beacon (and a `keepalive` fetch) from the browser process, past the tab's blocked
+// URLs and without a `Network.requestWillBeSent`: on Chrome 153 every parked half-filled lead was
+// saved. So before the page is left, the page itself is told to send neither: both are replaced
+// with versions that send nothing and report the attempt through a CDP binding.
+//
 // Nothing here decides anything about a record: the runner asks for it when a record leaves the
 // tab without committing, and the next navigate collects what it refused for the ledger.
 import type { CdpTransport } from "./cdp";
@@ -41,6 +47,39 @@ export const BLANK_URL = "about:blank";
 export const RETIRE_TIMEOUT_MS = 10_000;
 
 const RETIRE_POLL_MS = 100;
+
+/** The binding the silenced page reports a refused beacon or keepalive fetch through. */
+export const GUARD_BINDING = "__processlensAbandonGuard";
+
+/**
+ * Run in the dirty page before it is left: a beacon or a keepalive fetch sends nothing.
+ *
+ * A beacon answers `false` ("not queued"), which a page already has to handle. A keepalive fetch
+ * rejects, as a blocked one would. An ordinary fetch or XHR is left alone: the network block
+ * stops those, and they show up as blocked requests the usual way.
+ */
+export const SILENCE_UNLOAD_SENDS = `(() => {
+  const report = (method, url) => {
+    try { window[${JSON.stringify(GUARD_BINDING)}](JSON.stringify({ method, url: String(url) })); }
+    catch (error) { /* no binding: the send is refused all the same */ }
+  };
+  if (typeof navigator !== "undefined") {
+    navigator.sendBeacon = (url) => { report("POST", url); return false; };
+  }
+  if (typeof window.fetch === "function") {
+    const original = window.fetch;
+    window.fetch = (input, init) => {
+      const request = typeof Request !== "undefined" && input instanceof Request ? input : null;
+      if ((init && init.keepalive) || (request && request.keepalive)) {
+        const method = String((init && init.method) || (request && request.method) || "GET");
+        report(method.toUpperCase(), request ? request.url : input);
+        return Promise.reject(new TypeError("refused while the page is abandoned"));
+      }
+      return original(input, init);
+    };
+  }
+  return true;
+})()`;
 
 /** The methods that change nothing; a read the dying page makes is not worth reporting. */
 const READ_METHODS = new Set(["GET", "HEAD"]);
@@ -137,7 +176,29 @@ export async function armAbandonGuard(
       if (String(params["type"] ?? "") !== "beforeunload") return;
       void cdp.send("Page.handleJavaScriptDialog", { accept: true }).catch(() => undefined);
     }) ?? null;
+  const offBinding =
+    cdp.on?.("Runtime.bindingCalled", (params) => {
+      if (params["name"] !== GUARD_BINDING) return;
+      try {
+        const sent = JSON.parse(String(params["payload"] ?? "{}")) as { method?: unknown; url?: unknown };
+        remember({ method: String(sent.method ?? "POST"), url: String(sent.url ?? "") });
+      } catch {
+        remember({ method: "POST", url: "" });
+      }
+    }) ?? null;
   try {
+    await cdp.send("Runtime.addBinding", { name: GUARD_BINDING });
+    // A page that cannot be silenced would save past the block, so it is not left at all: the
+    // runner treats the tab as unsafe, as it does when the block itself is refused.
+    const silenced = (await cdp.send("Runtime.evaluate", {
+      expression: SILENCE_UNLOAD_SENDS,
+      returnByValue: true,
+    })) as { exceptionDetails?: { text?: unknown } } | undefined;
+    if (silenced?.exceptionDetails) {
+      throw new Error(
+        `the page's unload sends could not be silenced: ${String(silenced.exceptionDetails.text ?? "")}`,
+      );
+    }
     await cdp.send("Network.enable");
     await cdp.send("Network.setBlockedURLs", { urls: ["*"] });
     await cdp.send("Page.navigate", { url: BLANK_URL });
@@ -148,6 +209,8 @@ export async function armAbandonGuard(
   } finally {
     offDialog?.();
     offRequest?.();
+    offBinding?.();
+    await cdp.send("Runtime.removeBinding", { name: GUARD_BINDING }).catch(() => undefined);
     await cdp.send("Network.setBlockedURLs", { urls: [] }).catch(() => undefined);
     // Network events are not needed past the retirement, and every one of them would otherwise
     // be delivered to the service worker for the rest of the run.
