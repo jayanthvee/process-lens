@@ -1033,3 +1033,54 @@ def test_saving_a_mapping_refuses_a_column_that_is_not_there(
     with conn.cursor() as cur:
         cur.execute("SELECT column_mapping FROM input_batches WHERE id = %s", (batch_id,))
         assert cur.fetchone()[0] is None
+
+
+def test_a_row_with_no_key_is_flagged_and_does_not_block_the_run(
+    connected: TestClient, conn: psycopg.Connection, ledger: Ledger
+) -> None:
+    """PL-094: an empty key is flagged at the check, so the other rows still run.
+
+    Found running the pilot kit on Render: a product row with no SKU passed the check, and then the
+    whole run was refused at creation ("a rendered key is empty") -- one bad row stopped all of
+    them, and the person was told nothing they could act on.
+    """
+    document = recipe_document(
+        fields={"sku": {"type": "string", "required": True}, "new_price": {"type": "string"}},
+        record_key="{{row.sku | lower}}",
+    )
+    workflow_id, version_id = add_task(conn, ledger.tenant_id, document=document)
+    content = csv_bytes(
+        [
+            ["sku", "new_price"],
+            ["PL-1", "10.00"],
+            ["", "20.00"],
+            ["   ", "25.00"],
+            ["PL-2", "30.00"],
+        ]
+    )
+    batch_id = upload(connected, workflow_id, content).json()["batch_id"]
+
+    body = check(connected, batch_id, version_id)
+
+    assert body["rows_ok"] == 2
+    assert body["rows_need_a_look"] == [
+        {"row": 2, "reason": "No sku"},
+        {"row": 3, "reason": "No sku"},
+    ]
+
+    created = connected.post(
+        "/api/v1/runs",
+        json={
+            "workflow_id": str(workflow_id),
+            "recipe_version_id": str(version_id),
+            "input_batch_id": batch_id,
+            "mode": "batch",
+        },
+    )
+    assert created.status_code == 201, created.text
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT record_key FROM run_records WHERE run_id = %s ORDER BY record_key",
+            (created.json()["run_id"],),
+        )
+        assert cur.fetchall() == [("pl-1",), ("pl-2",)]
