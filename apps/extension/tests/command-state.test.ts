@@ -949,3 +949,111 @@ describe("the browser this session belongs to (PL-087)", () => {
     expect(bodies[1]).not.toHaveProperty("browser_id");
   });
 });
+
+describe("Connect pressed while a session is already open (PL-092)", () => {
+  function hubGives(sessionIds: string[]): void {
+    let call = 0;
+    globalThis.fetch = (async () => {
+      const id = sessionIds[Math.min(call, sessionIds.length - 1)];
+      call += 1;
+      return { status: 201, json: async () => ({ session_id: id, session_token: `tok-${id}` }) };
+    }) as unknown as typeof fetch;
+  }
+
+  it("closes the first socket before the second one opens", async () => {
+    hubGives(["sess-1", "sess-2"]);
+    const harness = makeHarness({ browserId: "browser-ben-00001" });
+    const first = await openSession(harness);
+
+    const second = await openSession(harness);
+
+    expect(second).not.toBe(first);
+    expect(first.closed).toBe(true);
+    expect(second.closed).toBe(false);
+    expect(second.url).toContain("session=sess-2");
+    expect(harness.storagePeek()?.sessionId).toBe("sess-2");
+  });
+
+  it("never runs a command that arrives on the replaced socket, nor answers it on the new one", async () => {
+    hubGives(["sess-1", "sess-2"]);
+    const harness = makeHarness({ browserId: "browser-ben-00001" });
+    const first = await openSession(harness);
+    const second = await openSession(harness);
+
+    deliver(first, command({ command_id: "c-stale" }));
+    await flush();
+
+    expect(harness.runStepCalls).toEqual([]);
+    expect(second.messages().filter((message) => message["command_id"] === "c-stale")).toEqual([]);
+    expect(first.messages().filter((message) => message["command_id"] === "c-stale")).toEqual([]);
+  });
+
+  it("still runs a command that arrives on the new socket", async () => {
+    hubGives(["sess-1", "sess-2"]);
+    const harness = makeHarness({ browserId: "browser-ben-00001" });
+    await openSession(harness);
+    const second = await openSession(harness);
+
+    deliver(second, command({ command_id: "c-new" }));
+    await flush();
+
+    expect(harness.runStepCalls).toHaveLength(1);
+    expect(second.lastResult()?.["command_id"]).toBe("c-new");
+  });
+
+  it("the replaced socket's close is not a drop: nothing reconnects to the old session", async () => {
+    hubGives(["sess-1", "sess-2"]);
+    const harness = makeHarness({ browserId: "browser-ben-00001" });
+    const first = await openSession(harness);
+    await openSession(harness);
+    const opened = harness.sockets.length;
+
+    first.emit("close");
+    for (const ms of [500, 1000, 2000, 4000]) harness.fireTimers(ms);
+
+    expect(harness.sockets).toHaveLength(opened);
+    expect(harness.states.at(-1)).toBe("ready");
+  });
+
+  it("cancels a pending reconnect, so the old session is never dialled again", async () => {
+    hubGives(["sess-1", "sess-2"]);
+    const harness = makeHarness({ browserId: "browser-ben-00001" });
+    const first = await openSession(harness);
+    first.emit("close"); // a real drop: a reconnect to sess-1 is now scheduled
+
+    const second = await openSession(harness);
+    for (const ms of [500, 1000, 2000, 4000]) harness.fireTimers(ms);
+
+    expect(harness.sockets.filter((socket) => socket.url.includes("session=sess-1"))).toHaveLength(1);
+    expect(harness.sockets.at(-1)).toBe(second);
+  });
+
+  it("aborts a command still running on the replaced socket", async () => {
+    hubGives(["sess-1", "sess-2"]);
+    const pending = deferredStep();
+    let aborted = false;
+    const harness = makeHarness({
+      browserId: "browser-ben-00001",
+      runStep: async (_step, opts) => {
+        opts.beforeInput();
+        opts.sentInput();
+        const report = await pending.promise;
+        try {
+          opts.beforeInput();
+        } catch {
+          aborted = true;
+        }
+        return report;
+      },
+    });
+    const first = await openSession(harness);
+    deliver(first, command({ command_id: "c-running" }));
+    await flush();
+
+    await openSession(harness);
+    pending.resolve({ id: "step-1", action: "click", outcome: "done", rung: 0, by: "role" });
+    await flush();
+
+    expect(aborted).toBe(true);
+  });
+});

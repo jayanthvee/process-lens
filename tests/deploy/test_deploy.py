@@ -12,6 +12,7 @@ decision function and never binds a port.
 from __future__ import annotations
 
 import socket
+import urllib.error
 import uuid
 from typing import Any
 
@@ -257,3 +258,59 @@ def test_deploy_mode_never_invents_a_secret() -> None:
     """The deploy module holds no secret generator: nothing can invent one by accident."""
     assert "secrets" not in deploy.__dict__
     assert not hasattr(deploy, "token_urlsafe")
+
+
+def test_a_chrome_list_the_api_could_not_give_is_not_an_empty_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PL-092: a failed read answers None, so the supervisor cannot take it for "nobody is here"."""
+
+    def unreachable(*_args: Any, **_kwargs: Any) -> Any:
+        raise urllib.error.URLError("the API is restarting")
+
+    monkeypatch.setattr(deploy.urllib.request, "urlopen", unreachable)
+
+    assert deploy.attached_sessions("https://api.example.test", "secret") is None
+
+
+def test_a_failed_read_of_the_connected_chromes_stops_no_worker(
+    monkeypatch: pytest.MonkeyPatch, deploy_env: None
+) -> None:
+    """PL-092: one blip in the API (a restart, a timeout) must not stop every running worker.
+
+    Tick 1 sees Anna and starts her worker; tick 2 cannot read the list; tick 3 sees Anna again.
+    Her worker is never stopped and never started twice.
+    """
+    runs = [_open("queued", "browser-anna")]
+    monkeypatch.setattr(deploy, "open_runs", lambda dsn: runs)
+    monkeypatch.setattr(deploy, "finish_unheld_cancels", lambda dsn: [])
+    reads = iter([[ANNA], None, [ANNA]])
+    monkeypatch.setattr(deploy, "attached_sessions", lambda api_url, secret=None: next(reads))
+    started: list[str] = []
+    stopped: list[Any] = []
+
+    class Alive:
+        returncode = None
+
+        def poll(self) -> None:
+            return None
+
+    def fake_start(api_url: str, secret: str, session_id: str, *, number: int, browser_id=None):
+        started.append(session_id)
+        return Alive()
+
+    monkeypatch.setattr(deploy, "start_worker", fake_start)
+    monkeypatch.setattr(deploy, "stop_process", stopped.append)
+    ticks = {"n": 0}
+
+    def fake_sleep(seconds: float) -> None:
+        ticks["n"] += 1
+        if ticks["n"] >= 3:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(deploy.time, "sleep", fake_sleep)
+
+    assert deploy.main(["supervisor"]) == 0
+    assert started == ["session-anna"]
+    # The only stop is the shutdown's own, after the last tick.
+    assert len(stopped) == 1

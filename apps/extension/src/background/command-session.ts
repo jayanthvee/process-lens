@@ -245,6 +245,14 @@ export class CommandSession {
    */
   async connect(hubUrl: string, accessCode = ""): Promise<void> {
     this.stopped = true; // refuse a competing reconnect while pairing
+    // PL-092: Connect starts over. A socket left open from an earlier session (an auto-connect the
+    // person then pressed Connect over) stayed attached at the hub, a worker was started for it,
+    // and its commands were run here but answered on the new socket: that worker heard nothing
+    // and paused the run "Chrome disconnected". So the old socket is closed and a pending
+    // reconnect, which would reopen it, is cancelled.
+    this.cancelReconnect?.();
+    this.cancelReconnect = null;
+    this.dropSocket();
     this.setState("pairing");
     const info = await this.activeTabInfo();
     const boundTabId = (await this.deps.bindActiveTab()) ?? info.id ?? -1;
@@ -334,6 +342,32 @@ export class CommandSession {
     }
   }
 
+  /**
+   * Close the current socket on purpose, as Connect does before pairing again (PL-092).
+   *
+   * Its close event is not a drop (the socket is no longer current), so nothing reconnects. A
+   * command still running on it is aborted and marked unwinding, exactly as a drop would, so it
+   * cannot run beside a command from the new session. It is not reported lost later: its runner
+   * belongs to the old session and has been told by the hub that this socket is gone.
+   */
+  private dropSocket(): void {
+    const socket = this.socket;
+    if (!socket) return;
+    this.socket = null;
+    this.stopKeepalive();
+    this.currentAbort?.abort();
+    const stillRunning = this.inFlight;
+    if (stillRunning) this.unwinding = stillRunning.command_id;
+    this.executing = null;
+    this.inFlight = null;
+    this.unreported = [];
+    try {
+      socket.close();
+    } catch {
+      // Already closed; nothing to do.
+    }
+  }
+
   /** Close the socket, forget the session, and go idle. */
   async disconnect(): Promise<void> {
     this.stopped = true;
@@ -399,7 +433,7 @@ export class CommandSession {
     this.setState("connecting");
     socket.addEventListener("open", () => this.onOpen(socket));
     socket.addEventListener("close", () => this.onClose(socket));
-    socket.addEventListener("message", (event) => this.onMessage(event));
+    socket.addEventListener("message", (event) => this.onMessage(socket, event));
     socket.addEventListener("error", () => {
       // The close handler owns the recovery; an error alone changes nothing.
     });
@@ -519,7 +553,11 @@ export class CommandSession {
     this.send({ protocol: PROTOCOL, type: "event", kind, detail });
   }
 
-  private onMessage(event: unknown): void {
+  private onMessage(socket: WebSocketLike, event: unknown): void {
+    // PL-092: only the current socket speaks for this session. A command arriving on one that was
+    // replaced must not run, because its answer could only go out on the new socket, to a runner
+    // that never sent it.
+    if (socket !== this.socket) return;
     const data = typeof event === "object" && event !== null ? (event as { data?: unknown }).data : undefined;
     if (typeof data !== "string") return;
     let raw: unknown;
