@@ -18,6 +18,13 @@ from .executor import ConditionResult, ConfirmationProbe, OnDispatched, StepComm
 REJECTED = "rejected"
 DUPLICATE = "duplicate"
 
+# PL-097: the extension's hit-test diagnosis for a click something covered. The run-loop test uses
+# this exact message, and the record's reason must not be it.
+NOT_CLICKABLE_ERROR = (
+    "the click target could not be resolved: the target is not clickable: "
+    "the box center is covered by <div>"
+)
+
 
 class FakeDestination:
     """An in-memory destination keyed by idempotency key."""
@@ -93,9 +100,9 @@ class FakeExecutor:
     """A scriptable executor that drives a :class:`FakeDestination` on a commit.
 
     Plan keys are either a step id (``"save-lead"``) or ``"<record_key>:<step_id>"``, for a
-    per-record override. Behaviors: ``ok``, ``locator_failure``, ``rejected``, ``timeout``,
-    ``failure``, ``lost_dispatch`` (dispatch reports ``not_dispatched``), ``refused`` (a guard
-    refused it before any input). Conditions default to True and are keyed the same way.
+    per-record override. Behaviors: ``ok``, ``locator_failure``, ``not_clickable``, ``rejected``,
+    ``timeout``, ``failure``, ``lost_dispatch`` (dispatch reports ``not_dispatched``), ``refused``
+    (a guard refused it before any input). Conditions default to True and are keyed the same way.
 
     ``probe_confirmation`` returns ``"unsupported"`` (PL-014 R1): a scripted fake has no page, so it
     can never report a confirmation that is already on screen. Reporting "unsupported" rather than
@@ -146,6 +153,8 @@ class FakeExecutor:
     def prepare(self, command: StepCommand) -> StepResult:
         self.commands.append(command)
         self.prepared.append(command)
+        if self._behavior(command) == "not_clickable":
+            return StepResult(status="locator_failed", error=NOT_CLICKABLE_ERROR)
         if self._behavior(command) == "locator_failure":
             return StepResult(status="locator_failed", error="the target could not be resolved")
         return StepResult(status="ok", rung=1)
@@ -191,6 +200,8 @@ class FakeExecutor:
     ) -> StepResult:
         self.commands.append(command)
         behavior = self._behavior(command)
+        if behavior == "not_clickable":
+            return StepResult(status="locator_failed", error=NOT_CLICKABLE_ERROR)
         if behavior in ("failure", "locator_failure"):
             return StepResult(status="locator_failed", error="the target could not be resolved")
         if behavior == "refused":
@@ -339,6 +350,7 @@ class ScriptedRun:
 
 __all__ = [
     "DUPLICATE",
+    "NOT_CLICKABLE_ERROR",
     "REJECTED",
     "CrashHooks",
     "EventDrain",

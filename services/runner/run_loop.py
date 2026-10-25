@@ -86,6 +86,7 @@ from .clock import Clock
 from .conditions import condition_timeout
 from .executor import ConditionResult, ConfirmationProbe, Executor, StepCommand
 from .reconcile import Reconciler, outcome_of
+from .step_words import describe_step_failure
 from .templates import TemplateError, is_template, render
 
 logger = logging.getLogger("processlens.runner")
@@ -872,7 +873,7 @@ class RunLoop:
                 record,
                 "filling",
                 "parked",
-                prepared.error or "the target could not be resolved",
+                describe_step_failure(step, row, variables, prepared.error),
                 step=step,
                 outcome="failed",
                 error=prepared.error,
@@ -1131,14 +1132,18 @@ class RunLoop:
         # to turn it into a `failed` record.
         if result.status == "refused":
             fail_to = "parked"
+            # PL-097: a refusal keeps the guard's own words; only a step that tried and failed
+            # gets the plain sentence.
+            reason = result.error or "the step did not complete"
         else:
             fail_to = "failed" if step.get("on_failure") == "fail" else "parked"
+            reason = describe_step_failure(step, row, variables, result.error)
         self._transition(
             conn,
             record,
             "filling",
             fail_to,
-            result.error or "the step did not complete",
+            reason,
             step=step,
             outcome="failed",
             error=result.error,
