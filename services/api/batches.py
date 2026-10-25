@@ -570,19 +570,20 @@ def _rule_reasons(document: dict[str, Any], values: dict[str, Any]) -> list[str]
 def _duplicate_reason(
     template: str, values: dict[str, Any], seen: dict[str, int], row_index: int
 ) -> str | None:
-    """The plain reason a row repeats an earlier row's key, or ``None`` when it does not."""
+    """The plain reason a row's key is missing or repeats an earlier row's, else ``None``."""
     if not template or "{{" not in template:
         return None
+    match = _ROW_TEMPLATE.search(template)
+    label = f" {_label(match.group('column')).lower()}" if match else ""
     try:
         key = render(template, row=values, variables={})
     except TemplateError:
-        # The row cannot be keyed at all; creation refuses that run with its own message.
-        return None
-    if not key:
-        return None
+        key = ""
+    if not key.strip():
+        # PL-094: a row with nothing to name it by cannot be run, and run creation refuses the
+        # whole batch for it ("a rendered key is empty"). Flagged here, it simply stays out.
+        return f"No{label}"
     if key in seen:
-        match = _ROW_TEMPLATE.search(template)
-        label = f" {_label(match.group('column')).lower()}" if match else ""
         return f"Same{label} as row {seen[key]}"
     seen[key] = row_index
     return None
@@ -597,7 +598,8 @@ def _row_reasons(
 ) -> list[str]:
     reasons = _rule_reasons(document, values)
     duplicate = _duplicate_reason(template, values, seen, row_index)
-    if duplicate is not None:
+    # A missing key a precheck rule already named ("No email") is said once, not twice.
+    if duplicate is not None and duplicate not in reasons:
         reasons.append(duplicate)
     return reasons
 
