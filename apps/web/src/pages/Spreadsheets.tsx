@@ -99,7 +99,7 @@ function AddWordDocument(): JSX.Element {
           <input
             className="doc-file"
             type="file"
-            accept=".docx"
+            accept=".docx,.pdf"
             aria-label={ADD_WORD_DOCUMENT}
             onChange={(event) => {
               const input = event.currentTarget;

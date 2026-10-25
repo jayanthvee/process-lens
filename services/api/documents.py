@@ -1,4 +1,4 @@
-"""Turn a Word document into a clean CSV a person can download or use for a task.
+"""Turn a Word document or a text PDF into a clean CSV a person can download or use for a task.
 
 The preview route takes the file as base64 inside JSON, not as a multipart form: the front door
 (``middleware``) accepts a form body only on ``POST /api/v1/batches``, and this ticket may not
@@ -20,7 +20,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel
 
-from packages.documents import DocumentRefused, clean, csv_bytes, read_docx
+from packages.documents import DocumentRefused, clean, csv_bytes, read_docx, read_pdf
 
 router = APIRouter(prefix="/api/v1", tags=["documents"])
 
@@ -30,10 +30,12 @@ MAX_BASE64_CHARS = ((MAX_UPLOAD_BYTES + 2) // 3) * 4 + 4
 TOKEN_TTL_SECONDS = 60 * 60
 MAX_PREVIEW_ROWS = 50
 DOCX_SUFFIX = ".docx"
+PDF_SUFFIX = ".pdf"
+DOCUMENT_SUFFIXES = frozenset({DOCX_SUFFIX, PDF_SUFFIX})
 
 
 class DocumentUpload(BaseModel):
-    """A Word document travelling as JSON: its name, and its bytes in base64."""
+    """A document travelling as JSON: its name, and its bytes in base64."""
 
     file_name: str
     content_base64: str
@@ -86,11 +88,11 @@ def _lookup(token: str) -> bytes | None:
         return stored.content
 
 
-def _content(payload: DocumentUpload) -> bytes:
-    """The document's bytes, after the suffix and both size checks."""
+def _content(payload: DocumentUpload) -> tuple[bytes, str]:
+    """The document's bytes and suffix, after the suffix and both size checks."""
     suffix = Path(payload.file_name.strip()).suffix.lower()
-    if suffix != DOCX_SUFFIX:
-        raise HTTPException(status_code=422, detail="Only a .docx file can be added here.")
+    if suffix not in DOCUMENT_SUFFIXES:
+        raise HTTPException(status_code=422, detail="Only a .docx or .pdf file can be added here.")
     if len(payload.content_base64) > MAX_BASE64_CHARS:
         raise HTTPException(
             status_code=413,
@@ -105,15 +107,17 @@ def _content(payload: DocumentUpload) -> bytes:
             status_code=413,
             detail="This file is larger than 5 MB; split it and add it in parts.",
         )
-    return content
+    return content, suffix
 
 
 def read_clean(
     content: bytes,
+    suffix: str = DOCX_SUFFIX,
 ) -> tuple[list[str], list[dict[str, str]], list[str]]:
     """The reader and the cleaner, with a refusal turned into the API's own 422."""
+    reader = read_pdf if suffix == PDF_SUFFIX else read_docx
     try:
-        columns, raw = read_docx(content)
+        columns, raw = reader(content)
     except DocumentRefused as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return clean(columns, [[row.get(column, "") for column in columns] for row in raw])
@@ -121,8 +125,9 @@ def read_clean(
 
 @router.post("/documents/to-csv", response_model=DocumentPreview)
 def to_csv(payload: DocumentUpload) -> DocumentPreview:
-    """Read a .docx and answer its columns, its first 50 rows, the notes, and a download token."""
-    columns, rows, notes = read_clean(_content(payload))
+    """Read a .docx or .pdf and answer its columns, its first 50 rows, the notes, and a token."""
+    content, suffix = _content(payload)
+    columns, rows, notes = read_clean(content, suffix)
     if not rows:
         raise HTTPException(status_code=422, detail="This file has no rows.")
     token = _remember(csv_bytes(columns, rows))
