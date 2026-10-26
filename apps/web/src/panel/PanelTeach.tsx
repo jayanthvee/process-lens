@@ -25,6 +25,13 @@ import {
   type StepProblem,
 } from "../../../extension/src/popup/flow";
 import { compileRefusalSentence, plainSentences, stepSentence } from "../../../extension/src/popup/words";
+import {
+  CODE_FROM_EMAIL_BUTTON,
+  CODE_FROM_EMAIL_LATER,
+  CODE_FROM_EMAIL_OFFER,
+  READING_CODE_FROM_GMAIL,
+  codeFromEmailWords,
+} from "../lib/words";
 import type { RecordedEvent } from "../../../extension/src/shared/recipe-types";
 import {
   EMPTY_STATUS,
@@ -80,6 +87,8 @@ export function PanelTeach(): JSX.Element {
   const [changingCommit, setChangingCommit] = useState(false);
 
   const recording = status.state === "recording";
+  // PL-107 item 12: what the recorder is doing about a code page, if it is on one.
+  const codeState = status.code ?? null;
   const values = recordedValues(events);
   // PL-107: one choice per recorded click, labelled by the click's own sentence.
   const clickChoices: { id: string; label: string }[] = [];
@@ -180,6 +189,11 @@ export function PanelTeach(): JSX.Element {
   async function stop(): Promise<void> {
     const answer = await send({ type: "record:stop" });
     apply(answer);
+  }
+
+  /** PL-107 item 12: the panel's yes to reading a code from Gmail, for this and later tasks. */
+  async function allowCodes(): Promise<void> {
+    apply(await send({ type: "record:code-consent" }));
   }
 
   async function remove(seq: number): Promise<void> {
@@ -316,6 +330,30 @@ export function PanelTeach(): JSX.Element {
           {status.warning}
         </p>
       )}
+      {codeState?.state === "looking" ? (
+        <p className="panel-note" role="status">
+          {READING_CODE_FROM_GMAIL}
+        </p>
+      ) : null}
+      {codeState?.state === "offer" ? (
+        <div className="panel-code">
+          <p className="panel-note">{CODE_FROM_EMAIL_OFFER}</p>
+          <button type="button" className="btn quiet" onClick={() => void allowCodes()}>
+            {CODE_FROM_EMAIL_BUTTON}
+          </button>
+          <p className="panel-note">{CODE_FROM_EMAIL_LATER}</p>
+        </div>
+      ) : null}
+      {codeState?.state === "typed" ? (
+        <p className="panel-note" role="status">
+          The code from your Gmail was typed for you.
+        </p>
+      ) : null}
+      {codeState?.state === "missed" ? (
+        <p className="panel-problem" role="status">
+          {codeFromEmailWords(codeState.reason)}
+        </p>
+      ) : null}
       {lines.length === 0 ? (
         <p className="panel-note">The steps you take will appear here.</p>
       ) : listLines.length === 0 ? null : (

@@ -6,6 +6,23 @@ import type { SessionState } from "../background/command-session";
 
 export type RecordingState = "idle" | "recording";
 
+/**
+ * PL-107 item 12: what the recorder is doing about a code page while the person teaches. The
+ * panel turns it into one line: reading, the PL-102 offer, the code typed, or why there was no
+ * single code to type.
+ */
+export type TeachCodeState =
+  | { state: "looking" }
+  | { state: "offer" }
+  | { state: "typed" }
+  | { state: "missed"; reason: "none" | "ambiguous" | "no_gmail" | "not_found" | "could_not_read" };
+
+/** PL-107 item 12: the worker's answer for a code page, for the page to type. Never stored. */
+export type TeachCodeAnswer =
+  | { status: "found"; code: string }
+  | { status: "not_allowed" }
+  | { status: "none" | "ambiguous" | "no_gmail" | "could_not_read" | "stopped" };
+
 export interface RecorderStatus {
   state: RecordingState;
   count: number;
@@ -17,6 +34,8 @@ export interface RecorderStatus {
    * nothing to say; the popup shows it in place of the steps until the next start clears it.
    */
   warning: string | null;
+  /** PL-107 item 12: the code page this recording is on, if any. */
+  code?: TeachCodeState | null;
 }
 
 export const EMPTY_STATUS: RecorderStatus = {
@@ -26,6 +45,7 @@ export const EMPTY_STATUS: RecorderStatus = {
   wsUrl: "",
   wsConnected: false,
   warning: null,
+  code: null,
 };
 
 /** Where an attended execution is, for the status line. */
@@ -67,6 +87,13 @@ export type ToWorker =
   | { type: "record:pending-observation" }
   // What the arriving page showed, as the evidence for the action that navigated to it.
   | { type: "record:observation"; stepId: string; observation: Condition }
+  // PL-107 item 12: the recorded tab reached a code page. The worker reads the person's email
+  // (only with their yes) and answers with the one code, or why there is none.
+  | { type: "record:code-from-email"; since: number; site: string }
+  // What the page did with the code, so the panel can say it was typed or could not be.
+  | { type: "record:code-entered"; entered: boolean; reason: string }
+  // The person's yes to reading codes from their Gmail, given in the teaching panel (PL-102).
+  | { type: "record:code-consent" }
   | { type: "executor:start"; recipe: unknown; row: Record<string, unknown> }
   | { type: "executor:pause" }
   | { type: "executor:resume" }
@@ -84,6 +111,9 @@ export type ToWorker =
 export type FromWorker =
   | { type: "record:state"; status: RecorderStatus }
   | { type: "record:appended"; event: RecordedEvent; status: RecorderStatus }
+  // PL-107 item 12: the person said yes in the teaching panel, so a code page already open
+  // should try the read now.
+  | { type: "record:code-retry" }
   | { type: "executor:state"; status: ExecutorStatus }
   | { type: "executor:session-state"; state: SessionState; detail?: string };
 
@@ -98,6 +128,8 @@ export interface RecorderResponse {
   status: RecorderStatus;
   events: RecordedEvent[];
   observationTarget?: string | null;
+  /** PL-107 item 12: the code for the page to type, when the worker was asked for one. */
+  code?: TeachCodeAnswer;
 }
 
 export function isToWorker(message: unknown): message is ToWorker {

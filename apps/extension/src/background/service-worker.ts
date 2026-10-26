@@ -11,6 +11,7 @@ import {
   type FromWorker,
   type RecorderResponse,
   type RecorderStatus,
+  type TeachCodeAnswer,
   type ToWorker,
 } from "../shared/messages";
 import { accessHeaders } from "../shared/access";
@@ -54,6 +55,7 @@ import {
 import { lookForCode, readGmailFeeds } from "./code-lookup";
 import { dispatchCommandStep, prepareCommandStep } from "./command-step";
 import { canRemoveStep, RecorderSession, shouldRecordNavigation } from "./recorder-session";
+import { codeForTeaching, enteredCodeState } from "./teach-code";
 import { REFRESH_PAGE_WARNING, UNRECORDABLE_PAGE_WARNING } from "../popup/words";
 import {
   CommandSession,
@@ -242,7 +244,13 @@ function attachArrivalObservation(stepId: string, observation: RecordedEvent["ob
 }
 
 function start(): void {
-  status = { ...status, state: "recording", startedAt: new Date().toISOString() };
+  status = {
+    ...status,
+    state: "recording",
+    startedAt: new Date().toISOString(),
+    // A new teaching starts with no code page behind it.
+    code: null,
+  };
   // The tab this recording follows is adopted from its first event, not remembered from the
   // last demonstration, and a fresh demonstration owes the last one no evidence.
   recordedTabId = null;
@@ -252,7 +260,7 @@ function start(): void {
 }
 
 function stop(): void {
-  status = { ...status, state: "idle" };
+  status = { ...status, state: "idle", code: null };
   closeSocket();
   updateBadge();
 }
@@ -262,8 +270,10 @@ function clear(): void {
   status = {
     ...status,
     count: 0,
-    // A clear is a fresh start: whatever the last refused start said no longer applies.
+    // A clear is a fresh start: whatever the last refused start said no longer applies, and a
+    // code page from the cleared recording is no longer the one being taught.
     warning: null,
+    code: null,
     startedAt: status.state === "recording" ? new Date().toISOString() : null,
   };
   updateBadge();
@@ -1191,6 +1201,9 @@ function senderIsTheRecordedPage(sender?: chrome.runtime.MessageSender): boolean
 
 async function handle(message: ToWorker, sender?: chrome.runtime.MessageSender): Promise<RecorderResponse> {
   const sendingTabId = sender?.tab?.id;
+  // PL-107 item 12: the one code a teaching-time request asked for, held only until it is
+  // answered. It never enters the recording or a panel state.
+  let codeAnswer: TeachCodeAnswer | undefined;
   switch (message.type) {
     case "record:start":
       // PL-039: the ping first. A tab whose content script the extension reload orphaned
@@ -1240,6 +1253,60 @@ async function handle(message: ToWorker, sender?: chrome.runtime.MessageSender):
     case "record:observation":
       attachArrivalObservation(message.stepId, message.observation);
       break;
+    case "record:code-from-email": {
+      // PL-107 item 12: only the top frame of the tab the recording is following may ask.
+      if (status.state !== "recording" || sender?.frameId !== 0) break;
+      if (recordedTabId !== null && sendingTabId !== recordedTabId) break;
+      if (recordedTabId === null && sendingTabId !== undefined) recordedTabId = sendingTabId;
+      codeAnswer = await codeForTeaching(
+        {
+          allowed: async () => {
+            try {
+              const local = chrome.storage?.local;
+              if (!local) return false;
+              const stored = await local.get([CODES_FROM_EMAIL_KEY]);
+              return stored[CODES_FROM_EMAIL_KEY] === true;
+            } catch {
+              // A storage read that fails is a no: the panel offers the yes rather than guessing.
+              return false;
+            }
+          },
+          read: () => readGmailFeeds((url, init) => fetch(url, init)),
+          now: () => Date.now(),
+          sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+          stop: () => status.state !== "recording",
+          say: (state) => {
+            if (status.state !== "recording") return;
+            status = { ...status, code: state };
+            broadcast();
+          },
+        },
+        { since: message.since, site: message.site },
+      );
+      break;
+    }
+    case "record:code-entered":
+      // The page's own answer is the last word on a code it was handed.
+      if (status.state === "recording") {
+        status = { ...status, code: enteredCodeState(message.entered) };
+      }
+      break;
+    case "record:code-consent": {
+      // The panel's yes is the same PL-102 consent a run page gives.
+      const local = chrome.storage?.local;
+      if (local) await local.set({ [CODES_FROM_EMAIL_KEY]: true });
+      status = { ...status, code: null };
+      const tabId =
+        recordedTabId ??
+        (await chrome.tabs.query({ active: true, currentWindow: true }))[0]?.id ??
+        null;
+      if (tabId !== null) {
+        void chrome.tabs
+          .sendMessage(tabId, { type: "record:code-retry" })
+          .catch(() => undefined);
+      }
+      break;
+    }
     case "record:pending-observation":
     case "record:get":
       break;
@@ -1256,6 +1323,7 @@ async function handle(message: ToWorker, sender?: chrome.runtime.MessageSender):
     status: snapshot(),
     events: [...session.events],
     observationTarget,
+    ...(codeAnswer !== undefined ? { code: codeAnswer } : {}),
   };
 }
 

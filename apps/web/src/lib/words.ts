@@ -467,6 +467,9 @@ export const CODE_FROM_EMAIL_LATER =
 /** PL-102: while the work window looks in Gmail, which can take up to a minute. */
 export const LOOKING_IN_GMAIL = "Looking in your Gmail for the code… this can take up to a minute.";
 
+/** PL-107 item 12: while the panel's recorder reads a sign-in code from the person's Gmail. */
+export const READING_CODE_FROM_GMAIL = "Reading your code from Gmail…";
+
 /** PL-102: a code was typed but the site is still asking for one. */
 export const CODE_STILL_ASKED =
   "The code was typed, but the site is still asking for one. Check the work window, then type the right code here.";
