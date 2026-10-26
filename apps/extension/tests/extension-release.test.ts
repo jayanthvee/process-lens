@@ -180,12 +180,15 @@ describe("the package to hand out", () => {
     expect(entries.some((name) => name.endsWith(".pem"))).toBe(false);
   });
 
-  it("is named for the manifest's version", async () => {
+  it("is named for the manifest's version, its day and its commit", async () => {
     const out = join(scratchDir(), "release-version");
     const version = String(manifestOf(ROOT)["version"]);
-    const built = await packageExtension({ outDir: out });
+    const built = await packageExtension({
+      outDir: out,
+      stamp: { date: "20261025", commit: "abc1234" },
+    });
 
-    expect(built.zipPath.endsWith(`processlens-${version}.zip`)).toBe(true);
+    expect(built.zipPath.endsWith(`processlens-${version}-20261025-abc1234.zip`)).toBe(true);
     expect(existsSync(built.zipPath)).toBe(true);
   });
 });

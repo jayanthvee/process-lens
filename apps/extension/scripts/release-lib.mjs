@@ -7,7 +7,7 @@
 import { spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync } from "node:crypto";
 import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -70,6 +70,27 @@ export function hubUrlFromEnv(env = process.env) {
     parsed.hash === "";
   if (!isOrigin) return { ok: false, problem: HUB_URL_PROBLEM };
   return { ok: true, url: parsed.origin };
+}
+
+/** JSON from a file, without the byte-order mark some editors leave at the front. */
+function readJson(path) {
+  return JSON.parse(readFileSync(path, "utf8").replace(/^\uFEFF/, ""));
+}
+
+/**
+ * A file's text with one version value replaced, and its byte-order mark dropped.
+ *
+ * A bump adds one to one number, so it edits that number and nothing else: the file's own layout
+ * -- its key order, its line breaks, its one-line arrays -- stays exactly as it was committed. The
+ * mark is dropped because the result is parsed as plain JSON by the test and by `npm`.
+ */
+function textWithVersion(path, version, next) {
+  const text = readFileSync(path, "utf8").replace(/^\uFEFF/, "");
+  const key = new RegExp(`("version"\\s*:\\s*)"${version.replace(/\./g, "\\.")}"`);
+  if (!key.test(text)) {
+    throw new Error(`cannot find "version": "${version}" in ${path}`);
+  }
+  return text.replace(key, `$1"${next}"`);
 }
 
 /** The committed public key, or `null` when there is none (the e2e harness's own build). */
@@ -289,8 +310,41 @@ export function readZipEntries(zipPath) {
   return names;
 }
 
+/** The day a release was built, as the stamp writes it: the local date, `YYYYMMDD`. */
+function todayStamp(now = new Date()) {
+  const pad = (value) => String(value).padStart(2, "0");
+  return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}`;
+}
+
+/** The checked-out commit's short sha, or `nogit` when there is no git to name one. */
+function commitStamp(root) {
+  const answer = spawnSync("git", ["rev-parse", "--short", "HEAD"], {
+    cwd: root,
+    encoding: "utf8",
+  });
+  const commit = String(answer.stdout ?? "").trim();
+  return answer.status === 0 && /^[0-9a-f]+$/i.test(commit) ? commit : "nogit";
+}
+
+/**
+ * PL-100: the day and the commit a package was built from. A caller that knows them -- a test, or
+ * a rebuild of the same commit -- passes `{ date, commit }`; otherwise the build asks this machine.
+ */
+function releaseStamp(stamp, root) {
+  return {
+    date: String(stamp?.date ?? "").trim() || todayStamp(),
+    commit: String(stamp?.commit ?? "").trim() || commitStamp(root),
+  };
+}
+
 /**
  * Build, validate and zip: the one file a coworker is handed.
+ *
+ * PL-100: the file is named for the version, the day and the commit it was built from, and the
+ * built manifest carries the same stamp as `version_name`, which Chrome shows on
+ * chrome://extensions. Only the built manifest is stamped: the repository's `manifest.json` stays
+ * exactly what was committed. `options.dist` is where the build goes, so a test never has to touch
+ * the real `dist/`.
  *
  * Validation is the repository's own `validate-package.mjs`, run against this build, so a package
  * that is missing a file the manifest names is never written.
@@ -299,8 +353,17 @@ export async function packageExtension(options = {}) {
   const root = options.root ?? EXTENSION_ROOT;
   const dist = options.dist ?? join(root, "dist");
   const outDir = options.outDir ?? join(root, "release");
+  const stamp = releaseStamp(options.stamp, root);
 
   await buildExtension({ ...options, root, dist });
+
+  const manifestPath = join(dist, "manifest.json");
+  const manifest = readJson(manifestPath);
+  const builtManifest = {
+    ...manifest,
+    version_name: `${manifest.version} (${stamp.date} ${stamp.commit})`,
+  };
+  await writeFile(manifestPath, `${JSON.stringify(builtManifest, null, 2)}\n`, "utf8");
 
   const check = spawnSync(process.execPath, [join(root, "scripts/validate-package.mjs")], {
     cwd: root,
@@ -311,11 +374,49 @@ export async function packageExtension(options = {}) {
     throw new Error(`the built extension did not validate:\n${check.stdout}${check.stderr}`);
   }
 
-  const manifest = JSON.parse(readFileSync(join(dist, "manifest.json"), "utf8"));
   await mkdir(outDir, { recursive: true });
-  const zipPath = join(outDir, `processlens-${manifest.version}.zip`);
+  const zipPath = join(
+    outDir,
+    `processlens-${manifest.version}-${stamp.date}-${stamp.commit}.zip`,
+  );
   await writeFile(zipPath, zipDirectory(dist));
   return { zipPath, entries: readZipEntries(zipPath) };
+}
+
+/** The version shape `bumpVersion` knows how to add one to. */
+const VERSION_PATTERN = /^(\d+)\.(\d+)\.(\d+)$/;
+
+/**
+ * PL-100: add one to the extension's patch version, in both `manifest.json` and `package.json`.
+ *
+ * Both files are read and checked before either is written, so a version this command cannot read
+ * -- anything but `N.N.N` -- throws, naming the version, and leaves both files exactly as they
+ * were. The new version is returned, so `npm run bump` has one thing to print.
+ */
+export function bumpVersion(options = {}) {
+  const root = options.root ?? EXTENSION_ROOT;
+  const manifestPath = join(root, "manifest.json");
+  const packagePath = join(root, "package.json");
+  const manifest = readJson(manifestPath);
+  const packageJson = readJson(packagePath);
+
+  const version = String(manifest.version ?? "");
+  const match = VERSION_PATTERN.exec(version);
+  if (match === null) {
+    throw new Error(`cannot bump version "${version}": expected N.N.N`);
+  }
+  const packageVersion = String(packageJson.version ?? "");
+  if (!VERSION_PATTERN.test(packageVersion)) {
+    throw new Error(`cannot bump version "${packageVersion}" in package.json: expected N.N.N`);
+  }
+
+  const next = `${Number(match[1])}.${Number(match[2])}.${Number(match[3]) + 1}`;
+  // Both files are prepared before either is written, so a failure leaves both untouched.
+  const manifestText = textWithVersion(manifestPath, version, next);
+  const packageText = textWithVersion(packagePath, packageVersion, next);
+  writeFileSync(manifestPath, manifestText, "utf8");
+  writeFileSync(packagePath, packageText, "utf8");
+  return next;
 }
 
 /**

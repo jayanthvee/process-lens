@@ -40,8 +40,15 @@ export function buildExtension(options?: BuildOptions): Promise<BuildResult>;
 export function zipDirectory(dir: string): Buffer;
 export function readZipEntries(zipPath: string): string[];
 
+export interface ReleaseStamp {
+  date: string;
+  commit: string;
+}
+
 export interface PackageOptions extends BuildOptions {
   outDir?: string;
+  /** PL-100: the day and commit the package is stamped with; the build asks git when omitted. */
+  stamp?: ReleaseStamp;
 }
 
 export interface PackageResult {
@@ -50,6 +57,12 @@ export interface PackageResult {
 }
 
 export function packageExtension(options?: PackageOptions): Promise<PackageResult>;
+
+export interface BumpOptions {
+  root?: string;
+}
+
+export function bumpVersion(options?: BumpOptions): string;
 
 export interface MakeKeyOptions {
   root?: string;

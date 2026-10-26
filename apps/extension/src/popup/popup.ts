@@ -8,6 +8,7 @@ import {
 import type { SessionState } from "../background/command-session";
 import type { RecordedEvent } from "../shared/recipe-types";
 import { createMakeRecipeForm } from "./make-recipe";
+import { renderBuildLabel } from "./build-label";
 import { applyStep, autoConnect, currentStep, openTaskTab, renderStepList } from "./flow";
 import {
   recordingWords,
@@ -360,6 +361,10 @@ chrome.runtime.onMessage.addListener((message: unknown) => {
     renderSession({ state: incoming.state, detail: incoming.detail });
   }
 });
+
+// Which build this is: the manifest's `version_name`, or its version for an unstamped build
+// (PL-100). Chrome shows the same stamp on chrome://extensions.
+renderBuildLabel(document, chrome.runtime.getManifest());
 
 renderSession({ state: "idle" });
 void refresh();

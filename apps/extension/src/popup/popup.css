@@ -395,6 +395,16 @@ body {
   border-top: 1px solid var(--hair);
 }
 
+/* PL-100: the build a tester is running, at the foot of the popup, small and grey. */
+.panel__build {
+  margin: 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--hair);
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
 /* Reduced motion: every animation is off and everything stays visible at rest. Nothing here is
    revealed by an animation, so nothing has to be restored. */
 @media (prefers-reduced-motion: reduce) {

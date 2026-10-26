@@ -13,6 +13,7 @@
     "make-key": "node scripts/make-key.mjs",
     "extension-id": "node scripts/extension-id.mjs",
     "package": "node scripts/package.mjs",
+    "bump": "node scripts/bump.mjs",
     "check": "npm run typecheck && npm run test && npm run build && npm run validate"
   },
   "devDependencies": {

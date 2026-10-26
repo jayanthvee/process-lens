@@ -2,7 +2,7 @@
 //
 //   PROCESSLENS_HUB_URL=https://processlens-api.onrender.com PROCESSLENS_ACCESS_CODE=... npm run package
 //
-// Writes apps/extension/release/processlens-<version>.zip, holding dist's contents at the zip's
+// Writes apps/extension/release/processlens-<version>-<date>-<commit>.zip, holding dist's contents at the zip's
 // root, so unzipping gives a folder Chrome's "Load unpacked" accepts.
 import { ACCESS_CODE_ENV, EXTENSION_ROOT, hubUrlFromEnv, packageExtension } from "./release-lib.mjs";
 
