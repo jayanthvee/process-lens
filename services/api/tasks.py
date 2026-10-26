@@ -19,11 +19,16 @@ from urllib.parse import urlsplit
 
 import psycopg
 from fastapi import APIRouter, Body, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+from packages.ledger import BatchRow, insert_batch
+from services.runner.creation import CreationError, create_run
+
+from .admin import require_runs_allowed
 from .db import connection
 from .operator import require_operator_user
 from .recipes import recipe_problems, store_recipe_version
+from .task_columns import RUN_ONCE_FIELD, input_fields, latest_task_version
 
 router = APIRouter(prefix="/api/v1", tags=["tasks"])
 
@@ -46,6 +51,22 @@ class CreateTaskResponse(BaseModel):
 
     workflow_id: uuid.UUID
     recipe_version_id: uuid.UUID
+
+
+class RunOnceRequest(BaseModel):
+    """The Chrome that should drive this one-row run; absent lets any Chrome take it."""
+
+    browser_id: Annotated[str, Field(pattern=r"^[A-Za-z0-9_-]{8,64}$")] | None = None
+
+
+class RunOnceResponse(BaseModel):
+    """The new run's identity, the same shape ``POST /api/v1/runs`` answers."""
+
+    run_id: uuid.UUID
+    status: str
+
+
+NEEDS_A_SPREADSHEET = "This task needs a spreadsheet."
 
 
 def destination_key_of(origins: list[str]) -> str:
@@ -122,4 +143,72 @@ def create_task(payload: Annotated[CreateTaskRequest, Body()]) -> CreateTaskResp
     return CreateTaskResponse(workflow_id=workflow_id, recipe_version_id=stored["id"])
 
 
-__all__ = ["CreateTaskRequest", "CreateTaskResponse", "destination_key_of", "router"]
+@router.post("/tasks/{workflow_id}/run-once", response_model=RunOnceResponse, status_code=201)
+def run_task_once(
+    workflow_id: uuid.UUID, payload: Annotated[RunOnceRequest, Body()] | None = None
+) -> RunOnceResponse:
+    """Run a task that needs no spreadsheet, once, on a fresh one-row batch.
+
+    A run needs an input batch and a batch needs at least one row, but a task with no recorded
+    inputs has no columns to fill. The row carries one fresh ``run_once_id``, and the task's own
+    record key repeats it, so two Run onces are two pieces of work rather than the same key
+    skipped as already done.
+
+    A task whose pinned recipe version asks for spreadsheet columns is refused rather than handed
+    an empty row: it belongs in the normal run flow (PL-105).
+    """
+    body = payload or RunOnceRequest()
+    with connection() as conn:
+        task = latest_task_version(conn, workflow_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail=f"task {workflow_id} does not exist")
+        if input_fields(task["recipe"]):
+            raise HTTPException(status_code=422, detail=NEEDS_A_SPREADSHEET)
+
+        require_runs_allowed(conn, task["tenant_id"])
+        run_once_id = uuid.uuid4()
+        row = {RUN_ONCE_FIELD: str(run_once_id)}
+        try:
+            with conn.transaction():
+                batch_id = insert_batch(
+                    conn,
+                    tenant_id=task["tenant_id"],
+                    workflow_id=workflow_id,
+                    kind="manual",
+                    rows=[
+                        BatchRow(
+                            row_index=1,
+                            raw=row,
+                            clean=row,
+                            record_key=str(run_once_id),
+                        )
+                    ],
+                )
+                run_id = create_run(
+                    conn,
+                    workflow_id=workflow_id,
+                    recipe_version_id=task["id"],
+                    input_batch_id=batch_id,
+                    mode="batch",
+                    limit=1,
+                    browser_id=body.browser_id,
+                )
+        except CreationError as exc:
+            conn.rollback()
+            raise HTTPException(
+                status_code=422,
+                detail={"message": "the run could not be created", "problems": exc.problems},
+            ) from exc
+        conn.commit()
+    return RunOnceResponse(run_id=run_id, status="queued")
+
+
+__all__ = [
+    "CreateTaskRequest",
+    "CreateTaskResponse",
+    "NEEDS_A_SPREADSHEET",
+    "RunOnceRequest",
+    "RunOnceResponse",
+    "destination_key_of",
+    "router",
+]

@@ -89,6 +89,8 @@ export interface CompileRequestBody {
   when_to_use: string;
   sample_row: Record<string, string>;
   record_key_column: string;
+  /** PL-105: a key template the caller supplies when a recording has no columns to key on. */
+  record_key?: string | null;
   allowed_origins: string[];
   commit_step_ids: string[];
   /** PL-017: propose the duplicate-search branch. */
@@ -575,13 +577,23 @@ function problemsFrom(status: number, body: unknown): string[] {
  */
 export async function compileRecording(
   request: CompileRequestBody,
-  deps: { fetchImpl?: typeof fetch; baseUrl: string; accessCode?: string },
+  deps: {
+    fetchImpl?: typeof fetch;
+    baseUrl: string;
+    accessCode?: string;
+    /** PL-105: the panel's already-built headers (its hub address and access header). */
+    headers?: Record<string, string>;
+  },
 ): Promise<CompileOutcome> {
   const fetchImpl = deps.fetchImpl ?? fetch;
   const baseUrl = deps.baseUrl.replace(/\/+$/, "");
   const response = await fetchImpl(`${baseUrl}${COMPILE_PATH}`, {
     method: "POST",
-    headers: { "content-type": "application/json", ...accessHeaders(deps.accessCode) },
+    headers: {
+      "content-type": "application/json",
+      ...accessHeaders(deps.accessCode),
+      ...(deps.headers ?? {}),
+    },
     body: JSON.stringify(request),
   });
 
@@ -622,13 +634,22 @@ export async function compileRecording(
  */
 export async function saveTask(
   request: SaveTaskBody,
-  deps: { fetchImpl?: typeof fetch; baseUrl: string; accessCode?: string },
+  deps: {
+    fetchImpl?: typeof fetch;
+    baseUrl: string;
+    accessCode?: string;
+    headers?: Record<string, string>;
+  },
 ): Promise<SaveTaskOutcome> {
   const fetchImpl = deps.fetchImpl ?? fetch;
   const baseUrl = deps.baseUrl.replace(/\/+$/, "");
   const response = await fetchImpl(`${baseUrl}${SAVE_TASK_PATH}`, {
     method: "POST",
-    headers: { "content-type": "application/json", ...accessHeaders(deps.accessCode) },
+    headers: {
+      "content-type": "application/json",
+      ...accessHeaders(deps.accessCode),
+      ...(deps.headers ?? {}),
+    },
     body: JSON.stringify(request),
   });
 

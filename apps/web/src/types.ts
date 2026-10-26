@@ -133,6 +133,11 @@ export interface TaskRow {
    * nothing and stopped for the same reason (PL-041).
    */
   keeps_failing?: KeepsFailing | null;
+  /**
+   * PL-105: the columns this task's pinned recipe version asks a spreadsheet for. Empty means the
+   * task needs no spreadsheet and can be run once; set on `GET /api/v1/tasks` only.
+   */
+  inputs?: string[];
 }
 
 /** The reason a task's last two runs both stopped for, in the runner's own words. */

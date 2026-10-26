@@ -160,8 +160,8 @@ export function stepProblems(events: readonly RecordedEvent[]): Map<number, Step
   return problems;
 }
 
-/** The fix button's words. */
-const FIX_LABEL: Record<StepFix, string> = { remove: "Remove", "start-over": "Start over" };
+/** The fix button's words. Exported so the panel's copy cannot drift from the popup's. */
+export const FIX_LABEL: Record<StepFix, string> = { remove: "Remove", "start-over": "Start over" };
 
 /** What the live step list needs to draw itself. */
 export interface StepListOptions {

@@ -19,5 +19,7 @@ export default defineConfig({
     environment: "happy-dom",
     include: ["tests/**/*.test.ts", "tests/**/*.test.tsx"],
     globals: true,
+    // The router test renders every page in one case; under a loaded suite it can pass 5 s.
+    testTimeout: 20_000,
   },
 });

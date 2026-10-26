@@ -28,7 +28,7 @@ from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from packages.ledger import (
     NeedsHelpRow,
@@ -43,6 +43,7 @@ from packages.ledger import (
 )
 
 from .db import connection
+from .task_columns import inputs_for_versions
 
 router = APIRouter(prefix="/api/v1", tags=["home"])
 
@@ -109,9 +110,15 @@ class KeepsFailing(BaseModel):
 
 
 class TaskListEntry(TaskEntry):
-    """One row of ``GET /api/v1/tasks``: the task, and whether it stopped working (PL-041)."""
+    """One row of ``GET /api/v1/tasks``: the task, whether it stopped working (PL-041), and the
+    columns a spreadsheet must supply.
+
+    ``inputs`` is empty for a task taught with no recorded inputs; such a task is run once from
+    the side panel, with no spreadsheet at all (PL-105).
+    """
 
     keeps_failing: KeepsFailing | None = None
+    inputs: list[str] = Field(default_factory=list)
 
 
 class HomeSummary(BaseModel):
@@ -234,12 +241,14 @@ def tasks(tenant_id: Annotated[uuid.UUID | None, Query()] = None) -> list[TaskLi
     """
     with connection() as conn:
         rows = list_tasks(conn, tenant_id=tenant_id, limit=None)
+        inputs = inputs_for_versions(conn, [row.recipe_version_id for row in rows])
         failing = {
             row.workflow_id: row.reason for row in keeps_failing_tasks(conn, tenant_id=tenant_id)
         }
     return [
         TaskListEntry(
             **entry.model_dump(),
+            inputs=inputs.get(entry.recipe_version_id, []),
             keeps_failing=(
                 KeepsFailing(reason=failing[entry.workflow_id])
                 if entry.workflow_id in failing

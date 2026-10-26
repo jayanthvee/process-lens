@@ -21,10 +21,12 @@ tests, including one that types a secret and asserts it appears nowhere in the p
 
 ## Build
 
+The extension carries the web app's side panel, so both packages need their dependencies:
+
 ```bash
-cd apps/extension
-npm install
-npm run build      # writes a loadable extension to dist/
+npm --prefix apps/web ci
+npm --prefix apps/extension ci
+npm --prefix apps/extension run build   # writes a loadable extension to apps/extension/dist/
 ```
 
 ## Load it in Chrome
@@ -35,13 +37,14 @@ npm run build      # writes a loadable extension to dist/
 
 ## Use it
 
-1. Click the extension's toolbar icon to open the popup.
-2. Press **Start**, then demonstrate the task on the page.
-3. Press **Stop**. **Download events (JSON)** exports everything captured.
-4. **Clear** empties the session history.
+1. Click the extension's toolbar icon: the ProcessLens side panel opens beside the page.
+2. In **Teach**, press **Start teaching**, then demonstrate the task on the page.
+3. Press **Stop**, remove any step you did not mean, and press **Save as task**.
+4. **Tasks** runs a task with a spreadsheet, or once when it needs no columns; **Runs** shows
+   progress and puts a parked row's fix buttons on its own row.
 
-Optionally, enter a WebSocket URL in the popup to stream events as JSON lines while recording; the
-worker reconnects on its own if the socket drops.
+The panel carries the ProcessLens address and access code the build was given; there is no address
+field and no website to open.
 
 ## Development
 
@@ -55,9 +58,9 @@ npm run check       # typecheck, test, build, validate
 ```
 
 `npm run e2e` starts a local page in headless Chromium, loads the extension, starts recording
-through the popup, performs a small interaction, and reads back what the worker stored. It tries each
-Chromium-family browser it finds, because Google Chrome (branded) ignores command-line unpacked
-extension loading; set `CHROME_PATH` to choose one. It is not part of `npm test`.
+through the side panel, performs a small interaction, and reads back what the worker stored. It
+loads the built package as an unpacked extension; set `CHROME_PATH` to choose a browser. It is not
+part of `npm test`.
 
 ### One action, two events
 
@@ -71,10 +74,11 @@ step. A form submitted without a click (for example with Enter) produces only th
 manifest.json            extension manifest (MV3)
 src/shared/              recipe types, fingerprints, event envelope, message protocol
 src/content/recorder.ts  the recorder that runs in the page
-src/background/          the service worker: state, session history, streaming
-src/popup/               the toolbar popup
-tests/                   fingerprint, recorder, and schema-conformance tests
-scripts/build.mjs        bundles src/ into dist/ with esbuild
+src/background/          the service worker: state, session history, streaming, panel behavior
+src/popup/               the compile-and-save logic the panel imports (and its legacy markup)
+../web/src/panel/        the side panel: shell, Teach, Tasks, Runs (built into dist/panel/)
+tests/                   fingerprint, recorder, panel, and schema-conformance tests
+scripts/build.mjs        bundles src/ and the web app's panel into dist/
 scripts/validate-package.mjs  checks the built package loads structurally
 scripts/e2e-smoke.mjs    loads it in a real browser and records a demo
 ```

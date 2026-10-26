@@ -57,8 +57,10 @@ supervisor service overrides the start command.
 
 ## 6. Point the extension at it
 
-10. In the ProcessLens popup, set the address to `https://<your domain>` and press Connect.
-    WebSockets go through Railway's public domain: the popup dials `wss://` there, not `ws://`.
+10. Build the extension with `PROCESSLENS_HUB_URL=https://<your domain>` (see
+    [INSTALL-EXTENSION.md](INSTALL-EXTENSION.md)), then click its icon: the side panel opens
+    beside the page and its Connect line dials the hub. WebSockets go through the platform's
+    public domain: the session dials `wss://` there, not `ws://`.
     The extension already handles this — `socketBase` in
     `apps/extension/src/background/command-session.ts` rewrites an `https://` address to
     `wss://` (and `http://` to `ws://`) before dialing `/api/v1/executor/ws`, so nothing needs to

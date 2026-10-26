@@ -1,6 +1,7 @@
 /**
- * The API client. Every path is relative, so the page talks to the API it was served by and never
- * to a host it made up.
+ * The API client. Unconfigured, every path is relative, so a website talks to the API it was
+ * served by. The side panel configures it once, before the first render, with the hub address it
+ * was built for (or the last one it connected to) and the team's access header.
  *
  * A refusal carries the API's own `detail` text, so a page can show it next to the button that
  * caused it instead of inventing a sentence of its own.
@@ -19,6 +20,35 @@ export class ApiError extends Error {
 }
 
 const REFUSED = "The API refused the request";
+
+let apiBase = "";
+let apiHeaders: Record<string, string> = {};
+
+/**
+ * Point every API call at one hub, with the headers that hub asks for.
+ *
+ * `base` empty means the website's own origin and relative paths, exactly as before. A trailing
+ * slash is trimmed so `${base}${path}` never has two. The header object is copied: a caller may
+ * keep and change its own.
+ */
+export function configureApi(config: {
+  base: string;
+  headers?: Record<string, string>;
+}): void {
+  apiBase = config.base.trim().replace(/\/+$/, "");
+  apiHeaders = { ...(config.headers ?? {}) };
+}
+
+/** What `configureApi` was given: the panel's compile and save calls need the same hub. */
+export function apiConfig(): { base: string; headers: Record<string, string> } {
+  return { base: apiBase, headers: { ...apiHeaders } };
+}
+
+/** A path as an absolute URL on the configured hub; relative when nothing is configured. */
+export function apiUrl(path: string): string {
+  if (apiBase === "") return path;
+  return `${apiBase}${path.startsWith("/") ? path : `/${path}`}`;
+}
 
 function parseJson(text: string): unknown {
   if (text.trim() === "") return null;
@@ -44,7 +74,7 @@ async function request<T>(
   signal?: AbortSignal,
   form?: FormData,
 ): Promise<T> {
-  const headers: Record<string, string> = { Accept: "application/json" };
+  const headers: Record<string, string> = { ...apiHeaders, Accept: "application/json" };
   const init: RequestInit = { method, headers };
   if (signal !== undefined) init.signal = signal;
   if (form !== undefined) {
@@ -57,7 +87,7 @@ async function request<T>(
   }
   let response: Response;
   try {
-    response = await fetch(path, init);
+    response = await fetch(apiUrl(path), init);
   } catch (error) {
     if (signal !== undefined && signal.aborted) throw error;
     throw new ApiError(0, "Could not reach the API.");

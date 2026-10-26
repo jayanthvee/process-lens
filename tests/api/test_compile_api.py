@@ -165,10 +165,10 @@ def test_a_recorded_navigate_outside_pinned_origins_is_a_422(client: TestClient)
     assert any("https://evil.example.com/records/new" in problem for problem in problems), problems
 
 
-def test_the_extension_origin_compiles_but_may_not_cancel_a_run(
+def test_the_extension_origin_compiles_and_may_cancel_a_run(
     connected: TestClient, ledger: Ledger, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The exception is those two routes alone: a run cancel still wants this API's origin."""
+    """PL-105: the side panel drives every state-changing API path from its own origin."""
     monkeypatch.setenv("PROCESSLENS_EXTENSION_ID", EXTENSION_ID)
     run = ledger.new_run()
 
@@ -177,11 +177,12 @@ def test_the_extension_origin_compiles_but_may_not_cancel_a_run(
         json=request_body(a_demonstration()),
         headers={"origin": EXTENSION_ORIGIN},
     )
-    refused = connected.post(f"/api/v1/runs/{run.id}/cancel", headers={"origin": EXTENSION_ORIGIN})
+    cancelled = connected.post(
+        f"/api/v1/runs/{run.id}/cancel", headers={"origin": EXTENSION_ORIGIN}
+    )
 
     assert compiled.status_code == 200, compiled.text
-    assert refused.status_code == 403, refused.text
-    assert "origin" in refused.json()["detail"]
+    assert cancelled.status_code == 200, cancelled.text
 
 
 def test_a_foreign_origin_cannot_compile(client: TestClient) -> None:
@@ -284,3 +285,102 @@ def test_the_route_says_which_searched_shape_it_compiled(
     # An update parks a row whose search found nothing; it never skips one it found.
     assert branch["when"]["element_absent"] is not None
     assert branch["then"][0]["outcome"] == "parked"
+
+
+def test_a_task_with_no_recorded_inputs_compiles_with_the_run_once_key(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PL-105: the panel saves a recording with no typed values under a fresh-key template."""
+    monkeypatch.setenv("PROCESSLENS_EXTENSION_ID", EXTENSION_ID)
+
+    response = client.post(
+        "/api/v1/recipes/compile",
+        json=request_body(
+            a_demonstration(),
+            sample_row={"run_once_id": "x"},
+            record_key_column=None,
+            record_key="{{row.run_once_id}}",
+        ),
+        headers={"origin": EXTENSION_ORIGIN},
+    )
+
+    assert response.status_code == 200, response.text
+    meta = response.json()["recipe"]["meta"]
+    assert meta["record_key"] == "{{row.run_once_id}}"
+    assert meta["idempotency_key"] == "{{row.run_once_id}}"
+    assert meta["input_schema"]["fields"] == {"run_once_id": {"type": "string", "example": "x"}}
+
+
+def a_panel_save() -> list[dict[str, Any]]:
+    """What the panel records when Save is a plain button: no form submit follows the click.
+
+    A ``submit`` event makes the compiler mark its click a commit by itself (``collapse_submits``),
+    so a recording carrying one cannot show what ``commit_step_ids`` does. The panel's save does
+    not depend on that: an application whose Save button posts from its own handler records no
+    submit at all.
+    """
+    return [
+        action_event(
+            1,
+            "fill",
+            "fill",
+            EMAIL_TARGETS,
+            value="ravi@example.com",
+            name="Fill Email",
+            url=NOT_NEW_URL,
+        ),
+        action_event(
+            2,
+            "click",
+            "click",
+            SAVE_TARGETS,
+            name="Click Save",
+            url=NOT_NEW_URL,
+            step_id="save-click",
+        ),
+        {
+            "seq": 3,
+            "kind": "observation",
+            "url": NOT_NEW_URL,
+            "step": None,
+            "observation": {"text_visible": "Record created"},
+        },
+    ]
+
+
+def test_a_panel_saved_recording_has_a_commit_step(client: TestClient) -> None:
+    """PL-105 review: the panel names the recording's last click, so the saved task marks it.
+
+    With no commit step the save compiles as a plain click: no write-ahead record and no save
+    check, which is how a crash between the click and its confirmation could create the same
+    record twice. The empty list the panel used to send is asserted beside it, so this test fails
+    for the bug and not only for the fix.
+    """
+    fixed = client.post(
+        "/api/v1/recipes/compile",
+        json=request_body(
+            a_panel_save(),
+            sample_row={"email": "ravi@example.com"},
+            record_key_column="email",
+            commit_step_ids=["save-click"],
+        ),
+    )
+
+    assert fixed.status_code == 200, fixed.text
+    commits = [step for step in fixed.json()["recipe"]["steps"] if step.get("commit")]
+    assert len(commits) == 1, fixed.json()["recipe"]["steps"]
+    assert commits[0]["name"] == "Click Save"
+    assert commits[0]["assert_after"] == {"text_visible": "Record created", "timeout_ms": 8000}
+
+    unchecked = client.post(
+        "/api/v1/recipes/compile",
+        json=request_body(
+            a_panel_save(),
+            sample_row={"email": "ravi@example.com"},
+            record_key_column="email",
+            commit_step_ids=[],
+        ),
+    )
+
+    assert unchecked.status_code == 200, unchecked.text
+    assert not any(step.get("commit") for step in unchecked.json()["recipe"]["steps"])

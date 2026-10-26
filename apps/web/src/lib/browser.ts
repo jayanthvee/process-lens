@@ -65,6 +65,18 @@ export function knownBrowser(): string | null {
   return known;
 }
 
+/**
+ * PL-105: the side panel already knows its browser, because the worker told it through
+ * `chrome.runtime.sendMessage`. That is a different bridge from the content script's
+ * `postMessage`, so the panel hands the id over here and every reader below stays unchanged.
+ */
+export function setBrowserId(value: string | null): void {
+  if (value !== null && !SHAPE.test(value)) return;
+  if (known === value) return;
+  known = value;
+  for (const listener of listeners) listener();
+}
+
 /** The session read for this Chrome: `?browser=` once the extension has said which it is. */
 export function sessionPath(browser: string | null): string {
   return browser === null

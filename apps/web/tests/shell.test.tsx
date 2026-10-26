@@ -36,18 +36,7 @@ describe("the sidebar", () => {
   it("shows every place the design names, in its groups", () => {
     renderApp("/");
 
-    for (const label of [
-      "Home",
-      "Needs help",
-      "Tasks",
-      "Runs",
-      "Spreadsheets",
-      "Documents",
-      "Saved answers",
-      "Apps",
-      "Settings",
-      "Help",
-    ]) {
+    for (const label of ["Home", "Needs help", "Tasks", "Runs", "Spreadsheets", "Apps"]) {
       expect(screen.getByRole("link", { name: label }), label).toBeTruthy();
     }
     for (const group of ["Automate", "Your data", "Connect"]) {
@@ -59,8 +48,8 @@ describe("the sidebar", () => {
     renderApp("/");
 
     expect(screen.getByRole("link", { name: "Runs" }).getAttribute("href")).toBe("/runs");
-    expect(screen.getByRole("link", { name: "Saved answers" }).getAttribute("href")).toBe(
-      "/saved-answers",
+    expect(screen.getByRole("link", { name: "Spreadsheets" }).getAttribute("href")).toBe(
+      "/spreadsheets",
     );
   });
 

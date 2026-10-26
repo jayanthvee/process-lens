@@ -118,17 +118,16 @@ def test_another_extension_id_may_not_open_a_session(
     assert "origin" in response.json()["detail"]
 
 
-def test_the_extension_origin_opens_no_other_route(
+def test_the_extension_origin_opens_a_state_changing_route(
     connected: TestClient, ledger: Ledger, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The exception is the extension's own three routes: a run cancel still wants this origin."""
+    """PL-105: the side panel's origin is accepted on every state-changing ``/api/v1/`` path."""
     monkeypatch.setenv("PROCESSLENS_EXTENSION_ID", EXTENSION_ID)
     run = ledger.new_run()
 
     response = connected.post(f"/api/v1/runs/{run.id}/cancel", headers={"origin": EXTENSION_ORIGIN})
 
-    assert response.status_code == 403, response.text
-    assert "origin" in response.json()["detail"]
+    assert response.status_code == 200, response.text
 
 
 def test_the_pinned_extension_origin_may_report_its_version(
