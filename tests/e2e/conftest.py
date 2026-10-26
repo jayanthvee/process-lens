@@ -1001,8 +1001,37 @@ def context(_playwright: Any, built_extension: Path) -> Iterator[Any]:
         shutil.rmtree(profile, ignore_errors=True)
 
 
+def _leave_dialogs_to_the_extension(context: Any) -> Any:
+    """Answer the pages' dialogs without crashing when the extension answered first (PL-099).
+
+    With no ``dialog`` listener Playwright dismisses every dialog itself. The abandon guard accepts
+    a "leave this page?" dialog over its own CDP session, and when both answer the same dialog
+    Playwright's own call fails with "No dialog is showing" and its driver drops the whole browser
+    -- which the run then saw as the extension disconnecting, or on Render as a row stuck in
+    filling. A person's Chrome has no Playwright, so only the tests could ever see it. Here the
+    harness accepts too (what the guard wants), and a dialog already answered is not an error.
+    """
+
+    def answer(dialog: Any) -> None:
+        # A dialog the extension answered first is gone, and that is not an error.
+        with contextlib.suppress(Exception):
+            dialog.accept()
+
+    def listen(page: Any) -> None:
+        page.on("dialog", answer)
+
+    for page in context.pages:
+        listen(page)
+    context.on("page", listen)
+    return context
+
+
 def _launch_with_install(playwright: Any, profile: str, args: list[str]) -> Any:
     """Launch the persistent context, installing the bundled Chromium once if it is missing."""
+    return _leave_dialogs_to_the_extension(_launch(playwright, profile, args))
+
+
+def _launch(playwright: Any, profile: str, args: list[str]) -> Any:
     # Requirement 4: the same two knobs for a first launch and a post-install retry.
     launch = {
         "user_data_dir": profile,

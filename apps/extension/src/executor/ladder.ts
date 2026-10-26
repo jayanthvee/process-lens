@@ -1023,7 +1023,12 @@ export function resolveTargetInPage(query: ResolveQuery): ResolveResult {
           // either keeps recipes pinned with placeholder names resolving.
           (name === "" ||
             lower(accessibleNameOf(el)) === lower(name) ||
-            lower(columnHeaderNameOf(el)) === lower(name)),
+            lower(columnHeaderNameOf(el)) === lower(name) ||
+            // PL-099: a list that shows its entries as "[CODE] Name" (Odoo's products) is
+            // answered by a spreadsheet that holds the name alone. The whole name must still
+            // match: "Desk Lamp" never picks "[LMP-1] Desk Lamp Pro".
+            (role === "option" &&
+              lower(accessibleNameOf(el).replace(/^\s*\[[^\]]*\]\s*/, "")) === lower(name))),
       );
     } else if (by === "testid") {
       const value = norm(target.value);

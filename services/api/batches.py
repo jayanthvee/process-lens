@@ -35,7 +35,6 @@ import re
 import uuid
 from collections.abc import Callable
 from datetime import date, datetime, time
-from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -46,7 +45,7 @@ from psycopg.rows import dict_row
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
-from packages.documents import DocumentRefused, clean, read_docx, read_pdf
+from packages.documents import DocumentRefused, clean, kinds, read_docx, read_pdf
 from packages.ledger import (
     BatchRow,
     get_batch,
@@ -97,14 +96,6 @@ SYNONYMS: dict[str, frozenset[str]] = {
 }
 
 _ROW_TEMPLATE = re.compile(r"\{\{\s*row\.(?P<column>[A-Za-z0-9_]+)")
-
-# A recorded task has no field types: its only type information is the example the person typed.
-_EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-_NUMBER = re.compile(
-    r"^(?:[\u20ac$\u00a3])?(?P<sign>-)?(?P<whole>\d{1,3}(?:,\d{3})*|\d+)(?P<fraction>\.\d+)?$"
-)
-# More plain digits than this, with no decimal point, is a phone or an ID rather than a number.
-MAX_PLAIN_DIGITS = 6
 
 
 class BatchUploadResponse(BaseModel):
@@ -430,39 +421,10 @@ def _is_close(recipe_column: str, spreadsheet_column: str) -> bool:
     return bool(_tokens(recipe_column) & _tokens(spreadsheet_column))
 
 
-def _is_email(text: str) -> bool:
-    """One ``@``, no whitespace, and a dot in the domain: ``local@domain.tld``."""
-    return _EMAIL.fullmatch(text.strip()) is not None
-
-
-def _number_value(text: str) -> Decimal | None:
-    """The value as a number, or ``None`` when it is not one the example taught.
-
-    A number is digits with optional thousands commas and one decimal point, optionally with a
-    currency sign. A leading ``+``, an internal space, or a long digit run with no decimal point
-    (a phone or an ID) is not a number.
-    """
-    match = _NUMBER.fullmatch(text.strip())
-    if match is None:
-        return None
-    digits = match.group("whole").replace(",", "")
-    plain = "," not in match.group("whole") and match.group("fraction") is None
-    if plain and len(digits) > MAX_PLAIN_DIGITS:
-        return None
-    sign = "-" if match.group("sign") else ""
-    return Decimal(f"{sign}{digits}{match.group('fraction') or ''}")
-
-
-def _kind(example: Any) -> str | None:
-    """The kind a task column was taught with: ``email``, ``number``, or nothing to check."""
-    text = "" if example is None else str(example).strip()
-    if not text:
-        return None
-    if _is_email(text):
-        return "email"
-    if _number_value(text) is not None:
-        return "number"
-    return None
+# PL-099: the kinds live with the documents, so a run types a number by the check's own rules.
+_is_email = kinds.is_email
+_number_value = kinds.number_value
+_kind = kinds.kind
 
 
 def _shape(text: str) -> str:
@@ -610,7 +572,9 @@ def _mapping_for(
 # --- the row verdict --------------------------------------------------------------------------
 
 
-def _values_for(raw: dict[str, Any], mapping: dict[str, str | None]) -> dict[str, Any]:
+def _values_for(
+    raw: dict[str, Any], mapping: dict[str, str | None], fields: dict[str, Any]
+) -> dict[str, Any]:
     """The row as the task sees it: ``{task column: the spreadsheet's value}``."""
     values: dict[str, Any] = {}
     for recipe_column, spreadsheet_column in mapping.items():
@@ -619,7 +583,8 @@ def _values_for(raw: dict[str, Any], mapping: dict[str, str | None]) -> dict[str
         value = raw.get(spreadsheet_column)
         # Trimmed, as `clean` is (PL-088): the check judges, and shows, what a run will type.
         values[recipe_column] = "" if value is None else _trimmed(value)
-    return values
+    # PL-099: and a number as the run types it, `$1,299.00` as `1299.00`.
+    return kinds.as_typed(fields, values)
 
 
 def _trimmed(value: Any) -> Any:
@@ -943,7 +908,7 @@ def check_batch(
         verdicts: list[tuple[Any, list[str]]] = []
         seen: dict[str, int] = {}
         for row in rows:
-            values = _values_for(row.raw, chosen)
+            values = _values_for(row.raw, chosen, _fields(document))
             verdicts.append(
                 (row, _row_reasons(document, values, template, seen, row.row_index, chosen))
             )
@@ -964,7 +929,9 @@ def check_batch(
     first_ready: FirstReady | None = None
     for row, reasons in verdicts:
         if not reasons:
-            first_ready = FirstReady(row=row.row_index, values=_values_for(row.raw, chosen))
+            first_ready = FirstReady(
+                row=row.row_index, values=_values_for(row.raw, chosen, _fields(document))
+            )
             break
 
     return CheckResponse(

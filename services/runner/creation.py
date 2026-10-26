@@ -17,6 +17,7 @@ import psycopg
 from psycopg.rows import dict_row
 
 from packages.compiler.validation import validation_errors
+from packages.documents import kinds
 from packages.ledger import batches as ledger_batches
 from packages.ledger import create as ledger_create
 from packages.ledger.reads import verified_preview_run
@@ -187,15 +188,16 @@ def _duplicate_key_problems(rendered: list[tuple[Any, int, str, str]]) -> list[s
 
 
 def _values_as_the_recipe_sees_them(
-    mapping: dict[str, Any], raw: Any, clean: Any
+    mapping: dict[str, Any], raw: Any, clean: Any, fields: dict[str, Any] | None = None
 ) -> dict[str, Any]:
     """One row's values as the recipe sees them: the saved mapping applied to the uploaded row.
 
     With no mapping the values are the row's ``clean`` values, exactly as before. The mapping is
-    applied from ``raw``, so applying it twice is the same as applying it once.
+    applied from ``raw``, so applying it twice is the same as applying it once. A number column's
+    value is the number as a number field takes it (PL-099), by the batch check's own rules.
     """
     if not mapping:
-        return clean if isinstance(clean, dict) else {}
+        return kinds.as_typed(fields or {}, clean if isinstance(clean, dict) else {})
     uploaded = raw if isinstance(raw, dict) else {}
     values: dict[str, Any] = {}
     for recipe_column, spreadsheet_column in mapping.items():
@@ -206,7 +208,7 @@ def _values_as_the_recipe_sees_them(
         values[str(recipe_column)] = (
             "" if value is None else value.strip() if isinstance(value, str) else value
         )
-    return values
+    return kinds.as_typed(fields or {}, values)
 
 
 def create_run(
@@ -271,14 +273,16 @@ def create_run(
         rows = rows[:limit]
 
     mapping = batch.column_mapping or {}
+    meta = document.get("meta") if isinstance(document.get("meta"), dict) else {}
+    schema = meta.get("input_schema") if isinstance(meta.get("input_schema"), dict) else {}
+    fields = schema.get("fields") if isinstance(schema.get("fields"), dict) else {}
     values_by_row: dict[uuid.UUID, dict[str, Any]] = {}
     keyed_rows: list[dict[str, Any]] = []
     for row in rows:
-        values = _values_as_the_recipe_sees_them(mapping, row.raw, row.clean)
+        values = _values_as_the_recipe_sees_them(mapping, row.raw, row.clean, fields)
         values_by_row[row.id] = values
         keyed_rows.append({"id": row.id, "row_index": row.row_index, "clean": values})
 
-    meta = document.get("meta") if isinstance(document.get("meta"), dict) else {}
     rendered, key_problems = _render_keys(meta, keyed_rows)
     if key_problems:
         raise CreationError(key_problems)
@@ -301,10 +305,11 @@ def create_run(
         approval_policy = {"commit": "none", "approved_in_preview": str(preview)}
 
     with conn.transaction():
-        if mapping:
-            # The runner reads ``clean``, so the recipe's own column names have to land there
-            # inside the same transaction that inserts the run and its records.
-            for row in rows:
+        # The runner reads ``clean``, so the recipe's own column names, and a number as a number
+        # field takes it (PL-099), have to land there inside the same transaction that inserts the
+        # run and its records -- with or without a mapping.
+        for row in rows:
+            if values_by_row[row.id] != row.clean:
                 ledger_batches.set_row_clean(conn, row.id, values_by_row[row.id])
         run_id = ledger_create.insert_run(
             conn,

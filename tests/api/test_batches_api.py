@@ -1084,3 +1084,71 @@ def test_a_row_with_no_key_is_flagged_and_does_not_block_the_run(
             (created.json()["run_id"],),
         )
         assert cur.fetchall() == [("pl-1",), ("pl-2",)]
+
+
+def test_a_mapped_run_types_a_price_without_its_currency_sign(
+    connected: TestClient, conn: psycopg.Connection, ledger: Ledger
+) -> None:
+    """PL-099: the pilot's "$109.00" invoice line never saved -- Odoo's line price refuses the
+    sign. The check shows, and the run types, the number as a number field takes it."""
+    document = recipe_document(
+        fields={
+            "email": {"type": "string", "required": True, "example": "a@x.test"},
+            "price": {"type": "string", "example": "329.00"},
+        }
+    )
+    workflow_id, version_id = add_task(conn, ledger.tenant_id, document=document)
+    content = xlsx_bytes([["E-mail", "Unit Price"], ["a@x.com", "$1,299.00"]])
+    batch_id = upload(connected, workflow_id, content, filename="invoices.xlsx").json()["batch_id"]
+    saved = connected.put(
+        f"/api/v1/batches/{batch_id}/mapping",
+        json={"mapping": {"email": "E-mail", "price": "Unit Price"}},
+    )
+    assert saved.status_code == 200, saved.text
+
+    first = check(connected, batch_id, version_id)["first_ready"]
+    assert first == {"row": 1, "values": {"email": "a@x.com", "price": "1299.00"}}
+
+    created = connected.post(
+        "/api/v1/runs",
+        json={
+            "workflow_id": str(workflow_id),
+            "recipe_version_id": str(version_id),
+            "input_batch_id": batch_id,
+            "mode": "batch",
+        },
+    )
+    assert created.status_code == 201, created.text
+    with conn.cursor() as cur:
+        cur.execute("SELECT clean FROM input_records WHERE batch_id = %s", (batch_id,))
+        assert cur.fetchone()[0] == {"email": "a@x.com", "price": "1299.00"}
+
+
+def test_a_run_without_a_mapping_types_the_plain_number_too(
+    connected: TestClient, conn: psycopg.Connection, ledger: Ledger
+) -> None:
+    """PL-099: the runner reads ``clean``, so the plain number must land there even when no
+    mapping was saved (the column names already match the task's)."""
+    document = recipe_document(
+        fields={
+            "email": {"type": "string", "required": True, "example": "a@x.test"},
+            "price": {"type": "string", "example": "329.00"},
+        }
+    )
+    workflow_id, version_id = add_task(conn, ledger.tenant_id, document=document)
+    content = csv_bytes([["email", "price"], ["a@x.com", "$109.00"]])
+    batch_id = upload(connected, workflow_id, content).json()["batch_id"]
+
+    created = connected.post(
+        "/api/v1/runs",
+        json={
+            "workflow_id": str(workflow_id),
+            "recipe_version_id": str(version_id),
+            "input_batch_id": batch_id,
+            "mode": "batch",
+        },
+    )
+    assert created.status_code == 201, created.text
+    with conn.cursor() as cur:
+        cur.execute("SELECT clean FROM input_records WHERE batch_id = %s", (batch_id,))
+        assert cur.fetchone()[0] == {"email": "a@x.com", "price": "109.00"}

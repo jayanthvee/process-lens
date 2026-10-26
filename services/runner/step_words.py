@@ -71,7 +71,10 @@ def describe_step_failure(
         option = _option(step, row, variables)
         if option is not None and _is_locator_failure(lowered):
             value, column = option
-            return _with_value("“", value, f"” isn't in the {_label(column)} list")
+            # PL-099: `product_2` is the recorder's second column for one field, not a field the
+            # person knows; the list is the Product list.
+            field = re.sub(r"_\d+$", "", column) or column
+            return _with_value("“", value, f"” isn't in the {_label(field)} list")
         name = _element_name(step, row, variables)
         if _mentions(lowered, _NOT_CLICKABLE):
             return _with_value("Couldn't click “", name, "”: something was in front of it")

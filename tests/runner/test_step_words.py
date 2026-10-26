@@ -106,3 +106,15 @@ def test_no_error_at_all_still_gives_a_sentence() -> None:
     assert describe_step_failure(SAVE_CLICK, ROW, {}, None) == (
         "Step “Click Save manually” didn't finish"
     )
+
+
+def test_a_recorders_numbered_column_is_named_as_its_field() -> None:
+    """PL-099: the invoice's product option reads `product_2`; the person knows a Product list."""
+    step = {
+        **OPTION_CLICK,
+        "targets": [{"by": "role", "role": "option", "name": "{{row.product_2}}"}],
+    }
+
+    sentence = describe_step_failure(step, {"product_2": "Desk Lamp"}, {}, COVERED)
+
+    assert sentence == "“Desk Lamp” isn't in the Product list"
