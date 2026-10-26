@@ -39,8 +39,10 @@ export interface FetchStub {
 
 /** A `Response` good enough for the API client: status, ok, and a JSON text body.
  *
- * `blob()` answers the same bytes as a CSV blob, so the document-to-CSV fetch (PL-076) behaves as
- * it does in a browser: the page uploads the blob through the normal file path.
+ * `json()` parses that same body, as a real `Response` does; `compileRecording` and `saveTask` read
+ * their answers through it. `blob()` answers the same bytes as a CSV blob, so the document-to-CSV
+ * fetch (PL-076) behaves as it does in a browser: the page uploads the blob through the normal file
+ * path.
  */
 export function jsonResponse(status: number, body: unknown): Response {
   const text = body === undefined ? "" : typeof body === "string" ? body : JSON.stringify(body);
@@ -48,6 +50,7 @@ export function jsonResponse(status: number, body: unknown): Response {
     ok: status >= 200 && status < 300,
     status,
     text: async () => text,
+    json: async () => JSON.parse(text) as unknown,
     blob: async () => new Blob([text], { type: "text/csv" }),
   } as unknown as Response;
 }

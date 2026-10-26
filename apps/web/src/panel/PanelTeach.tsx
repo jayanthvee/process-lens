@@ -12,6 +12,7 @@ import { useEffect, useState } from "react";
 import { apiConfig } from "../lib/api";
 import {
   compileRecording,
+  defaultCommitStepId,
   defaultRecordKeyColumn,
   makeRecipeRequest,
   recordedValues,
@@ -178,7 +179,10 @@ export function PanelTeach(): JSX.Element {
       const request = makeRecipeRequest(events, {
         name: trimmed,
         recordKeyColumn: keyColumn,
-        commitStepId: null,
+        // The recording's last click is the save, exactly as the popup preselected it. A null
+        // commit would compile that click as a plain click: no write-ahead and no save check, so
+        // a crash mid-save could create the record twice.
+        commitStepId: defaultCommitStepId(events),
       });
       if (values.length === 0) {
         // No column to key on: every Run once carries a fresh id, so the ledger sees new work.

@@ -1,10 +1,12 @@
-﻿/**
+/**
  * PL-105: the side panel's entry point.
  *
  * It runs before the first render, because every page below asks the API for something: it finds
  * the hub the person last connected to (else the one the build was handed), configures the API
- * client with the team's access header, and asks the worker which Chrome this is. Then it renders
- * the panel inside a `MemoryRouter`: an extension page has no server behind deep links.
+ * client with the team's access header, and asks the worker which Chrome this is. A hosted address
+ * baked into a handed-out build beats a stored loopback one, so an earlier local popup does not
+ * pin the panel to 127.0.0.1. Then it renders the panel inside a `MemoryRouter`: an extension
+ * page has no server behind deep links.
  *
  * The access code is a secret. It is read from the build, put in a header, and never logged,
  * printed, or made part of a URL.
@@ -24,7 +26,7 @@ import { MemoryRouter } from "react-router-dom";
 import { setBrowserId } from "../lib/browser";
 import { extensionChrome } from "./extension";
 import { PanelApp } from "./PanelApp";
-import { DEFAULT_HUB_URL, LAST_HUB_KEY, setPanelRuntime } from "./runtime";
+import { chooseHubUrl, DEFAULT_HUB_URL, LAST_HUB_KEY, setPanelRuntime } from "./runtime";
 
 declare const __PROCESSLENS_HUB_URL__: string | undefined;
 declare const __PROCESSLENS_ACCESS_CODE__: string | undefined;
@@ -63,9 +65,10 @@ async function thisBrowser(): Promise<string | null> {
 }
 
 async function boot(): Promise<void> {
-  // The last hub the person connected to wins over the one baked into this copy.
+  // The last hub the person connected to wins, except that a hosted build's own address beats a
+  // stored loopback one: a tester who once used the local popup is not stuck on 127.0.0.1.
   setPanelRuntime({
-    hubUrl: (await lastHubUrl()) || BAKED_HUB_URL,
+    hubUrl: chooseHubUrl(BAKED_HUB_URL, await lastHubUrl()),
     accessCode: BAKED_ACCESS_CODE,
   });
   const browser = await thisBrowser();
