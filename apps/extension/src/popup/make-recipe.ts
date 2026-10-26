@@ -1013,7 +1013,9 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
       }
       // PL-101: a key picked from a list is shared by many rows by its nature. Show the compiler's
       // sentence before saving, so the person can change the key; the same button, pressed again,
-      // saves anyway.
+      // saves anyway. The shape the compiler reported is applied first, so the rule's wording is
+      // the applied one even while the warning is on screen.
+      applySearchKind(outcome.searchKind);
       const key = keyEl.value;
       if (outcome.keyWarning !== null) {
         if (warnedKey !== key) {
@@ -1025,8 +1027,6 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
       } else {
         clearKeyWarning();
       }
-      // The compiler decides the shape; the rule's own sentence follows it (PL-077).
-      applySearchKind(outcome.searchKind);
       // The run controls read these two keys, and the row is the sample row the route compiled.
       await deps.storage.set({ [RECIPE_KEY]: outcome.recipe, [ROW_KEY]: request.sample_row });
       // Compiling stored nothing: this POST is what makes the task real (PL-030). The two session
