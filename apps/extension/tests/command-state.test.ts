@@ -88,6 +88,7 @@ interface HarnessOptions {
   restoreBoundTab?: (tabId: number) => Promise<boolean>;
   bindActiveTab?: () => Promise<number | null>;
   enterCode?: (code: string) => Promise<{ entered: boolean; reason: string }>;
+  codeFromEmail?: SessionDeps["codeFromEmail"];
   now?: () => number;
   storageValue?: StoredSession | null;
   browserId?: string;
@@ -118,6 +119,7 @@ function makeHarness(options: HarnessOptions = {}): Harness {
     },
     now: options.now ?? (() => clock.value),
     ...(options.enterCode ? { enterCode: options.enterCode } : {}),
+    ...(options.codeFromEmail ? { codeFromEmail: options.codeFromEmail } : {}),
     setInterval: (fn, ms) => {
       const timer: Timer = { fn, ms, cancelled: false };
       timers.push(timer);
@@ -919,6 +921,56 @@ describe("a verification code from the run page", () => {
     const result = socket.lastResult();
     expect(result?.["status"]).toBe("ok");
     expect(JSON.stringify(result)).not.toContain("246810");
+  });
+});
+
+describe("a code read from email (PL-102)", () => {
+  const command = {
+    protocol: 1,
+    type: "enter_code",
+    command_id: "code-2",
+    step_ref: "enter_code",
+    run_id: "run-1",
+    run_record_id: "",
+    lease_epoch: 0,
+    expires_at: 10_000_000,
+    from_email: true,
+    remember: true,
+    look_ms: 30_000,
+  };
+
+  it("asks the email reader, not the typed-code path, and reports whether the page moved on", async () => {
+    const asked: Array<{ remember: boolean; lookMs: number }> = [];
+    const harness = makeHarness({
+      enterCode: async () => {
+        throw new Error("a code read from email must not go through the typed-code path");
+      },
+      codeFromEmail: async (options) => {
+        asked.push({ remember: options.remember, lookMs: options.lookMs });
+        return { entered: true, reason: "submitted", cleared: true };
+      },
+    });
+    const socket = await openSession(harness);
+
+    deliver(socket, command);
+    await flush();
+
+    expect(asked).toEqual([{ remember: true, lookMs: 30_000 }]);
+    const result = socket.lastResult();
+    expect(result?.["status"]).toBe("ok");
+    expect(result?.["observed"]).toEqual({ entered: true, reason: "submitted", cleared: true });
+  });
+
+  it("says why when no single code was found", async () => {
+    const harness = makeHarness({
+      codeFromEmail: async () => ({ entered: false, reason: "ambiguous" }),
+    });
+    const socket = await openSession(harness);
+
+    deliver(socket, command);
+    await flush();
+
+    expect(socket.lastResult()?.["observed"]).toEqual({ entered: false, reason: "ambiguous" });
   });
 });
 

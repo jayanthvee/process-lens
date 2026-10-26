@@ -560,7 +560,30 @@ export function isPasswordField(el: Element): boolean {
   // the run page; the recording must never hold one a person typed while teaching.
   if (autocomplete.includes("one-time-code")) return true;
   const named = `${el.getAttribute("name") ?? ""} ${el.getAttribute("id") ?? ""}`.toLowerCase();
-  return ONE_TIME_CODE_NAME.test(named);
+  if (ONE_TIME_CODE_NAME.test(named)) return true;
+  // PL-102: the same code pages the run recognises (`codePromptInPage`). Six single-character
+  // boxes in a row carry no hint at all, and a numeric field says what it wants only in its label.
+  if (isSplitCodeBox(el)) return true;
+  const numeric =
+    (el.getAttribute("inputmode") ?? "").toLowerCase() === "numeric" ||
+    type === "tel" ||
+    type === "number";
+  return numeric && CODE_LABEL.test(accessibleName(el));
+}
+
+/** The words a code field's own label uses. */
+const CODE_LABEL = /(verification|one[- ]time|security code|passcode|\bcode\b)/i;
+
+/** One of 4-8 single-character inputs side by side: a code typed one digit per box. */
+function isSplitCodeBox(el: Element): boolean {
+  if (el.getAttribute("maxlength") !== "1") return false;
+  let node: Element | null = el.parentElement;
+  for (let depth = 0; depth < 3 && node; depth += 1) {
+    const boxes = node.querySelectorAll("input[maxlength='1']").length;
+    if (boxes >= 4 && boxes <= 8) return true;
+    node = node.parentElement;
+  }
+  return false;
 }
 
 /** Names and ids a one-time-code field carries: otp, mfa/2fa codes, verification codes. */

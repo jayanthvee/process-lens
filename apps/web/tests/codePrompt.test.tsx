@@ -7,8 +7,14 @@ import { fireEvent, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import {
+  CODE_FROM_EMAIL_BUTTON,
+  CODE_FROM_EMAIL_LATER,
+  CODE_FROM_EMAIL_OFFER,
   CODE_NOT_FOUND,
+  CODE_STILL_ASKED,
   ENTERING_CODE,
+  LOOKING_IN_GMAIL,
+  codeFromEmailWords,
   codePromptWords,
 } from "../src/lib/words";
 import { createFetchStub, renderApp, settle, type StubRoutes } from "./helpers";
@@ -105,6 +111,81 @@ describe("the paused run's code panel", () => {
 
     expect(screen.getByText(CODE_NOT_FOUND)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Resume" })).toBeTruthy();
+    stub.restore();
+  });
+});
+
+describe("reading the code from Gmail (PL-102)", () => {
+  it("offers it right beside the code box, and says it will do it by itself from then on", async () => {
+    const stub = createFetchStub({
+      ...SHELL,
+      "/api/v1/runs/run-1/records": { body: [] },
+      "/api/v1/runs/run-1": { body: pausedRun() },
+    });
+    renderApp("/runs/run-1");
+    await settle();
+
+    expect(screen.getByText(CODE_FROM_EMAIL_OFFER)).toBeTruthy();
+    expect(screen.getByRole("button", { name: CODE_FROM_EMAIL_BUTTON })).toBeTruthy();
+    expect(screen.getByText(CODE_FROM_EMAIL_LATER)).toBeTruthy();
+    stub.restore();
+  });
+
+  it("asks the work window to read it, remembering the yes, with no code on this page", async () => {
+    const stub = createFetchStub({
+      ...SHELL,
+      "/api/v1/runs/run-1/records": { body: [] },
+      "/api/v1/runs/run-1": { body: pausedRun() },
+      "/api/v1/runs/run-1/code-from-email": {
+        body: { entered: true, reason: "submitted", resumed: true },
+      },
+    });
+    renderApp("/runs/run-1");
+    await settle();
+
+    fireEvent.click(screen.getByRole("button", { name: CODE_FROM_EMAIL_BUTTON }));
+    await settle();
+
+    const posted = stub.requests.find((request) => request.path.endsWith("/code-from-email"));
+    expect(posted?.body).toEqual({ remember: true });
+    expect(screen.queryByText(LOOKING_IN_GMAIL)).toBeNull();
+    stub.restore();
+  });
+
+  it("says why when there was no single code to type", async () => {
+    const stub = createFetchStub({
+      ...SHELL,
+      "/api/v1/runs/run-1/records": { body: [] },
+      "/api/v1/runs/run-1": { body: pausedRun() },
+      "/api/v1/runs/run-1/code-from-email": {
+        body: { entered: false, reason: "ambiguous", resumed: false },
+      },
+    });
+    renderApp("/runs/run-1");
+    await settle();
+
+    fireEvent.click(screen.getByRole("button", { name: CODE_FROM_EMAIL_BUTTON }));
+    await settle();
+
+    expect(screen.getByText(codeFromEmailWords("ambiguous"))).toBeTruthy();
+    stub.restore();
+  });
+
+  it("says so when a typed code left the site still asking", async () => {
+    const stub = createFetchStub({
+      ...SHELL,
+      "/api/v1/runs/run-1/records": { body: [] },
+      "/api/v1/runs/run-1": { body: pausedRun() },
+      "/api/v1/runs/run-1/code": { body: { entered: true, reason: "submitted", resumed: false } },
+    });
+    renderApp("/runs/run-1");
+    await settle();
+
+    fireEvent.change(screen.getByLabelText(/verification code/i), { target: { value: "246810" } });
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await settle();
+
+    expect(screen.getByText(CODE_STILL_ASKED)).toBeTruthy();
     stub.restore();
   });
 });
