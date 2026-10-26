@@ -25,6 +25,7 @@ import {
   type InputHooks,
 } from "./dispatch";
 import { destructiveMatch, isOption } from "./guards";
+import { inPageClick, inPageFill, inPagePress, inPageSelect } from "./inpage";
 import { readFrameTree, selectFrame, type FrameContexts } from "./frames";
 import {
   resolverExpression,
@@ -49,6 +50,11 @@ export interface StepRunDeps {
    * command-mode step (R4).
    */
   commandMode?: boolean;
+  /**
+   * PL-108 experiment: dispatch this step's input from inside the page instead of through the
+   * debugger. Off unless the caller turns the flag on. The per-step fallback lives in the run loop.
+   */
+  inPage?: boolean;
   /**
    * The owner's policing of this step's own input. `beforeInput` runs immediately before every
    * trusted input CDP call and may throw, so a withdrawn or expired command is refused at the
@@ -803,6 +809,12 @@ export async function performStep(
     ...(deps.beforeInput ? { beforeInput: deps.beforeInput } : {}),
     ...(onInputDispatched ? { onFirstInput: onInputDispatched } : {}),
   };
+  // PL-108: the in-page path dispatches its input in one page call, so the owner's policing runs
+  // once, immediately before that call, exactly as it runs before the debugger's first input.
+  const beforeInPage = (): void => {
+    hooks.beforeInput?.();
+    hooks.onFirstInput?.();
+  };
 
   if (step.action === "navigate") {
     const url = step.url ?? "";
@@ -832,7 +844,12 @@ export async function performStep(
         "park",
       );
     }
-    await dispatchPress(deps.cdp, token, step.key ?? "", contextId, hooks);
+    if (deps.inPage) {
+      beforeInPage();
+      await inPagePress(deps.cdp, token, step.key ?? "", contextId);
+    } else {
+      await dispatchPress(deps.cdp, token, step.key ?? "", contextId, hooks);
+    }
     return { id: step.id, action: step.action, outcome: "done", rung: result.rung, by: result.by };
   }
 
@@ -854,11 +871,16 @@ export async function performStep(
         "park",
       );
     }
-    await dispatchFill(deps.cdp, token, text, {
-      clearFirst: step.clear_first,
-      contextId,
-      hooks,
-    });
+    if (deps.inPage) {
+      beforeInPage();
+      await inPageFill(deps.cdp, token, text, { clearFirst: step.clear_first, contextId });
+    } else {
+      await dispatchFill(deps.cdp, token, text, {
+        clearFirst: step.clear_first,
+        contextId,
+        hooks,
+      });
+    }
     // A fill the recorder witnessed as an autocomplete is not finished until its suggestion is
     // accepted; an ordinary fill is byte-identical to before — no listbox read, no poll, no click.
     if (step.autocomplete === true) {
@@ -887,14 +909,19 @@ export async function performStep(
         "park",
       );
     }
-    const chosen = await dispatchSelect(
-      deps.cdp,
-      token,
-      wanted,
-      step.option_match ?? "text",
-      contextId,
-      hooks,
-    );
+    const chosen = deps.inPage
+      ? await (async (): Promise<{ matched: boolean; value: string | null; reason?: string; custom?: boolean }> => {
+          beforeInPage();
+          return inPageSelect(deps.cdp, token, wanted, step.option_match ?? "text", contextId);
+        })()
+      : await dispatchSelect(
+          deps.cdp,
+          token,
+          wanted,
+          step.option_match ?? "text",
+          contextId,
+          hooks,
+        );
     if (!chosen.matched && !chosen.custom) {
       throw new ExecutorError(
         `the select step ${step.id} could not choose ${JSON.stringify(wanted)}: ${chosen.reason ?? "no option matched"}`,
@@ -907,7 +934,12 @@ export async function performStep(
       // owns. The search is `role=option` only, scoped to that listbox: a
       // document-wide search, or a fuzzy text fallback, could click an option of
       // some other listbox on the page.
-      await dispatchClick(deps.cdp, token, contextId, hooks);
+      if (deps.inPage) {
+        beforeInPage();
+        await inPageClick(deps.cdp, token, contextId);
+      } else {
+        await dispatchClick(deps.cdp, token, contextId, hooks);
+      }
       const listbox = await resolveListboxDescriptor(deps.cdp, token, contextId);
       if (!listbox.ok) {
         throw new ExecutorError(
@@ -926,7 +958,12 @@ export async function performStep(
           "park",
         );
       }
-      await dispatchClick(deps.cdp, option.token, contextId, hooks);
+      if (deps.inPage) {
+        beforeInPage();
+        await inPageClick(deps.cdp, option.token, contextId);
+      } else {
+        await dispatchClick(deps.cdp, option.token, contextId, hooks);
+      }
     }
     return { id: step.id, action: step.action, outcome: "done", rung: result.rung, by: result.by };
   }
@@ -973,7 +1010,12 @@ export async function performStep(
     }
     // The step's own deadline bounds how long the target may take to stop moving (PL-017b).
     try {
-      await dispatchClick(deps.cdp, token, contextId, hooks, Math.max(1, clickDeadline - Date.now()));
+      if (deps.inPage) {
+        beforeInPage();
+        await inPageClick(deps.cdp, token, contextId, Math.max(1, clickDeadline - Date.now()));
+      } else {
+        await dispatchClick(deps.cdp, token, contextId, hooks, Math.max(1, clickDeadline - Date.now()));
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (!message.includes("no longer in the document") || Date.now() >= clickDeadline) throw error;

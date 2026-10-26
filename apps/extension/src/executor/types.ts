@@ -62,6 +62,12 @@ export interface StepReport {
   by?: string;
   detail?: string;
   /**
+   * PL-108: which path sent this step's input. Present only for a run that tried the in-page
+   * dispatcher; `debugger` here means the step fell back to it after the in-page action showed no
+   * effect its own check could see.
+   */
+  via?: "debugger" | "in-page";
+  /**
    * What the step observed beyond its own success, for the runner's ledger (PL-027). A navigate
    * puts the requests the abandon guard refused here: the guard is released by that arrival, and
    * the page that was abandoned is the only thing that could have made them.

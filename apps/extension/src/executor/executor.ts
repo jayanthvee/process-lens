@@ -54,6 +54,11 @@ export interface RunDeps {
   resolverSource?: string;
   /** Execution contexts, for steps that name a frame. */
   frames?: StepRunDeps["frames"];
+  /**
+   * PL-108 experiment: try the in-page dispatcher for every step, falling back to the debugger for
+   * a step whose own check cannot see an effect. Off (the debugger) unless this is true.
+   */
+  inPage?: boolean;
 }
 
 export interface RunSummary {
@@ -208,8 +213,29 @@ export async function runRecipe(
         trace.commitInFlight = true;
       }
 
-      const report = await performStep(step, context, allowedOrigins, deps);
-      await verifyCondition(deps.cdp, step, step.assert_after, deps, () => control.aborted);
+      let report = await performStep(step, context, allowedOrigins, deps);
+      try {
+        await verifyCondition(deps.cdp, step, step.assert_after, deps, () => control.aborted);
+        if (deps.inPage === true) report = { ...report, via: "in-page" };
+      } catch (error) {
+        // PL-108: an in-page action whose own check cannot see an effect is retried ONCE through
+        // the debugger, and the report says which path worked. A commit step is never retried: a
+        // commit check that failed may already have saved, so it parks rather than double-submit.
+        const retry =
+          deps.inPage === true &&
+          step.commit !== true &&
+          !control.aborted &&
+          error instanceof ExecutorError &&
+          error.stepId === step.id;
+        if (!retry) throw error;
+        report = await performStep(step, context, allowedOrigins, { ...deps, inPage: false });
+        await verifyCondition(deps.cdp, step, step.assert_after, deps, () => control.aborted);
+        report = {
+          ...report,
+          via: "debugger",
+          detail: "the in-page action showed no effect; retried with the debugger",
+        };
+      }
       if (committing) trace.commitInFlight = false;
       reports.push(report);
       completed += 1;

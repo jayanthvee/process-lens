@@ -16,6 +16,23 @@ export {
 } from "./dispatch";
 export { conditionExpression, conditionTimeout, waitForCondition } from "./assertions";
 export {
+  DEFAULT_DISPATCH_PATH,
+  IN_PAGE_DISPATCH_KEY,
+  dispatchPathFrom,
+  inPageDispatchEnabled,
+  type DispatchPath,
+} from "./flags";
+export {
+  dialogOverrideExpression,
+  inPageClick,
+  inPageFill,
+  inPagePress,
+  inPageSelect,
+  inPageUpload,
+  type InPageFile,
+  type InPageSelectAnswer,
+} from "./inpage";
+export {
   LADDER,
   TARGET_MARKER,
   measureExpression,
