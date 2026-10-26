@@ -16,6 +16,12 @@ def _state_of(conn: psycopg.Connection, record_id: uuid.UUID) -> str:
         return cur.fetchone()[0]
 
 
+def _reason_of(conn: psycopg.Connection, record_id: uuid.UUID) -> str:
+    with conn.cursor() as cur:
+        cur.execute("SELECT reason FROM run_records WHERE id = %s", (record_id,))
+        return cur.fetchone()[0]
+
+
 def _reviewer(conn: psycopg.Connection, ledger: Ledger) -> uuid.UUID:
     """A user row: ``destination_checked_by`` is a foreign key, so a check names a real person."""
     with conn.cursor() as cur:
@@ -51,6 +57,32 @@ def test_dismiss_a_non_commit_record_goes_to_skipped(
     assert response.status_code == 200, response.text
     assert response.json() == {"record_id": str(record_id), "state": "skipped"}
     assert _state_of(conn, record_id) == "skipped"
+
+
+def test_a_not_found_skip_keeps_the_reason_that_tells_it_from_already_there(
+    connected: TestClient, conn: psycopg.Connection, ledger: Ledger
+) -> None:
+    """PL-106 item 7: the run page's Skip it sends the search's reason with the dismiss.
+
+    The web app reads that reason back to tell a row a person skipped because the search found
+    nothing ("Skipped") from one that was already in the destination ("Already there"). If the
+    API replaced it with the default, the row would be misread after the skip.
+    """
+    run = ledger.new_run()
+    record_id = ledger.add_record(run, state="parked")
+    conn.execute(
+        "UPDATE run_records SET reason = %s WHERE id = %s",
+        ("Not found in crm.example.com.", record_id),
+    )
+
+    response = connected.post(
+        f"/api/v1/records/{record_id}/dismiss",
+        json={"reason": "Not found in crm.example.com."},
+    )
+
+    assert response.status_code == 200, response.text
+    assert _state_of(conn, record_id) == "skipped"
+    assert _reason_of(conn, record_id) == "Not found in crm.example.com."
 
 
 def test_dismiss_a_commit_attempted_record_without_a_check_is_409(

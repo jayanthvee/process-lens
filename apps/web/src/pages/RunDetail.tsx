@@ -27,6 +27,7 @@ import {
 import type { ExecutorSession, OperatorInfo, RecordRow, RunDetail as RunDetailPayload } from "../types";
 import {
   actionGate,
+  actionReason,
   recordActionLabel,
   sendRecordAction,
   type RecordAction,
@@ -176,6 +177,8 @@ export function RunDetail(): JSX.Element {
         commitAttempted: row.commit_attempted === true,
         confirmed: confirmed[row.id] === true,
         operatorId,
+        // A not-found skip keeps its reason; every other action sends none (PL-106 item 7).
+        reason: actionReason(action, row.reason),
       });
       // The page shows the API's answer, never its own guess at what a row became.
       records.reload();
@@ -566,7 +569,7 @@ export function RunDetail(): JSX.Element {
                               disabled={gate.disabled || rowBusy !== null || batchBusy}
                               onClick={() => void rowAct(row, "dismiss")}
                             >
-                              {recordActionLabel("dismiss")}
+                              {recordActionLabel("dismiss", row.reason)}
                             </button>
                           </span>
                         )}

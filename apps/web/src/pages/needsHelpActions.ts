@@ -11,6 +11,7 @@
  */
 
 import { apiPost } from "../lib/api";
+import { isNotFoundReason } from "../lib/words";
 import type { RecordActionBody } from "../types";
 
 /** The exact words the confirmation carries. The ticket fixes them. */
@@ -30,8 +31,14 @@ export { OPERATOR_NOTE, operatorNote } from "../lib/words";
 
 export type RecordAction = "requeue" | "dismiss";
 
-/** The words on the button that asks for one action. */
-export function recordActionLabel(action: RecordAction): string {
+/**
+ * The words on the button that asks for one action.
+ *
+ * A row whose search found nothing is skipped by the person, not dismissed by the system: the
+ * button says so, while still using the existing parked -> skipped dismiss (PL-106 item 7 review).
+ */
+export function recordActionLabel(action: RecordAction, reason?: string | null): string {
+  if (action === "dismiss" && isNotFoundReason(reason)) return "Skip it";
   return action === "requeue" ? "Try again" : "Dismiss";
 }
 
@@ -118,6 +125,18 @@ export function actionBody(input: ActionBodyInput): RecordActionBody {
     body.destination_checked_by = input.operatorId;
   }
   return body;
+}
+
+/**
+ * The reason to send with an action, when it must not be the API's own default.
+ *
+ * A not-found row's dismiss keeps the reason that names the site, so the row still reads "Skipped"
+ * rather than "Already there" once a person skips it (PL-106 item 7). Every other action sends no
+ * reason, exactly as before: a normal dismiss still gets the API's own default sentence, and a
+ * requeue never carries one.
+ */
+export function actionReason(action: RecordAction, reason?: string | null): string | undefined {
+  return action === "dismiss" && isNotFoundReason(reason) ? reason ?? undefined : undefined;
 }
 
 /**

@@ -61,11 +61,11 @@ export const NO_SEARCH_HINT = DUPLICATES_BLOCKED;
  * already there, and the row is skipped. For a find-then-update -- the search finds the record the
  * row is about to change -- skipping a found record would skip every row, and the case worth
  * naming is the opposite one: a search that finds *nothing* leaves nothing to change, so that row
- * is skipped too (PL-106). The compiler decides which shape a recording is and the form words the
- * rule to match.
+ * is parked and a person can skip it (PL-106). The compiler decides which shape a recording is and
+ * the form words the rule to match.
  */
 export const SKIP_IF_THERE = "If this row is already there, skip it";
-export const PARK_WHEN_NOTHING_FOUND = "Skip a row when the search finds nothing";
+export const PARK_WHEN_NOTHING_FOUND = "Park a row when the search finds nothing";
 
 /** The checkbox's wording for a compiled shape: no shape, or a create, keeps today's words. */
 export function duplicateLabelFor(searchKind: string | null): string {
@@ -800,7 +800,8 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
    * Word the search rule for the shape the compiler just reported (PL-077).
    *
    * A create keeps "If this row is already there, skip it"; a find-then-update is told the truth
-   * about what the same rule now does: it skips a row whose search found nothing to change.
+   * about what the same rule now does: it parks a row whose search found nothing to change, so the
+   * person can skip it after looking.
    */
   function applySearchKind(searchKind: string | null): void {
     if (duplicateLabelEl) duplicateLabelEl.textContent = duplicateLabelFor(searchKind);

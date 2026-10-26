@@ -17,7 +17,7 @@ const WAITING: Outcome = { label: "Waiting", tone: "idle" };
 const CHECKING: Outcome = { label: "Checking…", tone: "live" };
 const DONE: Outcome = { label: "Done", tone: "ok" };
 const ALREADY_THERE: Outcome = { label: "Already there", tone: "idle" };
-/** A row whose record the search did not find: nothing to change, and nothing for a person to do. */
+/** A row a person skipped after its search did not find the record. */
 const SKIPPED: Outcome = { label: "Skipped", tone: "idle" };
 const NEEDS_HELP: Outcome = { label: "Needs your help", tone: "help" };
 const DIDNT_WORK: Outcome = { label: "Didn't work", tone: "help" };
@@ -56,14 +56,25 @@ export const RUNNING_AGAIN: Outcome = { label: "Running again", tone: "live" };
 export const CONNECT_CHROME = "Click the ProcessLens icon in Chrome's toolbar to connect.";
 
 /**
+ * Whether a row's reason says its search did not find the record.
+ *
+ * The compiler writes this prefix, whether or not the page had a host to name, and both the row's
+ * outcome and its action read it (PL-106 item 7).
+ */
+export function isNotFoundReason(reason?: string | null): boolean {
+  return (reason ?? "").trim().startsWith("Not found in");
+}
+
+/**
  * A row's outcome in plain words. Unknown states fall back to "Waiting".
  *
  * A `skipped` row has two causes, told apart by the reason the runner wrote: a search that found
- * nothing leaves nothing to change, so the row reads "Skipped"; any other skip was a record that
- * was already there (PL-106 item 7).
+ * nothing leaves nothing to change, so a row a person skipped reads "Skipped"; any other skip was
+ * a record that was already there (PL-106 item 7). Until the person skips it, the row is `parked`
+ * and reads "Needs your help".
  */
 export function rowOutcome(state: string, reason?: string | null): Outcome {
-  if (state === "skipped" && (reason ?? "").trim().startsWith("Not found in")) {
+  if (state === "skipped" && isNotFoundReason(reason)) {
     return SKIPPED;
   }
   return ROW_STATES[state] ?? WAITING;
@@ -128,8 +139,11 @@ export function plainReason(reason: string | null, state?: string): string {
   }
   const known = REASONS[key.toLowerCase()];
   if (known !== undefined) return known;
-  // The runner already writes its reasons for people, but a code we have never seen must still not
-  // reach the screen as an identifier.
+  // A not-found reason is the row's whole explanation and names a host, so it is shown exactly as
+  // written: the code-to-words fallback would turn the hyphen in "my-crm.example.com" into a
+  // space. Every other reason keeps the fallback (PL-106 item 7).
+  if (isNotFoundReason(key) && key.endsWith(".")) return key;
+  // A code we have never seen must still not reach the screen as an identifier.
   const readable = sentence(key);
   return /\.$/.test(readable) ? readable : `${readable}.`;
 }

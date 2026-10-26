@@ -86,6 +86,10 @@ describe("plainReason", () => {
     expect(plainReason("A value it needs is missing from the row.")).toBe(
       "A value it needs is missing from the row.",
     );
+    // A hyphen is part of the host, not a word break (PL-106 item 7).
+    expect(plainReason("Not found in my-crm.example.com.")).toBe(
+      "Not found in my-crm.example.com.",
+    );
     expect(plainReason(null)).toBe("Something went wrong.");
     expect(plainReason("   ")).toBe("Something went wrong.");
   });
@@ -249,7 +253,12 @@ describe("a finished run that left rows for a person (PL-106 item 4)", () => {
 });
 
 describe("a row whose record the search did not find (PL-106 item 7)", () => {
-  it("reads Skipped, not Already there, when the reason says it was not found", () => {
+  it("waits for a person until they skip it, then reads Skipped not Already there", () => {
+    // The branch parks: an absent result is not proof, so the row comes to the run page first.
+    expect(rowOutcome("parked", "Not found in crm.example.com.")).toEqual({
+      label: "Needs your help",
+      tone: "help",
+    });
     expect(rowOutcome("skipped", "Not found in crm.example.com.")).toEqual({
       label: "Skipped",
       tone: "idle",
