@@ -24,7 +24,7 @@ import {
   stepProblems,
   type StepProblem,
 } from "../../../extension/src/popup/flow";
-import { plainSentences } from "../../../extension/src/popup/words";
+import { compileRefusalSentence, plainSentences, stepSentence } from "../../../extension/src/popup/words";
 import type { RecordedEvent } from "../../../extension/src/shared/recipe-types";
 import {
   EMPTY_STATUS,
@@ -73,9 +73,18 @@ export function PanelTeach(): JSX.Element {
   const [saving, setSaving] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
+  // PL-107: which recorded click saves the work; "" is "Nothing gets saved".
+  const [commitStepId, setCommitStepId] = useState("");
 
   const recording = status.state === "recording";
   const values = recordedValues(events);
+  // PL-107: one choice per recorded click, labelled by the click's own sentence.
+  const clickChoices: { id: string; label: string }[] = [];
+  for (const event of events) {
+    const step = event?.step ?? null;
+    if (step === null || step.action !== "click" || !step.id) continue;
+    clickChoices.push({ id: step.id, label: stepSentence(step, event.kind) });
+  }
 
   async function send(message: ToWorker): Promise<RecorderResponse | null> {
     const chrome = extensionChrome();
@@ -138,9 +147,21 @@ export function PanelTeach(): JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [events]);
 
+  // The save choice follows the recording: the last click until the person picks another.
+  useEffect(() => {
+    const fallback = defaultCommitStepId(events) ?? "";
+    setCommitStepId((current) =>
+      clickChoices.some((choice) => choice.id === current) ? current : fallback,
+    );
+    // Only re-derive on a new recording; a deliberate "Nothing gets saved" is kept until then.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [events]);
+
   async function start(): Promise<void> {
     setProblem(null);
     setNote(null);
+    // PL-107: a new teaching starts empty, never adding to the last recording.
+    apply(await send({ type: "record:clear" }));
     const chrome = extensionChrome();
     const tabs = await chrome?.tabs?.query({ active: true, currentWindow: true });
     const tabId = tabs?.[0]?.id;
@@ -195,10 +216,9 @@ export function PanelTeach(): JSX.Element {
       const request = makeRecipeRequest(events, {
         name: trimmed,
         recordKeyColumn: keyColumn,
-        // The recording's last click is the save, exactly as the popup preselected it. A null
-        // commit would compile that click as a plain click: no write-ahead and no save check, so
-        // a crash mid-save could create the record twice.
-        commitStepId: defaultCommitStepId(events),
+        // PL-107: the person chooses which click saves; "" is "Nothing gets saved", which
+        // compiles a read-only recipe (no commit step). The last click stays the default.
+        commitStepId: commitStepId === "" ? null : commitStepId,
       });
       if (values.length === 0) {
         // No column to key on: every Run once carries a fresh id, so the ledger sees new work.
@@ -212,8 +232,7 @@ export function PanelTeach(): JSX.Element {
         headers: config.headers,
       });
       if (!compiled.ok) {
-        const plain = plainSentences(compiled.problems.join("\n")).shown[0];
-        setProblem(plain ?? "Could not save this as a task.");
+        setProblem(compileRefusalSentence(compiled.problems, events));
         setNote(null);
         return;
       }
@@ -242,6 +261,13 @@ export function PanelTeach(): JSX.Element {
   // the check runs once the recording is stopped: while it is still being built there is nothing
   // to judge yet.
   const problems = recording ? new Map<number, StepProblem>() : stepProblems(events);
+  // PL-107: a plain click's own words are already the "Which click saves your work?" choices, so
+  // the step list shows the other steps and any step that needs a fix (a click's included). That
+  // keeps one line per step on screen instead of the same sentence twice.
+  const clickSeqs = new Set(
+    events.filter((event) => event.step?.action === "click").map((event) => event.seq),
+  );
+  const listLines = lines.filter((line) => !clickSeqs.has(line.seq) || problems.has(line.seq));
 
   return (
     <section className="panel-card" aria-label="Teach">
@@ -259,6 +285,11 @@ export function PanelTeach(): JSX.Element {
         <button type="button" className="btn quiet" disabled={!recording} onClick={() => void stop()}>
           Stop
         </button>
+        {lines.length > 0 && !recording ? (
+          <button type="button" className="btn quiet" onClick={() => void startOver()}>
+            Start over
+          </button>
+        ) : null}
       </div>
       <p className="panel-count">
         {status.count} step{status.count === 1 ? "" : "s"} recorded
@@ -270,9 +301,9 @@ export function PanelTeach(): JSX.Element {
       )}
       {lines.length === 0 ? (
         <p className="panel-note">The steps you take will appear here.</p>
-      ) : (
+      ) : listLines.length === 0 ? null : (
         <ol className="panel-steps">
-          {lines.map((line) => {
+          {listLines.map((line) => {
             const problem = problems.get(line.seq);
             return (
               <li
@@ -312,6 +343,24 @@ export function PanelTeach(): JSX.Element {
         </ol>
       )}
 
+      {clickChoices.length === 0 ? null : (
+        <div className="panel-commit">
+          <select
+            className="panel-input"
+            aria-label="Which click saves your work?"
+            value={commitStepId}
+            onChange={(event) => setCommitStepId(event.target.value)}
+          >
+            {clickChoices.map((choice) => (
+              <option key={choice.id} value={choice.id}>
+                {choice.label}
+              </option>
+            ))}
+            <option value="">Nothing gets saved</option>
+          </select>
+        </div>
+      )}
+
       <div className="panel-save">
         <label className="panel-label" htmlFor="panel-task-name">
           What should this task be called?
@@ -329,8 +378,9 @@ export function PanelTeach(): JSX.Element {
         {values.length === 0 ? null : (
           <>
             <label className="panel-label" htmlFor="panel-task-key">
-              Which column identifies each row?
+              Which value is different for every row?
             </label>
+            <p className="panel-note">We use it so nothing gets added twice.</p>
             <select
               id="panel-task-key"
               className="panel-input"

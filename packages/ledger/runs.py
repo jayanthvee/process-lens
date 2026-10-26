@@ -223,6 +223,34 @@ def get_run(conn: psycopg.Connection, run_id: uuid.UUID) -> RunClaim | None:
     return _row(RunClaim, row) if row is not None else None
 
 
+# PL-107: a finished run whose row is put back in the queue must be put back to work. The
+# supervisor only starts `queued` runs, so a `completed` run stays completed and the re-queued row
+# waits forever. Reopening clears the worker/lease fields so the run is claimed exactly like a
+# fresh one. `started_at` is kept: it is when this work first started.
+_REOPEN_COMPLETED_RUN = """
+UPDATE runs
+SET status = 'queued',
+    worker_id = NULL,
+    heartbeat_at = NULL,
+    lease_epoch = 0,
+    cancel_requested_at = NULL,
+    pause_reason = NULL,
+    finished_at = NULL
+WHERE id = %(run)s AND status = 'completed'
+"""
+
+
+def reopen_completed_run(conn: psycopg.Connection, run_id: uuid.UUID) -> bool:
+    """Put a ``completed`` run back to ``queued``, clearing its worker/lease fields (PL-107).
+
+    Returns whether the run was ``completed`` and is now queued. A ``running``, ``paused`` or
+    already re-queued run is left exactly as it is: its own worker keeps going.
+    """
+    with conn.cursor() as cur:
+        cur.execute(_REOPEN_COMPLETED_RUN, {"run": run_id})
+        return cur.rowcount == 1
+
+
 def set_run_status(
     conn: psycopg.Connection,
     run_id: uuid.UUID,

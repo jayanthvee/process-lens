@@ -199,10 +199,11 @@ function stream(event: RecordedEvent): void {
   }
 }
 
-function appendEvent(pending: PendingEvent): RecordedEvent {
+function appendEvent(pending: PendingEvent): RecordedEvent | null {
   // The session owns the order and the step ids: one counter per action for the whole
   // recording, so a page load cannot restart it and mint an id that already exists.
   const event = session.append(pending);
+  if (event === null) return null;
   status = { ...status, count: session.count };
   stream(event);
   return event;
@@ -1165,6 +1166,7 @@ chrome.webNavigation?.onCommitted?.addListener((details) => {
   if (!recordable) return;
 
   const event = session.appendNavigate(details.url);
+  if (event === null) return;
   status = { ...status, count: session.count };
   updateBadge();
   void persist().then(() => broadcast());
@@ -1216,6 +1218,7 @@ async function handle(message: ToWorker, sender?: chrome.runtime.MessageSender):
       if (status.state === "recording") {
         if (sendingTabId !== undefined) recordedTabId = sendingTabId;
         const event = appendEvent(message.event);
+        if (event === null) break;
         broadcast();
         void chrome.runtime
           .sendMessage({ type: "record:appended", event, status: snapshot() })

@@ -21,6 +21,31 @@ export function normalizeText(value: string | null | undefined): string {
  * label text of "Contact?". Dropping the help marker here keeps recordings readable and means
  * the compiled recipe does not have to strip it after the fact.
  */
+/** The computed style of an element, or null when the document cannot compute one. */
+function computedStyleOf(el: Element): CSSStyleDeclaration | null {
+  const view = el.ownerDocument?.defaultView ?? null;
+  if (!view || typeof view.getComputedStyle !== "function") return null;
+  try {
+    return view.getComputedStyle(el);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether a subtree is hidden from the element's name: `aria-hidden`, the `hidden` attribute, or a
+ * `display:none`/`visibility:hidden` style (inline first, computed when available). Opacity alone
+ * does not hide a name (PL-107).
+ */
+function isHiddenSubtree(el: Element): boolean {
+  if (el.getAttribute("aria-hidden") === "true") return true;
+  if (el.hasAttribute("hidden")) return true;
+  const inline = (el as HTMLElement).style;
+  if (inline && (inline.display === "none" || inline.visibility === "hidden")) return true;
+  const style = computedStyleOf(el);
+  return style !== null && (style.display === "none" || style.visibility === "hidden");
+}
+
 function nodeTextExcludingHelp(node: Node | null | undefined): string {
   if (!node) return "";
   const pieces: string[] = [];
@@ -33,7 +58,9 @@ function nodeTextExcludingHelp(node: Node | null | undefined): string {
     const el = current as Element;
     const tag = el.tagName.toUpperCase();
     const childSkip =
-      skip || ((tag === "SUP" || tag === "SUB") && normalizeText(el.textContent) === "?");
+      skip ||
+      isHiddenSubtree(el) ||
+      ((tag === "SUP" || tag === "SUB") && normalizeText(el.textContent) === "?");
     for (const child of Array.from(el.childNodes)) {
       walk(child, childSkip);
     }
@@ -552,30 +579,22 @@ export function computeTargets(el: Element): LocatorRung[] {
  */
 export function isPasswordField(el: Element): boolean {
   if (el.tagName.toUpperCase() !== "INPUT") return false;
-  const type = (el.getAttribute("type") ?? "text").toLowerCase();
-  if (type === "password") return true;
-  const autocomplete = (el.getAttribute("autocomplete") ?? "").toLowerCase();
-  if (autocomplete.includes("password")) return true;
-  // PL-068: a one-time verification code is a credential too. The run asks the person for it on
-  // the run page; the recording must never hold one a person typed while teaching.
-  if (autocomplete.includes("one-time-code")) return true;
-  const named = `${el.getAttribute("name") ?? ""} ${el.getAttribute("id") ?? ""}`.toLowerCase();
-  if (ONE_TIME_CODE_NAME.test(named)) return true;
-  // PL-102: the same code pages the run recognises (`codePromptInPage`). Six single-character
-  // boxes in a row carry no hint at all, and a numeric field says what it wants only in its label.
-  if (isSplitCodeBox(el)) return true;
-  const numeric =
-    (el.getAttribute("inputmode") ?? "").toLowerCase() === "numeric" ||
-    type === "tel" ||
-    type === "number";
-  return numeric && CODE_LABEL.test(accessibleName(el));
+  if (isCodeFieldOnOwn(el)) return true;
+  return inCodeRow(el);
 }
 
 /** The words a code field's own label uses. */
 const CODE_LABEL = /(verification|one[- ]time|security code|passcode|\bcode\b)/i;
 
+/** A split-code box's own label: "Digit 3 of 6". */
+const SPLIT_DIGIT_LABEL = /\bdigit \d+ of \d+\b/i;
+
+/** Names and ids a one-time-code field carries: otp, mfa/2fa codes, verification codes. */
+const ONE_TIME_CODE_NAME =
+  /\b(otp|one[-_ ]?time[-_ ]?(code|password)|(verification|mfa|2fa|totp|auth)[-_ ]?code)\b/;
+
 /** One of 4-8 single-character inputs side by side: a code typed one digit per box. */
-function isSplitCodeBox(el: Element): boolean {
+function isMaxLengthCodeBox(el: Element): boolean {
   if (el.getAttribute("maxlength") !== "1") return false;
   let node: Element | null = el.parentElement;
   for (let depth = 0; depth < 3 && node; depth += 1) {
@@ -586,9 +605,87 @@ function isSplitCodeBox(el: Element): boolean {
   return false;
 }
 
-/** Names and ids a one-time-code field carries: otp, mfa/2fa codes, verification codes. */
-const ONE_TIME_CODE_NAME =
-  /\b(otp|one[-_ ]?time[-_ ]?(code|password)|(verification|mfa|2fa|totp|auth)[-_ ]?code)\b/;
+/**
+ * A cheap label reading for the split-code digit rule: aria-labelledby, aria-label, or a wrapping
+ * `<label>`. It deliberately skips the document-wide `<label for>` lookup and the computed-style
+ * walk `accessibleName` does, so a page of ordinary fields pays almost nothing for it.
+ */
+function cheapLabelText(el: Element): string {
+  const labelledby = normalizeText(el.getAttribute("aria-labelledby"));
+  if (labelledby) {
+    const root = el.ownerDocument;
+    return normalizeText(
+      labelledby
+        .split(" ")
+        .map((id) => root.getElementById(id)?.textContent ?? "")
+        .join(" "),
+    );
+  }
+  const ariaLabel = normalizeText(el.getAttribute("aria-label"));
+  if (ariaLabel) return ariaLabel;
+  return normalizeText(el.closest("label")?.textContent);
+}
+
+/**
+ * Does this one input, on its own, read as a code field? The shapes the existing rules recognise:
+ * a password, a one-time-code hint, a code name, a split-code box, or a numeric field whose label
+ * asks for a code. The sibling-row rule below builds on this and is deliberately not here.
+ */
+function isCodeFieldOnOwn(el: Element): boolean {
+  if (el.tagName.toUpperCase() !== "INPUT") return false;
+  const type = (el.getAttribute("type") ?? "text").toLowerCase();
+  if (type === "password") return true;
+  const autocomplete = (el.getAttribute("autocomplete") ?? "").toLowerCase();
+  // PL-068: a one-time verification code is a credential too. The run asks the person for it on
+  // the run page; the recording must never hold one a person typed while teaching.
+  if (autocomplete.includes("password")) return true;
+  if (autocomplete.includes("one-time-code")) return true;
+  const named = `${el.getAttribute("name") ?? ""} ${el.getAttribute("id") ?? ""}`.toLowerCase();
+  if (ONE_TIME_CODE_NAME.test(named)) return true;
+  // PL-107: a split-code box's label says "Digit N of M". Read it cheaply first, so a page of a
+  // thousand ordinary text fields never pays for an accessible name.
+  if (SPLIT_DIGIT_LABEL.test(cheapLabelText(el))) return true;
+  // PL-102: the same code pages the run recognises (`codePromptInPage`). Six single-character
+  // boxes in a row carry no hint at all.
+  if (isMaxLengthCodeBox(el)) return true;
+  const numeric =
+    (el.getAttribute("inputmode") ?? "").toLowerCase() === "numeric" ||
+    type === "tel" ||
+    type === "number";
+  if (!numeric) return false;
+  // A numeric field says what it wants only in its label; read the full name now.
+  return CODE_LABEL.test(accessibleName(el));
+}
+
+/** An input's shape for the sibling-row rule: its `type` and `inputmode`, both lowercase. */
+function inputShape(el: Element): string {
+  return `${(el.getAttribute("type") ?? "text").toLowerCase()}|${(el.getAttribute("inputmode") ?? "").toLowerCase()}`;
+}
+
+/**
+ * PL-107: a row of 4-8 same-shaped sibling inputs, one of which is a code field, is a split code;
+ * every box in the row is then a code field. "Sibling" means the same immediate parent, found within
+ * three levels, and the boxes must share a `type`/`inputmode`, so an ordinary six-field form stays
+ * an ordinary form.
+ */
+function inCodeRow(el: Element): boolean {
+  let node: Element | null = el.parentElement;
+  for (let depth = 0; depth < 3 && node; depth += 1) {
+    // A split code's row holds only its boxes. A container with many children is a page region,
+    // not a row: checking a whole document's children here (jsdom materializes them expensively)
+    // would make a snapshot of a large page quadratic for no answer.
+    if (node.childElementCount <= 20) {
+      const siblings = Array.from(node.children).filter((child) => child.tagName === "INPUT");
+      if (siblings.length >= 4 && siblings.length <= 8) {
+        const shape = inputShape(el);
+        const sameShape = siblings.every((sibling) => inputShape(sibling) === shape);
+        if (sameShape && siblings.some((sibling) => isCodeFieldOnOwn(sibling))) return true;
+      }
+    }
+    node = node.parentElement;
+  }
+  return false;
+}
 
 /** True for an element the person types into directly, without a value property. */
 export function isRichText(el: Element): boolean {

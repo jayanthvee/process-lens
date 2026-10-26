@@ -59,3 +59,23 @@ def test_try_again_on_a_stopped_run_says_so(
     assert response.status_code == 409, response.text
     assert "stopped" in response.text
     assert _run_status(conn, run.id) == "cancelled"
+
+
+def test_try_again_keeps_the_row_original_reason(
+    connected: TestClient, conn: psycopg.Connection, ledger: Ledger
+) -> None:
+    """PL-107 item 15: pressing Try again must not erase why the row stopped."""
+    run = ledger.new_run(status="completed")
+    record_id = ledger.add_record(run, state="parked")
+    original = "Couldn't click Continue: something was in front of it"
+    conn.execute("UPDATE run_records SET reason = %s WHERE id = %s", (original, record_id))
+
+    response = connected.post(f"/api/v1/records/{record_id}/requeue", json={})
+
+    assert response.status_code == 200, response.text
+    with conn.cursor() as cur:
+        cur.execute("SELECT reason FROM run_records WHERE id = %s", (record_id,))
+        reason = cur.fetchone()[0]
+    assert reason is not None
+    assert original in reason
+    assert "Trying again" in reason

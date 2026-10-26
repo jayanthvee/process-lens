@@ -113,7 +113,7 @@ describe("one click on a submit button is one line in the list", () => {
   it("folds the submit that a click caused into the click's line", () => {
     const lines = stepLines(events);
     expect(lines).toHaveLength(1);
-    expect(lines[0].sentence).toBe("Clicked Continue");
+    expect(lines[0]!.sentence).toBe("Clicked Continue");
   });
 });
 

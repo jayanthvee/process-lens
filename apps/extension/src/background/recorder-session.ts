@@ -10,6 +10,7 @@
 import type { PendingEvent } from "../shared/events";
 import type { Condition, RecordedEvent } from "../shared/recipe-types";
 import type { RecordingState } from "../shared/messages";
+import { isEmailHost } from "../shared/email-code";
 
 /**
  * How long the page an action navigated to has to report before the action is no longer the
@@ -135,8 +136,12 @@ export class RecorderSession {
    * to a page (requirement 5), so an id minted on one page keeps its place after a navigation
    * when the content script's own counter has started again. A step therefore arrives with a
    * provisional id and is stored under the session's own.
+   *
+   * An event on the person's own webmail (PL-107) is dropped and returns ``null``: going to the
+   * inbox for a code is not a step of the task being taught.
    */
-  append(pending: PendingEvent): RecordedEvent {
+  append(pending: PendingEvent): RecordedEvent | null {
+    if (isEmailHost(pending.url)) return null;
     this.sequence += 1;
     const provisional = typeof pending.step?.id === "string" ? pending.step.id : null;
     const step = pending.step
@@ -164,7 +169,7 @@ export class RecorderSession {
   }
 
   /** Record a navigation nobody's click caused. It has no step: it moved the page, nothing acted. */
-  appendNavigate(url: string): RecordedEvent {
+  appendNavigate(url: string): RecordedEvent | null {
     return this.append({
       at: new Date(this.now()).toISOString(),
       kind: "navigate",

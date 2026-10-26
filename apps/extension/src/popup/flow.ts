@@ -3,7 +3,7 @@
 // The markup holds one card per step, in order. Only the current step's button is gold: the other
 // cards' primary buttons are demoted to quiet ones while the person is on a different step. The
 // module is chrome-free and DOM-only, so the tests can drive it directly.
-import type { RecordedEvent } from "../shared/recipe-types";
+import type { RecordedEvent, RecordedStep } from "../shared/recipe-types";
 import { STEPS_EMPTY, stepSentence } from "./words";
 
 /** The three steps of the popup, in the order a person walks them. */
@@ -91,6 +91,12 @@ export interface StepLine {
   sentence: string;
 }
 
+/** A comparable signature of a step's first target, so a click and its submit fold together. */
+function firstTargetKey(step: RecordedStep | null): string {
+  const first = step?.targets?.[0];
+  return first ? JSON.stringify(first) : "";
+}
+
 /**
  * The step lines the live list shows: one per recorded interaction, in order.
  *
@@ -100,10 +106,23 @@ export interface StepLine {
  */
 export function stepLines(events: readonly RecordedEvent[]): StepLine[] {
   const lines: StepLine[] = [];
+  let previous: RecordedEvent | null = null;
   for (const event of events) {
     if (!event) continue;
     if (!event.step && event.kind !== "navigate") continue;
+    // PL-107: a `submit` right after a `click` on the same control is the click's own line, not a
+    // second "Clicked …" the person has to delete by hand. The compiler's `collapse_submits` folds
+    // the same pair; the live list shows one line, and removing it removes both events.
+    if (
+      event.kind === "submit" &&
+      previous !== null &&
+      previous.kind === "click" &&
+      firstTargetKey(previous.step) === firstTargetKey(event.step)
+    ) {
+      continue;
+    }
     lines.push({ seq: event.seq, sentence: stepSentence(event.step ?? null, event.kind) });
+    previous = event;
   }
   return lines;
 }

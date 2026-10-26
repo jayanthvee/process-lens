@@ -2,6 +2,7 @@ import { type CSSProperties, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 
 import { ApprovalPanel } from "../components/ApprovalPanel";
+import { DestinationCheck } from "../components/DestinationCheck";
 import { KeepsFailingWarning } from "../components/KeepsFailingWarning";
 import { WaitingRun } from "../components/WaitingRun";
 import { apiGet, apiPost, apiPostFile, apiPut, errorText } from "../lib/api";
@@ -11,7 +12,9 @@ import {
   DOCUMENT_ROWS_GONE,
   isOpenStatus,
   pauseReasonWords,
+  plainReason,
   refusalWords,
+  rowOutcome,
   runStatusWords,
 } from "../lib/words";
 import { runsBlocked, useWorkspaceState } from "../lib/workspace";
@@ -20,10 +23,13 @@ import type {
   BatchUpload,
   ExecutorSession,
   MappingEntry,
+  OperatorInfo,
+  RecordRow,
   RunCreated,
   RunDetail as RunDetailPayload,
   TaskRow,
 } from "../types";
+import { actionGate, actionReason, recordActionLabel, sendRecordAction } from "./needsHelpActions";
 import "./taskRun.css";
 
 /**
@@ -190,6 +196,15 @@ export function TaskRun(): JSX.Element {
   const runPath = runId === null ? null : `/api/v1/runs/${runId}`;
   const run = useJson<RunDetailPayload>(runPath, pollMs);
   const session = useJson<ExecutorSession>(useSessionPath(), pollMs);
+  // PL-107 item 9: the row the preview tried. Its own state, not the run's status, is what the
+  // "Try one row" card reports; a parked row gets its reason and its buttons here.
+  const recordsPath = runId === null ? null : `/api/v1/runs/${runId}/records`;
+  const records = useJson<RecordRow[]>(recordsPath, pollMs);
+  const operator = useJson<OperatorInfo>(runId === null ? null : "/api/v1/operator");
+  const [rowConfirmed, setRowConfirmed] = useState(false);
+  const [rowBusy, setRowBusy] = useState(false);
+  const [rowError, setRowError] = useState<string | null>(null);
+  const previewRow = records.data?.[0] ?? null;
   useEffect(() => {
     const next = isOpenStatus(run.data?.status ?? null) ? POLL_INTERVAL_MS : null;
     setPollMs((current) => (current === next ? current : next));
@@ -381,8 +396,47 @@ export function TaskRun(): JSX.Element {
     );
   }
 
+  // PL-107 item 9: the badge tells the truth about the row that was tried, not only the run. A
+  // finished run whose row is parked or failed says so; the run's status -- with the rows that
+  // need a person (PL-106 item 4) -- is the fallback when there is no row to show.
+  const rowNeedsHelp =
+    previewRow !== null && (previewRow.state === "parked" || previewRow.state === "failed");
   const outcome =
-    run.data === null ? null : runStatusWords(run.data.status, session.data?.attached);
+    run.data === null
+      ? null
+      : runDone && previewRow !== null
+        ? rowOutcome(previewRow.state, previewRow.reason)
+        : runStatusWords(run.data.status, session.data?.attached, run.data.counts);
+
+  // The row's own gate for Try again / Skip it: the same one RunDetail uses, so a row that may
+  // already be saved still needs the destination check first.
+  const gate = actionGate({
+    state: previewRow?.state ?? "",
+    commitAttempted: previewRow?.commit_attempted === true,
+    confirmed: rowConfirmed,
+    operatorId: operator.data?.operator_id ?? null,
+    operatorUnavailable: operator.error !== null,
+  });
+
+  async function rowAct(action: "requeue" | "dismiss"): Promise<void> {
+    if (previewRow === null || rowBusy || gate.disabled || !gate.shown) return;
+    setRowBusy(true);
+    setRowError(null);
+    try {
+      await sendRecordAction(previewRow.id, action, {
+        commitAttempted: previewRow.commit_attempted === true,
+        confirmed: rowConfirmed,
+        operatorId: operator.data?.operator_id ?? null,
+        reason: actionReason(action, previewRow.reason),
+      });
+      records.reload();
+      run.reload();
+    } catch (failure) {
+      setRowError(refusalWords(errorText(failure)));
+    } finally {
+      setRowBusy(false);
+    }
+  }
 
   return (
     <div className="task-run">
@@ -634,6 +688,38 @@ export function TaskRun(): JSX.Element {
                       stuck here. A stopped run's decision replaces this row with the panel. */}
                   <span className="run-count">Adding this row in the ProcessLens window…</span>
                 </>
+              ) : runDone && rowNeedsHelp && previewRow !== null ? (
+                <div className="run-row-help">
+                  <p className="run-note">{plainReason(previewRow.reason, previewRow.state)}</p>
+                  {gate.needsConfirmation ? (
+                    <DestinationCheck
+                      id="preview-row-check"
+                      checked={rowConfirmed}
+                      onChange={setRowConfirmed}
+                    />
+                  ) : null}
+                  <button
+                    type="button"
+                    className="btn primary"
+                    disabled={rowBusy || gate.disabled}
+                    onClick={() => void rowAct("requeue")}
+                  >
+                    {recordActionLabel("requeue")}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn quiet"
+                    disabled={rowBusy || gate.disabled}
+                    onClick={() => void rowAct("dismiss")}
+                  >
+                    Skip it
+                  </button>
+                  {rowError === null ? null : (
+                    <p className="refusal" role="status">
+                      {rowError}
+                    </p>
+                  )}
+                </div>
               ) : runDone && rowsLeft > 0 ? (
                 <button
                   type="button"

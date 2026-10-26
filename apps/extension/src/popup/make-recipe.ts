@@ -15,6 +15,7 @@ import {
   GO_WHY_NOTHING_RECORDED,
   UNNAMED_CLICK,
   UNNAMED_STEP,
+  compileRefusalSentence,
   plainSaveNotes,
   plainSentences,
 } from "./words";
@@ -355,6 +356,12 @@ function stepWords(step: RecordedStep | null): string {
 /** Something that looks enough like an email address to identify a record. */
 const EMAIL_VALUE = /^[^@\s]+@[^@\s]+$/;
 
+/** A value that reads as an id or a number rather than a person's name. */
+const ID_LIKE_VALUE = /^\d[\d\s._-]*$|^[A-Za-z]{1,6}[-_/ ]?\d{2,}$/;
+
+/** A value that reads as a person's name: two or more capitalized words. */
+const PERSON_NAME_VALUE = /^[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+$/;
+
 /**
  * Whether a recorded step's own target says "search": a searchbox role, or a name/value/text/within
  * that mentions search. Mirrors the compiler's check so the form and the compiler agree on what a
@@ -433,9 +440,12 @@ export function parkFieldDefaults(events: RecordedEvent[], recordKeyColumn: stri
 }
 
 /**
- * The column the record-key select should offer first: an email-named field when
- * there is one, else a value that looks like an email, else nothing. The recorder's
- * buffering can put a non-identifying field first, so it is never the default.
+ * The column the record-key select should offer first (PL-107 item 14).
+ *
+ * An email-named field, or a value that looks like an email, identifies a row best. An id/number
+ * comes next. A person's name is the last thing to key on, because two people can share one; a
+ * value that is none of these gets no default, so the person chooses. The recorder's buffering can
+ * put a non-identifying field first, so it is never the default on that basis alone.
  */
 export function defaultRecordKeyColumn(events: RecordedEvent[]): string | null {
   const values = recordedValues(events);
@@ -444,6 +454,12 @@ export function defaultRecordKeyColumn(events: RecordedEvent[]): string | null {
   }
   for (const value of values) {
     if (EMAIL_VALUE.test(value.value)) return value.column;
+  }
+  for (const value of values) {
+    if (ID_LIKE_VALUE.test(value.value.trim())) return value.column;
+  }
+  for (const value of values) {
+    if (PERSON_NAME_VALUE.test(value.value.trim())) return value.column;
   }
   return null;
 }
@@ -885,13 +901,10 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
       problems.length > 0 ? problems : ["ProcessLens would not accept this recording."];
     // The count is the true one, whether or not a sentence is one this page can show.
     const count = sentences.length === 1 ? "1 problem" : `${sentences.length} problems`;
-    // PL-103: the first plain sentence (the step a refusal is about, and its fix) is said right
-    // here, under Save, not only under Notes for support.
-    const { shown } = plainSentences(sentences.join("\n"));
+    // PL-103/PL-107: the refusal's one plain sentence (the step it is about and its fix, or why
+    // the save click could not be checked) is said right here, under Save, not only under support.
     notice(
-      shown.length > 0
-        ? `Could not save this as a task (${count}). ${shown[0]}`
-        : `Could not save this as a task (${count}).`,
+      `Could not save this as a task (${count}). ${compileRefusalSentence(sentences, events)}`,
     );
     // PL-033: the refusal's own sentences are for support. The person reads the headline and the
     // two plain notes; everything else stays reachable under More → "Notes for support".

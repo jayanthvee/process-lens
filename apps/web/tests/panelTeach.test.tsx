@@ -219,11 +219,13 @@ describe("the panel's step check", () => {
     expect(screen.queryByText("Typed the opportunity")).toBeNull();
   });
 
-  it("says nothing about a recording that can be repeated", async () => {
+  it("says nothing about a recording that can be repeated, but still offers Start over", async () => {
     render(<PanelTeach />);
 
     await screen.findByText("Clicked Save");
     expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Start over" })).toBeNull();
+    // PL-107 item 5: Start over is offered whenever there are steps, so a repeatable recording has
+    // it too. What such a recording does not have is a problem row or its own fix button.
+    expect(screen.getByRole("button", { name: "Start over" })).toBeTruthy();
   });
 });
