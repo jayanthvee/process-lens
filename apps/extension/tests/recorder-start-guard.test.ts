@@ -172,3 +172,33 @@ describe("starting a recording through the guard (PL-039)", () => {
     expect(status.warning).toBeNull();
   });
 });
+
+describe("a tab that was open before ProcessLens was installed (PL-103)", () => {
+  it("gets the recorder put in, and recording starts, instead of asking for a refresh", async () => {
+    let injected = false;
+    const ping = vi.fn(async () => {
+      if (!injected) throw new Error("Could not establish connection. Receiving end does not exist.");
+      return { ok: true };
+    });
+    const inject = vi.fn(async (_tabId: number) => {
+      injected = true;
+    });
+
+    const guard = await startRecordingGuard({ ...deps({ ping }), inject } as GuardDeps);
+
+    expect(guard).toEqual({ started: true });
+    expect(inject).toHaveBeenCalledWith(7);
+  });
+
+  it("asks for a refresh only when putting the recorder in did not work", async () => {
+    const ping = async () => {
+      throw new Error("Could not establish connection. Receiving end does not exist.");
+    };
+    const inject = vi.fn(async () => undefined);
+
+    const guard = await startRecordingGuard({ ...deps({ ping }), inject } as GuardDeps);
+
+    expect(guard).toEqual({ started: false, warning: REFRESH_PAGE_WARNING });
+    expect(inject).toHaveBeenCalled();
+  });
+});
