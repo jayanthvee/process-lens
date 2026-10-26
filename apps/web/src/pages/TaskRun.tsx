@@ -93,6 +93,9 @@ export function TaskRun(): JSX.Element {
   const [step, setStep] = useState<number>(1);
   // The columns a person changed. Anything they left alone stays exactly as the check chose it.
   const [edits, setEdits] = useState<Record<string, string | null>>({});
+  // The same picks, readable before React re-renders: a column change saves-and-asks in one go, and
+  // the request must carry the pick the person just made, not the one before it (PL-106 item 2).
+  const editsNow = useRef<Record<string, string | null>>({});
   const [dragging, setDragging] = useState(false);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
@@ -102,9 +105,29 @@ export function TaskRun(): JSX.Element {
   // So if the person changes a column, a run started from the first answer would leave out a row
   // their change just made ready. Continue saves the mapping, asks again, and only then goes on.
   const [confirmed, setConfirmed] = useState<BatchCheck | null>(null);
-  // True only while Continue's second check is in flight, so the panel says "Checking…" for the
-  // right reason and not while a run is starting.
+  // True only while a check is in flight -- Continue's second check or a column's own -- so the
+  // panel says "Checking…" for the right reason and not while a run is starting.
   const [rechecking, setRechecking] = useState(false);
+  // PL-106 item 2: every save-and-ask goes through one chain, in the order the person made the
+  // changes, and each reads the picks as they stand when it starts. The last answer to land is
+  // therefore the one for the last pick, and a slow earlier answer can never replace it.
+  const asking = useRef(0);
+  const askQueue = useRef<Promise<void>>(Promise.resolve());
+
+  /**
+   * Run one save-and-ask after every ask already started, and hand back its own result.
+   *
+   * The chain is rewound on a failure as well: one refused ask must not stop the next one, and the
+   * next one's answer still describes the columns then on screen.
+   */
+  function inAskOrder<T>(work: () => Promise<T>): Promise<T> {
+    const run = askQueue.current.then(work, work);
+    askQueue.current = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
   // PL-041: the in-flight flags for the two buttons that start a run. They are refs, not state,
   // because the second click of a double click arrives before a state update re-renders the page.
   const tryingIt = useRef(false);
@@ -120,13 +143,44 @@ export function TaskRun(): JSX.Element {
   const answer = confirmed ?? check.data;
   const entries: MappingEntry[] | null = answer?.mapping ?? null;
 
-  const chosenFor = (entry: MappingEntry): string | null => {
-    const edited = edits[entry.column];
+  const chosenIn = (entry: MappingEntry, from: Record<string, string | null>): string | null => {
+    const edited = from[entry.column];
     return edited === undefined ? entry.chosen : edited;
   };
+  const chosenFor = (entry: MappingEntry): string | null => chosenIn(entry, edits);
   // The task's own columns that must have a spreadsheet column before anything can run.
   const missing = (entries ?? []).filter((entry) => entry.required && chosenFor(entry) === null);
   const canContinue = entries !== null && missing.length === 0;
+
+  /** The mapping on screen as the API takes it: every task column, with the person's pick on it. */
+  function mappingFrom(from: Record<string, string | null>): Record<string, string | null> {
+    const mapping: Record<string, string | null> = {};
+    for (const entry of entries ?? []) mapping[entry.column] = chosenIn(entry, from);
+    return mapping;
+  }
+
+  // Remember a pick in both places: the state the table renders, and the ref a request reads before
+  // that render has happened.
+  function editMapping(column: string, value: string | null): void {
+    const next = { ...editsNow.current, [column]: value };
+    editsNow.current = next;
+    setEdits(next);
+  }
+
+  /**
+   * Save the mapping and ask the check again: the columns decide which rows are ready, so a change
+   * to one is a change to the other (PL-106 item 2). Returns the fresh answer, or null when there
+   * is nothing to ask.
+   */
+  async function saveMappingAndCheck(
+    from: Record<string, string | null>,
+  ): Promise<BatchCheck | null> {
+    if (batch === null || checkPath === null) return null;
+    // The mapping is saved on the batch before anything runs: the check reads the saved mapping,
+    // and so does the run that follows.
+    await apiPut(`/api/v1/batches/${batch.batch_id}/mapping`, { mapping: mappingFrom(from) });
+    return apiGet<BatchCheck>(checkPath);
+  }
 
   // The preview run, followed live until it is no longer open. `useJson` polls on its own, and the
   // interval is switched off the moment the run stops being open -- a finished run is never asked
@@ -160,6 +214,7 @@ export function TaskRun(): JSX.Element {
     try {
       const added = await apiPostFile<BatchUpload>("/api/v1/batches", form);
       setBatch(added);
+      editsNow.current = {};
       setEdits({});
       setConfirmed(null);
       setStep(2);
@@ -201,26 +256,54 @@ export function TaskRun(): JSX.Element {
     if (batch === null || entries === null) return;
     setBusy(true);
     setProblem(null);
-    const mapping: Record<string, string | null> = {};
-    for (const entry of entries) mapping[entry.column] = chosenFor(entry);
+    asking.current += 1;
+    setRechecking(true);
     try {
-      // The mapping is saved on the batch before anything runs: the run reads the row as the task
-      // sees it.
-      await apiPut(`/api/v1/batches/${batch.batch_id}/mapping`, { mapping });
       // Ask again with the mapping the person just confirmed. Answering it also rewrites the rows'
       // verdicts, so the run that follows is built from the columns they chose, not the ones the
-      // check guessed at.
-      if (checkPath === null) return;
-      setRechecking(true);
-      const fresh = await apiGet<BatchCheck>(checkPath);
+      // check guessed at. It takes its place in the same chain a column change uses, so a change
+      // made a moment earlier is answered first and the step-3 answer is the last one.
+      const fresh = await inAskOrder(async () => {
+        try {
+          return await saveMappingAndCheck(editsNow.current);
+        } finally {
+          asking.current -= 1;
+        }
+      });
+      if (fresh === null) return;
       setConfirmed(fresh);
       setStep(3);
     } catch (failure) {
       setProblem(refusalWords(errorText(failure)));
     } finally {
-      setRechecking(false);
+      if (asking.current === 0) setRechecking(false);
       setBusy(false);
     }
+  }
+
+  /**
+   * A column the person picked asks the check straight away (PL-106 item 2).
+   *
+   * The row problems belong to the columns on screen, so leaving them until Continue meant the list
+   * under the dropdown contradicted the dropdown itself. The page stays on step 2 and keeps the
+   * person's pick on screen while the answer is in flight; the asks are queued so the last answer
+   * shown is always the one for the last pick.
+   */
+  function recheckColumns(): void {
+    if (batch === null || entries === null || checkPath === null) return;
+    asking.current += 1;
+    setRechecking(true);
+    void inAskOrder(async () => {
+      try {
+        const fresh = await saveMappingAndCheck(editsNow.current);
+        if (fresh !== null) setConfirmed(fresh);
+      } catch (failure) {
+        setProblem(refusalWords(errorText(failure)));
+      } finally {
+        asking.current -= 1;
+        if (asking.current === 0) setRechecking(false);
+      }
+    });
   }
 
   async function create(mode: "preview" | "batch"): Promise<string | null> {
@@ -422,12 +505,13 @@ export function TaskRun(): JSX.Element {
                           // uses the mapping that was saved, so a change here would be a change
                           // nothing would act on. "Change the columns" below opens it again.
                           disabled={step === 3}
-                          onChange={(event) =>
-                            setEdits((current) => ({
-                              ...current,
-                              [entry.column]: event.target.value === "" ? null : event.target.value,
-                            }))
-                          }
+                          onChange={(event) => {
+                            editMapping(
+                              entry.column,
+                              event.target.value === "" ? null : event.target.value,
+                            );
+                            recheckColumns();
+                          }}
                         >
                           <option value="">Not in my file</option>
                           {columns.map((column) => (

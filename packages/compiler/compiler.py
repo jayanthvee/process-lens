@@ -1165,9 +1165,9 @@ def detect_find_then_update(candidates: list[Candidate], run_index: int) -> bool
     * there is a commit after that click (the caller only searches for recordings that commit).
 
     Then the search finds the record the run is about to change: the duplicate check must not skip
-    it, and a search that finds nothing must park the row instead. Everything else is a create:
-    no search, a click to a page whose last segment is a word (``.../new``), a click that does not
-    navigate, or a commit before any such click.
+    it, and a search that finds nothing skips the row instead (there is nothing there to change).
+    Everything else is a create: no search, a click to a page whose last segment is a word
+    (``.../new``), a click that does not navigate, or a commit before any such click.
     """
     first_commit = next(
         (index for index in range(run_index + 1, len(candidates)) if candidates[index].commit),
@@ -1212,19 +1212,23 @@ def _duplicate_branch(value_template: str) -> dict[str, Any]:
     }
 
 
-def _not_found_branch(value_template: str, key_column: str) -> dict[str, Any]:
-    """A branch that ends a record ``parked`` when the search finds nothing (PL-077).
+def _not_found_branch(value_template: str, host: str) -> dict[str, Any]:
+    """A branch that ends a record ``skipped`` when the search finds nothing (PL-077, PL-106).
 
     The mirror image of :func:`_duplicate_branch`, and built from the same machinery: the same
     ``element_absent`` condition shape the schema already has (no new keys), reading the same
-    results cell. For an update, an empty result means the row has nothing to change, so carrying
-    on would type into whatever page the run happens to be on. It parks with a reason the runner
-    renders from the row, and never ``failed``: a recipe's ``end_record`` cannot fail a record
-    (D-017).
+    results cell. For an update, an empty result means the record the row would change is not in
+    the app, so there is nothing for a person to do: the row is skipped, not parked, and the reason
+    names the site the search ran on. It still never ends ``failed``: a recipe's ``end_record``
+    cannot fail a record (D-017).
+
+    Ledger: the branch runs after the search and before any commit, so the record is in ``filling``
+    with ``commit_attempted`` false, and ``filling -> skipped`` is legal for exactly that (migration
+    0003). ``run_loop.end_record`` still turns a commit-attempted skip into a park (B2).
     """
     return {
         "action": "branch",
-        "name": "Park a record when the search finds nothing",
+        "name": "Skip a record when the search finds nothing",
         "when": {
             "element_absent": {
                 "targets": [
@@ -1236,10 +1240,8 @@ def _not_found_branch(value_template: str, key_column: str) -> dict[str, Any]:
             {
                 "id": "end-record-1",
                 "action": "end_record",
-                "outcome": "parked",
-                "reason": (
-                    f"No record matched {{{{row.{key_column}}}}}, so there was nothing to change."
-                ),
+                "outcome": "skipped",
+                "reason": f"Not found in {host}." if host else "Not found.",
             }
         ],
     }
@@ -1544,10 +1546,12 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
         value_template = f"{{{{row.{searched_column} | lower}}}}"
         if search_kind == "update":
             # The search finds the record to change: skipping it would skip every row, and finding
-            # nothing leaves nothing to change.
-            search_branch = _not_found_branch(value_template, searched_column)
+            # nothing leaves nothing to change, so that row is skipped with the site named
+            # (PL-106 item 7: there is nothing there for a person to do).
+            host = urlsplit(candidates[search_run].url).hostname or ""
+            search_branch = _not_found_branch(value_template, host)
             warnings.append(
-                "the search finds the record to change, so a row is parked when the search finds "
+                "the search finds the record to change, so a row is skipped when the search finds "
                 "nothing"
             )
         else:

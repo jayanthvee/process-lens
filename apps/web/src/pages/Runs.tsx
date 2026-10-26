@@ -88,8 +88,8 @@ export function Runs(): JSX.Element {
           </thead>
           <tbody>
             {rows.map((run) => {
-              const outcome = runStatusWords(run.status);
               const counts = run.counts ?? {};
+              const outcome = runStatusWords(run.status, undefined, counts);
               const done = doneCount(counts);
               const total = totalCount(counts);
               return (

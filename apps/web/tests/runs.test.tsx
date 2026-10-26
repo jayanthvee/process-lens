@@ -172,7 +172,9 @@ describe("one run", () => {
     await settle();
 
     expect(
-      screen.getByText("Waiting for Chrome: open the ProcessLens extension and it will connect"),
+      screen.getByText(
+        "Waiting for Chrome. Click the ProcessLens icon in Chrome's toolbar to connect.",
+      ),
     ).toBeTruthy();
     expect(screen.queryByText("Queued")).toBeNull();
   });

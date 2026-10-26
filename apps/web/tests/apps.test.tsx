@@ -13,7 +13,7 @@ const SHELL = {
 };
 
 const CHROME_CONNECTED = "Chrome is connected";
-const CHROME_AWAY = "Chrome isn't connected — open the ProcessLens extension and press Connect";
+const CHROME_AWAY = "Chrome isn't connected. Click the ProcessLens icon in Chrome's toolbar to connect.";
 
 let stub: FetchStub | null = null;
 

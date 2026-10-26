@@ -281,6 +281,6 @@ def test_the_route_says_which_searched_shape_it_compiled(
     body = response.json()
     assert body["search_kind"] == "update"
     branch = next(step for step in body["recipe"]["steps"] if step["action"] == "branch")
-    # An update parks a row whose search found nothing; it never skips one it found.
+    # An update skips a row whose search found nothing; it never skips one it found (PL-106).
     assert branch["when"]["element_absent"] is not None
-    assert branch["then"][0]["outcome"] == "parked"
+    assert branch["then"][0]["outcome"] == "skipped"

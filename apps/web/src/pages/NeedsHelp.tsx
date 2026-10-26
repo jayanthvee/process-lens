@@ -102,7 +102,9 @@ export function NeedsHelp(): JSX.Element {
         ) : (
           <ul className="rows">
             {rows.map((row) => {
-              const outcome = rowOutcome(row.state);
+              // PL-106 item 7: the reason tells a skip for "not found" from one that was already
+              // there, so the label and the reason agree.
+              const outcome = rowOutcome(row.state, row.reason);
               const ticked = confirmed[row.record_id] === true;
               const gate = actionGate({
                 state: row.state,

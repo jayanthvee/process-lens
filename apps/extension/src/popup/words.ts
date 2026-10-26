@@ -23,6 +23,16 @@ export const REFRESH_PAGE_WARNING =
 export const UNRECORDABLE_PAGE_WARNING =
   "ProcessLens can't record on this page. Open your app's page first.";
 
+/**
+ * PL-106 item 1: why "Save as task" is greyed out, one sentence per reason, right under the button
+ * in `#make-go-why`. `syncGo` writes the first one that applies; a button that is ready says
+ * nothing there.
+ */
+export const GO_WHY_NOTHING_RECORDED = "Record some steps first.";
+export const GO_WHY_NO_VALUES =
+  "Type at least one value while teaching, so each row has something to fill in.";
+export const GO_WHY_NO_KEY = "Pick the column that identifies each row.";
+
 /** A click with no name of its own: never its step id. */
 export const UNNAMED_CLICK = "This click";
 

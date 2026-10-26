@@ -52,7 +52,7 @@ describe("rowOutcome", () => {
 describe("runStatusWords", () => {
   it("says Waiting for Chrome when a run is queued and no Chrome session is attached", () => {
     expect(runStatusWords("queued", false)).toEqual({
-      label: "Waiting for Chrome: open the ProcessLens extension and it will connect",
+      label: "Waiting for Chrome. Click the ProcessLens icon in Chrome's toolbar to connect.",
       tone: "idle",
     });
     // With Chrome attached, or while the session is not known yet, the plain status stands.
@@ -119,7 +119,7 @@ describe("pauseReasonWords", () => {
 
   it("PL-040: the runner's own pause reasons read as words, never as codes", () => {
     expect(pauseReasonWords("window_hidden")).toContain("Press Resume and it will come to the front");
-    expect(pauseReasonWords("executor_disconnected")).toContain("press Connect");
+    expect(pauseReasonWords("executor_disconnected")).toContain("Chrome disconnected");
     expect(pauseReasonWords("canary_failed")).toContain("The first row didn't work");
     for (const reason of [
       "window_hidden",

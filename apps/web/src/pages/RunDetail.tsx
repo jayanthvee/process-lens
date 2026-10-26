@@ -246,12 +246,14 @@ export function RunDetail(): JSX.Element {
     );
   }
 
-  const status = wasFinished && isOpenStatus(detail.status)
-    ? RUNNING_AGAIN
-    : runStatusWords(detail.status, session.data?.attached);
-  const buttons = runActions(detail.status);
   // Every count comes from the API, and a run with no records counts as nothing at all.
   const counts = (detail.counts ?? {}) as Record<string, number>;
+  // PL-106 item 4: a finished run with rows left for a person says how many, rather than reading
+  // like a clean finish.
+  const status = wasFinished && isOpenStatus(detail.status)
+    ? RUNNING_AGAIN
+    : runStatusWords(detail.status, session.data?.attached, counts);
+  const buttons = runActions(detail.status);
   const done = doneCount(counts);
   const total = totalCount(counts);
   const alreadyThere = counts.skipped ?? 0;
@@ -530,7 +532,7 @@ export function RunDetail(): JSX.Element {
             </thead>
             <tbody>
               {rows.map((row) => {
-                const outcome = rowOutcome(row.state);
+                const outcome = rowOutcome(row.state, row.reason);
                 const reason = reasonWords(row, outcome.tone === "help");
                 const gate = gateFor(row);
                 const ticked = confirmed[row.id] === true;

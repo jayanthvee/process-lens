@@ -3,12 +3,12 @@ import { Link } from "react-router-dom";
 
 import { useJson } from "../lib/useJson";
 import {
-  durationWords,
   estimatedRowsNote,
   isOpenStatus,
   plainReason,
   relativeTime,
   runStatusWords,
+  savedFigureWords,
 } from "../lib/words";
 import type { HomeSummary, TaskRow } from "../types";
 import "./home.css";
@@ -123,7 +123,7 @@ export function Home(): JSX.Element {
           ) : null}
         </div>
         <div className="saved-fig in" style={slot(2)}>
-          <b>{durationWords(savedSeconds / 60)}</b>
+          <b>{savedFigureWords(savedSeconds)}</b>
           <span>Time saved this week</span>
           <small>
             {estimateNote ??
