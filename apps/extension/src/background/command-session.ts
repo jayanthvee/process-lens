@@ -125,7 +125,18 @@ export interface SessionDeps {
    * this call.
    */
   /** PL-068: types a person's verification code; a session without it answers "not found". */
-  enterCode?: (code: string) => Promise<{ entered: boolean; reason: string }>;
+  enterCode?: (code: string) => Promise<CodeAnswer>;
+  /**
+   * PL-102: read the code from the person's own Gmail and type it. `since` is when the code page
+   * appeared; `remember` stores the person's yes. Answers `not_allowed` without that yes, and
+   * `none`, `ambiguous` or `no_gmail` when there is no single code to type. Never the code.
+   */
+  codeFromEmail?: (options: {
+    since: number;
+    remember: boolean;
+    lookMs: number;
+    stop: () => boolean;
+  }) => Promise<CodeAnswer>;
   /**
    * Arm the abandon guard on the bound tab (PL-027): refuse every request that is not a read, so a
    * page that autosaves when it unloads cannot write a record the runner did not commit. The
@@ -151,8 +162,24 @@ export interface SessionDeps {
 /** The backoff schedule for a dropped socket: 500 ms → 1 s → 2 s → 4 s (cap). */
 const RECONNECT_SCHEDULE_MS = [500, 1000, 2000, 4000];
 
+/** PL-102: what typing a code did. `cleared` says the code page went away afterwards. */
+export interface CodeAnswer {
+  entered: boolean;
+  reason: string;
+  cleared?: boolean;
+}
+
+/** PL-102: how long to look for an emailed code when the command does not say. */
+const DEFAULT_LOOK_MS = 60_000;
+/** PL-102: with no code page seen by this session (a restart), look this far back. */
+const CODE_PAGE_FALLBACK_MS = 3 * 60_000;
+
 /** Trim trailing slashes so a hub URL composes cleanly. */
 /** What the popup shows when a hosted ProcessLens refuses the team access code (PL-086). */
+/** PL-104: Chrome would not open the work window, so nothing was connected. */
+export const WORK_WINDOW_REFUSED =
+  "Chrome didn't let ProcessLens open its own window. Close a few Chrome windows, then press Connect again.";
+
 export const ACCESS_REFUSED =
   "ProcessLens needs the team access code. Open More and check Team access code.";
 
@@ -180,6 +207,8 @@ function chromeTabs(): ChromeTabs | null {
 /** A session with a hub, driven entirely through its injected dependencies. */
 export class CommandSession {
   private state: SessionState = "idle";
+  /** PL-102: when this session last reported a code page, so older emails are not read. */
+  private codePageAt: number | null = null;
   private socket: WebSocketLike | null = null;
   private stored: StoredSession | null = null;
   /** The first socket's token, from the hub's 201 response; the resume token replaces it. */
@@ -268,8 +297,15 @@ export class CommandSession {
     this.setState("pairing");
     const info = await this.activeTabInfo();
     if (overtaken()) return;
-    const boundTabId = (await this.deps.bindActiveTab()) ?? info.id ?? -1;
+    // PL-104: the session works in a window of its own, or not at all. Falling back to the person's
+    // own tab meant every look at the run page hid the work and the run paused or failed.
+    const boundTabId = await this.deps.bindActiveTab();
     if (overtaken()) return;
+    if (boundTabId === null) {
+      this.stopped = true;
+      this.setState("idle");
+      throw new Error(WORK_WINDOW_REFUSED);
+    }
 
     const fetchFn = (globalThis as { fetch?: typeof fetch }).fetch;
     if (typeof fetchFn !== "function") throw new Error("fetch is unavailable in this context");
@@ -571,6 +607,8 @@ export class CommandSession {
   }
 
   private sendEvent(kind: EventKind, detail: string): void {
+    // PL-102: an emailed code is looked for from the moment its page appeared, not before.
+    if (kind === "code_required") this.codePageAt = Date.now();
     this.send({ protocol: PROTOCOL, type: "event", kind, detail });
   }
 
@@ -755,15 +793,33 @@ export class CommandSession {
         // PL-068: the person supplied the code on the run page; it is typed here and reported as
         // entered or not found. The answer never contains the code, and nothing stores it.
         try {
-          const answer = this.deps.enterCode
-            ? await this.deps.enterCode(command.code)
-            : { entered: false, reason: "not_found" };
+          // PL-102: or the runner (or the person's "Yes" on the run page) asked for the code to be
+          // read from the person's own Gmail, starting from when the code page appeared.
+          let answer: CodeAnswer;
+          if (command.from_email === true) {
+            answer = this.deps.codeFromEmail
+              ? await this.deps.codeFromEmail({
+                  since: this.codePageAt ?? Date.now() - CODE_PAGE_FALLBACK_MS,
+                  remember: command.remember === true,
+                  lookMs: typeof command.look_ms === "number" ? command.look_ms : DEFAULT_LOOK_MS,
+                  stop: () => this.stopped || withdrawn(),
+                })
+              : { entered: false, reason: "no_gmail" };
+          } else {
+            answer = this.deps.enterCode
+              ? await this.deps.enterCode(command.code ?? "")
+              : { entered: false, reason: "not_found" };
+          }
           if (current()) {
             this.sendResult(
               command.command_id,
               answer.entered ? "ok" : "locator_failed",
               null,
-              { entered: answer.entered, reason: answer.reason },
+              {
+                entered: answer.entered,
+                reason: answer.reason,
+                ...(answer.cleared !== undefined ? { cleared: answer.cleared } : {}),
+              },
               answer.entered ? null : "the page's code field could not be found",
             );
           }

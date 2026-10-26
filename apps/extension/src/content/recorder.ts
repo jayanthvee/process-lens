@@ -17,6 +17,7 @@ import {
   normalizeText,
   semanticRole,
 } from "../shared/fingerprint";
+import { scrubCodes } from "../shared/email-code";
 import { makeEvent, nextStepId, resetStepIds, type PendingEvent } from "../shared/events";
 import { installBrowserBridge, type Whoami } from "./browser-bridge";
 import {
@@ -429,6 +430,37 @@ function resolveClickTarget(start: Element): ResolvedClick {
   return { element: start, viaLabel: false };
 }
 
+/** PL-103: whether a field's suggestion list is open, so Tab would pick from it. */
+function suggestionsOpen(el: Element): boolean {
+  if (el.getAttribute("aria-expanded") === "true") return true;
+  const listId = el.getAttribute("aria-controls") ?? el.getAttribute("aria-owns");
+  const list = listId ? el.ownerDocument.getElementById(listId) : null;
+  if (list && isVisibleElement(list)) return true;
+  return Array.from(el.ownerDocument.querySelectorAll("[role='listbox']")).some((box) =>
+    isVisibleElement(box),
+  );
+}
+
+/** The roles that say nothing about what a click on them would do. */
+const NO_ACTION_ROLES = new Set(["generic", "none", "presentation", "group", "region", "main", "form"]);
+
+/** Text this long, with no name of the element's own, is a page area rather than a control. */
+const PAGE_AREA_TEXT = 200;
+
+/**
+ * PL-103: a click that landed on empty space. On the pilot call a click on Odoo's form background
+ * was recorded as a step named with the whole form's text, which the server refused, and the save
+ * failed for everything. An element with no role of its own that holds fields, or that is only a
+ * long run of page text, is somewhere the person clicked, not something they clicked.
+ */
+function isEmptySpace(el: Element): boolean {
+  if (!NO_ACTION_ROLES.has(semanticRole(el))) return false;
+  if (el.querySelector("input, select, textarea, [contenteditable='true']")) return true;
+  if (el.hasAttribute("tabindex") || el.hasAttribute("onclick")) return false;
+  if (ownNameOf(el)) return false;
+  return normalizeText(el.textContent).length > PAGE_AREA_TEXT;
+}
+
 function firstSubmitControl(form: Element): Element | null {
   return form.querySelector(
     "button[type='submit'], input[type='submit'], button:not([type])",
@@ -448,6 +480,9 @@ export type RecorderHandle = (() => void) & { checkpoint: () => void };
  * collector for `send`, and a flag for `isActive`.
  */
 export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHandle {
+  // PL-102: every event leaves the page with its names scrubbed, so a code shown in the page's
+  // text (an email row in Gmail) never reaches a recording.
+  const send = (event: PendingEvent): void => hooks.send(scrubEvent(event));
   const pending = new Map<Element, string>();
   /**
    * The value each element's typing was last recorded with. A combobox reports the same entry
@@ -577,7 +612,7 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
   }
 
   function emitStep(kind: PendingEvent["kind"], step: RecordedStep, required = false): void {
-    hooks.send(stepEvent(kind, step, required));
+    send(stepEvent(kind, step, required));
   }
 
   /**
@@ -642,7 +677,10 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
       if (event.metaKey) return "Meta+Enter";
       return "Enter";
     }
-    if (raw === "Tab") return "Tab";
+    // PL-103: Tab from a plain field only moves to the next one, which records its own fill; as a
+    // step it named a field that is gone by replay ("Press Tab ... could not be resolved"). Tab
+    // with a suggestion list open picks the suggestion (Odoo), so that one is a step.
+    if (raw === "Tab") return el && suggestionsOpen(el) ? "Tab" : null;
     if (raw === "Backspace" || raw === "Delete") {
       // Inside a text field this is editing, and the checkpoint records the resulting value.
       return el && isTextEntryElement(el) ? null : raw;
@@ -754,7 +792,7 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
       const typed = touched.has(fill.element);
       const count = typed ? (keystrokes.get(fill.element) ?? 0) : 0;
       keystrokes.delete(fill.element);
-      hooks.send(
+      send(
         annotatedStepEvent("fill", step, {
           ...(typed ? {} : { warning: PAGE_SET_VALUE_WARNING, page_set: true }),
           ...(isRequiredField(fill.element) ? { required: true } : {}),
@@ -798,7 +836,7 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
         clear_first: false,
       };
       if (field) lastFillElement = field;
-      hooks.send(
+      send(
         annotatedStepEvent("fill", step, {
           chip: true,
           autocomplete: field ? witnessedAutocomplete.has(field) : false,
@@ -811,7 +849,7 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
       // A remove control the person clicked is the step for the chip going away; a chip that
       // vanished with no click is not replayable, so it is reported rather than dropped.
       if (removedByControl.has(removed.value)) continue;
-      hooks.send(
+      send(
         annotatedStepEvent("unrecordable", null, {
           reason: "chip-removal",
           warning: UNRECORDABLE_CHIP_WARNING,
@@ -945,14 +983,14 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
 
   /** Emit a click or a submit, then watch the page for what it changed. */
   function emitAction(kind: "click" | "submit", step: RecordedStep | null, control: Element | null): void {
-    hooks.send(stepEvent(kind, step));
+    send(stepEvent(kind, step));
     actionAwaitingEvidence = true;
     beginObservation(control);
   }
 
   function emitObservation(payload: Record<string, unknown>, at: string): void {
     actionAwaitingEvidence = false;
-    hooks.send(
+    send(
       makeEvent({
         kind: OBSERVATION_KIND,
         url: at,
@@ -1279,7 +1317,7 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
     rememberEmittedFill(el, value);
     lastFillElement = el;
     lastTypedFillId.set(el, step.id);
-    hooks.send(
+    send(
       annotatedStepEvent("fill", step, {
         required: isRequiredField(el),
         keystrokes: count,
@@ -1317,6 +1355,8 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
       return;
     }
     if (isPasswordField(el) || isPasswordField(start)) return;
+    // PL-103: a click on the empty space of a form or page is the person's hand resting, not a step.
+    if (isEmptySpace(el)) return;
 
     const role = semanticRole(el);
     // A click on a field is focus, not an action -- but it is the person's hand on the field, so a
@@ -1427,7 +1467,7 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
         rememberEmittedFill(el, value);
         lastFillElement = el;
         lastTypedFillId.set(el, step.id);
-        hooks.send(annotatedStepEvent("fill", step, { keystrokes: count }));
+        send(annotatedStepEvent("fill", step, { keystrokes: count }));
         return;
       }
       lastEmitted.set(el, value);
@@ -1546,6 +1586,12 @@ export function shouldResetStepIds(
 function bootstrap(): void {
   const ext = (globalThis as { chrome?: typeof chrome }).chrome;
   if (!ext?.runtime?.id) return;
+  // PL-103: the worker may put the recorder into a tab that has none. A frame whose recorder is
+  // still alive keeps it, so no step is recorded twice; one orphaned by an extension update (its
+  // runtime gone) is replaced.
+  const world = globalThis as { __processlensRecorderAlive?: () => boolean };
+  if (world.__processlensRecorderAlive?.() === true) return;
+  world.__processlensRecorderAlive = () => Boolean(ext.runtime?.id);
 
   let recording = false;
   let previousStatus: { state?: string; count?: number } | undefined;
@@ -1611,10 +1657,36 @@ bootstrap();
 // PL-087: the ProcessLens dashboard asks which Chrome it is in, so its runs come here.
 const bridgeExt = (globalThis as { chrome?: typeof chrome }).chrome;
 if (typeof window !== "undefined" && bridgeExt?.runtime?.id) {
-  installBrowserBridge(window, async () => {
-    const answer = (await bridgeExt.runtime.sendMessage({ type: "executor:whoami" })) as
-      | Whoami
-      | undefined;
-    return answer ?? {};
-  });
+  installBrowserBridge(
+    window,
+    async () => {
+      const answer = (await bridgeExt.runtime.sendMessage({ type: "executor:whoami" })) as
+        | Whoami
+        | undefined;
+      return answer ?? {};
+    },
+    // PL-104: the run page's "Show the ProcessLens window".
+    async () => {
+      await bridgeExt.runtime.sendMessage({ type: "executor:show-window" });
+    },
+  );
+}
+
+/** The event with every name a person reads, and every text rung, cut free of one-time codes. */
+function scrubEvent(event: PendingEvent): PendingEvent {
+  const step = event.step as (Record<string, unknown> & { targets?: unknown[] }) | null;
+  if (!step) return event;
+  const clean: Record<string, unknown> = { ...step };
+  if (typeof step["name"] === "string") clean["name"] = scrubCodes(step["name"]);
+  if (Array.isArray(step.targets)) {
+    clean["targets"] = step.targets.map((target) => {
+      if (target === null || typeof target !== "object") return target;
+      const rung = { ...(target as Record<string, unknown>) };
+      for (const key of ["name", "value", "text"]) {
+        if (typeof rung[key] === "string") rung[key] = scrubCodes(rung[key] as string);
+      }
+      return rung;
+    });
+  }
+  return { ...event, step: clean as unknown as PendingEvent["step"] };
 }

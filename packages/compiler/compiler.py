@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any
 from urllib.parse import urlsplit
@@ -1673,5 +1673,65 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
         ),
     }
 
-    assert_valid_recipe(recipe)
+    _fit_step_names(recipe.get("steps"))
+    try:
+        assert_valid_recipe(recipe)
+    except CompileError as exc:
+        # PL-103: the step a refusal is about is named first, in words a person can act on.
+        raise CompileError(
+            "the compiled recipe does not match the recipe schema",
+            problems=plain_step_problems(recipe, exc.problems),
+        ) from exc
     return CompileResult(recipe=recipe, warnings=warnings, search_kind=search_kind)
+
+
+# PL-103: the recipe schema's limit on a step name.
+STEP_NAME_MAX = 120
+
+_STEP_PATH = re.compile(r"^steps/(\d+)(?:/|:)")
+
+
+def _fit_step_names(steps: Any) -> None:
+    """Cut every step name, nested branches included, to the schema's 120 characters.
+
+    A name is only a label; one made of a page's text must not cost the person the whole save.
+    """
+    if isinstance(steps, list):
+        for step in steps:
+            _fit_step_names(step)
+        return
+    if not isinstance(steps, dict):
+        return
+    name = steps.get("name")
+    if isinstance(name, str) and len(name) > STEP_NAME_MAX:
+        steps["name"] = name[: STEP_NAME_MAX - 1].rstrip() + "…"
+    for value in steps.values():
+        if isinstance(value, (list, dict)):
+            _fit_step_names(value)
+
+
+def plain_step_problems(recipe: Mapping[str, Any], problems: list[str]) -> list[str]:
+    """The schema's problems, each refused step named first in one plain sentence.
+
+    The engine's own lines are kept after them for support. A problem outside the steps is left as
+    it is.
+    """
+    steps = recipe.get("steps")
+    named: list[str] = []
+    seen: set[int] = set()
+    for problem in problems:
+        match = _STEP_PATH.match(problem)
+        if match is None:
+            continue
+        index = int(match.group(1))
+        if index in seen:
+            continue
+        seen.add(index)
+        step = steps[index] if isinstance(steps, list) and index < len(steps) else {}
+        name = str(step.get("name") or "") if isinstance(step, dict) else ""
+        label = f' ("{name[:60]}")' if name else ""
+        named.append(
+            f"Step {index + 1}{label} can't be saved as it was recorded. "
+            "Remove it with × and save again."
+        )
+    return named + list(problems)

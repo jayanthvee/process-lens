@@ -116,7 +116,14 @@ export interface GuardCommandMessage extends CommandEnvelope {
  */
 export interface EnterCodeCommandMessage extends CommandEnvelope {
   type: "enter_code";
-  code: string;
+  /** The person's code. Absent when the code is to be read from their email (PL-102). */
+  code?: string;
+  /** PL-102: read the code from the person's own Gmail in this Chrome instead of being given one. */
+  from_email?: boolean;
+  /** PL-102: the person said yes on the run page, so later runs may read codes without asking. */
+  remember?: boolean;
+  /** PL-102: how long to look for the email, in milliseconds. */
+  look_ms?: number;
 }
 
 export type CommandMessage =
@@ -257,8 +264,9 @@ export function parseIncoming(raw: unknown): { message: IncomingMessage } | { er
       // Fail-closed: a guard command says what to do, and an unknown action is not a default.
       return { error: `unknown guard action ${JSON.stringify(record["action"])}` };
     }
-    if (type === "enter_code") {
+    if (type === "enter_code" && record["from_email"] !== true) {
       // A code is 4-10 letters or digits. Anything else is refused here, before it reaches a page.
+      // PL-102: a command that asks for the code to be read from email carries none.
       const code = record["code"];
       if (typeof code !== "string" || !/^[0-9A-Za-z]{4,10}$/.test(code)) {
         return { error: "enter_code has no usable code" };

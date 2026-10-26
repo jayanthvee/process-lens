@@ -122,7 +122,9 @@ describe("pauseReasonWords", () => {
   });
 
   it("PL-040: the runner's own pause reasons read as words, never as codes", () => {
-    expect(pauseReasonWords("window_hidden")).toContain("Press Resume and it will come to the front");
+    // PL-104: the run page has one button for this, right under the reason.
+    expect(pauseReasonWords("window_hidden")).toContain("Press Show it and continue.");
+    // PL-106 item 8: the Chrome sentence says where the click is, not "press Connect".
     expect(pauseReasonWords("executor_disconnected")).toContain("Chrome disconnected");
     expect(pauseReasonWords("canary_failed")).toContain("The first row didn't work");
     for (const reason of [

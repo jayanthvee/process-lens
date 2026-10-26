@@ -4,6 +4,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   ACCESS_REFUSED,
+  WORK_WINDOW_REFUSED,
   CommandSession,
   type CheckAnswer,
   type SessionDeps,
@@ -85,7 +86,9 @@ interface HarnessOptions {
     aborted: () => boolean,
   ) => Promise<CheckAnswer>;
   restoreBoundTab?: (tabId: number) => Promise<boolean>;
+  bindActiveTab?: () => Promise<number | null>;
   enterCode?: (code: string) => Promise<{ entered: boolean; reason: string }>;
+  codeFromEmail?: SessionDeps["codeFromEmail"];
   now?: () => number;
   storageValue?: StoredSession | null;
   browserId?: string;
@@ -116,6 +119,7 @@ function makeHarness(options: HarnessOptions = {}): Harness {
     },
     now: options.now ?? (() => clock.value),
     ...(options.enterCode ? { enterCode: options.enterCode } : {}),
+    ...(options.codeFromEmail ? { codeFromEmail: options.codeFromEmail } : {}),
     setInterval: (fn, ms) => {
       const timer: Timer = { fn, ms, cancelled: false };
       timers.push(timer);
@@ -123,7 +127,7 @@ function makeHarness(options: HarnessOptions = {}): Harness {
         timer.cancelled = true;
       };
     },
-    bindActiveTab: async () => 7,
+    bindActiveTab: options.bindActiveTab ?? (async () => 7),
     ...(options.browserId ? { browserId: async () => options.browserId ?? "" } : {}),
     restoreBoundTab: async (tabId: number) => {
       restoredTabs.push(tabId);
@@ -859,6 +863,34 @@ describe("connect when nothing answers", () => {
 });
 
 
+describe("the work window (PL-104)", () => {
+  it("does not connect in the person's own tab when Chrome refuses a window of its own", async () => {
+    // On the pilot call the session fell back to the active tab. Every look at the run page then
+    // hid it, and the run paused or failed with "Couldn't find Contact".
+    let asked = false;
+    globalThis.fetch = (async () => {
+      asked = true;
+      return { status: 201, json: async () => ({ session_id: "s", session_token: "t" }) };
+    }) as unknown as typeof fetch;
+    const harness = makeHarness({ bindActiveTab: async () => null });
+
+    await expect(harness.session.connect("http://127.0.0.1:8000")).rejects.toThrow(
+      WORK_WINDOW_REFUSED,
+    );
+
+    expect(asked).toBe(false);
+    expect(harness.states.at(-1)).toBe("idle");
+    expect(harness.sockets).toHaveLength(0);
+  });
+
+  it("says what to do in plain words", () => {
+    expect(WORK_WINDOW_REFUSED).toBe(
+      "Chrome didn't let ProcessLens open its own window. Close a few Chrome windows, then press Connect again.",
+    );
+  });
+});
+
+
 describe("a verification code from the run page", () => {
   it("reaches the code handler and is answered, without echoing the code", async () => {
     // PL-068: the session's message switch dropped `enter_code` silently, so the run page's code
@@ -889,6 +921,56 @@ describe("a verification code from the run page", () => {
     const result = socket.lastResult();
     expect(result?.["status"]).toBe("ok");
     expect(JSON.stringify(result)).not.toContain("246810");
+  });
+});
+
+describe("a code read from email (PL-102)", () => {
+  const command = {
+    protocol: 1,
+    type: "enter_code",
+    command_id: "code-2",
+    step_ref: "enter_code",
+    run_id: "run-1",
+    run_record_id: "",
+    lease_epoch: 0,
+    expires_at: 10_000_000,
+    from_email: true,
+    remember: true,
+    look_ms: 30_000,
+  };
+
+  it("asks the email reader, not the typed-code path, and reports whether the page moved on", async () => {
+    const asked: Array<{ remember: boolean; lookMs: number }> = [];
+    const harness = makeHarness({
+      enterCode: async () => {
+        throw new Error("a code read from email must not go through the typed-code path");
+      },
+      codeFromEmail: async (options) => {
+        asked.push({ remember: options.remember, lookMs: options.lookMs });
+        return { entered: true, reason: "submitted", cleared: true };
+      },
+    });
+    const socket = await openSession(harness);
+
+    deliver(socket, command);
+    await flush();
+
+    expect(asked).toEqual([{ remember: true, lookMs: 30_000 }]);
+    const result = socket.lastResult();
+    expect(result?.["status"]).toBe("ok");
+    expect(result?.["observed"]).toEqual({ entered: true, reason: "submitted", cleared: true });
+  });
+
+  it("says why when no single code was found", async () => {
+    const harness = makeHarness({
+      codeFromEmail: async () => ({ entered: false, reason: "ambiguous" }),
+    });
+    const socket = await openSession(harness);
+
+    deliver(socket, command);
+    await flush();
+
+    expect(socket.lastResult()?.["observed"]).toEqual({ entered: false, reason: "ambiguous" });
   });
 });
 

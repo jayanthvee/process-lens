@@ -562,3 +562,37 @@ def test_the_grace_waits_on_the_clock_not_on_a_second_timeout() -> None:
     executor.prepare(a_command({"id": "s1", "action": "click", "timeout_ms": 10_000}))
 
     assert waits == [15.0, 45.0]
+
+
+# -- PL-102: a code read from the person's email ------------------------------------------------
+
+
+def test_the_email_code_ask_carries_no_code_and_reads_the_answer() -> None:
+    def reply(message: dict[str, Any]) -> list[Any]:
+        return [
+            wire(
+                type="result",
+                command_id=message["command_id"],
+                status="ok",
+                observed={"entered": True, "reason": "submitted", "cleared": True},
+            )
+        ]
+
+    executor, socket = make_executor(reply)
+
+    answer = executor.code_from_email(look_seconds=30)
+
+    sent = socket.sent[-1]
+    assert sent["type"] == "enter_code"
+    assert sent["from_email"] is True
+    assert sent["look_ms"] == 30_000
+    assert "code" not in sent
+    assert answer == {"entered": True, "reason": "submitted", "cleared": True}
+
+
+def test_an_unanswered_email_code_ask_is_not_entered() -> None:
+    executor, _ = make_executor([])
+
+    answer = executor.code_from_email(look_seconds=0)
+
+    assert answer["entered"] is False

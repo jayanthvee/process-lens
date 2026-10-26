@@ -863,7 +863,14 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
       problems.length > 0 ? problems : ["ProcessLens would not accept this recording."];
     // The count is the true one, whether or not a sentence is one this page can show.
     const count = sentences.length === 1 ? "1 problem" : `${sentences.length} problems`;
-    notice(`Could not save this as a task (${count}).`);
+    // PL-103: the first plain sentence (the step a refusal is about, and its fix) is said right
+    // here, under Save, not only under Notes for support.
+    const { shown } = plainSentences(sentences.join("\n"));
+    notice(
+      shown.length > 0
+        ? `Could not save this as a task (${count}). ${shown[0]}`
+        : `Could not save this as a task (${count}).`,
+    );
     // PL-033: the refusal's own sentences are for support. The person reads the headline and the
     // two plain notes; everything else stays reachable under More → "Notes for support".
     warningsEl.textContent = sentences.join("\n");

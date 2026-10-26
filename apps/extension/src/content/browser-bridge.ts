@@ -14,12 +14,29 @@ export interface Whoami {
   hubOrigin?: string;
 }
 
-export function installBrowserBridge(win: Window, ask: () => Promise<Whoami>): void {
+/**
+ * PL-104: the run page asks for the ProcessLens window to be brought forward, when a run paused
+ * because it was hidden. Only the ProcessLens address may ask, exactly like the browser id.
+ */
+export const SHOW_WINDOW = "processlens:show-window";
+
+export function installBrowserBridge(
+  win: Window,
+  ask: () => Promise<Whoami>,
+  show?: () => Promise<void>,
+): void {
   if (win !== win.top) return;
   win.addEventListener("message", (event: MessageEvent) => {
     if (event.source !== win) return;
     const data = event.data as { type?: unknown } | null;
-    if (data === null || typeof data !== "object" || data.type !== WHICH_BROWSER) return;
+    if (data === null || typeof data !== "object") return;
+    if (data.type === SHOW_WINDOW && show) {
+      void ask()
+        .then((who) => (who.hubOrigin === win.location.origin ? show() : undefined))
+        .catch(() => undefined);
+      return;
+    }
+    if (data.type !== WHICH_BROWSER) return;
     void ask()
       .then((who) => {
         if (!who.browserId || !who.hubOrigin || who.hubOrigin !== win.location.origin) return;

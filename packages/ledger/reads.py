@@ -171,6 +171,17 @@ def run_of_record(conn: psycopg.Connection, record_id: uuid.UUID) -> uuid.UUID |
     return row[0] if row is not None else None
 
 
+_RUN_BROWSER = "SELECT browser_id FROM runs WHERE id = %(run)s"
+
+
+def run_browser(conn: psycopg.Connection, run_id: uuid.UUID) -> str | None:
+    """PL-102: the Chrome a run is pinned to (PL-087), so a code reaches that Chrome only."""
+    with conn.cursor() as cur:
+        cur.execute(_RUN_BROWSER, {"run": run_id})
+        row = cur.fetchone()
+    return row[0] if row is not None else None
+
+
 def list_runs(conn: psycopg.Connection, *, limit: int = 50) -> list[RunListRow]:
     """The most recent runs first, at most ``limit`` of them (1..50)."""
     capped = max(1, min(int(limit), 50))

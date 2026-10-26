@@ -188,8 +188,9 @@ def test_a_code_page_pauses_the_run_and_the_person_s_code_carries_it_on(
     assert sent.get("entered") is True, sent
     assert CODE not in json.dumps(sent), "the answer echoed the code"
 
-    # 6. Resume, approve the task's first save as a person would, and check the row and the site.
-    harness.api_post(f"/api/v1/runs/{run_id}/resume")
+    # 6. PL-102: the code took the page past the prompt, so the run resumed by itself -- nobody
+    # presses Resume. Approve the task's first save as a person would, and check the row and site.
+    assert sent.get("resumed") is True, sent
     # The compiled task holds its first save for a person's approval (PL-027), exactly as every
     # other golden's settle_run does: approve each open request until the row is out.
     deadline = time.monotonic() + 240
