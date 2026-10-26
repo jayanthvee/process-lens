@@ -16,11 +16,11 @@ You need Chrome (version 116 or later), and the zip your admin sent you
 4. Press **Load unpacked** and pick the folder you unzipped (the one with `manifest.json` in it).
 5. The extension appears as **ProcessLens Recorder**. Press the **puzzle-piece icon** in Chrome's
    toolbar and **pin** it, so its icon stays visible.
-6. **Open it** by clicking the icon. The address is already filled in — leave it as it is.
-7. Press **Connect**. It says **Chrome connected** when it worked.
+6. **Open it** by clicking the icon. The ProcessLens panel opens beside the page you are working
+   in.
+7. Press **Connect** in the line at the top of the panel. It says **Connected** when it worked.
 
-If the address field is empty, paste the ProcessLens address your admin gave you (it looks like
-`https://processlens.up.railway.app`) and press Connect again.
+There is no address to type: the copy your admin sent already knows the ProcessLens address.
 
 To update: unzip the new zip over the old folder, then press the **reload** arrow on the extension's
 card in `chrome://extensions`. Your saved task in ProcessLens is not affected.
@@ -60,7 +60,7 @@ npm --prefix apps/extension run package
 ```
 
 It builds, validates and writes `apps/extension/release/processlens-<version>.zip` (gitignored).
-Hand that file out. Without `PROCESSLENS_HUB_URL` the build still works, but the popup starts at
+Hand that file out. Without `PROCESSLENS_HUB_URL` the build still works, but the panel starts at
 `http://127.0.0.1:8000`, which is only right on your own machine.
 
 Bump `version` in `apps/extension/manifest.json` for each release, so a person can see which one

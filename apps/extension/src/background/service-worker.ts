@@ -15,6 +15,7 @@ import {
 } from "../shared/messages";
 import { accessHeaders } from "../shared/access";
 import { LAST_HUB_KEY, browserId, originOf } from "./browser-id";
+import { registerPanelBehavior } from "./side-panel";
 import type { PendingEvent } from "../shared/events";
 import type { Condition, RecordedEvent } from "../shared/recipe-types";
 import type { EventKind } from "../shared/command-protocol";
@@ -1135,6 +1136,9 @@ chrome.runtime.onStartup.addListener(() => {
   // Re-attach a session that outlived the previous worker, using its resume token.
   void getCommandSession().restore();
 });
+
+// PL-105: a click on the toolbar icon opens the side panel, on install and on every start.
+registerPanelBehavior(chrome);
 
 void load().then(updateBadge);
 void getCommandSession().restore();

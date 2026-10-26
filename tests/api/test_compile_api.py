@@ -165,10 +165,10 @@ def test_a_recorded_navigate_outside_pinned_origins_is_a_422(client: TestClient)
     assert any("https://evil.example.com/records/new" in problem for problem in problems), problems
 
 
-def test_the_extension_origin_compiles_but_may_not_cancel_a_run(
+def test_the_extension_origin_compiles_and_may_cancel_a_run(
     connected: TestClient, ledger: Ledger, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The exception is those two routes alone: a run cancel still wants this API's origin."""
+    """PL-105: the side panel drives every state-changing API path from its own origin."""
     monkeypatch.setenv("PROCESSLENS_EXTENSION_ID", EXTENSION_ID)
     run = ledger.new_run()
 
@@ -177,11 +177,12 @@ def test_the_extension_origin_compiles_but_may_not_cancel_a_run(
         json=request_body(a_demonstration()),
         headers={"origin": EXTENSION_ORIGIN},
     )
-    refused = connected.post(f"/api/v1/runs/{run.id}/cancel", headers={"origin": EXTENSION_ORIGIN})
+    cancelled = connected.post(
+        f"/api/v1/runs/{run.id}/cancel", headers={"origin": EXTENSION_ORIGIN}
+    )
 
     assert compiled.status_code == 200, compiled.text
-    assert refused.status_code == 403, refused.text
-    assert "origin" in refused.json()["detail"]
+    assert cancelled.status_code == 200, cancelled.text
 
 
 def test_a_foreign_origin_cannot_compile(client: TestClient) -> None:
@@ -284,3 +285,27 @@ def test_the_route_says_which_searched_shape_it_compiled(
     # An update parks a row whose search found nothing; it never skips one it found.
     assert branch["when"]["element_absent"] is not None
     assert branch["then"][0]["outcome"] == "parked"
+
+
+def test_a_task_with_no_recorded_inputs_compiles_with_the_run_once_key(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PL-105: the panel saves a recording with no typed values under a fresh-key template."""
+    monkeypatch.setenv("PROCESSLENS_EXTENSION_ID", EXTENSION_ID)
+
+    response = client.post(
+        "/api/v1/recipes/compile",
+        json=request_body(
+            a_demonstration(),
+            sample_row={"run_once_id": "x"},
+            record_key_column=None,
+            record_key="{{row.run_once_id}}",
+        ),
+        headers={"origin": EXTENSION_ORIGIN},
+    )
+
+    assert response.status_code == 200, response.text
+    meta = response.json()["recipe"]["meta"]
+    assert meta["record_key"] == "{{row.run_once_id}}"
+    assert meta["idempotency_key"] == "{{row.run_once_id}}"
+    assert meta["input_schema"]["fields"] == {"run_once_id": {"type": "string", "example": "x"}}

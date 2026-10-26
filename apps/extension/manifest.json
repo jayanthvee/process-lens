@@ -4,11 +4,14 @@
   "version": "0.1.0",
   "description": "Records a browser demonstration as semantic, replayable steps.",
   "minimum_chrome_version": "116",
-  "permissions": ["activeTab", "storage", "debugger", "webNavigation"],
+  "permissions": ["activeTab", "storage", "debugger", "webNavigation", "sidePanel"],
   "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "background/service-worker.js",
     "type": "module"
+  },
+  "side_panel": {
+    "default_path": "panel/panel.html"
   },
   "content_scripts": [
     {
@@ -20,7 +23,6 @@
     }
   ],
   "action": {
-    "default_title": "ProcessLens Recorder",
-    "default_popup": "popup/popup.html"
+    "default_title": "ProcessLens Recorder"
   }
 }

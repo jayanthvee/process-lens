@@ -1,7 +1,7 @@
 // End-to-end smoke test in a real Chromium browser.
 //
 // Loads the built extension as an unpacked extension, opens a page with a form,
-// starts recording through the popup, performs an interaction, and reads back what
+// starts recording through the side panel, performs an interaction, and reads back what
 // the worker stored. This is the "loads cleanly and captures events" check that
 // unit tests cannot make on their own.
 //
@@ -193,23 +193,35 @@ async function runSmoke(browserPath) {
     ).sessionId;
     await cdp.send("Runtime.enable", {}, pageSession);
 
-    const popup = await cdp.send("Target.createTarget", {
-      url: `chrome-extension://${extensionId}/popup/popup.html`,
+    const panel = await cdp.send("Target.createTarget", {
+      url: `chrome-extension://${extensionId}/panel/panel.html`,
     });
-    const popupSession = (
-      await cdp.send("Target.attachToTarget", { targetId: popup.targetId, flatten: true })
+    const panelSession = (
+      await cdp.send("Target.attachToTarget", { targetId: panel.targetId, flatten: true })
     ).sessionId;
-    await cdp.send("Runtime.enable", {}, popupSession);
-    await sleep(700);
-
-    await cdp.evaluate(popupSession, "document.getElementById('start').click(); 'started'");
+    await cdp.send("Runtime.enable", {}, panelSession);
+    // Wait for the panel's React page, then put the smoke page back in front: the panel starts
+    // recording the person's active tab, exactly as it does beside a real page.
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      const ready = await cdp.evaluate(
+        panelSession,
+        "Boolean([...document.querySelectorAll('button')].find((b) => b.textContent?.includes('Start teaching')))",
+      );
+      if (ready) break;
+      await sleep(250);
+    }
+    await cdp.send("Page.bringToFront", {}, pageSession);
+    await cdp.evaluate(
+      panelSession,
+      "[...document.querySelectorAll('button')].find((b) => b.textContent?.includes('Start teaching')).click(); 'started'",
+    );
     await sleep(600);
 
     await cdp.evaluate(pageSession, INTERACTION);
     await sleep(1200);
 
     const stored = await cdp.evaluate(
-      popupSession,
+      panelSession,
       "(async () => { const r = await chrome.runtime.sendMessage({type:'record:get'}); return JSON.stringify(r); })()",
     );
     const events = JSON.parse(stored).events ?? [];

@@ -83,8 +83,13 @@ function reasonWords(row: RecordRow, needsHelp: boolean): string | null {
   return needsHelp ? plainReason(null, row.state) : null;
 }
 
-/** One run: live progress, its buttons, and what every row ended up as. */
-export function RunDetail(): JSX.Element {
+/**
+ * One run: live progress, its buttons, and what every row ended up as.
+ *
+ * `panel` is the side panel's build: it has no Needs help page and no website origin for the CSV
+ * download, so those two links are left out rather than drawn broken.
+ */
+export function RunDetail({ panel = false }: { panel?: boolean } = {}): JSX.Element {
   const { id } = useParams<{ id: string }>();
   const runPath = id === undefined ? null : `/api/v1/runs/${id}`;
   const recordsPath = id === undefined ? null : `/api/v1/runs/${id}/records`;
@@ -465,9 +470,11 @@ export function RunDetail(): JSX.Element {
               ) : null}
             </span>
           ) : null}
-          <a className="btn quiet export" href={`/api/v1/runs/${detail.id}/results.csv`}>
-            Export CSV
-          </a>
+          {panel ? null : (
+            <a className="btn quiet export" href={`/api/v1/runs/${detail.id}/results.csv`}>
+              Export CSV
+            </a>
+          )}
         </div>
       </section>
 
@@ -490,7 +497,7 @@ export function RunDetail(): JSX.Element {
       <section className="panel in" style={slot(3)}>
         <div className="panel-h">
           <h3>What happened to each row</h3>
-          <Link to="/needs-help">Needs help</Link>
+          {panel ? null : <Link to="/needs-help">Needs help</Link>}
         </div>
         {showBatch ? (
           <div className="row-batch">

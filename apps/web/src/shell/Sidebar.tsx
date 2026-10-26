@@ -23,18 +23,11 @@ const AUTOMATE: Item[] = [
   { to: "/runs", label: "Runs", icon: "hist" },
 ];
 
-const YOUR_DATA: Item[] = [
-  { to: "/spreadsheets", label: "Spreadsheets", icon: "sheet" },
-  { to: "/documents", label: "Documents", icon: "doc" },
-  { to: "/saved-answers", label: "Saved answers", icon: "map" },
-];
+const YOUR_DATA: Item[] = [{ to: "/spreadsheets", label: "Spreadsheets", icon: "sheet" }];
 
 const CONNECT: Item[] = [{ to: "/apps", label: "Apps", icon: "apps" }];
 
-const FOOT: Item[] = [
-  { to: "/settings", label: "Settings", icon: "gear" },
-  { to: "/help", label: "Help", icon: "q" },
-];
+const FOOT: Item[] = [];
 
 function itemLink(item: Item, extra?: React.ReactNode): JSX.Element {
   return (
@@ -100,7 +93,7 @@ export function Sidebar(): JSX.Element {
         <nav className="nav">{CONNECT.map((item) => itemLink(item))}</nav>
       </div>
       <div className="side-foot">
-        <nav className="nav">{FOOT.map((item) => itemLink(item))}</nav>
+        {FOOT.length === 0 ? null : <nav className="nav">{FOOT.map((item) => itemLink(item))}</nav>}
         <div className={attached ? "ext" : "ext off"}>
           <i aria-hidden="true" />
           {attached ? "Chrome connected" : "Chrome not connected"}

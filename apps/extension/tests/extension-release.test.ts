@@ -67,6 +67,14 @@ function manifestOf(dist: string): Record<string, unknown> {
   return JSON.parse(readFileSync(join(dist, "manifest.json"), "utf8")) as Record<string, unknown>;
 }
 
+/** The one script `panel/panel.html` loads, as the built page names it. */
+function panelScript(dist: string): string {
+  const html = readFileSync(join(dist, "panel/panel.html"), "utf8");
+  const src = /<script[^>]+src="([^"]+)"/.exec(html)?.[1];
+  if (!src) throw new Error("the panel page loads no script");
+  return readFileSync(join(dist, "panel", src), "utf8");
+}
+
 describe("the extension id", () => {
   it("turns a known public key into its known id", () => {
     expect(extensionIdFromPublicKey(TEST_PUBLIC_KEY)).toBe(TEST_ID);
@@ -97,32 +105,30 @@ describe("the key in the built manifest", () => {
   });
 });
 
-describe("the hub address baked into the popup", () => {
+describe("the hub address baked into the panel", () => {
   it("is the hosted address when the build is given one", async () => {
     const dist = join(scratchDir(), "hosted");
     await buildExtension({ dist, hubUrl: "https://processlens.up.railway.app" });
 
-    const popup = readFileSync(join(dist, "popup/popup.js"), "utf8");
-    expect(popup).toContain('"https://processlens.up.railway.app"');
+    expect(panelScript(dist)).toContain("https://processlens.up.railway.app");
   });
 
   it("carries the team access code when the build is given one, and none otherwise (PL-086)", async () => {
     const hosted = join(scratchDir(), "hosted-code");
     await buildExtension({ dist: hosted, hubUrl: "https://x.example", accessCode: " team-code " });
-    expect(readFileSync(join(hosted, "popup/popup.js"), "utf8")).toContain('"team-code"');
+    expect(panelScript(hosted)).toContain("team-code");
 
     const local = join(scratchDir(), "local-code");
     const built = await buildExtension({ dist: local });
     expect(built.hasAccessCode).toBe(false);
-    expect(readFileSync(join(local, "popup/popup.js"), "utf8")).not.toContain("team-code");
+    expect(panelScript(local)).not.toContain("team-code");
   });
 
   it("is this machine when no address is given", async () => {
     const dist = join(scratchDir(), "local");
     await buildExtension({ dist });
 
-    const popup = readFileSync(join(dist, "popup/popup.js"), "utf8");
-    expect(popup).toContain('"http://127.0.0.1:8000"');
+    expect(panelScript(dist)).toContain("http://127.0.0.1:8000");
   });
 });
 
@@ -174,7 +180,7 @@ describe("the package to hand out", () => {
     const entries = readZipEntries(built.zipPath);
     expect(entries).toContain("manifest.json");
     expect(entries.every((name) => !name.startsWith("dist/"))).toBe(true);
-    expect(entries).toContain("popup/popup.html");
+    expect(entries).toContain("panel/panel.html");
     expect(entries).toContain("background/service-worker.js");
     // The private key never travels with the package.
     expect(entries.some((name) => name.endsWith(".pem"))).toBe(false);
@@ -228,4 +234,5 @@ describe("making a key", () => {
     ).rejects.toThrow(/gitignore/);
   });
 });
+
 

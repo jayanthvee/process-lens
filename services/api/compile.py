@@ -40,6 +40,9 @@ class CompileRequest(BaseModel):
     when_to_use: str
     sample_row: dict[str, Any] = {}
     record_key_column: str | None = None
+    # PL-105: a task taught with no recorded inputs has no column to build a key from, so the
+    # panel supplies the key template itself (`{{row.run_once_id}}`).
+    record_key: str | None = None
     allowed_origins: list[str] | None = None
     commit_step_ids: list[str] = []
     # PL-017 built-in rules. ``duplicate_check`` is on by default; ``park_fields`` are the columns
@@ -73,6 +76,7 @@ def compile_recipe(request: CompileRequest) -> CompileResponse:
         when_to_use=request.when_to_use,
         sample_row=request.sample_row,
         record_key_column=request.record_key_column,
+        record_key=request.record_key,
         allowed_origins=request.allowed_origins,
         commit_step_ids=request.commit_step_ids,
         duplicate_check=request.duplicate_check,

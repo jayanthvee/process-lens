@@ -1,7 +1,8 @@
 // Builds the loadable extension into dist/.
 //
 // The content script is bundled as a classic script (content scripts are not
-// ES modules); the service worker and the popup are bundled as ES modules.
+// ES modules); the service worker is bundled as an ES module. The side panel is
+// the web app's own React entry, built by its Vite config into dist/panel/ (PL-105).
 //
 // A build can carry two things a handed-out copy needs:
 //   - the public key in `extension-key.pub`, which fixes the extension's id (PL-052);

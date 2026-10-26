@@ -16,6 +16,10 @@ import { build } from "esbuild";
 /** The repository's `apps/extension` folder: what a build reads from unless told otherwise. */
 export const EXTENSION_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
+/** The web app whose panel entry the extension build carries (PL-105). */
+export const WEB_ROOT = resolve(EXTENSION_ROOT, "../web");
+const VITE_BIN = resolve(WEB_ROOT, "node_modules/vite/bin/vite.js");
+
 /** The address a build takes, when the owner wants a handed-out copy to know where ProcessLens is. */
 export const HUB_URL_ENV = "PROCESSLENS_HUB_URL";
 
@@ -102,7 +106,8 @@ export function gitIgnored(root, path) {
  *
  * A public key makes the manifest carry `key`, so the extension id is the same on every machine.
  * No public key leaves the manifest exactly as it is committed, which is what the e2e harness
- * loads. `hubUrl` is baked into the popup as its starting address.
+ * loads. `hubUrl` and `accessCode` are baked into the side panel: the panel is the web app's own
+ * React pages, built a second time and into `dist/panel/` (PL-105).
  */
 export async function buildExtension(options = {}) {
   const root = options.root ?? EXTENSION_ROOT;
@@ -123,20 +128,38 @@ export async function buildExtension(options = {}) {
       target: "chrome116",
       sourcemap: true,
       logLevel: "silent",
-      // Only the popup reads the address; the worker is told it by the popup.
-      define:
-        outfile === "popup/popup.js"
-          ? {
-              __PROCESSLENS_HUB_URL__: JSON.stringify(hubUrl),
-              __PROCESSLENS_ACCESS_CODE__: JSON.stringify(accessCode),
-            }
-          : {},
     });
 
-  // A content script is not an ES module; the worker and the popup are.
+  // A content script is not an ES module; the worker is.
   await bundle("src/content/recorder.ts", "content/recorder.js", "iife");
   await bundle("src/background/service-worker.ts", "background/service-worker.js", "esm");
-  await bundle("src/popup/popup.ts", "popup/popup.js", "esm");
+
+  // The side panel: the web app's panel entry, built with its own Vite config. It writes
+  // `panel/panel.html` and the script beside it, and every asset URL is relative (`base: "./"`).
+  if (!existsSync(VITE_BIN)) {
+    throw new Error(
+      `the panel build needs the web app's dependencies: run npm --prefix apps/web ci`,
+    );
+  }
+  const panel = spawnSync(
+    process.execPath,
+    [VITE_BIN, "build", "--config", "vite.panel.config.ts"],
+    {
+      cwd: WEB_ROOT,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        // A test runner may set NODE_ENV=test; the shipped panel is always a production build.
+        NODE_ENV: "production",
+        PROCESSLENS_PANEL_OUT: resolve(dist, "panel"),
+        PROCESSLENS_PANEL_HUB_URL: hubUrl,
+        PROCESSLENS_PANEL_ACCESS_CODE: accessCode,
+      },
+    },
+  );
+  if (panel.status !== 0) {
+    throw new Error(`the panel build failed:\n${panel.stdout}${panel.stderr}`);
+  }
 
   const publicKey = readPublicKey(publicKeyPath);
   if (publicKey === null) {
@@ -148,21 +171,6 @@ export async function buildExtension(options = {}) {
       `${JSON.stringify(manifestWithKey(manifest, publicKey), null, 2)}\n`,
       "utf8",
     );
-  }
-
-  await cp(resolve(root, "src/popup/popup.html"), resolve(dist, "popup/popup.html"));
-  await cp(resolve(root, "src/popup/popup.css"), resolve(dist, "popup/popup.css"));
-
-  // The popup's design tokens sit next to its stylesheet, and its fonts are bundled, never
-  // fetched: the four Public Sans weights are copied out of @fontsource/public-sans so the
-  // popup's CSP never has to allow a remote font.
-  await cp(resolve(root, "src/popup/tokens.css"), resolve(dist, "popup/tokens.css"));
-
-  const fontFiles = resolve(root, "node_modules/@fontsource/public-sans/files");
-  await mkdir(resolve(dist, "popup/fonts"), { recursive: true });
-  for (const weight of [300, 400, 500, 600]) {
-    const file = `public-sans-latin-${weight}-normal.woff2`;
-    await cp(resolve(fontFiles, file), resolve(dist, "popup/fonts", file));
   }
 
   return { dist, hubUrl, hasAccessCode: accessCode !== "", publicKey, extensionId: publicKey === null ? null : extensionIdFromPublicKey(publicKey) };

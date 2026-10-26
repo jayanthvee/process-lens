@@ -5,5 +5,7 @@ export default defineConfig({
     environment: "jsdom",
     include: ["tests/**/*.test.ts"],
     globals: true,
+    // A release test builds the whole extension, including the panel's Vite build.
+    testTimeout: 60_000,
   },
 });

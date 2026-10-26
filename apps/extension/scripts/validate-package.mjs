@@ -37,7 +37,7 @@ require_(manifest.manifest_version === 3, "manifest_version must be 3");
 require_(typeof manifest.name === "string" && manifest.name.length > 0, "name is required");
 require_(typeof manifest.version === "string" && manifest.version.length > 0, "version is required");
 
-const REQUIRED_PERMISSIONS = ["activeTab", "storage", "debugger"];
+const REQUIRED_PERMISSIONS = ["activeTab", "storage", "debugger", "sidePanel"];
 const permissions = manifest.permissions ?? [];
 for (const permission of REQUIRED_PERMISSIONS) {
   require_(permissions.includes(permission), `permission missing: ${permission}`);
@@ -53,15 +53,20 @@ for (const entry of scripts) {
   require_(Array.isArray(entry.matches) && entry.matches.length > 0, "content script needs matches");
 }
 
-const popup = manifest.action?.default_popup;
-require_(Boolean(popup), "action.default_popup is required");
-if (popup) {
-  fileAt(popup);
-  const html = readFileSync(resolve(dist, popup), "utf8");
+const panel = manifest.side_panel?.default_path;
+require_(Boolean(panel), "side_panel.default_path is required");
+require_(
+  manifest.action?.default_popup === undefined,
+  "action.default_popup must not be set: the side panel replaces the popup",
+);
+if (panel) {
+  fileAt(panel);
+  const html = readFileSync(resolve(dist, panel), "utf8");
   for (const match of html.matchAll(/(?:src|href)="([^"]+)"/g)) {
     const target = match[1];
-    if (target.startsWith("http")) continue;
-    fileAt(join(dirname(popup), target));
+    if (target.startsWith("http") || target.startsWith("data:")) continue;
+    require_(!target.startsWith("/"), `panel asset must be relative: ${target}`);
+    fileAt(join(dirname(panel), target));
   }
 }
 
@@ -74,7 +79,7 @@ console.log(`manifest: ${manifest.name} ${manifest.version} (MV3)`);
 console.log(`permissions: ${permissions.join(", ")}`);
 console.log(`content scripts: ${scripts.length}`);
 console.log(`service worker: ${manifest.background.service_worker}`);
-console.log(`popup: ${popup}`);
+console.log(`side panel: ${panel}`);
 for (const note of notes) console.log(`note: ${note}`);
 
 if (problems.length > 0) {

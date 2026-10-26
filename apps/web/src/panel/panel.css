@@ -1,0 +1,321 @@
+/* PL-105: the side panel's narrow shell. The pages are the web app's own; only the frame and the
+   narrow-width adjustments live here. */
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+.panel-shell {
+  width: 100%;
+  max-width: 420px;
+  min-width: 360px;
+  margin: 0 auto;
+  padding: 10px 10px 28px;
+  display: grid;
+  gap: 10px;
+  align-content: start;
+}
+
+/* the connection line: the panel's whole settings screen */
+.panel-connect {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 12px;
+  border-radius: 10px;
+  background: var(--glass-strong);
+  border: 1px solid var(--hair-2);
+  color: var(--help);
+  font-size: 13px;
+  font-weight: 500;
+}
+.panel-connect.on {
+  color: var(--ok);
+}
+.panel-connect .btn {
+  padding: 5px 10px;
+  font-size: 12.5px;
+}
+
+/* exactly three places, always visible */
+.panel-nav {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+  padding: 4px;
+  border-radius: 12px;
+  background: var(--glass);
+  border: 1px solid var(--glass-line);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+}
+.panel-nav a {
+  padding: 8px 6px;
+  border-radius: 8px;
+  text-align: center;
+  color: var(--ink-2);
+  text-decoration: none;
+  font-size: 13.5px;
+  font-weight: 500;
+}
+.panel-nav a:hover {
+  color: var(--ink);
+}
+.panel-nav a.on {
+  background: var(--glass-strong);
+  color: var(--ink);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04), inset 0 0 0 1px var(--hair);
+}
+
+.panel-main {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
+
+/* the panel's own cards and controls */
+.panel-card {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 14px;
+  background: var(--glass);
+  border: 1px solid var(--glass-line);
+}
+.panel-title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.panel-state {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink-2);
+}
+.panel-note {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 13px;
+  line-height: 1.45;
+}
+.panel-count {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+.panel-problem {
+  margin: 0;
+  color: var(--help);
+  font-size: 13px;
+}
+.panel-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.panel-actions .btn {
+  padding: 7px 12px;
+  font-size: 13px;
+}
+
+.panel-empty {
+  display: grid;
+  gap: 10px;
+  justify-items: start;
+  padding: 16px 14px;
+  border-radius: 14px;
+  background: var(--glass);
+  border: 1px solid var(--glass-line);
+  color: var(--ink-2);
+  font-size: 14px;
+}
+.panel-empty p {
+  margin: 0;
+}
+
+.panel-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+.panel-task {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 11px;
+  background: var(--glass-strong);
+  border: 1px solid var(--hair-2);
+}
+.panel-task-text {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+.panel-task-text b {
+  font-weight: 500;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+.panel-task-text small {
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.panel-task .btn {
+  flex: none;
+  padding: 6px 10px;
+  font-size: 12.5px;
+}
+
+.panel-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  border-top: 1px solid var(--hair);
+}
+.panel-steps li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--hair);
+  font-size: 13px;
+  color: var(--ink-2);
+}
+.panel-steps li span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.panel-remove {
+  margin-left: auto;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1;
+  padding: 2px 6px;
+  cursor: pointer;
+}
+.panel-remove:hover {
+  color: var(--ink);
+}
+
+.panel-save {
+  display: grid;
+  gap: 7px;
+  padding-top: 4px;
+  border-top: 1px solid var(--hair);
+}
+.panel-label {
+  color: var(--ink-2);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+.panel-input {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 9px;
+  border: 1px solid var(--hair-2);
+  background: #fff;
+  color: var(--ink);
+  font: 400 14px var(--font);
+}
+.panel-save .btn {
+  justify-self: start;
+  margin-top: 3px;
+}
+
+/* the web app's pages, narrowed: same components, same actions, less chrome */
+.panel-shell .runs,
+.panel-shell .run-detail,
+.panel-shell .task-run {
+  gap: 14px;
+}
+.panel-shell .hero {
+  gap: 10px;
+}
+.panel-shell .big {
+  font-size: 26px;
+}
+.panel-shell .lede {
+  font-size: 14px;
+}
+.panel-shell .panel-h {
+  padding: 12px 12px 4px;
+}
+.panel-shell .panel-h h3 {
+  font-size: 14px;
+}
+.panel-shell .run {
+  padding: 8px 12px 14px;
+}
+.panel-shell .run-detail .pause-reason,
+.panel-shell .run-detail .times,
+.panel-shell .run-detail .actions {
+  padding-left: 12px;
+  padding-right: 12px;
+}
+.panel-shell th,
+.panel-shell td {
+  padding: 9px 7px;
+  font-size: 12.5px;
+}
+.panel-shell td b {
+  overflow-wrap: anywhere;
+}
+.panel-shell .run-detail table {
+  table-layout: fixed;
+}
+.panel-shell .run-detail th:nth-child(1),
+.panel-shell .run-detail td:nth-child(1) {
+  width: 23%;
+}
+.panel-shell .run-detail th:nth-child(2),
+.panel-shell .run-detail td:nth-child(2) {
+  width: 21%;
+}
+.panel-shell .run-detail th:nth-child(4),
+.panel-shell .run-detail td:nth-child(4) {
+  width: 31%;
+}
+.panel-shell .run-detail .record-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-end;
+}
+.panel-shell .record-buttons .btn {
+  padding: 4px 7px;
+  font-size: 11.5px;
+}
+.panel-shell .runs td.progress-cell,
+.panel-shell .runs th:nth-child(4) {
+  display: none;
+}
+.panel-shell .run-category,
+.panel-shell .saved-fig {
+  display: none;
+}
+.panel-shell .task-run .run-mapping th,
+.panel-shell .task-run .run-mapping td {
+  padding: 8px 5px;
+  font-size: 12px;
+}
+.panel-shell .task-run .run-select {
+  max-width: 130px;
+}
