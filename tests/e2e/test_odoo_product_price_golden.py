@@ -10,7 +10,7 @@ to the same product is new work.
 The search here is a real search (the search view, Enter applied). PL-077
 tells the two searched shapes apart: this recording opens the result the search
 found and commits on that record's own page, so it is a find-then-update, and
-the popup words its rule "Park a row when the search finds nothing" -- a skip
+the popup words its rule "If the search finds nothing, stop and ask me" -- a skip
 rule would end every row `skipped`, since the product always exists. The golden
 leaves the rule as the popup offers it and asserts that wording.
 
@@ -149,9 +149,10 @@ def record_price_change(harness) -> None:
 # ------------------------------------------------------------------- the compile
 
 
-# PL-077: the popup words the search rule for the shape the compiler reports. An update parks a
-# row whose search found nothing; it never skips one it found. The golden reads that sentence.
-PARK_WHEN_NOTHING_FOUND = "Park a row when the search finds nothing"
+# PL-077: the popup words the search rule for the shape the compiler reports. An update stops
+# and asks a person for a row whose search found nothing; it never skips one it found. The golden
+# reads that sentence.
+PARK_WHEN_NOTHING_FOUND = "If the search finds nothing, stop and ask me"
 
 
 def compile_update_recipe(harness, name: str, record_key: str | None) -> dict[str, Any]:
@@ -160,7 +161,7 @@ def compile_update_recipe(harness, name: str, record_key: str | None) -> dict[st
     PL-077: the popup used to propose the skip-if-the-search-finds-it branch, which for an update
     would end every row `skipped` -- the product the search finds is the one the row is about to
     update -- so this golden unticked it. The compiler now tells the two shapes apart, and the
-    popup words the same rule as "Park a row when the search finds nothing" for an update; the
+    popup words the same rule as "If the search finds nothing, stop and ask me" for an update; the
     form is left exactly as the popup offers it, and the wording is asserted below.
     """
     popup = harness.popup

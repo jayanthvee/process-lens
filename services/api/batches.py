@@ -525,8 +525,7 @@ def _match(
         offered = [
             column
             for column in columns
-            if _normalise(recipe_column) == _normalise(column)
-            or _fits_kind(kind, raw_rows, column)
+            if _normalise(recipe_column) == _normalise(column) or _fits_kind(kind, raw_rows, column)
         ]
     ranks = [_rank(recipe_column, column, sample_value, row_one) for column in offered]
     best = min(ranks) if ranks else 3
