@@ -201,11 +201,20 @@ describe("the panel's step check", () => {
     );
   });
 
+  it("shows the value the person typed on the step that names the field", async () => {
+    installChrome(MID_FORM);
+    render(<PanelTeach />);
+
+    await screen.findByText(/Typed the opportunity/);
+    // PL-109 item 1: the taught value rides beside the field's own sentence.
+    expect(screen.getByText(/— “x”/)).toBeTruthy();
+  });
+
   it("says teaching began mid-form, and Start over clears the recording", async () => {
     installChrome(MID_FORM);
     render(<PanelTeach />);
 
-    await screen.findByText("Typed the opportunity");
+    await screen.findByText(/Typed the opportunity/);
     const bad = screen
       .getAllByRole("listitem")
       .find((row) => row.textContent?.includes(MID_FORM_PROBLEM));
@@ -216,7 +225,7 @@ describe("the panel's step check", () => {
 
     expect(sent.some((message) => message.type === "record:clear")).toBe(true);
     // The clear empties the recording, so its one bad step is gone.
-    expect(screen.queryByText("Typed the opportunity")).toBeNull();
+    expect(screen.queryByText(/Typed the opportunity/)).toBeNull();
   });
 
   it("says nothing about a recording that can be repeated, but still offers Start over", async () => {

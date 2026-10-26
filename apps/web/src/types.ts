@@ -236,6 +236,8 @@ export interface MappingEntry {
   confidence: "exact" | "close" | "none";
   required: boolean;
   alternatives: string[];
+  /** PL-109 item 1: the value the person typed while teaching, never a default for a row. */
+  example?: string | null;
 }
 
 /** One row of `check.rows_need_a_look`: the row's number and one plain reason. */

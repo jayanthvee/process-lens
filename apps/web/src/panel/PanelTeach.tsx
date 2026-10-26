@@ -277,6 +277,14 @@ export function PanelTeach(): JSX.Element {
     events.filter((event) => event.step?.action === "click").map((event) => event.seq),
   );
   const listLines = lines.filter((line) => !clickSeqs.has(line.seq) || problems.has(line.seq));
+  // PL-109 item 1: the value the person typed, shown where the step names the field.
+  const typedBySeq = new Map<number, string>();
+  for (const event of events) {
+    const step = event?.step ?? null;
+    if (step === null || (step.action !== "fill" && step.action !== "select")) continue;
+    const source = step.value;
+    if (source && source.kind === "constant") typedBySeq.set(event.seq, String(source.value));
+  }
 
   return (
     <section className="panel-card" aria-label="Teach">
@@ -320,7 +328,10 @@ export function PanelTeach(): JSX.Element {
                 className={problem === undefined ? "panel-step" : "panel-step is-problem"}
               >
                 <div className="panel-step-line">
-                  <span>{line.sentence}</span>
+                  <span>
+                    {line.sentence}
+                    {typedBySeq.has(line.seq) ? ` — “${typedBySeq.get(line.seq)}”` : ""}
+                  </span>
                   <button
                     type="button"
                     className="panel-remove"

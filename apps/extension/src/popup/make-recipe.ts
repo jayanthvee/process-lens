@@ -346,16 +346,55 @@ export function recordedValues(events: RecordedEvent[]): RecordedValue[] {
     seenFields.add(`${JSON.stringify(step.targets ?? [])}|${value}`);
 
     const name = humanName(step);
-    const column = allocate(slug(name ?? String(step.id ?? "")), takenColumns);
     values.push({
       stepId: String(step.id ?? ""),
-      column,
+      column: "",
       value,
-      label: name ?? column,
+      label: name ?? "",
       required: event.required === true,
     });
   }
-  return values;
+  return namedValues(values, takenColumns);
+}
+
+/** Ordinal words, so a tie is told apart in plain language and never by a bare "2". */
+const ORDINALS = ["first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth"];
+
+/**
+ * Give every field a name a person recognises and a column of its own (PL-109 item 2).
+ *
+ * Two fields that would get the same name are told apart by what was typed in them:
+ * ``Contact (ben baller)`` and ``Contact (ben baller's opportunity)``. Only a tie on the value too,
+ * which no name can distinguish, falls back to a plain ordinal word ("the second field"), never to
+ * ``Contact 2``. The machine column keeps its old derivation (the first name, then ``_2``), so no
+ * saved mapping or schema key changes; only the name a person reads is disambiguated.
+ */
+function namedValues(values: RecordedValue[], takenColumns: Map<string, number>): RecordedValue[] {
+  const counts = new Map<string, number>();
+  for (const value of values) {
+    const key = (value.label || value.stepId).trim().toLowerCase();
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  const seen = new Map<string, number>();
+  const result: RecordedValue[] = [];
+  for (const value of values) {
+    const base = value.label || value.stepId;
+    const column = allocate(slug(base), takenColumns);
+    let label = value.label;
+    const key = base.trim().toLowerCase();
+    if ((counts.get(key) ?? 0) > 1) {
+      const typed = value.value.trim();
+      label = `${value.label || "Field"} (${typed || "empty"})`;
+      const tie = (seen.get(label.toLowerCase()) ?? 0) + 1;
+      seen.set(label.toLowerCase(), tie);
+      if (tie > 1) {
+        const ordinal = ORDINALS[tie - 1] ?? `${tie}th`;
+        label = `${value.label || "Field"} (${typed || "empty"}, ${ordinal} field)`;
+      }
+    }
+    result.push({ ...value, column, label: label || column });
+  }
+  return result;
 }
 
 /**

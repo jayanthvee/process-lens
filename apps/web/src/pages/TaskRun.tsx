@@ -17,6 +17,7 @@ import {
   rowOutcome,
   runStatusWords,
 } from "../lib/words";
+import { EMPTY_COLUMN, fieldReading, matchedExample, taughtLine } from "../lib/fields";
 import { runsBlocked, useWorkspaceState } from "../lib/workspace";
 import type {
   BatchCheck,
@@ -41,28 +42,6 @@ import "./taskRun.css";
  */
 function slot(index: number): CSSProperties {
   return { "--i": index } as CSSProperties;
-}
-
-/**
- * How a matched column reads: three plain words, never the API's own confidence name.
- *
- * `chosen` is the column the page is showing for this task column, which may be one the person
- * picked rather than the one the check guessed at. A column a person picked is `Matched` whatever
- * the guess's own confidence was: they chose it deliberately, and saying "Check this" about their
- * own choice would be asking them to check something they just decided.
- */
-function matchWords(
-  chosen: string | null,
-  confidence: MappingEntry["confidence"],
-  auto: string | null,
-): {
-  label: string;
-  tone: string;
-} {
-  if (chosen === null) return { label: "Not found", tone: "idle" };
-  if (chosen !== auto) return { label: "Matched", tone: "ok" };
-  if (confidence === "exact") return { label: "Matched", tone: "ok" };
-  return { label: "Check this", tone: "live" };
 }
 
 /** The check's sentence: the rows that are ready, and the rows that need a look. */
@@ -543,11 +522,19 @@ export function TaskRun(): JSX.Element {
               <tbody>
                 {entries.map((entry) => {
                   const chosen = chosenFor(entry);
-                  const words = matchWords(chosen, entry.confidence, entry.chosen);
+                  const words = fieldReading(
+                    chosen,
+                    entry.confidence,
+                    entry.chosen,
+                    entry.label,
+                    entry.example,
+                  );
+                  const firstValue =
+                    first === null ? undefined : first.values[entry.column];
                   return (
                     <tr key={entry.column}>
                       <td>
-                        <b>{entry.label}</b>
+                        <b>{taughtLine(entry.label, entry.example)}</b>
                         {entry.required ? <small>Needed</small> : null}
                       </td>
                       <td>
@@ -580,6 +567,11 @@ export function TaskRun(): JSX.Element {
                       </td>
                       <td>
                         <span className={`res ${words.tone}`}>{words.label}</span>
+                        {words.label === "Matched" && chosen !== null ? (
+                          <small className="run-match-value">
+                            {matchedExample(chosen, firstValue)}
+                          </small>
+                        ) : null}
                       </td>
                     </tr>
                   );
@@ -645,7 +637,7 @@ export function TaskRun(): JSX.Element {
               <dl className="run-values">
                 {(entries ?? []).map((entry) => (
                   <div className="run-value" key={entry.column}>
-                    <dt>{entry.label}</dt>
+                    <dt>{taughtLine(entry.label, entry.example)}</dt>
                     <dd>{String(first.values[entry.column] ?? "")}</dd>
                   </div>
                 ))}

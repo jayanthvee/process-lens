@@ -237,7 +237,7 @@ describe("the run flow", () => {
     expect(screen.getAllByText("Email").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Phone").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Matched")).toHaveLength(2);
-    expect(screen.getByText("Not found")).toBeTruthy();
+    expect(screen.getByText("Left empty for every row.")).toBeTruthy();
     expect(screen.getByText("Also looked like: Company")).toBeTruthy();
     expect(
       (screen.getByLabelText("Contact name") as HTMLSelectElement).value,
@@ -363,13 +363,13 @@ describe("the run flow", () => {
     await addFile(view);
 
     // Phone came back unmatched, so its chip says so.
-    expect(screen.getByText("Not found")).toBeTruthy();
+    expect(screen.getByText("Left empty for every row.")).toBeTruthy();
 
     // The person picks the column themselves: it is now their decision, not a guess to check.
     fireEvent.change(screen.getByLabelText("Phone"), { target: { value: "City" } });
     await pump();
 
-    expect(screen.queryByText("Not found")).toBeNull();
+    expect(screen.queryByText("Left empty for every row.")).toBeNull();
     expect(screen.getAllByText("Matched")).toHaveLength(3);
   });
 
