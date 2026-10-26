@@ -39,6 +39,11 @@ describe("the manifest", () => {
     expect(manifest().side_panel?.default_path).toBe(PANEL_PATH);
   });
 
+  // PL-103 added `scripting` for the recorder; merging main into this branch must not lose it.
+  it("keeps the permissions the rest of the extension needs", () => {
+    expect(manifest().permissions).toContain("scripting");
+  });
+
   it("has no popup, so a click on the icon opens the panel", () => {
     expect(manifest().action?.default_popup).toBeUndefined();
   });

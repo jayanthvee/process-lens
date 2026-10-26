@@ -189,17 +189,49 @@ body,
   border-top: 1px solid var(--hair);
 }
 .panel-steps li {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+  display: grid;
+  gap: 3px;
   padding: 7px 0;
   border-bottom: 1px solid var(--hair);
   font-size: 13px;
   color: var(--ink-2);
 }
+.panel-step-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 .panel-steps li span {
   min-width: 0;
   overflow-wrap: anywhere;
+}
+/* PL-103: a step that cannot be repeated says so on its own row, above its fix. */
+.panel-step.is-problem {
+  border-left: 2px solid var(--help);
+  padding-left: 8px;
+}
+.panel-step-problem {
+  margin: 2px 0 0;
+  color: var(--help);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+.panel-step-fix {
+  padding: 2px 8px;
+  border: 1px solid var(--hair-2);
+  border-radius: 6px;
+  background: var(--fog-1);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.panel-step-fix:hover {
+  background: var(--fog-3);
+}
+.panel-step-fix:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 1px;
 }
 .panel-remove {
   margin-left: auto;

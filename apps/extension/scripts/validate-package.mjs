@@ -37,7 +37,10 @@ require_(manifest.manifest_version === 3, "manifest_version must be 3");
 require_(typeof manifest.name === "string" && manifest.name.length > 0, "name is required");
 require_(typeof manifest.version === "string" && manifest.version.length > 0, "version is required");
 
-const REQUIRED_PERMISSIONS = ["activeTab", "storage", "debugger", "sidePanel"];
+// PL-105: `sidePanel` is the panel. PL-103: `scripting` is how the recorder reads a page the
+// worker cannot reach. Both are load-bearing, so a package missing either is refused here rather
+// than discovered by a person whose side panel never opens.
+const REQUIRED_PERMISSIONS = ["activeTab", "storage", "debugger", "scripting", "sidePanel"];
 const permissions = manifest.permissions ?? [];
 for (const permission of REQUIRED_PERMISSIONS) {
   require_(permissions.includes(permission), `permission missing: ${permission}`);

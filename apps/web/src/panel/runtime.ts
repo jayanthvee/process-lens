@@ -25,16 +25,21 @@ export function isLocalHub(url: string): boolean {
 }
 
 /**
- * The hub to boot with: the last one the person connected to, unless it is a loopback address and
- * this copy was handed a hosted one. A tester who once used the local popup keeps
- * `http://127.0.0.1:8000` in storage; a built-for-the-team panel must not stay pointed at their
- * own laptop. A build with no hosted address (the default local one) still follows the last hub.
+ * The hub to boot with.
+ *
+ * A hosted address baked into a handed-out build is that deployment's own address, so nothing
+ * stored on the machine may point the panel somewhere else: neither the loopback address an
+ * earlier local popup left behind, nor an older team address someone connected to once.
+ *
+ * A build with no hosted address (the default local one `make demo` produces) has nothing to
+ * defend, so the last hub the person connected to wins — that is how a laptop moves between
+ * ports, and how a local build follows the hub it was pointed at.
  */
 export function chooseHubUrl(baked: string, stored: string): string {
+  const build = baked.trim();
   const last = stored.trim();
-  if (last === "") return baked;
-  if (isLocalHub(last) && !isLocalHub(baked)) return baked;
-  return last;
+  if (build !== "" && !isLocalHub(build)) return build;
+  return last === "" ? baked : last;
 }
 
 export interface PanelRuntimeConfig {

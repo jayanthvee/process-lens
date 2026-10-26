@@ -18,7 +18,12 @@ import {
   recordedValues,
   saveTask,
 } from "../../../extension/src/popup/make-recipe";
-import { stepLines } from "../../../extension/src/popup/flow";
+import {
+  FIX_LABEL,
+  stepLines,
+  stepProblems,
+  type StepProblem,
+} from "../../../extension/src/popup/flow";
 import { plainSentences } from "../../../extension/src/popup/words";
 import type { RecordedEvent } from "../../../extension/src/shared/recipe-types";
 import {
@@ -156,6 +161,17 @@ export function PanelTeach(): JSX.Element {
     apply(answer);
   }
 
+  /**
+   * PL-103: a step that cannot be repeated offers Start over, which is the popup's Clear: the
+   * recording is emptied so the person teaches it again from the start, on the list this time.
+   */
+  async function startOver(): Promise<void> {
+    setProblem(null);
+    setNote(null);
+    const answer = await send({ type: "record:clear" });
+    apply(answer);
+  }
+
   async function save(): Promise<void> {
     if (saving) return;
     const trimmed = name.trim();
@@ -222,6 +238,10 @@ export function PanelTeach(): JSX.Element {
   }
 
   const lines = stepLines(events);
+  // PL-103: a step that cannot be repeated says so on its own row, with its fix. Like the popup,
+  // the check runs once the recording is stopped: while it is still being built there is nothing
+  // to judge yet.
+  const problems = recording ? new Map<number, StepProblem>() : stepProblems(events);
 
   return (
     <section className="panel-card" aria-label="Teach">
@@ -252,20 +272,43 @@ export function PanelTeach(): JSX.Element {
         <p className="panel-note">The steps you take will appear here.</p>
       ) : (
         <ol className="panel-steps">
-          {lines.map((line) => (
-            <li key={line.seq}>
-              <span>{line.sentence}</span>
-              <button
-                type="button"
-                className="panel-remove"
-                aria-label="Remove this step"
-                hidden={recording}
-                onClick={() => void remove(line.seq)}
+          {lines.map((line) => {
+            const problem = problems.get(line.seq);
+            return (
+              <li
+                key={line.seq}
+                className={problem === undefined ? "panel-step" : "panel-step is-problem"}
               >
-                ×
-              </button>
-            </li>
-          ))}
+                <div className="panel-step-line">
+                  <span>{line.sentence}</span>
+                  <button
+                    type="button"
+                    className="panel-remove"
+                    aria-label="Remove this step"
+                    hidden={recording}
+                    onClick={() => void remove(line.seq)}
+                  >
+                    ×
+                  </button>
+                </div>
+                {problem === undefined ? null : (
+                  <p className="panel-step-problem">
+                    {problem.sentence}{" "}
+                    <button
+                      type="button"
+                      className="panel-step-fix"
+                      onClick={() => {
+                        if (problem.fix === "remove") void remove(line.seq);
+                        else void startOver();
+                      }}
+                    >
+                      {FIX_LABEL[problem.fix]}
+                    </button>
+                  </p>
+                )}
+              </li>
+            );
+          })}
         </ol>
       )}
 

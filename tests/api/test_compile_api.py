@@ -309,3 +309,78 @@ def test_a_task_with_no_recorded_inputs_compiles_with_the_run_once_key(
     assert meta["record_key"] == "{{row.run_once_id}}"
     assert meta["idempotency_key"] == "{{row.run_once_id}}"
     assert meta["input_schema"]["fields"] == {"run_once_id": {"type": "string", "example": "x"}}
+
+
+def a_panel_save() -> list[dict[str, Any]]:
+    """What the panel records when Save is a plain button: no form submit follows the click.
+
+    A ``submit`` event makes the compiler mark its click a commit by itself (``collapse_submits``),
+    so a recording carrying one cannot show what ``commit_step_ids`` does. The panel's save does
+    not depend on that: an application whose Save button posts from its own handler records no
+    submit at all.
+    """
+    return [
+        action_event(
+            1,
+            "fill",
+            "fill",
+            EMAIL_TARGETS,
+            value="ravi@example.com",
+            name="Fill Email",
+            url=NOT_NEW_URL,
+        ),
+        action_event(
+            2,
+            "click",
+            "click",
+            SAVE_TARGETS,
+            name="Click Save",
+            url=NOT_NEW_URL,
+            step_id="save-click",
+        ),
+        {
+            "seq": 3,
+            "kind": "observation",
+            "url": NOT_NEW_URL,
+            "step": None,
+            "observation": {"text_visible": "Record created"},
+        },
+    ]
+
+
+def test_a_panel_saved_recording_has_a_commit_step(client: TestClient) -> None:
+    """PL-105 review: the panel names the recording's last click, so the saved task marks it.
+
+    With no commit step the save compiles as a plain click: no write-ahead record and no save
+    check, which is how a crash between the click and its confirmation could create the same
+    record twice. The empty list the panel used to send is asserted beside it, so this test fails
+    for the bug and not only for the fix.
+    """
+    fixed = client.post(
+        "/api/v1/recipes/compile",
+        json=request_body(
+            a_panel_save(),
+            sample_row={"email": "ravi@example.com"},
+            record_key_column="email",
+            commit_step_ids=["save-click"],
+        ),
+    )
+
+    assert fixed.status_code == 200, fixed.text
+    commits = [step for step in fixed.json()["recipe"]["steps"] if step.get("commit")]
+    assert len(commits) == 1, fixed.json()["recipe"]["steps"]
+    assert commits[0]["name"] == "Click Save"
+    assert commits[0]["assert_after"] == {"text_visible": "Record created", "timeout_ms": 8000}
+
+    unchecked = client.post(
+        "/api/v1/recipes/compile",
+        json=request_body(
+            a_panel_save(),
+            sample_row={"email": "ravi@example.com"},
+            record_key_column="email",
+            commit_step_ids=[],
+        ),
+    )
+
+    assert unchecked.status_code == 200, unchecked.text
+    assert not any(step.get("commit") for step in unchecked.json()["recipe"]["steps"])
