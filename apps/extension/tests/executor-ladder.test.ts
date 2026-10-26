@@ -212,3 +212,41 @@ describe("usability and scoping", () => {
     expect(typeof result.y).toBe("number");
   });
 });
+
+describe("PL-099: an option listed as [CODE] Name", () => {
+  const products =
+    "<ul role='listbox'>" +
+    "<li role='option' id='dock'>[PL-DOC-4001] Thunderbolt Dock</li>" +
+    "<li role='option' id='lamp'>[PL-LGT-9001] Desk Lamp Pro</li>" +
+    "</ul>";
+
+  it("is found by its name alone, the way a spreadsheet holds it", () => {
+    document.body.innerHTML = products;
+    const result = resolveTargetInPage(
+      query([{ by: "role", role: "option", name: "Thunderbolt Dock" }]),
+    );
+    expect(result.ok).toBe(true);
+    expect(marked()?.id).toBe("dock");
+  });
+
+  it("still needs the whole name: a partial name picks nothing", () => {
+    document.body.innerHTML = products;
+    const result = resolveTargetInPage(query([{ by: "role", role: "option", name: "Desk Lamp" }]));
+    expect(result.ok).toBe(false);
+  });
+
+  it("is found by its full text too, code and all", () => {
+    document.body.innerHTML = products;
+    const result = resolveTargetInPage(
+      query([{ by: "role", role: "option", name: "[PL-DOC-4001] Thunderbolt Dock" }]),
+    );
+    expect(result.ok).toBe(true);
+    expect(marked()?.id).toBe("dock");
+  });
+
+  it("only strips a code from an option, not from a button", () => {
+    document.body.innerHTML = "<button id='b'>[Beta] Save</button>";
+    const result = resolveTargetInPage(query([{ by: "role", role: "button", name: "Save" }]));
+    expect(result.ok).toBe(false);
+  });
+});
