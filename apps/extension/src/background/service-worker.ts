@@ -50,6 +50,7 @@ import {
   type VisibilityDeps,
   type VisibilityReport,
 } from "../executor/visibility";
+import { lookForCode, readGmailFeeds } from "./code-lookup";
 import { dispatchCommandStep, prepareCommandStep } from "./command-step";
 import { canRemoveStep, RecorderSession, shouldRecordNavigation } from "./recorder-session";
 import { REFRESH_PAGE_WARNING, UNRECORDABLE_PAGE_WARNING } from "../popup/words";
@@ -60,6 +61,7 @@ import {
   type SessionState,
   type StoredSession,
   type WebSocketLike,
+  type CodeAnswer,
 } from "./command-session";
 
 const STORAGE_KEY = "processlens:recorder";
@@ -918,20 +920,28 @@ function getCommandSession(): CommandSession {
     checkCondition: checkCommandCondition,
     // PL-068: type the person's code into the bound tab and press its own continue. The code is
     // used for this one page call and never stored.
-    enterCode: async (code: string) => {
+    enterCode: (code: string) => typeCodeInBoundTab(code),
+    // PL-102: the same, with the code read from the person's own Gmail in this Chrome -- only once
+    // they have said yes, on the run page, to reading sign-in codes.
+    codeFromEmail: async ({ since, remember, lookMs, stop }) => {
       const tabId = commandBoundTabId;
       if (tabId === null || tabId < 0) return { entered: false, reason: "not_found" };
-      const cdp = await ensureDebugger(tabId);
-      const expression =
-        `(() => { const codePromptInPage = ${codePromptInPage.toString()};` +
-        ` return (${enterCodeInPage.toString()})(${JSON.stringify({ code })}) })()`;
-      const answer = (await evaluate(cdp, expression, {})) as
-        | { entered?: boolean; reason?: string }
-        | undefined;
-      return {
-        entered: answer?.entered === true,
-        reason: String(answer?.reason ?? "not_found"),
-      };
+      const local = chrome.storage?.local;
+      if (remember) await local?.set({ [CODES_FROM_EMAIL_KEY]: true });
+      const allowed =
+        remember || (local ? (await local.get([CODES_FROM_EMAIL_KEY]))[CODES_FROM_EMAIL_KEY] : false);
+      if (allowed !== true) return { entered: false, reason: "not_allowed" };
+      const site = (await chrome.tabs.get(tabId).catch(() => undefined))?.url ?? "";
+      const answer = await lookForCode(
+        {
+          read: () => readGmailFeeds((url, init) => fetch(url, init)),
+          now: () => Date.now(),
+          sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+        },
+        { since, site, lookMs, stop },
+      );
+      if (answer.status !== "found") return { entered: false, reason: answer.status };
+      return typeCodeInBoundTab(answer.code);
     },
     // PL-027: the abandon guard runs on the bound tab's debugger, the same one every command uses.
     armAbandonGuard: async () => {
@@ -956,6 +966,45 @@ function getCommandSession(): CommandSession {
   };
   commandSession = new CommandSession(deps);
   return commandSession;
+}
+
+/** PL-102: the person's yes to reading sign-in codes from their Gmail, kept in this Chrome. */
+const CODES_FROM_EMAIL_KEY = "processlens.codesFromEmail";
+
+/** PL-102: how long the page may take to leave the code page after the code is typed. */
+const CODE_PAGE_CLEAR_MS = 10_000;
+
+/**
+ * Type a code into the bound tab and press the page's own continue, then wait for the code page to
+ * go. `cleared` is what lets the runner carry on by itself; a wrong code leaves the page in place.
+ * The code lives for this call only.
+ */
+async function typeCodeInBoundTab(code: string): Promise<CodeAnswer> {
+  const tabId = commandBoundTabId;
+  if (tabId === null || tabId < 0) return { entered: false, reason: "not_found" };
+  const cdp = await ensureDebugger(tabId);
+  const expression =
+    `(() => { const codePromptInPage = ${codePromptInPage.toString()};` +
+    ` return (${enterCodeInPage.toString()})(${JSON.stringify({ code })}) })()`;
+  const answer = (await evaluate(cdp, expression, {})) as
+    | { entered?: boolean; reason?: string }
+    | undefined;
+  if (answer?.entered !== true) {
+    return { entered: false, reason: String(answer?.reason ?? "not_found") };
+  }
+  const probe = `(${codePromptInPage.toString()})({}).found === true`;
+  const deadline = Date.now() + CODE_PAGE_CLEAR_MS;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    try {
+      if ((await evaluate(await ensureDebugger(tabId), probe, {})) === false) {
+        return { entered: true, reason: "submitted", cleared: true };
+      }
+    } catch {
+      // The page is navigating; ask again.
+    }
+  }
+  return { entered: true, reason: "submitted", cleared: false };
 }
 
 async function handleExecutor(message: ToWorker): Promise<unknown> {

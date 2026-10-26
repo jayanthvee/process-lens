@@ -89,7 +89,7 @@ def test_the_code_is_written_nowhere(
 
     delivered: list[str] = []
 
-    async def accept(code: str, *, run_id: uuid.UUID, lease_epoch: int = 0) -> dict[str, object]:
+    async def accept(code: str | None, *, run_id: uuid.UUID, **_: object) -> dict[str, object]:
         delivered.append(code)
         return {"entered": True, "reason": "submitted"}
 
@@ -113,3 +113,107 @@ def test_the_code_is_written_nowhere(
                 (f"%{CODE}%",),
             )
             assert cur.fetchone()[0] == 0, f"the code reached {table}.{column}"
+
+
+# -- PL-102: the run resumes by itself, and the code can be read from email ----------------------
+
+
+def _run_status(conn: psycopg.Connection, run: Run) -> tuple[str, str | None]:
+    row = conn.execute(
+        "SELECT status::text, pause_reason FROM runs WHERE id = %s", (run.id,)
+    ).fetchone()
+    return row[0], row[1]
+
+
+def test_a_code_that_takes_the_page_past_the_prompt_resumes_the_run(
+    connected: TestClient,
+    conn: psycopg.Connection,
+    ledger: Ledger,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run = paused_run(conn, ledger)
+
+    async def accept(code: str | None, **_: object) -> dict[str, object]:
+        return {"entered": True, "reason": "submitted", "cleared": True}
+
+    monkeypatch.setattr(runs_module.hub, "send_enter_code", accept)
+
+    response = connected.post(f"/api/v1/runs/{run.id}/code", json={"code": CODE})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["resumed"] is True
+    assert _run_status(conn, run)[0] != "paused"
+
+
+def test_a_wrong_code_leaves_the_run_paused(
+    connected: TestClient,
+    conn: psycopg.Connection,
+    ledger: Ledger,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run = paused_run(conn, ledger)
+
+    async def accept(code: str | None, **_: object) -> dict[str, object]:
+        return {"entered": True, "reason": "submitted", "cleared": False}
+
+    monkeypatch.setattr(runs_module.hub, "send_enter_code", accept)
+
+    response = connected.post(f"/api/v1/runs/{run.id}/code", json={"code": CODE})
+
+    assert response.json()["resumed"] is False
+    assert _run_status(conn, run) == ("paused", "code_required")
+
+
+def test_reading_the_code_from_email_asks_the_runs_own_chrome_with_no_code(
+    connected: TestClient,
+    conn: psycopg.Connection,
+    ledger: Ledger,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run = paused_run(conn, ledger)
+    conn.execute("UPDATE runs SET browser_id = 'chrome-of-lakshmi' WHERE id = %s", (run.id,))
+    asked: list[dict[str, object]] = []
+
+    async def accept(code: str | None, **kwargs: object) -> dict[str, object]:
+        asked.append({"code": code, **kwargs})
+        return {"entered": True, "reason": "submitted", "cleared": True}
+
+    monkeypatch.setattr(runs_module.hub, "send_enter_code", accept)
+
+    response = connected.post(f"/api/v1/runs/{run.id}/code-from-email", json={"remember": True})
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"entered": True, "reason": "submitted", "resumed": True}
+    assert asked[0]["code"] is None
+    assert asked[0]["from_email"] is True
+    assert asked[0]["remember"] is True
+    assert asked[0]["browser_id"] == "chrome-of-lakshmi"
+
+
+def test_reading_the_code_from_email_says_why_it_could_not(
+    connected: TestClient,
+    conn: psycopg.Connection,
+    ledger: Ledger,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run = paused_run(conn, ledger)
+
+    async def accept(code: str | None, **_: object) -> dict[str, object]:
+        return {"entered": False, "reason": "ambiguous"}
+
+    monkeypatch.setattr(runs_module.hub, "send_enter_code", accept)
+
+    response = connected.post(f"/api/v1/runs/{run.id}/code-from-email", json={})
+
+    assert response.json() == {"entered": False, "reason": "ambiguous", "resumed": False}
+    assert _run_status(conn, run) == ("paused", "code_required")
+
+
+def test_reading_the_code_from_email_is_refused_unless_the_run_waits_for_one(
+    connected: TestClient, conn: psycopg.Connection, ledger: Ledger
+) -> None:
+    run = ledger.new_run()
+
+    response = connected.post(f"/api/v1/runs/{run.id}/code-from-email", json={})
+
+    assert response.status_code == 409, response.text
