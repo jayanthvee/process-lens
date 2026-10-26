@@ -195,6 +195,52 @@ export function plainSentences(text: string | null | undefined): { shown: string
   return { shown, hidden };
 }
 
+/** A compile refusal that no assertion could be inferred for the chosen save click (PL-107). */
+const NO_ASSERTION_REFUSAL =
+  /(?:^|\b)(?:no|without)\s+assert(?:_after|ion)\b|assertion[^.]*could\s*(?:not|n't)\s+be\s+inferred|commit step must carry an assertion/i;
+
+/** The step id a refusal names, as "click-2" or "fill-3". */
+const STEP_ID = /\b([a-z]+-\d+)\b/;
+
+/** The recording's last click, the step the compiler treats as the save. */
+function lastClickStep(events: RecordedEvent[]): RecordedStep | null {
+  let last: RecordedStep | null = null;
+  for (const event of events) {
+    const step = event?.step ?? null;
+    if (step !== null && step.action === "click") last = step;
+  }
+  return last;
+}
+
+/** The name of the click a refusal's step id points at, or the recording's last click. */
+function clickNameIn(text: string, events: RecordedEvent[]): string | null {
+  const id = STEP_ID.exec(text)?.[1];
+  const named = id
+    ? (events.find((event) => event?.step?.id === id)?.step ?? null)
+    : null;
+  const step = named ?? lastClickStep(events);
+  return step ? ownWords(step) : null;
+}
+
+/**
+ * PL-107: one plain sentence for a recording the compiler refused.
+ *
+ * A save click the compiler could not check ("no assertion could be inferred") is the case a person
+ * fixes by answering "Which click saves your work?" differently, so the sentence names the click and
+ * says so. A schema or step-name refusal keeps PL-103's plain sentence. Anything else is said in the
+ * same shape, so the panel never shows a bare "Could not save this as a task.".
+ */
+export function compileRefusalSentence(problems: string[], events: RecordedEvent[]): string {
+  const text = problems.join("\n");
+  if (NO_ASSERTION_REFUSAL.test(text)) {
+    const click = clickNameIn(text, events) ?? "that click";
+    return `ProcessLens couldn't see anything change after “${click}”, so it can't check that click worked. Pick a different answer for “Which click saves your work?”, or choose “Nothing gets saved”.`;
+  }
+  const { shown } = plainSentences(text);
+  if (shown.length > 0) return shown[0]!;
+  return "This recording can't be saved yet: something in it can't be repeated. Start over and teach it again.";
+}
+
 /**
  * The worker's own detail, when it is free of the engine's words.
  *

@@ -109,10 +109,10 @@ describe("RecorderSession.remove", () => {
 
   it("takes an observation attached to the action itself along, and nothing after it", () => {
     const session = new RecorderSession({ now: () => 1_000 });
-    const save = session.append(click("Save"));
+    const save = session.append(click("Save"))!;
     session.noteLeaving();
     session.attachObservation(save.step!.id, { text_visible: "Lead created" });
-    const next = session.append(click("Next"));
+    const next = session.append(click("Next"))!;
 
     session.remove(save.seq);
 
@@ -132,7 +132,7 @@ describe("RecorderSession.remove", () => {
 
   it("drops the evidence a removed step was still owed across a navigation", () => {
     const session = new RecorderSession({ now: () => 1_000 });
-    const save = session.append(click("Save"));
+    const save = session.append(click("Save"))!;
     session.noteLeaving();
     expect(session.pendingTarget()).toBe(save.step!.id);
 

@@ -15,6 +15,7 @@ import {
   GO_WHY_NOTHING_RECORDED,
   UNNAMED_CLICK,
   UNNAMED_STEP,
+  compileRefusalSentence,
   plainSaveNotes,
   plainSentences,
 } from "./words";
@@ -123,8 +124,18 @@ function constantValue(step: RecordedStep): string | null {
   return String(source.value);
 }
 
-/** The field's human name, climbing the target ladder's named rungs. */
-function humanName(step: RecordedStep): string | null {
+/**
+ * A placeholder that reads as an example, not a label: "e.g. …", "eg …", "Example: …",
+ * "such as …". Such text names the value the page expects, not the field (PL-107 item 13).
+ */
+const EXAMPLE_HINT = /^\s*(?:e\.?\s*g\.?|example\s*:|such as\b|for example\b|i\.e\.?)\s/i;
+
+function isExampleHint(text: string): boolean {
+  return EXAMPLE_HINT.test(text.trim());
+}
+
+/** The first non-empty name any rung offers: role name, then label, then test id. */
+function firstNamedText(step: RecordedStep): string | null {
   const targets = step.targets ?? [];
   for (const target of targets) {
     if (target.by === "role" && target.name.trim().length > 0) return target.name.trim();
@@ -134,6 +145,37 @@ function humanName(step: RecordedStep): string | null {
   }
   for (const target of targets) {
     if (target.by === "testid" && target.value.trim().length > 0) return target.value.trim();
+  }
+  return null;
+}
+
+/** A field's own id or name, from its css rung, in words: "#name_0" -> "Name". */
+function fieldToken(step: RecordedStep): string | null {
+  for (const target of step.targets ?? []) {
+    if (target.by !== "css") continue;
+    const selector = target.selector ?? "";
+    const token =
+      /#([A-Za-z][\w-]*)/.exec(selector)?.[1] ??
+      /\[name=["']([^"']+)["']\]/.exec(selector)?.[1] ??
+      /\[id=["']([^"']+)["']\]/.exec(selector)?.[1];
+    if (!token) continue;
+    const words = token.replace(/_\d+$/, "").replace(/[-_]+/g, " ").trim();
+    if (words.length > 0) return words.charAt(0).toUpperCase() + words.slice(1);
+  }
+  return null;
+}
+
+/** The field's human name, climbing the target ladder's named rungs. */
+function humanName(step: RecordedStep): string | null {
+  const first = firstNamedText(step);
+  if (first !== null && !isExampleHint(first)) return first;
+  // PL-107 item 13: the only name this field offers is an example placeholder. That is not a
+  // name; use the field's own id/name, then call a text field "Name" (nothing better to say).
+  if (first !== null) {
+    const token = fieldToken(step);
+    if (token !== null) return token;
+    if (step.action === "fill") return "Name";
+    return first;
   }
   const name = step.name?.trim();
   return name && name.length > 0 ? name : null;
@@ -304,16 +346,55 @@ export function recordedValues(events: RecordedEvent[]): RecordedValue[] {
     seenFields.add(`${JSON.stringify(step.targets ?? [])}|${value}`);
 
     const name = humanName(step);
-    const column = allocate(slug(name ?? String(step.id ?? "")), takenColumns);
     values.push({
       stepId: String(step.id ?? ""),
-      column,
+      column: "",
       value,
-      label: name ?? column,
+      label: name ?? "",
       required: event.required === true,
     });
   }
-  return values;
+  return namedValues(values, takenColumns);
+}
+
+/** Ordinal words, so a tie is told apart in plain language and never by a bare "2". */
+const ORDINALS = ["first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth"];
+
+/**
+ * Give every field a name a person recognises and a column of its own (PL-109 item 2).
+ *
+ * Two fields that would get the same name are told apart by what was typed in them:
+ * ``Contact (ben baller)`` and ``Contact (ben baller's opportunity)``. Only a tie on the value too,
+ * which no name can distinguish, falls back to a plain ordinal word ("the second field"), never to
+ * ``Contact 2``. The machine column keeps its old derivation (the first name, then ``_2``), so no
+ * saved mapping or schema key changes; only the name a person reads is disambiguated.
+ */
+function namedValues(values: RecordedValue[], takenColumns: Map<string, number>): RecordedValue[] {
+  const counts = new Map<string, number>();
+  for (const value of values) {
+    const key = (value.label || value.stepId).trim().toLowerCase();
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  const seen = new Map<string, number>();
+  const result: RecordedValue[] = [];
+  for (const value of values) {
+    const base = value.label || value.stepId;
+    const column = allocate(slug(base), takenColumns);
+    let label = value.label;
+    const key = base.trim().toLowerCase();
+    if ((counts.get(key) ?? 0) > 1) {
+      const typed = value.value.trim();
+      label = `${value.label || "Field"} (${typed || "empty"})`;
+      const tie = (seen.get(label.toLowerCase()) ?? 0) + 1;
+      seen.set(label.toLowerCase(), tie);
+      if (tie > 1) {
+        const ordinal = ORDINALS[tie - 1] ?? `${tie}th`;
+        label = `${value.label || "Field"} (${typed || "empty"}, ${ordinal} field)`;
+      }
+    }
+    result.push({ ...value, column, label: label || column });
+  }
+  return result;
 }
 
 /**
@@ -354,6 +435,12 @@ function stepWords(step: RecordedStep | null): string {
 
 /** Something that looks enough like an email address to identify a record. */
 const EMAIL_VALUE = /^[^@\s]+@[^@\s]+$/;
+
+/** A value that reads as an id or a number rather than a person's name. */
+const ID_LIKE_VALUE = /^\d[\d\s._-]*$|^[A-Za-z]{1,6}[-_/ ]?\d{2,}$/;
+
+/** A value that reads as a person's name: two or more capitalized words. */
+const PERSON_NAME_VALUE = /^[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+$/;
 
 /**
  * Whether a recorded step's own target says "search": a searchbox role, or a name/value/text/within
@@ -433,9 +520,12 @@ export function parkFieldDefaults(events: RecordedEvent[], recordKeyColumn: stri
 }
 
 /**
- * The column the record-key select should offer first: an email-named field when
- * there is one, else a value that looks like an email, else nothing. The recorder's
- * buffering can put a non-identifying field first, so it is never the default.
+ * The column the record-key select should offer first (PL-107 item 14).
+ *
+ * An email-named field, or a value that looks like an email, identifies a row best. An id/number
+ * comes next. A person's name is the last thing to key on, because two people can share one; a
+ * value that is none of these gets no default, so the person chooses. The recorder's buffering can
+ * put a non-identifying field first, so it is never the default on that basis alone.
  */
 export function defaultRecordKeyColumn(events: RecordedEvent[]): string | null {
   const values = recordedValues(events);
@@ -444,6 +534,12 @@ export function defaultRecordKeyColumn(events: RecordedEvent[]): string | null {
   }
   for (const value of values) {
     if (EMAIL_VALUE.test(value.value)) return value.column;
+  }
+  for (const value of values) {
+    if (ID_LIKE_VALUE.test(value.value.trim())) return value.column;
+  }
+  for (const value of values) {
+    if (PERSON_NAME_VALUE.test(value.value.trim())) return value.column;
   }
   return null;
 }
@@ -885,13 +981,10 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
       problems.length > 0 ? problems : ["ProcessLens would not accept this recording."];
     // The count is the true one, whether or not a sentence is one this page can show.
     const count = sentences.length === 1 ? "1 problem" : `${sentences.length} problems`;
-    // PL-103: the first plain sentence (the step a refusal is about, and its fix) is said right
-    // here, under Save, not only under Notes for support.
-    const { shown } = plainSentences(sentences.join("\n"));
+    // PL-103/PL-107: the refusal's one plain sentence (the step it is about and its fix, or why
+    // the save click could not be checked) is said right here, under Save, not only under support.
     notice(
-      shown.length > 0
-        ? `Could not save this as a task (${count}). ${shown[0]}`
-        : `Could not save this as a task (${count}).`,
+      `Could not save this as a task (${count}). ${compileRefusalSentence(sentences, events)}`,
     );
     // PL-033: the refusal's own sentences are for support. The person reads the headline and the
     // two plain notes; everything else stays reachable under More → "Notes for support".

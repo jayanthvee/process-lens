@@ -17,6 +17,11 @@ from psycopg.types.json import Jsonb
 from .errors import StaleLease, StateConflict, guard_refusal_is_typed
 from .lease import require_lease
 from .models import RecordClaim, _row
+from .runs import get_run, reopen_completed_run
+
+# The one note a requeue writes in front of a row's own reason (PL-107 item 15). Stripping it first
+# keeps a second Try again from nesting it.
+_REQUEUE_PREFIX = "Trying again — last time: "
 
 # sql-patterns.md § Claim the next record in a run. attempts is raised by the database trigger.
 # The order is the input row's row_index, not created_at: a batch's records are inserted together,
@@ -195,45 +200,73 @@ def requeue_record(
     goes to ``reconciling`` unless the caller records who checked the destination, in which case the
     same update sets both check columns and it reaches ``pending`` directly (the guard rejects
     anything else).
+
+    PL-107: a row of a ``completed`` run puts that run back to ``queued`` in the same transaction,
+    so the supervisor starts it again. A ``cancelled`` run is refused: it was stopped on purpose,
+    and a new run is the way to try the row again. A ``running`` or ``paused`` run is left to its
+    own worker.
+
+    PL-107 item 15: the row's own reason is kept visible; the requeue note never replaces it.
     """
     record = get_record(conn, record_id)
     if record is None:
         raise StateConflict(f"run_record {record_id} does not exist")
+    run = get_run(conn, record.run_id)
+    if run is None:
+        raise StateConflict(f"run {record.run_id} does not exist")
+    if run.status == "cancelled":
+        raise StateConflict("This run was stopped. Start a new run to try this row again.")
+
+    # Keep why the row stopped, so the person can still see it after pressing Try again. The
+    # prefix is added once: a row that was re-queued before already carries it (PL-107 review), and
+    # pressing Try again twice must not nest it into "Trying again — last time: Trying again …".
+    previous = (record.reason or "").strip()
+    while previous.startswith(_REQUEUE_PREFIX):
+        previous = previous[len(_REQUEUE_PREFIX) :].strip()
+    requeue_reason = f"{_REQUEUE_PREFIX}{previous}" if previous else reason
 
     if record.commit_attempted and destination_checked_by is None:
         with conn.cursor() as cur, guard_refusal_is_typed():
             cur.execute(
                 "UPDATE run_records SET state = 'reconciling', reason = %(reason)s"
                 " WHERE id = %(record)s AND state IN ('parked', 'failed') AND commit_attempted",
-                {"reason": reason, "record": record_id},
+                {"reason": requeue_reason, "record": record_id},
             )
             if cur.rowcount == 0:
                 raise StateConflict(f"run_record {record_id} is not parked or failed")
-        return "reconciling"
-
-    if record.commit_attempted:
+        state = "reconciling"
+    elif record.commit_attempted:
         with conn.cursor() as cur, guard_refusal_is_typed():
             cur.execute(
                 "UPDATE run_records SET state = 'pending', reason = %(reason)s,"
                 " claimed_by = NULL, claimed_at = NULL,"
                 " destination_checked_by = %(checked_by)s, destination_checked_at = now()"
                 " WHERE id = %(record)s AND state IN ('parked', 'failed') AND commit_attempted",
-                {"reason": reason, "record": record_id, "checked_by": destination_checked_by},
+                {
+                    "reason": requeue_reason,
+                    "record": record_id,
+                    "checked_by": destination_checked_by,
+                },
             )
             if cur.rowcount == 0:
                 raise StateConflict(f"run_record {record_id} is not parked or failed")
-        return "pending"
+        state = "pending"
+    else:
+        with conn.cursor() as cur, guard_refusal_is_typed():
+            cur.execute(
+                "UPDATE run_records SET state = 'pending', reason = %(reason)s,"
+                " claimed_by = NULL, claimed_at = NULL"
+                " WHERE id = %(record)s AND state IN ('parked', 'failed') AND NOT commit_attempted",
+                {"reason": requeue_reason, "record": record_id},
+            )
+            if cur.rowcount == 0:
+                raise StateConflict(f"run_record {record_id} is not parked or failed")
+        state = "pending"
 
-    with conn.cursor() as cur, guard_refusal_is_typed():
-        cur.execute(
-            "UPDATE run_records SET state = 'pending', reason = %(reason)s,"
-            " claimed_by = NULL, claimed_at = NULL"
-            " WHERE id = %(record)s AND state IN ('parked', 'failed') AND NOT commit_attempted",
-            {"reason": reason, "record": record_id},
-        )
-        if cur.rowcount == 0:
-            raise StateConflict(f"run_record {record_id} is not parked or failed")
-    return "pending"
+    # PL-107: a finished run whose row is back in the queue is put back to work. A running or
+    # paused run is a no-op here; the reopen's own WHERE keeps it to `completed`.
+    reopen_completed_run(conn, record.run_id)
+    return state
 
 
 def dismiss_record(

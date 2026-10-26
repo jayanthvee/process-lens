@@ -600,6 +600,45 @@ export function resolveTargetInPage(query: ResolveQuery): ResolveResult {
 
   const doc = document;
 
+  // PL-107: the accessible name skips what the page hides, exactly as the recorder's
+  // `nodeTextExcludingHelp` does: aria-hidden, `hidden`, and display:none/visibility:hidden. The
+  // resolver is serialized into the page, so the rule lives here, self-contained.
+  const textOf = (el: Element): string => {
+    const pieces: string[] = [];
+    const view = doc.defaultView;
+    const computed =
+      view && typeof view.getComputedStyle === "function"
+        ? view.getComputedStyle.bind(view)
+        : null;
+    const hiddenStyle = (node: Element): boolean => {
+      if (!computed) return false;
+      try {
+        const style = computed(node);
+        return style.display === "none" || style.visibility === "hidden";
+      } catch {
+        return false;
+      }
+    };
+    const walk = (node: Node, skip: boolean): void => {
+      if (node.nodeType === 3) {
+        if (!skip) pieces.push(node.textContent ?? "");
+        return;
+      }
+      if (node.nodeType !== 1) return;
+      const child = node as Element;
+      const inline = (child as HTMLElement).style;
+      const hidden =
+        child.getAttribute("aria-hidden") === "true" ||
+        child.hasAttribute("hidden") ||
+        (inline && (inline.display === "none" || inline.visibility === "hidden")) ||
+        hiddenStyle(child);
+      const childSkip = skip || hidden;
+      for (const grandchild of Array.from(child.childNodes)) walk(grandchild, childSkip);
+    };
+    for (const child of Array.from(el.childNodes)) walk(child, false);
+    return norm(pieces.join(""));
+  };
+
   // A shadow root is a separate tree: `querySelector`, `querySelectorAll` and `getElementById` stop
   // at the boundary, so a control inside `attachShadow({ mode: "open" })` is unreachable by a plain
   // document query. These helpers walk into every OPEN shadow root, in document order — a shadow
@@ -651,6 +690,23 @@ export function resolveTargetInPage(query: ResolveQuery): ResolveResult {
       if (found) return found;
     }
     return null;
+  };
+
+  /**
+   * Whether the accessible name is the element's own text content: no higher-precedence source
+   * (aria-labelledby, aria-label, a label, a field's value/placeholder/title, alt, title) names it.
+   * Only such an element can carry the old full-text name a recipe was pinned with (PL-107).
+   */
+  const nameIsOwnText = (el: Element): boolean => {
+    if (norm(el.getAttribute("aria-labelledby"))) return false;
+    if (norm(el.getAttribute("aria-label"))) return false;
+    if (labelTextOf(el)) return false;
+    const tag = el.tagName.toUpperCase();
+    if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return false;
+    if (norm(el.getAttribute("alt"))) return false;
+    if (norm(el.getAttribute("title"))) return false;
+    if (el.getAttribute("contenteditable") === "true") return false;
+    return true;
   };
 
   const roleOf = (el: Element): string => {
@@ -735,10 +791,13 @@ export function resolveTargetInPage(query: ResolveQuery): ResolveResult {
       // The label can sit in the same open shadow root as the control it names, which a document
       // query cannot see past; the control's own root is searched before the document.
       const forLabel = findIn(el, (root) => deepFirst(root, `label[for="${escaped}"]`));
-      const text = norm(forLabel?.textContent);
-      if (text) return text;
+      if (forLabel) {
+        const text = textOf(forLabel);
+        if (text) return text;
+      }
     }
-    return norm(el.closest("label")?.textContent);
+    const wrapping = el.closest("label");
+    return wrapping ? textOf(wrapping) : "";
   };
 
   const accessibleNameOf = (el: Element): string => {
@@ -747,7 +806,10 @@ export function resolveTargetInPage(query: ResolveQuery): ResolveResult {
       const text = norm(
         labelledby
           .split(" ")
-          .map((id) => norm(findIn(el, (root) => deepFirstId(root, id))?.textContent))
+          .map((id) => {
+            const target = findIn(el, (root) => deepFirstId(root, id));
+            return target ? textOf(target) : "";
+          })
           .join(" "),
       );
       if (text) return text;
@@ -779,7 +841,7 @@ export function resolveTargetInPage(query: ResolveQuery): ResolveResult {
     const title = norm(el.getAttribute("title"));
     if (title) return title;
     if (el.getAttribute("contenteditable") === "true") return "";
-    return norm(el.textContent);
+    return textOf(el);
   };
 
   /**
@@ -872,7 +934,10 @@ export function resolveTargetInPage(query: ResolveQuery): ResolveResult {
   const isDisabled = (el: Element): boolean => {
     const node = el as HTMLInputElement;
     if (node.disabled === true) return true;
-    return lower(el.getAttribute("aria-disabled")) === "true";
+    if (lower(el.getAttribute("aria-disabled")) === "true") return true;
+    // PL-107 item 11: a control the page is busy with is not ready to act on either; the click
+    // path waits for it, and the step's own assertion may show the page already moved on.
+    return lower(el.getAttribute("aria-busy")) === "true";
   };
 
   const isVisible = (el: Element): boolean => {
@@ -1023,6 +1088,11 @@ export function resolveTargetInPage(query: ResolveQuery): ResolveResult {
           // either keeps recipes pinned with placeholder names resolving.
           (name === "" ||
             lower(accessibleNameOf(el)) === lower(name) ||
+            // PL-107: a recipe saved before hidden subtrees were left out of the name carried the
+            // old doubled name ("ContinueContinuing"); when the name is the element's own text, the
+            // full text still matches it. An element with a higher-precedence name (aria-label,
+            // label, title) keeps that name, so it gains no second one.
+            (nameIsOwnText(el) && lower(norm(el.textContent)) === lower(name)) ||
             lower(columnHeaderNameOf(el)) === lower(name) ||
             // PL-099: a list that shows its entries as "[CODE] Name" (Odoo's products) is
             // answered by a spreadsheet that holds the name alone. The whole name must still

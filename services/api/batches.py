@@ -119,6 +119,9 @@ class ColumnMapping(BaseModel):
     confidence: Literal["exact", "close", "none"]
     required: bool
     alternatives: list[str]
+    # PL-109 item 1: the value the person typed while teaching, so every screen that names a field
+    # can show it ("Contact — you typed “ben baller”"). Never a default for a row.
+    example: str | None = None
 
 
 class NeedALook(BaseModel):
@@ -474,9 +477,42 @@ def _rank(
         return 1
     if recorded and _is_code_shape(recorded) and _shape(value) == _shape(recorded):
         return 2
+    recorded_kind = _value_kind(recorded)
+    # A person's name is not matched here: two name columns look alike ("Ana Ruiz" and "Ruiz
+    # Hermanos" are both A A), so it is only guessed when exactly one column qualifies (see
+    # `_match`). Email, a phone number and money are distinctive enough to name their column.
+    if recorded_kind in {"email", "phone", "money"} and _value_kind(value) == recorded_kind:
+        return 2
     if _is_close(recipe_column, spreadsheet_column):
         return 2
     return 3
+
+
+_PHONE = re.compile(r"^\+?[\d][\d\s().-]{5,}$")
+_NAME = re.compile(r"^[A-Z][^\W\d_]+(?:\s+[A-Z][^\W\d_]+)+$")
+
+
+def _value_kind(text: str) -> str | None:
+    """What a taught value looks like: ``email``, ``number``, ``phone``, ``name``, or nothing.
+
+    Deliberately coarse: a kind only separates the shapes a person would recognise (an address, a
+    sum of money, a phone number, a person's name) so a column can be guessed by its values. A value
+    that fits none of them is never matched by shape.
+    """
+    value = str(text).strip()
+    if not value:
+        return None
+    if _is_email(value):
+        return "email"
+    if _number_value(value) is not None:
+        # Money is marked apart from a plain count: "$1,299.00" says more about its column than
+        # "349" does, and a quantity must never be guessed from a price (PL-109 item 3).
+        return "money" if re.search(r"[€$£]|,|\.", value) else "number"
+    if _PHONE.fullmatch(value) and sum(char.isdecimal() for char in value) >= 7:
+        return "phone"
+    if _NAME.fullmatch(value):
+        return "name"
+    return None
 
 
 def _label(column: str) -> str:
@@ -514,13 +550,20 @@ def _match(
     row_one: dict[str, str],
     kind: str | None = None,
     raw_rows: list[dict[str, Any]] | None = None,
+    exclude: set[str] | None = None,
 ) -> tuple[str | None, str, list[str]]:
-    """Choose a spreadsheet column for one task column, with a confidence and the alternatives."""
+    """Choose a spreadsheet column for one task column, with a confidence and the alternatives.
+
+    ``exclude`` names columns another task field already claimed with a different taught value
+    (PL-109 item 3): two fields never share a column unless what was typed in them was the same.
+    """
     # PL-106 item 3: the kind filters the *guess* only; a saved mapping is applied later, untouched.
     # A column the file names exactly like the field is not a guess -- the person's own header says
     # the same thing -- so it keeps its place and PL-095's row-by-row check flags its bad values.
     # What this removes is the shared-word guess: "Expected" offered for "expected_revenue".
     offered = columns
+    if exclude:
+        offered = [column for column in offered if column not in exclude]
     if kind in {"email", "number"} and raw_rows:
         offered = [
             column
@@ -530,6 +573,13 @@ def _match(
     ranks = [_rank(recipe_column, column, sample_value, row_one) for column in offered]
     best = min(ranks) if ranks else 3
     if best == 3:
+        # PL-109 item 3: a person's name is guessed only when exactly one column reads as one, so
+        # two name-like columns are never guessed between.
+        recorded = "" if sample_value is None else str(sample_value).strip()
+        if _value_kind(recorded) == "name":
+            name_columns = [c for c in offered if _value_kind(str(row_one.get(c, ""))) == "name"]
+            if len(name_columns) == 1:
+                return name_columns[0], "close", []
         return None, "none", []
     chosen = offered[ranks.index(best)]
     confidence = "exact" if best <= 1 else "close"
@@ -591,14 +641,22 @@ def _mapping_for(
 ) -> list[ColumnMapping]:
     """One mapping entry per task column, in the task's own field order."""
     entries: list[ColumnMapping] = []
+    # PL-109 item 3: which column each field claimed, with the taught value it claimed it with.
+    claimed: dict[str, str] = {}
     for recipe_column, spec in _fields(document).items():
         sample_value = (sample_row or {}).get(recipe_column)
+        example = spec.get("example") if isinstance(spec, dict) else None
+        taught = "" if example is None else str(example).strip()
+        # A column another field took with a different taught value is not offered here.
+        exclude = {column for column, value in claimed.items() if value != taught}
         # PL-106 item 3: the field's kind, read from its example, keeps a column that cannot hold
         # its values out of the guess. Every row is read, not just the first one.
         kind = _kind(spec.get("example")) if isinstance(spec, dict) else None
         chosen, confidence, alternatives = _match(
-            recipe_column, columns, sample_value, row_one, kind, raw_rows
+            recipe_column, columns, sample_value, row_one, kind, raw_rows, exclude
         )
+        if chosen is not None:
+            claimed[chosen] = taught
         required = bool(spec.get("required")) if isinstance(spec, dict) else False
         entries.append(
             ColumnMapping(
@@ -608,6 +666,7 @@ def _mapping_for(
                 confidence=confidence,
                 required=required,
                 alternatives=alternatives,
+                example=taught or None,
             )
         )
     return entries

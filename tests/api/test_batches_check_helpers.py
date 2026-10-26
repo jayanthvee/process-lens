@@ -16,6 +16,7 @@ from services.api.batches import (
     _is_email,
     _kind,
     _kind_reasons,
+    _mapping_for,
     _number_value,
     _rank,
     _shape,
@@ -154,3 +155,71 @@ def test_one_file_column_read_by_two_task_columns_is_flagged_once() -> None:
     }
     values = {"search": "gus.hale.at.example", "email": "gus.hale.at.example"}
     assert _kind_reasons(document, values) == ["“gus.hale.at.example” isn't an email"]
+
+
+# --- PL-109 items 1 and 3: the example travels, and values name the column --------------------
+
+
+def _document(fields: dict[str, dict[str, str]]) -> dict:
+    return {"meta": {"input_schema": {"fields": fields}}}
+
+
+def test_every_mapping_entry_carries_the_taught_example() -> None:
+    document = _document({"contact": {"type": "string", "example": "ben baller"}})
+    entries = _mapping_for(document, ["Full Name"], {}, {"Full Name": "Priya Nair"})
+    assert entries[0].example == "ben baller"
+
+
+def test_a_column_of_emails_is_matched_by_its_values_when_the_header_differs() -> None:
+    document = _document({"email": {"type": "string", "example": "ana@x.test"}})
+    entries = _mapping_for(
+        document, ["Contact info"], {"email": "ana@x.test"}, {"Contact info": "gus@x.test"}
+    )
+    assert entries[0].chosen == "Contact info"
+    assert entries[0].confidence == "close"
+
+
+def test_money_matches_money_but_a_plain_count_does_not_match_a_price() -> None:
+    money = _document({"expected_revenue": {"type": "string", "example": "$1,299.00"}})
+    assert (
+        _mapping_for(money, ["Price"], {"expected_revenue": "$1,299.00"}, {"Price": "$89.00"})[
+            0
+        ].chosen
+        == "Price"
+    )
+    count = _document({"quantity": {"type": "string", "example": "2"}})
+    assert (
+        _mapping_for(count, ["Unit Price"], {"quantity": "2"}, {"Unit Price": "349"})[0].chosen
+        is None
+    )
+
+
+def test_a_person_name_is_guessed_only_when_exactly_one_column_looks_like_one() -> None:
+    document = _document({"contact": {"type": "string", "example": "Ana Ruiz"}})
+    one = _mapping_for(
+        document, ["Full Name"], {"contact": "Ana Ruiz"}, {"Full Name": "Priya Nair"}
+    )
+    assert one[0].chosen == "Full Name"
+    assert one[0].confidence == "close"
+    two = _mapping_for(
+        document,
+        ["Alpha", "Beta"],
+        {"contact": "Ana Ruiz"},
+        {"Alpha": "Priya Nair", "Beta": "Ruiz Hermanos"},
+    )
+    assert two[0].chosen is None
+
+
+def test_two_fields_with_different_taught_values_never_share_a_column() -> None:
+    document = _document(
+        {
+            "contact": {"type": "string", "example": "Ana Ruiz"},
+            "company": {"type": "string", "example": "Ruiz Hermanos"},
+        }
+    )
+    sample = {"contact": "Ana Ruiz", "company": "Ruiz Hermanos"}
+    entries = _mapping_for(document, ["Names"], sample, {"Names": "Priya Nair"})
+    chosen = [entry.chosen for entry in entries]
+    # Only one field may claim the single name-like column.
+    assert chosen.count("Names") == 1
+    assert chosen.count(None) == 1

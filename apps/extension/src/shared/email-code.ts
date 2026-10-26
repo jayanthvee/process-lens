@@ -170,3 +170,25 @@ export function parseGmailFeed(xml: string): MailMessage[] {
   }
   return messages;
 }
+
+/** The webmail hosts a person reads codes from. A plain search page is not mail. */
+const WEBMAIL_HOSTS = new Set([
+  "mail.google.com",
+  "outlook.live.com",
+  "outlook.office.com",
+  "mail.yahoo.com",
+]);
+
+/**
+ * PL-107: whether a URL is a person's own inbox. Teaching never records the inbox tab: going to
+ * Gmail/Outlook/Yahoo for a code is not a step of the task being taught.
+ */
+export function isEmailHost(url: string): boolean {
+  let hostname = "";
+  try {
+    hostname = new URL(url).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  return WEBMAIL_HOSTS.has(hostname);
+}

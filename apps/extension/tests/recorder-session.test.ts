@@ -72,14 +72,14 @@ describe("step ids belong to the session (requirement 5)", () => {
 
     const restarted = new RecorderSession();
     restarted.restore(first.events);
-    expect(restarted.append(clickEvent("click-1")).step?.id).toBe("click-4");
+    expect(restarted.append(clickEvent("click-1"))!.step?.id).toBe("click-4");
     expect(restarted.count).toBe(4);
   });
 
   it("keeps the recorded order in seq, whatever the pages numbered", () => {
     const session = new RecorderSession();
-    const first = session.append(clickEvent("click-1"));
-    const second = session.append(clickEvent("click-1"));
+    const first = session.append(clickEvent("click-1"))!;
+    const second = session.append(clickEvent("click-1"))!;
     expect([first.seq, second.seq]).toEqual([1, 2]);
   });
 });
@@ -96,7 +96,7 @@ describe("navigations (requirement 6)", () => {
     ).toBe(true);
 
     const session = new RecorderSession();
-    const event = session.appendNavigate("https://mail.example.test/leads?page=2");
+    const event = session.appendNavigate("https://mail.example.test/leads?page=2")!;
 
     expect(event).toMatchObject({
       kind: "navigate",
@@ -234,7 +234,7 @@ describe("the action a navigation is owed evidence for (requirement 3)", () => {
 
     expect(session.count).toBe(0);
     expect(session.pendingTarget()).toBeNull();
-    expect(session.append(clickEvent("click-1")).step?.id).toBe("click-1");
+    expect(session.append(clickEvent("click-1"))!.step?.id).toBe("click-1");
   });
 });
 
@@ -253,7 +253,7 @@ describe("step ids restart for a new recording (PL-018, requirement 4)", () => {
         targets: [{ by: "role", role: "combobox", name: "To" }],
         value: { kind: "constant", value: "dana" },
       },
-    });
+    })!;
     expect(prefix.step?.id).toBe("fill-1");
 
     const chip = session.append({
@@ -270,7 +270,7 @@ describe("step ids restart for a new recording (PL-018, requirement 4)", () => {
       chip: true,
       autocomplete: true,
       supersedes: "fill-2",
-    });
+    })!;
 
     // The reference must name the id the stored fill actually carries, or the compiler's fold
     // cannot find the prefix and the accept stays a press of its own.

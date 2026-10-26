@@ -371,14 +371,14 @@ describe("recorded values", () => {
         stepId: "fill-1",
         column: "contact_name",
         value: "Ravi",
-        label: "Contact Name",
+        label: "Contact Name (Ravi)",
         required: false,
       },
       {
         stepId: "fill-3",
         column: "contact_name_2",
         value: "Meera",
-        label: "Contact Name",
+        label: "Contact Name (Meera)",
         required: false,
       },
     ]);
