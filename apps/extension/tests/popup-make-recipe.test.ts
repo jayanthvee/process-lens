@@ -1153,3 +1153,68 @@ describe("the team access code on compile and save (PL-086)", () => {
     expect(seen[2]).not.toHaveProperty("authorization");
   });
 });
+
+describe("why Save as task is greyed out (PL-106 item 1)", () => {
+  // The button is disabled for exactly three reasons in `syncGo`: nothing recorded, no column to
+  // choose (no value was typed while teaching), or no column chosen. Each one is said in one
+  // sentence right under the button, in `#make-go-why`; an enabled button says nothing there.
+  const NOTHING_RECORDED = "Record some steps first.";
+  const NO_VALUES = "Type at least one value while teaching, so each row has something to fill in.";
+  const NO_KEY = "Pick the column that identifies each row.";
+
+  it("sits right under the button in the popup markup", () => {
+    const go = control<HTMLButtonElement>("make-go");
+    const why = control<HTMLParagraphElement>("make-go-why");
+    expect(go.nextElementSibling).toBe(why);
+  });
+
+  it("says to record some steps when the recording is empty", () => {
+    const { fetchImpl } = fakeFetch({});
+    const form = mount(fetchImpl);
+
+    form.refresh([]);
+
+    expect(control<HTMLButtonElement>("make-go").disabled).toBe(true);
+    expect(control("make-go-why").textContent).toBe(NOTHING_RECORDED);
+  });
+
+  it("says to type a value when the recording has only clicks", () => {
+    const { fetchImpl } = fakeFetch({});
+    const form = mount(fetchImpl);
+
+    form.refresh([clickEvent(1, "click-1", "New lead"), clickEvent(2, "click-2", "Save")]);
+
+    expect(control<HTMLButtonElement>("make-go").disabled).toBe(true);
+    expect(control("make-go-why").textContent).toBe(NO_VALUES);
+  });
+
+  it("says to pick the key column when none is chosen, and goes quiet once one is", () => {
+    const { fetchImpl } = fakeFetch({});
+    const form = mount(fetchImpl);
+
+    form.refresh([
+      fillEvent(1, "fill-1", "Interest", "Data course"),
+      fillEvent(2, "fill-2", "Notes", "Called on Monday"),
+    ]);
+
+    expect(control<HTMLButtonElement>("make-go").disabled).toBe(true);
+    expect(control("make-go-why").textContent).toBe(NO_KEY);
+
+    const key = control<HTMLSelectElement>("make-key");
+    key.value = "interest";
+    key.dispatchEvent(new Event("change"));
+
+    expect(control<HTMLButtonElement>("make-go").disabled).toBe(false);
+    expect(control("make-go-why").textContent).toBe("");
+  });
+
+  it("says nothing when the button is ready", () => {
+    const { fetchImpl } = fakeFetch({});
+    const form = mount(fetchImpl);
+
+    form.refresh(leadRecording());
+
+    expect(control<HTMLButtonElement>("make-go").disabled).toBe(false);
+    expect(control("make-go-why").textContent).toBe("");
+  });
+});

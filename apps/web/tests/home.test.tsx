@@ -167,3 +167,29 @@ describe("Home", () => {
     stub.restore();
   });
 });
+
+describe("time saved under a minute (PL-106 item 5)", () => {
+  it("says Under a minute rather than 0 m next to a week of rows", async () => {
+    const stub = createFetchStub({
+      "/api/v1/home": {
+        body: {
+          ...EMPTY,
+          counts: { done: 145, already_there: 0, needs_help: 0 },
+          saved_seconds: 20,
+          estimated_rows: 0,
+        },
+      },
+      ...SHELL,
+    });
+    renderApp("/");
+    await settle();
+
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toContain(
+      "145 rows done this week.",
+    );
+    expect(screen.queryByText("0 m")).toBeNull();
+    expect(screen.getByText("Under a minute")).toBeTruthy();
+
+    stub.restore();
+  });
+});

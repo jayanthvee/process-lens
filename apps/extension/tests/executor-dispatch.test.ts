@@ -363,3 +363,31 @@ describe("navigate", () => {
     });
   });
 });
+
+describe("a fill whose value carries a spreadsheet line break (PL-106 item 6)", () => {
+  // A spreadsheet cell written on Windows ends its lines with CRLF. A browser field never keeps the
+  // `\r`: a textarea normalises CRLF to `\n`, and a one-line input drops line breaks altogether. The
+  // field holds what the person meant, so the read-back must not call it "did not stick".
+  it("accepts a textarea that kept the line break as a plain newline", async () => {
+    stamp("<textarea id='notes'></textarea>", "f1", { by: "css", selector: "#notes" });
+    const { cdp } = fakeCdp(undefined, { simulateInput: true });
+
+    await expect(dispatchFill(cdp, "f1", "Ana\r\nRuiz")).resolves.toBeUndefined();
+    expect((document.getElementById("notes") as HTMLTextAreaElement).value).toBe("Ana\nRuiz");
+  });
+
+  it("accepts a one-line input that dropped the line break", async () => {
+    stamp("<input id='name'>", "f1", { by: "css", selector: "#name" });
+    const { cdp } = fakeCdp(undefined, { simulateInput: true });
+
+    await expect(dispatchFill(cdp, "f1", "Ana Ruiz\r\n")).resolves.toBeUndefined();
+  });
+
+  it("still refuses a field that kept nothing of a value with a line break", async () => {
+    stamp("<input id='name'>", "f1", { by: "css", selector: "#name" });
+    // No simulated input: the field stays empty, as on a page that threw the typing away.
+    const { cdp } = fakeCdp();
+
+    await expect(dispatchFill(cdp, "f1", "Ana\r\nRuiz")).rejects.toThrow(/did not stick/);
+  });
+});

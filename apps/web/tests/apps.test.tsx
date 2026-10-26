@@ -131,3 +131,17 @@ describe("the apps page", () => {
     expect(engineWordsIn(text)).toEqual([]);
   });
 });
+
+describe("what to do when Chrome is not connected (PL-106 item 8)", () => {
+  it("says where to click on the Apps page", async () => {
+    stub = serve([app()], false);
+    renderApp("/apps");
+    await settle();
+
+    expect(
+      screen.getByText("Click the ProcessLens icon in Chrome's toolbar to connect.", {
+        exact: false,
+      }),
+    ).toBeTruthy();
+  });
+});

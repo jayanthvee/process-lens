@@ -776,3 +776,47 @@ describe("a cleaned document carried in from the Spreadsheets page (PL-076)", ()
     ).toHaveLength(0);
   });
 });
+
+describe("the row problems follow the columns as they change (PL-106 item 2)", () => {
+  it("asks the check again the moment a column is picked, without Continue", async () => {
+    // The pilot picked a column and the list of row problems under it stayed as it was until
+    // Continue. The list belongs to the columns on screen, so a change asks again straight away:
+    // the mapping is saved (the check reads the saved mapping) and the check answers anew.
+    let asked = 0;
+    harness({
+      "/api/v1/batches/batch-1/check": () => {
+        asked += 1;
+        return asked === 1
+          ? { body: CHECK }
+          : {
+              body: {
+                ...CHECK,
+                rows_ok: 19,
+                rows_need_a_look: [{ row: 4, reason: "“Paris” isn't a phone" }],
+              },
+            };
+      },
+    });
+    const view = renderApp("/tasks/wf-1/run");
+    await pump();
+    await addFile(view);
+    expect(screen.getByText("20 rows ready · 0 rows need a look")).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText("Phone"), { target: { value: "City" } });
+    await pump();
+
+    expect(asked, "a changed column asks the check again").toBe(2);
+    const saved = (stub as FetchStub).requests.find((call) => call.method === "PUT");
+    expect(saved?.path).toBe("/api/v1/batches/batch-1/mapping");
+    expect(saved?.body).toEqual({
+      mapping: { contact_name: "Name", email: "Email", phone: "City" },
+    });
+    expect(screen.getByText("19 rows ready · 1 row needs a look")).toBeTruthy();
+    expect(screen.getByText("“Paris” isn't a phone")).toBeTruthy();
+    // Still on the check step: the person reads the new list beside the dropdown they changed.
+    expect(screen.queryByText("3. Try one row")).toBeNull();
+    expect(button("Continue")).toBeTruthy();
+    // And the person's pick stays on screen while the answer comes back.
+    expect((screen.getByLabelText("Phone") as HTMLSelectElement).value).toBe("City");
+  });
+});

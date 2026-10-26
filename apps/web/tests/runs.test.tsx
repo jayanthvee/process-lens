@@ -747,3 +747,36 @@ describe("a run paused at a site's daily cap (PL-067)", () => {
     expect(resume.disabled).toBe(true);
   });
 });
+
+describe("a finished run with rows left for a person (PL-106 item 4)", () => {
+  it("says how many need you on the runs list, not a bare Finished", async () => {
+    stub = createFetchStub({
+      ...SHELL,
+      "/api/v1/runs": {
+        body: [runSummary({ status: "completed", counts: { verified: 11, parked: 3, failed: 1 } })],
+      },
+    });
+    renderApp("/runs");
+    await settle();
+
+    expect(screen.getByText("Finished — 4 need you")).toBeTruthy();
+    expect(screen.queryByText("Finished")).toBeNull();
+  });
+
+  it("says it on the run's own page too", async () => {
+    stub = createFetchStub({
+      ...SHELL,
+      "/api/v1/runs/run-1": {
+        body: runDetail({
+          status: "completed",
+          counts: { total: 15, verified: 11, skipped: 0, parked: 3, failed: 1, in_progress: 0 },
+        }),
+      },
+      "/api/v1/runs/run-1/records": { body: [] },
+    });
+    renderApp("/runs/run-1");
+    await settle();
+
+    expect(screen.getByText("Finished — 4 need you")).toBeTruthy();
+  });
+});
