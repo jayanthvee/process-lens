@@ -102,18 +102,18 @@ afterEach(() => {
 describe("starting over", () => {
   it("always offers Start over once something is recorded, and it clears the recording", async () => {
     render(<PanelTeach />);
-    await screen.findByText("Clicked View results");
+    await screen.findByText(/click saves your work/i);
 
     fireEvent.click(screen.getByRole("button", { name: "Start over" }));
     await settle();
 
     expect(sent.some((message) => message.type === "record:clear")).toBe(true);
-    expect(screen.queryByText("Clicked View results")).toBeNull();
+    expect(screen.queryByText(/click saves your work/i)).toBeNull();
   });
 
   it("Start teaching begins with an empty list, never adding to the last one", async () => {
     render(<PanelTeach />);
-    await screen.findByText("Clicked View results");
+    await screen.findByText(/click saves your work/i);
 
     fireEvent.click(screen.getByRole("button", { name: "Start teaching" }));
     await settle();
@@ -132,7 +132,9 @@ describe("which click saves", () => {
 
   it("asks, with the recorded clicks and 'Nothing gets saved' as the choices", async () => {
     render(<PanelTeach />);
-    await screen.findByText("Clicked View results");
+    await screen.findByText(/click saves your work/i);
+    fireEvent.click(screen.getByRole("button", { name: "Change which click saves your work" }));
+    await settle();
 
     const choice = screen.getByRole("combobox", { name: "Which click saves your work?" });
     const options = Array.from((choice as HTMLSelectElement).options).map((o) => o.text);
@@ -141,7 +143,9 @@ describe("which click saves", () => {
 
   it("'Nothing gets saved' compiles with no save step (a sign-in, a lookup)", async () => {
     render(<PanelTeach />);
-    await screen.findByText("Clicked View results");
+    await screen.findByText(/click saves your work/i);
+    fireEvent.click(screen.getByRole("button", { name: "Change which click saves your work" }));
+    await settle();
 
     const choice = screen.getByRole("combobox", { name: "Which click saves your work?" });
     fireEvent.change(choice, { target: { value: "" } });
@@ -153,7 +157,9 @@ describe("which click saves", () => {
 
   it("a chosen click is the one sent", async () => {
     render(<PanelTeach />);
-    await screen.findByText("Clicked View results");
+    await screen.findByText(/click saves your work/i);
+    fireEvent.click(screen.getByRole("button", { name: "Change which click saves your work" }));
+    await settle();
 
     const choice = screen.getByRole("combobox", { name: "Which click saves your work?" });
     fireEvent.change(choice, { target: { value: "click-1" } });
@@ -179,7 +185,7 @@ describe("a refused save says why", () => {
       },
     });
     render(<PanelTeach />);
-    await screen.findByText("Clicked View results");
+    await screen.findByText(/click saves your work/i);
 
     fireEvent.click(screen.getByRole("button", { name: "Save as task" }));
     await settle();

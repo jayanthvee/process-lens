@@ -157,7 +157,7 @@ describe("the panel's Save", () => {
   it("sends the recording's last click as the commit step", async () => {
     render(<PanelTeach />);
 
-    await screen.findByText("Clicked Save");
+    await screen.findByText(/click saves your work/i);
     fireEvent.click(screen.getByRole("button", { name: "Save as task" }));
     await settle();
 
@@ -185,7 +185,7 @@ describe("the panel's step check", () => {
     installChrome(AREA_CLICK);
     render(<PanelTeach />);
 
-    await screen.findByText("Clicked New");
+    await screen.findByText(EMPTY_SPACE_PROBLEM);
     const bad = screen
       .getAllByRole("listitem")
       .find((row) => row.textContent?.includes(EMPTY_SPACE_PROBLEM));
@@ -222,7 +222,7 @@ describe("the panel's step check", () => {
   it("says nothing about a recording that can be repeated, but still offers Start over", async () => {
     render(<PanelTeach />);
 
-    await screen.findByText("Clicked Save");
+    await screen.findByText(/click saves your work/i);
     expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
     // PL-107 item 5: Start over is offered whenever there are steps, so a repeatable recording has
     // it too. What such a recording does not have is a problem row or its own fix button.

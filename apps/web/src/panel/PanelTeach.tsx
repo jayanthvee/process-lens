@@ -75,6 +75,9 @@ export function PanelTeach(): JSX.Element {
   const [problem, setProblem] = useState<string | null>(null);
   // PL-107: which recorded click saves the work; "" is "Nothing gets saved".
   const [commitStepId, setCommitStepId] = useState("");
+  // PL-109 item 5/6: the decision is shown, and "Change" opens the question only when asked.
+  const [changingKey, setChangingKey] = useState(false);
+  const [changingCommit, setChangingCommit] = useState(false);
 
   const recording = status.state === "recording";
   const values = recordedValues(events);
@@ -141,7 +144,9 @@ export function PanelTeach(): JSX.Element {
       return;
     }
     if (!values.some((value) => value.column === keyColumn)) {
-      setKeyColumn(defaultRecordKeyColumn(events) ?? values[0]?.column ?? "");
+      // PL-109 item 5: decide the key when a value can identify a row; otherwise ask, never pick
+      // the first field just because it is first.
+      setKeyColumn(defaultRecordKeyColumn(events) ?? "");
     }
     // `values` is derived from `events`, and the key is the only thing this effect owns.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -205,7 +210,7 @@ export function PanelTeach(): JSX.Element {
       return;
     }
     if (values.length > 0 && keyColumn === "") {
-      setProblem("Choose which column identifies each row first.");
+      setProblem("Choose which value is different for every row.");
       return;
     }
 
@@ -257,6 +262,10 @@ export function PanelTeach(): JSX.Element {
   }
 
   const lines = stepLines(events);
+  // PL-109 item 5/6: the labels the decisions name.
+  const keyLabel = values.find((value) => value.column === keyColumn)?.label ?? keyColumn;
+  const commitLabel =
+    clickChoices.find((choice) => choice.id === commitStepId)?.label.replace(/^Clicked /, "") ?? "";
   // PL-103: a step that cannot be repeated says so on its own row, with its fix. Like the popup,
   // the check runs once the recording is stopped: while it is still being built there is nothing
   // to judge yet.
@@ -345,19 +354,44 @@ export function PanelTeach(): JSX.Element {
 
       {clickChoices.length === 0 ? null : (
         <div className="panel-commit">
-          <select
-            className="panel-input"
-            aria-label="Which click saves your work?"
-            value={commitStepId}
-            onChange={(event) => setCommitStepId(event.target.value)}
-          >
-            {clickChoices.map((choice) => (
-              <option key={choice.id} value={choice.id}>
-                {choice.label}
-              </option>
-            ))}
-            <option value="">Nothing gets saved</option>
-          </select>
+          {!changingCommit ? (
+            <p className="panel-note">
+              {commitStepId === "" ? (
+                <>Nothing gets saved.</>
+              ) : (
+                <>
+                  The <b>{commitLabel}</b> click saves your work.
+                </>
+              )}{" "}
+              <button
+                type="button"
+                className="panel-change"
+                aria-label="Change which click saves your work"
+                onClick={() => setChangingCommit(true)}
+              >
+                Change
+              </button>
+            </p>
+          ) : (
+            <>
+              <label className="panel-label" htmlFor="panel-commit">
+                Which click saves your work?
+              </label>
+              <select
+                id="panel-commit"
+                className="panel-input"
+                value={commitStepId}
+                onChange={(event) => setCommitStepId(event.target.value)}
+              >
+                {clickChoices.map((choice) => (
+                  <option key={choice.id} value={choice.id}>
+                    {choice.label}
+                  </option>
+                ))}
+                <option value="">Nothing gets saved</option>
+              </select>
+            </>
+          )}
         </div>
       )}
 
@@ -376,24 +410,40 @@ export function PanelTeach(): JSX.Element {
           onChange={(event) => setName(event.target.value)}
         />
         {values.length === 0 ? null : (
-          <>
-            <label className="panel-label" htmlFor="panel-task-key">
-              Which value is different for every row?
-            </label>
-            <p className="panel-note">We use it so nothing gets added twice.</p>
-            <select
-              id="panel-task-key"
-              className="panel-input"
-              value={keyColumn}
-              onChange={(event) => setKeyColumn(event.target.value)}
-            >
-              {values.map((value) => (
-                <option key={value.column} value={value.column}>
-                  {value.label}
-                </option>
-              ))}
-            </select>
-          </>
+          <div className="panel-key">
+            {keyColumn !== "" && !changingKey ? (
+              <p className="panel-note">
+                We'll use <b>{keyLabel}</b> so nothing gets added twice.{" "}
+                <button
+                  type="button"
+                  className="panel-change"
+                  aria-label="Change the value that is different for every row"
+                  onClick={() => setChangingKey(true)}
+                >
+                  Change
+                </button>
+              </p>
+            ) : (
+              <>
+                <label className="panel-label" htmlFor="panel-task-key">
+                  Which value is different for every row?
+                </label>
+                <p className="panel-note">We use it so nothing gets added twice.</p>
+                <select
+                  id="panel-task-key"
+                  className="panel-input"
+                  value={keyColumn}
+                  onChange={(event) => setKeyColumn(event.target.value)}
+                >
+                  {values.map((value) => (
+                    <option key={value.column} value={value.column}>
+                      {value.label}
+                    </option>
+                  ))}
+                </select>
+              </>
+            )}
+          </div>
         )}
         <button
           type="button"
