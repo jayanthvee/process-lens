@@ -13,7 +13,7 @@ const SHELL = {
 };
 
 const CHROME_CONNECTED = "Chrome is connected";
-const CHROME_AWAY = "Chrome isn't connected — open the ProcessLens extension and press Connect";
+const CHROME_AWAY = "Chrome isn't connected. Click the ProcessLens icon in Chrome's toolbar to connect.";
 
 let stub: FetchStub | null = null;
 
@@ -129,5 +129,19 @@ describe("the apps page", () => {
     const text = view.container.textContent ?? "";
     expect(text).not.toBe("");
     expect(engineWordsIn(text)).toEqual([]);
+  });
+});
+
+describe("what to do when Chrome is not connected (PL-106 item 8)", () => {
+  it("says where to click on the Apps page", async () => {
+    stub = serve([app()], false);
+    renderApp("/apps");
+    await settle();
+
+    expect(
+      screen.getByText("Click the ProcessLens icon in Chrome's toolbar to connect.", {
+        exact: false,
+      }),
+    ).toBeTruthy();
   });
 });

@@ -120,3 +120,23 @@ describe("the header", () => {
     expect(screen.queryByRole("dialog", { name: "Search tasks" })).toBeNull();
   });
 });
+
+describe("what to do when Chrome is not connected (PL-106 item 8)", () => {
+  const CONNECT = "Click the ProcessLens icon in Chrome's toolbar to connect.";
+
+  it("says where to click, right under Chrome not connected", async () => {
+    renderApp("/");
+
+    const status = await screen.findByText("Chrome not connected");
+    expect(status.closest(".side-foot")?.textContent).toContain(CONNECT);
+  });
+
+  it("says nothing about connecting once Chrome is connected", async () => {
+    stub.restore();
+    stub = stubWith([], true);
+    renderApp("/");
+
+    expect(await screen.findByText("Chrome connected")).toBeTruthy();
+    expect(screen.queryByText(CONNECT, { exact: false })).toBeNull();
+  });
+});

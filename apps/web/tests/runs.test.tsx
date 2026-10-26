@@ -172,7 +172,9 @@ describe("one run", () => {
     await settle();
 
     expect(
-      screen.getByText("Waiting for Chrome: open the ProcessLens extension and it will connect"),
+      screen.getByText(
+        "Waiting for Chrome. Click the ProcessLens icon in Chrome's toolbar to connect.",
+      ),
     ).toBeTruthy();
     expect(screen.queryByText("Queued")).toBeNull();
   });
@@ -480,6 +482,48 @@ describe("a row that needs a person, on the run page", () => {
     expect(callsTo(fetchStub, "/api/v1/runs/run-1")).toBeGreaterThan(beforeRun);
   });
 
+  it("offers one click to skip a row whose search found nothing, and keeps its reason", async () => {
+    const fetchStub = createFetchStub({
+      ...SHELL,
+      "/api/v1/runs/run-1/records": {
+        body: [
+          record({
+            id: "rr-9",
+            record_key: "missing@example.com",
+            state: "parked",
+            reason: "Not found in crm.example.com.",
+          }),
+        ],
+      },
+      "/api/v1/runs/run-1": { body: runDetail({ status: "completed" }) },
+      "/api/v1/records/rr-9/dismiss": { body: { record_id: "rr-9", state: "skipped" } },
+    });
+    stub = fetchStub;
+    const view = renderApp("/runs/run-1");
+    await settle();
+
+    const beforeRecords = callsTo(fetchStub, "/api/v1/runs/run-1/records");
+    expect(screen.getByText("Not found in crm.example.com.")).toBeTruthy();
+    // The row is parked because the engine cannot prove the record is gone, so a person gets one
+    // clear click -- the existing dismiss -- and no destination tick (it never reached a commit).
+    expect(view.container.querySelector(".destination-check-box")).toBeNull();
+    const skip = screen.getByRole("button", { name: "Skip it" }) as HTMLButtonElement;
+    expect(skip.disabled).toBe(false);
+    expect(skip.classList.contains("record-dismiss")).toBe(true);
+
+    await act(async () => {
+      fireEvent.click(skip);
+    });
+    await settle();
+
+    const sent = posts(fetchStub, "/api/v1/records/rr-9/dismiss");
+    expect(sent).toHaveLength(1);
+    // The dismiss carries the original reason, so afterwards it still reads "Skipped" rather than
+    // "Already there" (rowOutcome tells the two skips apart by this prefix).
+    expect(sent[0]?.body).toEqual({ reason: "Not found in crm.example.com." });
+    expect(callsTo(fetchStub, "/api/v1/runs/run-1/records")).toBeGreaterThan(beforeRecords);
+  });
+
   it("keeps Try again off for a row that may already be saved, until the tick", async () => {
     const fetchStub = createFetchStub({
       ...SHELL,
@@ -745,5 +789,38 @@ describe("a run paused at a site's daily cap (PL-067)", () => {
     ).toBeGreaterThan(0);
     const resume = screen.getByRole("button", { name: "Resume" }) as HTMLButtonElement;
     expect(resume.disabled).toBe(true);
+  });
+});
+
+describe("a finished run with rows left for a person (PL-106 item 4)", () => {
+  it("says how many need you on the runs list, not a bare Finished", async () => {
+    stub = createFetchStub({
+      ...SHELL,
+      "/api/v1/runs": {
+        body: [runSummary({ status: "completed", counts: { verified: 11, parked: 3, failed: 1 } })],
+      },
+    });
+    renderApp("/runs");
+    await settle();
+
+    expect(screen.getByText("Finished — 4 need you")).toBeTruthy();
+    expect(screen.queryByText("Finished")).toBeNull();
+  });
+
+  it("says it on the run's own page too", async () => {
+    stub = createFetchStub({
+      ...SHELL,
+      "/api/v1/runs/run-1": {
+        body: runDetail({
+          status: "completed",
+          counts: { total: 15, verified: 11, skipped: 0, parked: 3, failed: 1, in_progress: 0 },
+        }),
+      },
+      "/api/v1/runs/run-1/records": { body: [] },
+    });
+    renderApp("/runs/run-1");
+    await settle();
+
+    expect(screen.getByText("Finished — 4 need you")).toBeTruthy();
   });
 });

@@ -4,7 +4,8 @@ PL-017 proposes "skip the row if the search finds it" whenever a recording searc
 value. That is right for a create: a lead that is already there is skipped. It is wrong for an
 update: the product the search finds is exactly the one to change, so every row would end
 `skipped`. For an update the opposite rule holds -- if the search finds nothing there is nothing to
-change, and the row is parked with a plain reason.
+change, and the row is parked with the site it looked in named in the reason. A person can then
+skip it in one click (PL-106 item 7).
 
 The two shapes are told apart from the recorded steps and their URLs only, never from app names:
 
@@ -99,15 +100,17 @@ def _branches(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
 # ---------------------------------------------------------- find-then-update
 
 
-def test_a_find_then_update_gets_a_park_branch_not_a_skip_branch() -> None:
+def test_a_find_then_update_parks_a_row_whose_search_finds_nothing() -> None:
     result = compile_recording(_find_then_update(), _options(commit_step_ids=["save-1"]))
     steps = result.recipe["steps"]
 
     branches = _branches(steps)
     assert len(branches) == 1, [step["action"] for step in steps]
     branch = branches[0]
-    # The rule is the opposite of the duplicate check: no result in the table means nothing to
-    # change, so the row parks instead of typing into whatever page it is on.
+    # The rule is the opposite of the duplicate check: no result in the table means the record is
+    # not there, so the row stops instead of typing into whatever page it is on. It parks, not
+    # skips: the absence can be a page that has not drawn yet or a login page, and a person decides
+    # whether to skip it (PL-106 item 7 review).
     assert branch["when"] == {
         "element_absent": {
             "targets": [{"by": "role", "role": "cell", "name": "{{row.sku | lower}}"}]
@@ -118,12 +121,12 @@ def test_a_find_then_update_gets_a_park_branch_not_a_skip_branch() -> None:
             "id": "end-record-1",
             "action": "end_record",
             "outcome": "parked",
-            "reason": "No record matched {{row.sku}}, so there was nothing to change.",
+            "reason": "Not found in crm.example.com.",
         }
     ]
     assert branch["name"] == "Park a record when the search finds nothing"
-    # The reason is a template the runner renders from the row, exactly like the branch's condition.
-    assert "{{row.sku}}" in branch["then"][0]["reason"]
+    # The reason names the site the search ran on, so a person reading it knows where to look.
+    assert branch["then"][0]["reason"] == "Not found in crm.example.com."
 
 
 def test_the_park_branch_goes_after_the_search_and_before_the_click_that_opens_a_result() -> None:

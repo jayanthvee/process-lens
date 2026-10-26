@@ -1,7 +1,8 @@
-import { NavLink } from "react-router-dom";
+import { NavLink, useLocation } from "react-router-dom";
 
 import { useJson } from "../lib/useJson";
 import { useSessionPath } from "../lib/browser";
+import { CONNECT_CHROME } from "../lib/words";
 import type { ExecutorSession, NeedsHelpRow } from "../types";
 import { Icon, type IconName } from "./Icons";
 
@@ -77,8 +78,13 @@ function Logo(): JSX.Element {
 export function Sidebar(): JSX.Element {
   const help = useJson<NeedsHelpRow[]>("/api/v1/needs-help");
   const session = useJson<ExecutorSession>(useSessionPath());
+  const { pathname } = useLocation();
   const count = help.data?.length ?? 0;
   const attached = session.data?.attached === true;
+  // PL-106 item 8: the line that says how to bring Chrome back belongs on the screen where the
+  // person notices it is gone. The Apps page says it itself, right above the cards, so the sidebar
+  // does not say the same sentence a second time on that one screen.
+  const pageSaysHowToConnect = pathname === "/apps";
 
   return (
     <aside className="side">
@@ -105,6 +111,11 @@ export function Sidebar(): JSX.Element {
           <i aria-hidden="true" />
           {attached ? "Chrome connected" : "Chrome not connected"}
         </div>
+        {/* PL-106 item 8: saying the extension is away without saying how to call it back
+            leaves the person stuck. The line is here only while it is away. */}
+        {attached || pageSaysHowToConnect ? null : (
+          <p className="ext-hint">{CONNECT_CHROME}</p>
+        )}
       </div>
     </aside>
   );

@@ -19,6 +19,8 @@
 .ext { display: flex; gap: 9px; align-items: center; padding: 8px 10px; font-size: 13px; color: var(--ink-2); }
 .ext i { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); flex: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 16%, transparent); }
 .ext.off i { background: var(--muted); box-shadow: 0 0 0 3px color-mix(in srgb, var(--muted) 16%, transparent); }
+/* PL-106 item 8: how to bring Chrome back, under the status line that says it is away. */
+.ext-hint { margin: 0; padding: 0 10px; font-size: 12px; line-height: 1.45; color: var(--muted); }
 
 /* the content column */
 main { min-width: 0; padding: 16px clamp(16px, 3vw, 40px) 64px; display: grid; gap: 30px; align-content: start; max-width: 1180px; }

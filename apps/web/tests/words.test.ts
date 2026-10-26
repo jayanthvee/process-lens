@@ -3,6 +3,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  CONNECT_CHROME,
   durationWords,
   isOpenStatus,
   minutesSavedWords,
@@ -51,7 +52,7 @@ describe("rowOutcome", () => {
 describe("runStatusWords", () => {
   it("says Waiting for Chrome when a run is queued and no Chrome session is attached", () => {
     expect(runStatusWords("queued", false)).toEqual({
-      label: "Waiting for Chrome: open the ProcessLens extension and it will connect",
+      label: "Waiting for Chrome. Click the ProcessLens icon in Chrome's toolbar to connect.",
       tone: "idle",
     });
     // With Chrome attached, or while the session is not known yet, the plain status stands.
@@ -84,6 +85,10 @@ describe("plainReason", () => {
     expect(plainReason("The salesperson isn't in Odoo.")).toBe("The salesperson isn't in Odoo.");
     expect(plainReason("A value it needs is missing from the row.")).toBe(
       "A value it needs is missing from the row.",
+    );
+    // A hyphen is part of the host, not a word break (PL-106 item 7).
+    expect(plainReason("Not found in my-crm.example.com.")).toBe(
+      "Not found in my-crm.example.com.",
     );
     expect(plainReason(null)).toBe("Something went wrong.");
     expect(plainReason("   ")).toBe("Something went wrong.");
@@ -119,7 +124,8 @@ describe("pauseReasonWords", () => {
   it("PL-040: the runner's own pause reasons read as words, never as codes", () => {
     // PL-104: the run page has one button for this, right under the reason.
     expect(pauseReasonWords("window_hidden")).toContain("Press Show it and continue.");
-    expect(pauseReasonWords("executor_disconnected")).toContain("press Connect");
+    // PL-106 item 8: the Chrome sentence says where the click is, not "press Connect".
+    expect(pauseReasonWords("executor_disconnected")).toContain("Chrome disconnected");
     expect(pauseReasonWords("canary_failed")).toContain("The first row didn't work");
     for (const reason of [
       "window_hidden",
@@ -225,5 +231,58 @@ describe("the site daily cap (PL-067)", () => {
   it("keeps Resume disabled while the count stands, and only then", () => {
     expect(siteCapReached({ origin: "https://x.example", limit: 25, used: 25 })).toBe(true);
     expect(siteCapReached({ origin: "https://x.example", limit: 25, used: 24 })).toBe(false);
+  });
+});
+
+describe("a finished run that left rows for a person (PL-106 item 4)", () => {
+  it("says how many need you instead of reading like a clean finish", () => {
+    expect(runStatusWords("completed", undefined, { verified: 11, parked: 3, failed: 1 })).toEqual({
+      label: "Finished — 4 need you",
+      tone: "help",
+    });
+    expect(runStatusWords("completed", undefined, { verified: 14, parked: 1 })).toEqual({
+      label: "Finished — 1 needs you",
+      tone: "help",
+    });
+  });
+
+  it("stays plain Finished when every row is done or was already there", () => {
+    expect(runStatusWords("completed", undefined, { verified: 4, skipped: 6 })).toEqual({
+      label: "Finished",
+      tone: "ok",
+    });
+  });
+});
+
+describe("a row whose record the search did not find (PL-106 item 7)", () => {
+  it("waits for a person until they skip it, then reads Skipped not Already there", () => {
+    // The branch parks: an absent result is not proof, so the row comes to the run page first.
+    expect(rowOutcome("parked", "Not found in crm.example.com.")).toEqual({
+      label: "Needs your help",
+      tone: "help",
+    });
+    expect(rowOutcome("skipped", "Not found in crm.example.com.")).toEqual({
+      label: "Skipped",
+      tone: "idle",
+    });
+    expect(plainReason("Not found in crm.example.com.", "skipped")).toBe(
+      "Not found in crm.example.com.",
+    );
+  });
+
+  it("keeps Already there for a row that was skipped because it was there", () => {
+    expect(rowOutcome("skipped", "It was already there.")).toEqual({
+      label: "Already there",
+      tone: "idle",
+    });
+    expect(rowOutcome("skipped")).toEqual({ label: "Already there", tone: "idle" });
+  });
+});
+
+describe("what to do when Chrome is not connected (PL-106 item 8)", () => {
+  it("says where to click, wherever Chrome's absence is reported", () => {
+    expect(CONNECT_CHROME).toBe("Click the ProcessLens icon in Chrome's toolbar to connect.");
+    expect(runStatusWords("queued", false).label).toContain(CONNECT_CHROME);
+    expect(pauseReasonWords("executor_disconnected")).toContain(CONNECT_CHROME);
   });
 });

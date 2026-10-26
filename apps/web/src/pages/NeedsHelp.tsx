@@ -7,6 +7,7 @@ import { plainReason, refusalWords, rowOutcome } from "../lib/words";
 import type { NeedsHelpRow, OperatorInfo } from "../types";
 import {
   actionGate,
+  actionReason,
   operatorNote,
   recordActionLabel,
   sendRecordAction,
@@ -70,6 +71,8 @@ export function NeedsHelp(): JSX.Element {
         commitAttempted: row.commit_attempted === true,
         confirmed: confirmed[row.record_id] === true,
         operatorId,
+        // A not-found skip keeps its reason; every other action sends none (PL-106 item 7).
+        reason: actionReason(action, row.reason),
       });
       help.reload();
     } catch (failure) {
@@ -102,7 +105,9 @@ export function NeedsHelp(): JSX.Element {
         ) : (
           <ul className="rows">
             {rows.map((row) => {
-              const outcome = rowOutcome(row.state);
+              // PL-106 item 7: the reason tells a skip for "not found" from one that was already
+              // there, so the label and the reason agree.
+              const outcome = rowOutcome(row.state, row.reason);
               const ticked = confirmed[row.record_id] === true;
               const gate = actionGate({
                 state: row.state,
@@ -140,7 +145,7 @@ export function NeedsHelp(): JSX.Element {
                           disabled={gate.disabled || busy !== null}
                           onClick={() => void act(row, "dismiss")}
                         >
-                          {recordActionLabel("dismiss")}
+                          {recordActionLabel("dismiss", row.reason)}
                         </button>
                       </span>
                     )}

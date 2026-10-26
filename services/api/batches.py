@@ -22,7 +22,9 @@ never collapse.
 
 A recorded task has no field types: every field's example is a string, so the check reads the kind
 from the example. A number column flags a value that is not a number and one below zero; an email
-column flags a value that is not an email. Everything else is left to the task's own rules.
+column flags a value that is not an email. Everything else is left to the task's own rules. The
+kind also guards the guess itself (PL-106): a column whose values mostly do not fit the field's
+kind is not offered for it, because a guess that makes most rows wrong is worse than no guess.
 """
 
 from __future__ import annotations
@@ -482,22 +484,58 @@ def _label(column: str) -> str:
     return " ".join(str(column).replace("_", " ").split()).capitalize()
 
 
+def _fits_kind(kind: str, raw_rows: list[dict[str, Any]], column: str) -> bool:
+    """Whether a spreadsheet column's values fit a field's kind well enough to be guessed for it.
+
+    PL-106 item 3: the check used to offer any column whose *name* shared a word with the field, so
+    a column of words next to "Expected revenue" was guessed and then every row was flagged "isn't a
+    number". A column whose non-blank values mostly do not fit the kind cannot be what the field
+    wants, so it is not offered. A blank is silent here: it belongs to the task's own missing rule.
+    """
+    present = [str(row.get(column, "")).strip() for row in raw_rows]
+    present = [value for value in present if value]
+    if not present:
+        return True
+    if kind == "email":
+        fits = sum(1 for value in present if _is_email(value))
+    else:
+        # `is not None`, never truthiness: "0" is a number this field accepts, and the number it
+        # parses to is falsy.
+        fits = sum(1 for value in present if _number_value(value) is not None)
+    # "Most do not fit" is strictly more than half; a tie keeps the column, so a stray value is
+    # still guessed as before and still flagged row by row.
+    return fits * 2 >= len(present)
+
+
 def _match(
     recipe_column: str,
     columns: list[str],
     sample_value: Any,
     row_one: dict[str, str],
+    kind: str | None = None,
+    raw_rows: list[dict[str, Any]] | None = None,
 ) -> tuple[str | None, str, list[str]]:
     """Choose a spreadsheet column for one task column, with a confidence and the alternatives."""
-    ranks = [_rank(recipe_column, column, sample_value, row_one) for column in columns]
+    # PL-106 item 3: the kind filters the *guess* only; a saved mapping is applied later, untouched.
+    # A column the file names exactly like the field is not a guess -- the person's own header says
+    # the same thing -- so it keeps its place and PL-095's row-by-row check flags its bad values.
+    # What this removes is the shared-word guess: "Expected" offered for "expected_revenue".
+    offered = columns
+    if kind in {"email", "number"} and raw_rows:
+        offered = [
+            column
+            for column in columns
+            if _normalise(recipe_column) == _normalise(column) or _fits_kind(kind, raw_rows, column)
+        ]
+    ranks = [_rank(recipe_column, column, sample_value, row_one) for column in offered]
     best = min(ranks) if ranks else 3
     if best == 3:
         return None, "none", []
-    chosen = columns[ranks.index(best)]
+    chosen = offered[ranks.index(best)]
     confidence = "exact" if best <= 1 else "close"
     alternatives = [
         column
-        for index, column in enumerate(columns)
+        for index, column in enumerate(offered)
         if ranks[index] != 3 and index != ranks.index(best)
     ]
     return chosen, confidence, alternatives[:MAX_ALTERNATIVES]
@@ -549,12 +587,18 @@ def _mapping_for(
     columns: list[str],
     sample_row: dict[str, Any] | None,
     row_one: dict[str, str],
+    raw_rows: list[dict[str, Any]] | None = None,
 ) -> list[ColumnMapping]:
     """One mapping entry per task column, in the task's own field order."""
     entries: list[ColumnMapping] = []
     for recipe_column, spec in _fields(document).items():
         sample_value = (sample_row or {}).get(recipe_column)
-        chosen, confidence, alternatives = _match(recipe_column, columns, sample_value, row_one)
+        # PL-106 item 3: the field's kind, read from its example, keeps a column that cannot hold
+        # its values out of the guess. Every row is read, not just the first one.
+        kind = _kind(spec.get("example")) if isinstance(spec, dict) else None
+        chosen, confidence, alternatives = _match(
+            recipe_column, columns, sample_value, row_one, kind, raw_rows
+        )
         required = bool(spec.get("required")) if isinstance(spec, dict) else False
         entries.append(
             ColumnMapping(
@@ -892,13 +936,16 @@ def check_batch(
                 and spec["example"].strip()
             }
         row_one = rows[0].raw if rows else {}
+        # PL-106 item 3: the guess reads every row's value for a column, so a column whose values
+        # cannot be what a field holds is never offered for it.
+        raw_rows = [row.raw for row in rows]
         # The mapping a person saved is the one that counts: the check's own guess is only a
         # starting point, and the verdicts below -- which decide which rows a run is built from --
         # have to be computed from the columns they confirmed, not from the ones we guessed at.
         saved = batch.column_mapping or {}
         mapping = [
             _with_saved(entry, saved, columns)
-            for entry in _mapping_for(document, columns, recorded, row_one)
+            for entry in _mapping_for(document, columns, recorded, row_one, raw_rows)
         ]
         chosen = {entry.column: entry.chosen for entry in mapping}
 

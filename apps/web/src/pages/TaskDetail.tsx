@@ -574,7 +574,7 @@ export function TaskDetail(): JSX.Element {
               </thead>
               <tbody>
                 {mine.map((run) => {
-                  const outcome = runStatusWords(run.status);
+                  const outcome = runStatusWords(run.status, undefined, run.counts ?? {});
                   return (
                     <tr key={run.id}>
                       <td>{relativeTime(run.created_at)}</td>

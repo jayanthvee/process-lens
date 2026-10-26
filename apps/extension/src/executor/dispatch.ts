@@ -155,26 +155,35 @@ export async function focusAndSelect(cdp: CdpTransport, token: string, contextId
   return prepared.ok;
 }
 
+interface FieldReading {
+  value: string;
+  oneLine: boolean;
+}
+
 /**
- * Read a stamped element's current value (or text) back out of the page, so a
- * fill can prove the field actually kept what was typed into it.
+ * A stamped element's current value (or text) as the page really holds it, plus whether the field
+ * is one that cannot hold a line break at all.
+ *
+ * A textarea normalises a spreadsheet's CRLF to `\n`, and a one-line `<input>` drops the line
+ * break entirely (the HTML value sanitiser strips it), so the read-back needs to know which shape
+ * of field it just typed into before it calls a fill "did not stick" (PL-106 item 6).
  */
-async function readFieldValue(
+async function readFieldState(
   cdp: CdpTransport,
   token: string,
   contextId?: number,
-): Promise<string> {
+): Promise<FieldReading> {
   const expression = `(() => {
     const el = ${markerExpression(token)};
     if (!el) return null;
-    if (typeof el.value === "string") return el.value;
-    return el.textContent === null || el.textContent === undefined ? "" : String(el.textContent);
+    const raw = typeof el.value === "string" ? el.value : (el.textContent ?? "");
+    return { value: String(raw), oneLine: el.tagName === "INPUT" };
   })()`;
   const result = (await evaluate(
     cdp,
     expression,
     contextId !== undefined ? { contextId } : {},
-  )) as string | null;
+  )) as { value?: unknown; oneLine?: unknown } | null;
   if (result === null) {
     throw new ExecutorError(
       "the fill target is no longer in the document, so the typed value could not be verified",
@@ -182,7 +191,7 @@ async function readFieldValue(
       "park",
     );
   }
-  return result;
+  return { value: String(result.value ?? ""), oneLine: result.oneLine === true };
 }
 
 /** Press Backspace once, used to clear a selection before typing. */
@@ -284,12 +293,19 @@ export async function dispatchFill(
   gate();
   await sendInput(cdp, "Input.insertText", { text: value });
 
-  const actual = await readFieldValue(cdp, token, options.contextId);
-  if (actual !== value) {
+  const actual = await readFieldState(cdp, token, options.contextId);
+  // The browser's own storage of a spreadsheet cell: a textarea keeps the line break as `\n`, and a
+  // one-line field drops it, so neither is a value that did not stick (PL-106 item 6). A field that
+  // kept something else still is.
+  const expected = value.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  const kept =
+    actual.value === expected ||
+    (actual.oneLine && actual.value === expected.replace(/\n/g, ""));
+  if (!kept) {
     throw new ExecutorError(
       `the fill did not stick: the recipe typed ${JSON.stringify(
         value,
-      )} but the field holds ${JSON.stringify(actual)}`,
+      )} but the field holds ${JSON.stringify(actual.value)}`,
       undefined,
       "park",
     );

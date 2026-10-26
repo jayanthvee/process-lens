@@ -17,6 +17,8 @@ const WAITING: Outcome = { label: "Waiting", tone: "idle" };
 const CHECKING: Outcome = { label: "Checking…", tone: "live" };
 const DONE: Outcome = { label: "Done", tone: "ok" };
 const ALREADY_THERE: Outcome = { label: "Already there", tone: "idle" };
+/** A row a person skipped after its search did not find the record. */
+const SKIPPED: Outcome = { label: "Skipped", tone: "idle" };
 const NEEDS_HELP: Outcome = { label: "Needs your help", tone: "help" };
 const DIDNT_WORK: Outcome = { label: "Didn't work", tone: "help" };
 
@@ -50,8 +52,31 @@ const RUN_STATUSES: Record<string, Outcome> = {
  */
 export const RUNNING_AGAIN: Outcome = { label: "Running again", tone: "live" };
 
-/** A row's outcome in plain words. Unknown states fall back to "Waiting". */
-export function rowOutcome(state: string): Outcome {
+/** The words under every "Chrome isn't connected" the app shows: where the click is (PL-106). */
+export const CONNECT_CHROME = "Click the ProcessLens icon in Chrome's toolbar to connect.";
+
+/**
+ * Whether a row's reason says its search did not find the record.
+ *
+ * The compiler writes this prefix, whether or not the page had a host to name, and both the row's
+ * outcome and its action read it (PL-106 item 7).
+ */
+export function isNotFoundReason(reason?: string | null): boolean {
+  return (reason ?? "").trim().startsWith("Not found in");
+}
+
+/**
+ * A row's outcome in plain words. Unknown states fall back to "Waiting".
+ *
+ * A `skipped` row has two causes, told apart by the reason the runner wrote: a search that found
+ * nothing leaves nothing to change, so a row a person skipped reads "Skipped"; any other skip was
+ * a record that was already there (PL-106 item 7). Until the person skips it, the row is `parked`
+ * and reads "Needs your help".
+ */
+export function rowOutcome(state: string, reason?: string | null): Outcome {
+  if (state === "skipped" && isNotFoundReason(reason)) {
+    return SKIPPED;
+  }
   return ROW_STATES[state] ?? WAITING;
 }
 
@@ -60,13 +85,30 @@ export function rowOutcome(state: string): Outcome {
  * to open the extension (PL-033 requirement 4). `chromeAttached` comes from
  * `GET /api/v1/executor/session`; while it is not known yet, the plain status stands.
  */
-export const WAITING_FOR_CHROME =
-  "Waiting for Chrome: open the ProcessLens extension and it will connect";
+export const WAITING_FOR_CHROME = `Waiting for Chrome. ${CONNECT_CHROME}`;
 
-/** A run's status in plain words. */
-export function runStatusWords(status: string, chromeAttached?: boolean): Outcome {
+/**
+ * A run's status in plain words.
+ *
+ * A finished run is only a clean finish when no row is left for a person: `counts` lets a
+ * `completed` run say how many rows were parked or failed beside it (PL-106 item 4).
+ */
+export function runStatusWords(
+  status: string,
+  chromeAttached?: boolean,
+  counts?: Record<string, number>,
+): Outcome {
   if (status === "queued" && chromeAttached === false) {
     return { label: WAITING_FOR_CHROME, tone: "idle" };
+  }
+  if (status === "completed" && counts !== undefined) {
+    const needYou = (counts.parked ?? 0) + (counts.failed ?? 0);
+    if (needYou > 0) {
+      return {
+        label: `Finished — ${needYou} ${needYou === 1 ? "needs" : "need"} you`,
+        tone: "help",
+      };
+    }
   }
   return RUN_STATUSES[status] ?? WAITING;
 }
@@ -97,8 +139,11 @@ export function plainReason(reason: string | null, state?: string): string {
   }
   const known = REASONS[key.toLowerCase()];
   if (known !== undefined) return known;
-  // The runner already writes its reasons for people, but a code we have never seen must still not
-  // reach the screen as an identifier.
+  // A not-found reason is the row's whole explanation and names a host, so it is shown exactly as
+  // written: the code-to-words fallback would turn the hyphen in "my-crm.example.com" into a
+  // space. Every other reason keeps the fallback (PL-106 item 7).
+  if (isNotFoundReason(key) && key.endsWith(".")) return key;
+  // A code we have never seen must still not reach the screen as an identifier.
   const readable = sentence(key);
   return /\.$/.test(readable) ? readable : `${readable}.`;
 }
@@ -123,10 +168,11 @@ const PAUSE_REASONS: Record<string, string> = {
   // (PL-026). Without a sentence here the page would show the raw `admin_freeze` code.
   admin_freeze: "An admin paused all runs. Resume when an admin lets runs start again.",
   // PL-040: the reasons the runner sets that used to reach the page as "Paused: Canary failed".
+  // PL-104: the run page offers one button for this, right under the reason, so the sentence names
+  // that button rather than telling a person to press Resume.
   window_hidden:
     "The ProcessLens window was hidden or minimized, so the site stopped drawing. Press Show it and continue.",
-  executor_disconnected:
-    "Chrome disconnected. Open the ProcessLens extension, press Connect, then resume.",
+  executor_disconnected: `Chrome disconnected. ${CONNECT_CHROME} Then resume.`,
   canary_failed:
     "The first row didn't work, so the other rows are waiting. Check that row below, then resume.",
   policy_blocked: "Your company's Chrome settings block ProcessLens. Ask your IT team to allow it.",
@@ -262,6 +308,17 @@ export function durationWords(minutes: number): string {
   if (hours === 0) return `${rest} m`;
   if (rest === 0) return `${hours} h`;
   return `${hours} h ${rest} m`;
+}
+
+/**
+ * The week's saved figure. A minute's rounding would print "0 m" beside a week of rows, so
+ * anything under a minute is said in words instead (PL-106 item 5). Nothing saved at all stays
+ * "0 m".
+ */
+export function savedFigureWords(seconds: number): string {
+  const total = Math.max(0, Math.round(seconds));
+  if (total > 0 && total < 60) return "Under a minute";
+  return durationWords(total / 60);
 }
 
 /** "About 52 minutes saved" (or "About 1 hour saved"). */

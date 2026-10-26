@@ -8,7 +8,16 @@
 // the engine's words (DESIGN.md §2) never reach the screen.
 import { accessHeaders } from "../shared/access";
 import type { RecordedEvent, RecordedStep } from "../shared/recipe-types";
-import { DUPLICATES_BLOCKED, UNNAMED_CLICK, UNNAMED_STEP, plainSaveNotes, plainSentences } from "./words";
+import {
+  DUPLICATES_BLOCKED,
+  GO_WHY_NO_KEY,
+  GO_WHY_NO_VALUES,
+  GO_WHY_NOTHING_RECORDED,
+  UNNAMED_CLICK,
+  UNNAMED_STEP,
+  plainSaveNotes,
+  plainSentences,
+} from "./words";
 import { taskUrl } from "./flow";
 
 /** Where the compiled recipe and its sample row live for the Run button. */
@@ -50,12 +59,14 @@ export const NO_SEARCH_HINT = DUPLICATES_BLOCKED;
  *
  * A search that finds a record means two different things. For a create it means the record is
  * already there, and the row is skipped. For a find-then-update -- the search finds the record the
- * row is about to change -- skipping would skip every row, and finding *nothing* is the case worth
- * stopping for, so the same rule is worded as the park it really is. The compiler decides which
- * shape a recording is and the form words the rule to match.
+ * row is about to change -- skipping a found record would skip every row, and the case worth
+ * naming is the opposite one: a search that finds *nothing* leaves nothing to change, so that row
+ * stops and asks a person, who can skip it (PL-106). "Stop and ask me" is the person's own frame:
+ * "park" is our word for it. The compiler decides which shape a recording is and the form words the
+ * rule to match.
  */
 export const SKIP_IF_THERE = "If this row is already there, skip it";
-export const PARK_WHEN_NOTHING_FOUND = "Park a row when the search finds nothing";
+export const PARK_WHEN_NOTHING_FOUND = "If the search finds nothing, stop and ask me";
 
 /** The checkbox's wording for a compiled shape: no shape, or a create, keeps today's words. */
 export function duplicateLabelFor(searchKind: string | null): string {
@@ -731,6 +742,9 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
   const originsEl = control<HTMLFieldSetElement>(deps.root, scope, "make-origins");
   const parkEl = control<HTMLFieldSetElement>(deps.root, scope, "make-park-fields");
   const goEl = control<HTMLButtonElement>(deps.root, scope, "make-go");
+  // PL-106 item 1: the sentence under the button that says why it is greyed out. An older markup
+  // without it still works; the button simply says nothing there.
+  const goWhyEl = deps.root.querySelector<HTMLParagraphElement>("#make-go-why");
   const resultEl = control<HTMLParagraphElement>(deps.root, scope, "make-result");
   const warningsEl = control<HTMLParagraphElement>(deps.root, scope, "make-warnings");
   // The two plain sentences under the save result; a page without the element (an older markup)
@@ -745,9 +759,26 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
     deps.onNotice?.(message);
   }
 
+  /**
+   * The one sentence under the button, first reason winning (PL-106 item 1).
+   *
+   * The button is off for three reasons, and two of them are invisible on their own: an empty
+   * recording, no value typed while teaching (so the key select has no options), and no key picked.
+   * While a save is in flight the busy note under the result already says what is happening, so
+   * this line goes quiet rather than competing with it.
+   */
+  function goWhyWords(): string {
+    if (busy) return "";
+    if (events.length === 0) return GO_WHY_NOTHING_RECORDED;
+    if (recordedValues(events).length === 0) return GO_WHY_NO_VALUES;
+    if (keyEl.value.length === 0) return GO_WHY_NO_KEY;
+    return "";
+  }
+
   /** The button follows the recording, the busy flag, and whether a key is chosen. */
   function syncGo(): void {
     goEl.disabled = events.length === 0 || busy || keyEl.value.length === 0;
+    if (goWhyEl) goWhyEl.textContent = goWhyWords();
   }
 
   /**
@@ -770,7 +801,8 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
    * Word the search rule for the shape the compiler just reported (PL-077).
    *
    * A create keeps "If this row is already there, skip it"; a find-then-update is told the truth
-   * about what the same rule now does: it parks a row whose search found nothing to change.
+   * about what the same rule now does: it parks a row whose search found nothing to change, so the
+   * person can skip it after looking.
    */
   function applySearchKind(searchKind: string | null): void {
     if (duplicateLabelEl) duplicateLabelEl.textContent = duplicateLabelFor(searchKind);

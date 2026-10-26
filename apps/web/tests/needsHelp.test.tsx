@@ -15,6 +15,8 @@ import {
   DESTINATION_CHECK_LABEL,
   actionBody,
   actionGate,
+  actionReason,
+  recordActionLabel,
   recordActionPath,
   recordActions,
 } from "../src/pages/needsHelpActions";
@@ -173,6 +175,23 @@ describe("the endpoints", () => {
   });
 });
 
+describe("the words on a not-found row's action (PL-106 item 7)", () => {
+  it("calls the parked-to-skipped dismiss Skip it, and leaves other rows alone", () => {
+    expect(recordActionLabel("dismiss", "Not found in crm.example.com.")).toBe("Skip it");
+    expect(recordActionLabel("dismiss", "missing email")).toBe("Dismiss");
+    expect(recordActionLabel("dismiss")).toBe("Dismiss");
+    expect(recordActionLabel("requeue", "Not found in crm.example.com.")).toBe("Try again");
+  });
+
+  it("sends the reason only on the not-found skip, and never on anything else", () => {
+    expect(actionReason("dismiss", "Not found in crm.example.com.")).toBe(
+      "Not found in crm.example.com.",
+    );
+    expect(actionReason("dismiss", "missing email")).toBeUndefined();
+    expect(actionReason("requeue", "Not found in crm.example.com.")).toBeUndefined();
+  });
+});
+
 describe("the destination check gates a commit-attempted row on the page", () => {
   it("disables both buttons until the unticked box is ticked, and again once it is cleared", async () => {
     const stub = createFetchStub(routes([sampleRow()]));
@@ -223,6 +242,37 @@ describe("the destination check gates a commit-attempted row on the page", () =>
     const sent = posts(stub, "/api/v1/records/record-1/dismiss");
     expect(sent).toHaveLength(1);
     expect(sent[0]?.body).toEqual({});
+    stub.restore();
+    view.unmount();
+  });
+
+  it("calls a not-found row's one click Skip it and keeps the search's reason", async () => {
+    const stub = createFetchStub(
+      routes(
+        [
+          sampleRow({
+            reason: "Not found in crm.example.com.",
+            commit_attempted: false,
+          }),
+        ],
+        {
+          "/api/v1/records/record-1/dismiss": {
+            body: { record_id: "record-1", state: "skipped" },
+          },
+        },
+      ),
+    );
+    const view = renderApp("/needs-help");
+    await settle();
+
+    expect(view.container.querySelector(".destination-check-box")).toBeNull();
+    expect(button(view.container, ".record-dismiss").textContent).toBe("Skip it");
+    fireEvent.click(button(view.container, ".record-dismiss"));
+    await settle();
+
+    const sent = posts(stub, "/api/v1/records/record-1/dismiss");
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.body).toEqual({ reason: "Not found in crm.example.com." });
     stub.restore();
     view.unmount();
   });

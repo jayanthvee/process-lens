@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 
 import { useJson } from "../lib/useJson";
 import { useSessionPath } from "../lib/browser";
-import { relativeTime, runStatusWords } from "../lib/words";
+import { CONNECT_CHROME, relativeTime, runStatusWords } from "../lib/words";
 import type { AppRow, ExecutorSession } from "../types";
 import "./apps.css";
 
@@ -14,8 +14,7 @@ function slot(index: number): CSSProperties {
 
 /** The two things the Chrome status can say, in the words a person can act on. */
 const CHROME_CONNECTED = "Chrome is connected";
-const CHROME_AWAY =
-  "Chrome isn't connected — open the ProcessLens extension and press Connect";
+const CHROME_AWAY = `Chrome isn't connected. ${CONNECT_CHROME}`;
 
 /**
  * A site's newest run in one line: when it ran, then how it went in plain words (DESIGN.md §2).
