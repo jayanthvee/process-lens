@@ -59,6 +59,10 @@ DEFAULT_LATE_REPLY_GRACE_SECONDS = 45.0
 # How long the runner waits for the abandon guard to be armed or released (PL-027). Arming it is one
 # CDP command, so this is generous; a guard that cannot be armed is reported, never retried blindly.
 GUARD_TIMEOUT_SECONDS = 15.0
+# PL-102: how long the extension looks in Gmail for an emailed code, and the time after that for
+# typing it and seeing the code page go.
+CODE_LOOK_SECONDS = 60.0
+CODE_TYPE_SECONDS = 15.0
 
 # The statuses the runner understands, and the ones it maps to something narrower.
 _KNOWN_STATUSES = frozenset(
@@ -301,6 +305,42 @@ class BrowserExecutor:
         if not isinstance(blocked, list):
             return []
         return [entry for entry in blocked if isinstance(entry, dict)]
+
+    # -- PL-102: a code read from the person's email ---------------------------
+
+    def code_from_email(self, *, look_seconds: float = CODE_LOOK_SECONDS) -> dict[str, Any]:
+        """Ask the extension to read the site's code from the person's Gmail and type it.
+
+        The answer is ``entered``, ``reason`` and ``cleared`` (the code page went away) and never
+        the code. The extension answers ``not_allowed`` until the person has said yes on the run
+        page. Anything unanswered is "not entered": the run pauses for the person, as before.
+        """
+        if self._socket is None:
+            return {"entered": False, "reason": "not_connected"}
+        budget = look_seconds + CODE_TYPE_SECONDS
+        try:
+            wire_id = self._send_command(
+                "enter_code",
+                self._synthetic("enter_code"),
+                extra={"from_email": True, "look_ms": int(look_seconds * 1000)},
+                ttl=budget,
+            )
+        except ExecutorUnavailable:
+            return {"entered": False, "reason": "not_connected"}
+        kind, message = self._read(
+            self._now() + budget + self.ack_budget_seconds, command_id=wire_id
+        )
+        if kind != "result":
+            logger.warning("the code-from-email ask was not answered (%s)", kind)
+            return {"entered": False, "reason": "not_answered"}
+        observed = message.get("observed")
+        if not isinstance(observed, dict):
+            return {"entered": False, "reason": "not_answered"}
+        return {
+            "entered": bool(observed.get("entered")),
+            "reason": str(observed.get("reason") or ""),
+            "cleared": bool(observed.get("cleared")),
+        }
 
     def probe_confirmation(
         self,

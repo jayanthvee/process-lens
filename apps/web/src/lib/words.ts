@@ -124,7 +124,7 @@ const PAUSE_REASONS: Record<string, string> = {
   admin_freeze: "An admin paused all runs. Resume when an admin lets runs start again.",
   // PL-040: the reasons the runner sets that used to reach the page as "Paused: Canary failed".
   window_hidden:
-    "The ProcessLens window was hidden behind other windows, so the site stopped drawing. Press Resume and it will come to the front.",
+    "The ProcessLens window was hidden or minimized, so the site stopped drawing. Press Show it and continue.",
   executor_disconnected:
     "Chrome disconnected. Open the ProcessLens extension, press Connect, then resume.",
   canary_failed:
@@ -389,9 +389,46 @@ export function codePromptWords(heading?: string | null): string {
 /** The moment between pressing Continue and the work window reporting back. */
 export const ENTERING_CODE = "Entering the code…";
 
+/** PL-104: the one button for a run paused because the ProcessLens window was hidden. */
+export const SHOW_AND_CONTINUE = "Show it and continue";
+
 /** The work window could not find the code field: the person types it there and resumes. */
 export const CODE_NOT_FOUND =
   "ProcessLens couldn't find where to type the code. Type it in the work window, then press Resume.";
+
+/** PL-102: the offer, beside the code box, to read the code from the person's own Gmail. */
+export const CODE_FROM_EMAIL_OFFER =
+  "Did the site email you the code? ProcessLens can read it from your Gmail in this Chrome and type it for you. It reads only new sign-in codes and keeps nothing.";
+
+/** PL-102: the button that says yes, for this run and every later one. */
+export const CODE_FROM_EMAIL_BUTTON = "Read it from my Gmail";
+
+/** PL-102: under the button, so the yes is not a surprise later. */
+export const CODE_FROM_EMAIL_LATER =
+  "From then on, ProcessLens does this by itself when a site emails a code.";
+
+/** PL-102: while the work window looks in Gmail, which can take up to a minute. */
+export const LOOKING_IN_GMAIL = "Looking in your Gmail for the code… this can take up to a minute.";
+
+/** PL-102: a code was typed but the site is still asking for one. */
+export const CODE_STILL_ASKED =
+  "The code was typed, but the site is still asking for one. Check the work window, then type the right code here.";
+
+/** PL-102: why the code could not be read from email, in words a person can act on. */
+export function codeFromEmailWords(reason: string): string {
+  switch (reason) {
+    case "none":
+      return "No code email has arrived yet. Try again in a moment, or type the code here.";
+    case "ambiguous":
+      return "Two codes arrived and ProcessLens can't tell which one is this site's. Type the right one here.";
+    case "no_gmail":
+      return "ProcessLens couldn't open Gmail in this Chrome. Sign in to Gmail in this Chrome, or type the code here.";
+    case "not_found":
+      return CODE_NOT_FOUND;
+    default:
+      return "ProcessLens couldn't read the code. Type it here.";
+  }
+}
 
 /**
  * PL-072: the Spreadsheets page's Word-document area. A document becomes a CSV, and the two ways

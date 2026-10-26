@@ -74,8 +74,10 @@ describe("the keys that are a press", () => {
     expect(recorded.events[0]!.step).toMatchObject({ key: "Escape" });
   });
 
-  it("records Tab, which accepts a suggestion and moves focus with intent", () => {
-    document.body.innerHTML = "<input id='to' aria-label='To'>";
+  it("records Tab when a suggestion list is open, where it accepts the suggestion", () => {
+    // PL-103: Tab from a plain field is not a step (recorder-clumsy.test.ts); with the field's
+    // suggestions showing it picks one, so it is.
+    document.body.innerHTML = "<input id='to' aria-label='To' role='combobox' aria-expanded='true'>";
     const recorded = harness();
     const field = document.getElementById("to") as HTMLInputElement;
     field.focus();

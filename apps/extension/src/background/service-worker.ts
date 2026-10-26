@@ -51,6 +51,7 @@ import {
   type VisibilityDeps,
   type VisibilityReport,
 } from "../executor/visibility";
+import { lookForCode, readGmailFeeds } from "./code-lookup";
 import { dispatchCommandStep, prepareCommandStep } from "./command-step";
 import { canRemoveStep, RecorderSession, shouldRecordNavigation } from "./recorder-session";
 import { REFRESH_PAGE_WARNING, UNRECORDABLE_PAGE_WARNING } from "../popup/words";
@@ -61,6 +62,7 @@ import {
   type SessionState,
   type StoredSession,
   type WebSocketLike,
+  type CodeAnswer,
 } from "./command-session";
 
 const STORAGE_KEY = "processlens:recorder";
@@ -279,6 +281,8 @@ export interface StartGuardDeps {
   ping: (tabId: number, message: unknown) => Promise<unknown>;
   /** How long to wait for the ping's answer. Defaults to one second. */
   timeoutMs?: number;
+  /** PL-103: put the recorder into a tab that has none. Rejects when the page cannot take one. */
+  inject?: (tabId: number) => Promise<void>;
   /**
    * The tab that sent the start, when the popup is open as a tab of its own rather than as the
    * toolbar popup. That tab is the extension's own page, so it has no content script to answer.
@@ -338,11 +342,43 @@ export async function startRecordingGuard(deps: StartGuardDeps): Promise<StartGu
   // The popup opened as a tab is itself the active tab; it is not the page being recorded, so it
   // decides nothing (the e2e harness drives the popup this way).
   if (deps.senderTabId !== undefined && tab.id === deps.senderTabId) return { started: true };
-  if (!(await pingContentScript(deps, tab.id))) {
-    return { started: false, warning: REFRESH_PAGE_WARNING };
+  if (await pingContentScript(deps, tab.id)) return { started: true };
+  // PL-103: a tab opened before ProcessLens was installed (or updated) has no recorder. Put one in
+  // and ask again; the refresh line is only for a page that still cannot be reached.
+  if (deps.inject) {
+    try {
+      await deps.inject(tab.id);
+    } catch {
+      return { started: false, warning: REFRESH_PAGE_WARNING };
+    }
+    if (await pingContentScript(deps, tab.id)) return { started: true };
   }
-  return { started: true };
+  return { started: false, warning: REFRESH_PAGE_WARNING };
 }
+
+/** PL-103: load the recorder into every frame of a tab that has none. */
+async function injectRecorder(tabId: number): Promise<void> {
+  await chrome.scripting.executeScript({
+    target: { tabId, allFrames: true },
+    files: ["content/recorder.js"],
+  });
+}
+
+/**
+ * PL-103: while recording, a tab the person switches to gets a recorder if it has none, so a
+ * switch to a tab that was open before the install does not silently record nothing.
+ */
+async function ensureRecorderIn(tabId: number): Promise<void> {
+  const tab = await chrome.tabs.get(tabId).catch(() => undefined);
+  if (!tab || unrecordablePage(tab.url)) return;
+  const deps = { ping: (id: number, message: unknown) => chrome.tabs.sendMessage(id, message) };
+  if (await pingContentScript(deps as StartGuardDeps, tabId)) return;
+  await injectRecorder(tabId).catch(() => undefined);
+}
+
+chrome.tabs?.onActivated?.addListener(({ tabId }) => {
+  if (status.state === "recording") void ensureRecorderIn(tabId);
+});
 
 /**
  * Start a recording on the active tab, or refuse with a warning the popup shows in place of
@@ -370,6 +406,7 @@ function startGuardDeps(tabId?: number): StartGuardDeps {
         ? await chrome.tabs.get(tabId).catch(() => undefined)
         : (await chrome.tabs.query({ active: true, currentWindow: true }))[0],
     ping: (tabId, message) => chrome.tabs.sendMessage(tabId, message),
+    inject: injectRecorder,
   };
 }
 
@@ -865,7 +902,8 @@ function getCommandSession(): CommandSession {
     // and an app like Odoo never finishes rendering there. A separate visible window keeps drawing
     // while the person works in their own tabs, and lets them watch the run.
     // Chrome refuses bounds it thinks are off screen, so the window takes the right half of the
-    // person's own window, then no bounds at all. It never falls back to a tab the person is using.
+    // person's own window, then no bounds at all. It never falls back to a tab the person is using:
+    // with no window, nothing connects (PL-104).
     bindActiveTab: async () => {
       const attempts: chrome.windows.CreateData[] = [];
       try {
@@ -891,16 +929,21 @@ function getCommandSession(): CommandSession {
         try {
           const win = await chrome.windows.create(data);
           tabId = win?.tabs?.[0]?.id ?? null;
+          // PL-104: Chrome may answer with a window but leave its tab list out. Ask for it, rather
+          // than counting the window as refused.
+          if (tabId === null && win?.id !== undefined) {
+            const [first] = await chrome.tabs.query({ windowId: win.id });
+            tabId = first?.id ?? null;
+          }
           if (tabId !== null) break;
         } catch (error) {
           console.warn("ProcessLens: could not open the work window", error);
         }
       }
-      if (tabId === null) {
-        const tab = await chrome.tabs.create({ url: "about:blank", active: true });
-        tabId = tab?.id ?? null;
-      }
+      // PL-104: never a tab in the person's own window. Looking at the run page hid that tab, and
+      // the run paused or failed; the session refuses to connect instead, and says so.
       commandBoundTabId = tabId;
+      if (tabId !== null) await explainWorkWindow(tabId);
       return tabId;
     },
     // B2: after a worker restart, adopt the STORED bound tab — never the active one, which at
@@ -919,20 +962,28 @@ function getCommandSession(): CommandSession {
     checkCondition: checkCommandCondition,
     // PL-068: type the person's code into the bound tab and press its own continue. The code is
     // used for this one page call and never stored.
-    enterCode: async (code: string) => {
+    enterCode: (code: string) => typeCodeInBoundTab(code),
+    // PL-102: the same, with the code read from the person's own Gmail in this Chrome -- only once
+    // they have said yes, on the run page, to reading sign-in codes.
+    codeFromEmail: async ({ since, remember, lookMs, stop }) => {
       const tabId = commandBoundTabId;
       if (tabId === null || tabId < 0) return { entered: false, reason: "not_found" };
-      const cdp = await ensureDebugger(tabId);
-      const expression =
-        `(() => { const codePromptInPage = ${codePromptInPage.toString()};` +
-        ` return (${enterCodeInPage.toString()})(${JSON.stringify({ code })}) })()`;
-      const answer = (await evaluate(cdp, expression, {})) as
-        | { entered?: boolean; reason?: string }
-        | undefined;
-      return {
-        entered: answer?.entered === true,
-        reason: String(answer?.reason ?? "not_found"),
-      };
+      const local = chrome.storage?.local;
+      if (remember) await local?.set({ [CODES_FROM_EMAIL_KEY]: true });
+      const allowed =
+        remember || (local ? (await local.get([CODES_FROM_EMAIL_KEY]))[CODES_FROM_EMAIL_KEY] : false);
+      if (allowed !== true) return { entered: false, reason: "not_allowed" };
+      const site = (await chrome.tabs.get(tabId).catch(() => undefined))?.url ?? "";
+      const answer = await lookForCode(
+        {
+          read: () => readGmailFeeds((url, init) => fetch(url, init)),
+          now: () => Date.now(),
+          sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+        },
+        { since, site, lookMs, stop },
+      );
+      if (answer.status !== "found") return { entered: false, reason: answer.status };
+      return typeCodeInBoundTab(answer.code);
     },
     // PL-027: the abandon guard runs on the bound tab's debugger, the same one every command uses.
     armAbandonGuard: async () => {
@@ -957,6 +1008,96 @@ function getCommandSession(): CommandSession {
   };
   commandSession = new CommandSession(deps);
   return commandSession;
+}
+
+/**
+ * PL-104: bring the work window back: out of minimized, in front, its work tab active. True when
+ * there was a work window to show.
+ */
+export async function showWorkWindow(): Promise<boolean> {
+  const tabId = commandBoundTabId;
+  if (tabId === null || tabId < 0) return false;
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    await chrome.windows.update(tab.windowId, { state: "normal", focused: true });
+    await chrome.tabs.update(tabId, { active: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** PL-104: the words on the work window's first page, so a blank window does not look broken. */
+export const WORK_WINDOW_TITLE = "ProcessLens is working here";
+export const WORK_WINDOW_WORDS =
+  "ProcessLens does its work in this window. Leave it open. You can keep using your other windows; just don't minimize this one while a task is running.";
+
+/**
+ * PL-104: write a short explanation into the work window's blank first page. The page stays
+ * `about:blank` (the run navigates from it, and the abandon guard retires to it), only its words
+ * change. A page that cannot be written to is left blank: this is a courtesy, never a blocker.
+ */
+async function explainWorkWindow(tabId: number): Promise<void> {
+  try {
+    const cdp = await ensureDebugger(tabId);
+    const expression =
+      `(() => { if (location.href !== "about:blank") return;` +
+      ` document.title = ${JSON.stringify(WORK_WINDOW_TITLE)};` +
+      ` document.body.style.cssText = "margin:0;display:grid;place-items:center;height:100vh;` +
+      `font:16px/1.5 system-ui,sans-serif;color:#2a2d2b;background:#f4f5f3";` +
+      ` const box = document.createElement("div"); box.style.cssText = "max-width:420px;padding:24px";` +
+      ` const h = document.createElement("h1"); h.style.cssText = "font-size:20px;margin:0 0 8px";` +
+      ` h.textContent = ${JSON.stringify(WORK_WINDOW_TITLE)};` +
+      ` const p = document.createElement("p"); p.style.margin = "0";` +
+      ` p.textContent = ${JSON.stringify(WORK_WINDOW_WORDS)};` +
+      ` box.append(h, p); document.body.replaceChildren(box); })()`;
+    await evaluate(cdp, expression, {});
+  } catch (error) {
+    console.warn("ProcessLens: could not label the work window", error);
+  } finally {
+    // Released again at once: connecting must not hold the debugger, so nothing about how a
+    // session attaches for its first command changes.
+    await releaseDebugger().catch(() => undefined);
+  }
+}
+
+/** PL-102: the person's yes to reading sign-in codes from their Gmail, kept in this Chrome. */
+const CODES_FROM_EMAIL_KEY = "processlens.codesFromEmail";
+
+/** PL-102: how long the page may take to leave the code page after the code is typed. */
+const CODE_PAGE_CLEAR_MS = 10_000;
+
+/**
+ * Type a code into the bound tab and press the page's own continue, then wait for the code page to
+ * go. `cleared` is what lets the runner carry on by itself; a wrong code leaves the page in place.
+ * The code lives for this call only.
+ */
+async function typeCodeInBoundTab(code: string): Promise<CodeAnswer> {
+  const tabId = commandBoundTabId;
+  if (tabId === null || tabId < 0) return { entered: false, reason: "not_found" };
+  const cdp = await ensureDebugger(tabId);
+  const expression =
+    `(() => { const codePromptInPage = ${codePromptInPage.toString()};` +
+    ` return (${enterCodeInPage.toString()})(${JSON.stringify({ code })}) })()`;
+  const answer = (await evaluate(cdp, expression, {})) as
+    | { entered?: boolean; reason?: string }
+    | undefined;
+  if (answer?.entered !== true) {
+    return { entered: false, reason: String(answer?.reason ?? "not_found") };
+  }
+  const probe = `(${codePromptInPage.toString()})({}).found === true`;
+  const deadline = Date.now() + CODE_PAGE_CLEAR_MS;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    try {
+      if ((await evaluate(await ensureDebugger(tabId), probe, {})) === false) {
+        return { entered: true, reason: "submitted", cleared: true };
+      }
+    } catch {
+      // The page is navigating; ask again.
+    }
+  }
+  return { entered: true, reason: "submitted", cleared: false };
 }
 
 async function handleExecutor(message: ToWorker): Promise<unknown> {
@@ -984,6 +1125,8 @@ async function handleExecutor(message: ToWorker): Promise<unknown> {
       const lastHub = local ? (await local.get([LAST_HUB_KEY]))[LAST_HUB_KEY] : undefined;
       return { ok: true, browserId: await browserId(local), hubOrigin: originOf(lastHub) };
     }
+    case "executor:show-window":
+      return { ok: await showWorkWindow() };
     case "executor:disconnect":
       await getCommandSession().disconnect();
       break;

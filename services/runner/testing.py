@@ -131,11 +131,22 @@ class FakeExecutor:
         # PL-027: the abandon guard's two calls, and what a release reports having refused.
         self.guard_calls: list[str] = []
         self.guard_blocked: list[dict[str, str]] = []
+        # PL-102: what each ask for an emailed code answers, in order, and how many were asked.
+        # With nothing scripted the person has not said yes, so the run pauses as it always did.
+        self.code_answers: list[dict[str, Any]] = []
+        self.code_requests = 0
 
     def guard(self, action: str) -> list[dict[str, str]]:
         """Record the guard call; a release reports whatever the test scripted as refused."""
         self.guard_calls.append(action)
         return list(self.guard_blocked) if action == "disarm" else []
+
+    def code_from_email(self) -> dict[str, Any]:
+        """PL-102: the scripted answer to reading the code from the person's email."""
+        self.code_requests += 1
+        if self.code_answers:
+            return self.code_answers.pop(0)
+        return {"entered": False, "reason": "not_allowed"}
 
     def _behavior(self, command: StepCommand) -> str:
         step_id = str(command.step.get("id", ""))

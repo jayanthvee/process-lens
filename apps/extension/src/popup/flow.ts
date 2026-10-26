@@ -108,6 +108,61 @@ export function stepLines(events: readonly RecordedEvent[]): StepLine[] {
   return lines;
 }
 
+/** PL-103: a click that landed on a page area; nothing replays it. */
+export const EMPTY_SPACE_PROBLEM = "This click lands on empty space, so it can't be repeated.";
+
+/** PL-103: teaching began on a form a New button had already opened. */
+export const MID_FORM_PROBLEM =
+  "Teaching started on a form that was already open, so each row would have nowhere to type. Start over: begin on the list and press New while recording.";
+
+/** What fixes a problem: remove that one step, or record the task again from the start. */
+export type StepFix = "remove" | "start-over";
+
+export interface StepProblem {
+  sentence: string;
+  fix: StepFix;
+}
+
+/** Roles that say nothing about what a click does, so a long name on one is page text. */
+const AREA_ROLES = new Set(["generic", "none", "presentation", "group", "region", "main", "form"]);
+const AREA_NAME_LENGTH = 100;
+
+/** A page whose address says it is a new, unsaved record (Odoo's `/new`, `view_type=form`). */
+const NEW_RECORD_URL = /\/new(?:[/?#]|$)|[?&#]view_type=form(?!.*[?&#]id=)|\/create(?:[/?#]|$)/i;
+
+function isAreaClick(step: RecordedEvent["step"]): boolean {
+  const record = step as { action?: string; targets?: Array<{ by?: string; role?: string; name?: string }> } | null;
+  if (record?.action !== "click") return false;
+  const first = record.targets?.[0];
+  return (
+    first?.by === "role" &&
+    AREA_ROLES.has(first.role ?? "") &&
+    (first.name ?? "").length >= AREA_NAME_LENGTH
+  );
+}
+
+/**
+ * PL-103: the steps that cannot be repeated, by seq, each with one plain sentence and its fix.
+ * Checked after Stop, so a person fixes the recording where they see it, before saving.
+ */
+export function stepProblems(events: readonly RecordedEvent[]): Map<number, StepProblem> {
+  const problems = new Map<number, StepProblem>();
+  const steps = events.filter((event) => event && (event.step || event.kind === "navigate"));
+  const first = steps[0];
+  if (first && first.kind === "fill" && NEW_RECORD_URL.test(first.url ?? "")) {
+    problems.set(first.seq, { sentence: MID_FORM_PROBLEM, fix: "start-over" });
+  }
+  for (const event of steps) {
+    if (isAreaClick(event.step ?? null)) {
+      problems.set(event.seq, { sentence: EMPTY_SPACE_PROBLEM, fix: "remove" });
+    }
+  }
+  return problems;
+}
+
+/** The fix button's words. */
+const FIX_LABEL: Record<StepFix, string> = { remove: "Remove", "start-over": "Start over" };
+
 /** What the live step list needs to draw itself. */
 export interface StepListOptions {
   /** True while the recorder runs: a step's × is hidden until Stop. */
@@ -116,6 +171,8 @@ export interface StepListOptions {
   onRemove?: (seq: number) => void;
   /** Why the last start did not happen (PL-039); shown in place of the steps when set. */
   warning?: string | null;
+  /** PL-103: what a step's Start over should do: clear the steps, ready to record again. */
+  onStartOver?: () => void;
 }
 
 /**
@@ -146,10 +203,12 @@ export function renderStepList(
     list.replaceChildren(empty);
     return;
   }
-  list.replaceChildren(...lines.map((line) => stepItem(line, options)));
+  // PL-103: problems are shown once the recording is stopped, on the row they belong to.
+  const problems = options.recording ? new Map<number, StepProblem>() : stepProblems(events);
+  list.replaceChildren(...lines.map((line) => stepItem(line, options, problems.get(line.seq))));
 }
 
-function stepItem(line: StepLine, options: StepListOptions): HTMLLIElement {
+function stepItem(line: StepLine, options: StepListOptions, problem?: StepProblem): HTMLLIElement {
   const item = document.createElement("li");
   item.className = "steps__item";
   item.dataset["seq"] = String(line.seq);
@@ -164,5 +223,21 @@ function stepItem(line: StepLine, options: StepListOptions): HTMLLIElement {
   remove.hidden = options.recording;
   remove.addEventListener("click", () => options.onRemove?.(line.seq));
   item.append(text, remove);
+  if (problem) {
+    item.classList.add("steps__item--problem");
+    const note = document.createElement("p");
+    note.className = "steps__problem";
+    note.textContent = problem.sentence;
+    const fix = document.createElement("button");
+    fix.type = "button";
+    fix.className = "steps__fix";
+    fix.textContent = FIX_LABEL[problem.fix];
+    fix.addEventListener("click", () => {
+      if (problem.fix === "remove") options.onRemove?.(line.seq);
+      else options.onStartOver?.();
+    });
+    note.append(" ", fix);
+    item.append(note);
+  }
   return item;
 }

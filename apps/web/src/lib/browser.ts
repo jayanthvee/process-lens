@@ -30,6 +30,24 @@ function heard(event: MessageEvent): void {
   for (const listener of listeners) listener();
 }
 
+/** PL-104: the run page asks the extension to bring the ProcessLens window forward. */
+export const SHOW_WINDOW = "processlens:show-window";
+
+/**
+ * PL-104: bring the ProcessLens window forward. From the side panel (an extension page) the worker
+ * is asked directly; from the website, the extension's content script on this page is.
+ */
+export function showWorkWindow(): void {
+  if (typeof window === "undefined") return;
+  const runtime = (globalThis as { chrome?: { runtime?: { id?: string; sendMessage?: (m: unknown) => unknown } } })
+    .chrome?.runtime;
+  if (runtime?.id && typeof runtime.sendMessage === "function") {
+    void Promise.resolve(runtime.sendMessage({ type: "executor:show-window" })).catch(() => undefined);
+    return;
+  }
+  window.postMessage({ type: SHOW_WINDOW }, window.location.origin);
+}
+
 /** Start asking, once per page. */
 export function askWhichBrowser(): void {
   if (started || typeof window === "undefined") return;
