@@ -52,7 +52,16 @@ export interface EventInput {
   keystrokes?: number | undefined;
 }
 
+/** The recipe schema's limit on a step name. */
+export const STEP_NAME_MAX = 120;
+
 export function makeEvent(input: EventInput): PendingEvent {
+  // PL-103: a step's name is at most 120 characters (the recipe schema's `step_name`). "Click "
+  // in front of a long element name went over, and the server refused the whole save for it.
+  const name = (input.step as { name?: unknown } | null | undefined)?.name;
+  if (input.step && typeof name === "string" && name.length > STEP_NAME_MAX) {
+    (input.step as { name: string }).name = `${name.slice(0, STEP_NAME_MAX - 1).trimEnd()}…`;
+  }
   const event: PendingEvent = {
     at: input.at ?? new Date().toISOString(),
     kind: input.kind,

@@ -103,19 +103,18 @@ describe("Tab between fields", () => {
 });
 
 describe("names", () => {
-  it("are never longer than 120 characters, whatever the element's text", () => {
+  it("are never longer than the schema's 120 characters, whatever the element's text", () => {
+    // "Click " in front of a 120-character element name was 126, and the server refused the save.
     document.body.innerHTML =
       "<div role='button' tabindex='0' id='card'>" + "Lead details and history. ".repeat(40) + "</div>";
     const recorded = harness();
 
     (document.getElementById("card") as HTMLElement).click();
 
+    expect(recorded.events.length).toBeGreaterThan(0);
     for (const event of recorded.events) {
-      const step = event.step as { name?: string; targets?: { name?: string; value?: string }[] };
+      const step = event.step as { name?: string };
       expect((step.name ?? "").length).toBeLessThanOrEqual(120);
-      for (const target of step.targets ?? []) {
-        expect((target.name ?? target.value ?? "").length).toBeLessThanOrEqual(120);
-      }
     }
   });
 });

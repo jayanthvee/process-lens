@@ -278,6 +278,25 @@ describe("the make-recipe form", () => {
     expect(storage.writes).toHaveLength(0);
   });
 
+  it("says which step the refusal is about, right under Save (PL-103)", async () => {
+    const plain = 'Step 1 ("Click the form") can\'t be saved as it was recorded. Remove it with × and save again.';
+    const { fetchImpl } = fakeFetch(
+      {
+        detail: {
+          message: "the compiled recipe does not match the recipe schema",
+          problems: [plain, "steps/0: {} is not valid under any of the given schemas"],
+        },
+      },
+      { ok: false, status: 422 },
+    );
+    const form = mount(fetchImpl);
+
+    form.refresh(leadRecording());
+    await form.submit();
+
+    expect(control("make-result").textContent).toContain(plain);
+  });
+
   it("preselects the last recorded click as the commit step", () => {
     const { fetchImpl } = fakeFetch({});
     const form = mount(fetchImpl);

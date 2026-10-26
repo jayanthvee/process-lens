@@ -278,6 +278,8 @@ export interface StartGuardDeps {
   ping: (tabId: number, message: unknown) => Promise<unknown>;
   /** How long to wait for the ping's answer. Defaults to one second. */
   timeoutMs?: number;
+  /** PL-103: put the recorder into a tab that has none. Rejects when the page cannot take one. */
+  inject?: (tabId: number) => Promise<void>;
   /**
    * The tab that sent the start, when the popup is open as a tab of its own rather than as the
    * toolbar popup. That tab is the extension's own page, so it has no content script to answer.
@@ -337,11 +339,43 @@ export async function startRecordingGuard(deps: StartGuardDeps): Promise<StartGu
   // The popup opened as a tab is itself the active tab; it is not the page being recorded, so it
   // decides nothing (the e2e harness drives the popup this way).
   if (deps.senderTabId !== undefined && tab.id === deps.senderTabId) return { started: true };
-  if (!(await pingContentScript(deps, tab.id))) {
-    return { started: false, warning: REFRESH_PAGE_WARNING };
+  if (await pingContentScript(deps, tab.id)) return { started: true };
+  // PL-103: a tab opened before ProcessLens was installed (or updated) has no recorder. Put one in
+  // and ask again; the refresh line is only for a page that still cannot be reached.
+  if (deps.inject) {
+    try {
+      await deps.inject(tab.id);
+    } catch {
+      return { started: false, warning: REFRESH_PAGE_WARNING };
+    }
+    if (await pingContentScript(deps, tab.id)) return { started: true };
   }
-  return { started: true };
+  return { started: false, warning: REFRESH_PAGE_WARNING };
 }
+
+/** PL-103: load the recorder into every frame of a tab that has none. */
+async function injectRecorder(tabId: number): Promise<void> {
+  await chrome.scripting.executeScript({
+    target: { tabId, allFrames: true },
+    files: ["content/recorder.js"],
+  });
+}
+
+/**
+ * PL-103: while recording, a tab the person switches to gets a recorder if it has none, so a
+ * switch to a tab that was open before the install does not silently record nothing.
+ */
+async function ensureRecorderIn(tabId: number): Promise<void> {
+  const tab = await chrome.tabs.get(tabId).catch(() => undefined);
+  if (!tab || unrecordablePage(tab.url)) return;
+  const deps = { ping: (id: number, message: unknown) => chrome.tabs.sendMessage(id, message) };
+  if (await pingContentScript(deps as StartGuardDeps, tabId)) return;
+  await injectRecorder(tabId).catch(() => undefined);
+}
+
+chrome.tabs?.onActivated?.addListener(({ tabId }) => {
+  if (status.state === "recording") void ensureRecorderIn(tabId);
+});
 
 /**
  * Start a recording on the active tab, or refuse with a warning the popup shows in place of
@@ -369,6 +403,7 @@ function startGuardDeps(tabId?: number): StartGuardDeps {
         ? await chrome.tabs.get(tabId).catch(() => undefined)
         : (await chrome.tabs.query({ active: true, currentWindow: true }))[0],
     ping: (tabId, message) => chrome.tabs.sendMessage(tabId, message),
+    inject: injectRecorder,
   };
 }
 

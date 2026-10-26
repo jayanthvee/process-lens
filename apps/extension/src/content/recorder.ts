@@ -429,6 +429,37 @@ function resolveClickTarget(start: Element): ResolvedClick {
   return { element: start, viaLabel: false };
 }
 
+/** PL-103: whether a field's suggestion list is open, so Tab would pick from it. */
+function suggestionsOpen(el: Element): boolean {
+  if (el.getAttribute("aria-expanded") === "true") return true;
+  const listId = el.getAttribute("aria-controls") ?? el.getAttribute("aria-owns");
+  const list = listId ? el.ownerDocument.getElementById(listId) : null;
+  if (list && isVisibleElement(list)) return true;
+  return Array.from(el.ownerDocument.querySelectorAll("[role='listbox']")).some((box) =>
+    isVisibleElement(box),
+  );
+}
+
+/** The roles that say nothing about what a click on them would do. */
+const NO_ACTION_ROLES = new Set(["generic", "none", "presentation", "group", "region", "main", "form"]);
+
+/** Text this long, with no name of the element's own, is a page area rather than a control. */
+const PAGE_AREA_TEXT = 200;
+
+/**
+ * PL-103: a click that landed on empty space. On the pilot call a click on Odoo's form background
+ * was recorded as a step named with the whole form's text, which the server refused, and the save
+ * failed for everything. An element with no role of its own that holds fields, or that is only a
+ * long run of page text, is somewhere the person clicked, not something they clicked.
+ */
+function isEmptySpace(el: Element): boolean {
+  if (!NO_ACTION_ROLES.has(semanticRole(el))) return false;
+  if (el.querySelector("input, select, textarea, [contenteditable='true']")) return true;
+  if (el.hasAttribute("tabindex") || el.hasAttribute("onclick")) return false;
+  if (ownNameOf(el)) return false;
+  return normalizeText(el.textContent).length > PAGE_AREA_TEXT;
+}
+
 function firstSubmitControl(form: Element): Element | null {
   return form.querySelector(
     "button[type='submit'], input[type='submit'], button:not([type])",
@@ -642,7 +673,10 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
       if (event.metaKey) return "Meta+Enter";
       return "Enter";
     }
-    if (raw === "Tab") return "Tab";
+    // PL-103: Tab from a plain field only moves to the next one, which records its own fill; as a
+    // step it named a field that is gone by replay ("Press Tab ... could not be resolved"). Tab
+    // with a suggestion list open picks the suggestion (Odoo), so that one is a step.
+    if (raw === "Tab") return el && suggestionsOpen(el) ? "Tab" : null;
     if (raw === "Backspace" || raw === "Delete") {
       // Inside a text field this is editing, and the checkpoint records the resulting value.
       return el && isTextEntryElement(el) ? null : raw;
@@ -1317,6 +1351,8 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
       return;
     }
     if (isPasswordField(el) || isPasswordField(start)) return;
+    // PL-103: a click on the empty space of a form or page is the person's hand resting, not a step.
+    if (isEmptySpace(el)) return;
 
     const role = semanticRole(el);
     // A click on a field is focus, not an action -- but it is the person's hand on the field, so a
@@ -1546,6 +1582,12 @@ export function shouldResetStepIds(
 function bootstrap(): void {
   const ext = (globalThis as { chrome?: typeof chrome }).chrome;
   if (!ext?.runtime?.id) return;
+  // PL-103: the worker may put the recorder into a tab that has none. A frame whose recorder is
+  // still alive keeps it, so no step is recorded twice; one orphaned by an extension update (its
+  // runtime gone) is replaced.
+  const world = globalThis as { __processlensRecorderAlive?: () => boolean };
+  if (world.__processlensRecorderAlive?.() === true) return;
+  world.__processlensRecorderAlive = () => Boolean(ext.runtime?.id);
 
   let recording = false;
   let previousStatus: { state?: string; count?: number } | undefined;
