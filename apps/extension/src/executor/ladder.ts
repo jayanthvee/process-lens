@@ -934,7 +934,10 @@ export function resolveTargetInPage(query: ResolveQuery): ResolveResult {
   const isDisabled = (el: Element): boolean => {
     const node = el as HTMLInputElement;
     if (node.disabled === true) return true;
-    return lower(el.getAttribute("aria-disabled")) === "true";
+    if (lower(el.getAttribute("aria-disabled")) === "true") return true;
+    // PL-107 item 11: a control the page is busy with is not ready to act on either; the click
+    // path waits for it, and the step's own assertion may show the page already moved on.
+    return lower(el.getAttribute("aria-busy")) === "true";
   };
 
   const isVisible = (el: Element): boolean => {

@@ -13,6 +13,8 @@
 import type { ValueSource } from "../shared/recipe-types";
 import { disarmAbandonGuard } from "./abandon-guard";
 import type { ConditionContext } from "./assertions";
+import { waitForCondition } from "./assertions";
+import { answerConsentNoticeInPage, COOKIE_NOTICE_PARKED } from "./consent";
 import type { CdpTransport } from "./cdp";
 import {
   DEFAULT_NAVIGATE_TIMEOUT_MS,
@@ -382,7 +384,8 @@ async function resolveWhenReady(
   contextId: number | undefined,
   ladder?: ResolveRung[],
   preset?: ResolvedTarget,
-): Promise<{ result: ResolveResult; token: string }> {
+  movedOn?: () => Promise<boolean>,
+): Promise<{ result: ResolveResult; token: string; movedOn?: boolean }> {
   if (preset) return resolveStep(cdp, step, deps, contextId, ladder, preset);
   const deadline = Date.now() + readyWaitMs(step);
   for (;;) {
@@ -392,9 +395,12 @@ async function resolveWhenReady(
     // autocomplete and one other; stopping at that first answer parked the record a moment before
     // the row's own input existed. Waiting never acts on an ambiguous target, it only delays the
     // same refusal by at most the ready wait when the page really is ambiguous.
-    if (attempt.result.ok || Date.now() >= deadline) {
-      return attempt;
-    }
+    if (attempt.result.ok) return attempt;
+    // PL-107 item 11: while the target is busy or disabled -- which is exactly when the resolver
+    // refuses it -- the step's own assertion holding means the page moved on by itself, and the
+    // click is already done. Only a step that carries an assertion passes this probe.
+    if (movedOn && (await movedOn())) return { ...attempt, movedOn: true };
+    if (Date.now() >= deadline) return attempt;
     await delay(Math.min(READY_WAIT_POLL_MS, Math.max(1, deadline - Date.now())));
   }
 }
@@ -941,15 +947,42 @@ export async function performStep(
   // for. The step's own deadline bounds the retries, and a click that landed is never repeated: only
   // the pre-press "the marked element is no longer in the document" is ever retried.
   const clickDeadline = Date.now() + stepTimeoutMs(step, deps);
+  const condition = step.assert_after;
   for (let attempt = 0; ; attempt += 1) {
-    const { result, token } = await resolveWhenReady(
+    // PL-107 item 11: while a busy/disabled target is being waited on, a step's own assertion
+    // holding proves the page already moved on, so the click is done. A probe answers the condition
+    // once; it is passed only when the step has an assertion, so a step with none keeps today's wait.
+    const probe = condition
+      ? async (): Promise<boolean> => {
+          if (Date.now() >= clickDeadline) return false;
+          const outcome = await waitForCondition(deps.cdp, condition, assertionContext(deps), {
+            timeoutMs: 0,
+            ...(contextId !== undefined ? { contextId } : {}),
+          });
+          return outcome.ok;
+        }
+      : undefined;
+    const {
+      result,
+      token,
+      movedOn,
+    } = await resolveWhenReady(
       deps.cdp,
       step,
       deps,
       contextId,
       undefined,
       attempt === 0 ? preset : undefined,
+      probe,
     );
+    if (movedOn) {
+      return {
+        id: step.id,
+        action: step.action,
+        outcome: "done",
+        detail: "the page moved on by itself",
+      };
+    }
     if (!result.ok) {
       throw new ExecutorError(
         `the click target for step ${step.id} could not be resolved: ${result.error ?? "no rung matched"}${attemptTrail(result)}`,
@@ -976,8 +1009,22 @@ export async function performStep(
       await dispatchClick(deps.cdp, token, contextId, hooks, Math.max(1, clickDeadline - Date.now()));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (!message.includes("no longer in the document") || Date.now() >= clickDeadline) throw error;
-      continue; // the page re-rendered under the marker; nothing was pressed, so climb again
+      // PL-107 item 10: a consent notice covering the page is answered the private way, then the
+      // click is retried once. A notice that offers only Accept/Allow is never answered for the
+      // person: that parks, with the sentence that says where to answer it.
+      if (message.includes("covered by")) {
+        const consent = await answerConsentNoticeInPage(deps.cdp, token, contextId);
+        if (consent.parked) {
+          throw new ExecutorError(COOKIE_NOTICE_PARKED, step.id, "park");
+        }
+        if (!consent.answered) throw error;
+        // The private answer was clicked; retry the click once now that the notice is going away.
+        await dispatchClick(deps.cdp, token, contextId, hooks, Math.max(1, clickDeadline - Date.now()));
+      } else if (message.includes("no longer in the document") && Date.now() < clickDeadline) {
+        continue; // the page re-rendered under the marker; nothing was pressed, so climb again
+      } else {
+        throw error;
+      }
     }
     return { id: step.id, action: step.action, outcome: "done", rung: result.rung, by: result.by };
   }

@@ -124,8 +124,18 @@ function constantValue(step: RecordedStep): string | null {
   return String(source.value);
 }
 
-/** The field's human name, climbing the target ladder's named rungs. */
-function humanName(step: RecordedStep): string | null {
+/**
+ * A placeholder that reads as an example, not a label: "e.g. …", "eg …", "Example: …",
+ * "such as …". Such text names the value the page expects, not the field (PL-107 item 13).
+ */
+const EXAMPLE_HINT = /^\s*(?:e\.?\s*g\.?|example\s*:|such as\b|for example\b|i\.e\.?)\s/i;
+
+function isExampleHint(text: string): boolean {
+  return EXAMPLE_HINT.test(text.trim());
+}
+
+/** The first non-empty name any rung offers: role name, then label, then test id. */
+function firstNamedText(step: RecordedStep): string | null {
   const targets = step.targets ?? [];
   for (const target of targets) {
     if (target.by === "role" && target.name.trim().length > 0) return target.name.trim();
@@ -135,6 +145,37 @@ function humanName(step: RecordedStep): string | null {
   }
   for (const target of targets) {
     if (target.by === "testid" && target.value.trim().length > 0) return target.value.trim();
+  }
+  return null;
+}
+
+/** A field's own id or name, from its css rung, in words: "#name_0" -> "Name". */
+function fieldToken(step: RecordedStep): string | null {
+  for (const target of step.targets ?? []) {
+    if (target.by !== "css") continue;
+    const selector = target.selector ?? "";
+    const token =
+      /#([A-Za-z][\w-]*)/.exec(selector)?.[1] ??
+      /\[name=["']([^"']+)["']\]/.exec(selector)?.[1] ??
+      /\[id=["']([^"']+)["']\]/.exec(selector)?.[1];
+    if (!token) continue;
+    const words = token.replace(/_\d+$/, "").replace(/[-_]+/g, " ").trim();
+    if (words.length > 0) return words.charAt(0).toUpperCase() + words.slice(1);
+  }
+  return null;
+}
+
+/** The field's human name, climbing the target ladder's named rungs. */
+function humanName(step: RecordedStep): string | null {
+  const first = firstNamedText(step);
+  if (first !== null && !isExampleHint(first)) return first;
+  // PL-107 item 13: the only name this field offers is an example placeholder. That is not a
+  // name; use the field's own id/name, then call a text field "Name" (nothing better to say).
+  if (first !== null) {
+    const token = fieldToken(step);
+    if (token !== null) return token;
+    if (step.action === "fill") return "Name";
+    return first;
   }
   const name = step.name?.trim();
   return name && name.length > 0 ? name : null;
