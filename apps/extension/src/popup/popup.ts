@@ -166,6 +166,8 @@ function renderSteps(): void {
     recording: recordingNow,
     onRemove: removeStep,
     warning: statusWarning,
+    // PL-103: a step's Start over is the Clear button, so the person records again from the list.
+    onStartOver: () => clearButton.click(),
   });
 }
 

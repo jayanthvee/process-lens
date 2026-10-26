@@ -319,6 +319,28 @@ body {
 .steps__remove:focus-visible { outline: 2px solid var(--gold); outline-offset: 1px; }
 .steps__remove[hidden] { display: none; }
 
+/* PL-103: a step that cannot be repeated says so on its own row, with its fix right there. */
+.steps__item--problem { flex-wrap: wrap; }
+.steps__problem {
+  flex: 1 0 100%;
+  margin: 2px 0 0;
+  color: var(--help);
+  font-size: 13px;
+  line-height: 1.4;
+}
+.steps__fix {
+  padding: 2px 8px;
+  border: 1px solid var(--hair-2);
+  border-radius: 6px;
+  background: var(--fog-1);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.steps__fix:hover { background: var(--fog-3); }
+.steps__fix:focus-visible { outline: 2px solid var(--gold); outline-offset: 1px; }
+
 .steps__empty {
   padding: 8px 0;
   color: var(--muted);
