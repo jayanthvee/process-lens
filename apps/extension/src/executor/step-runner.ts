@@ -35,7 +35,7 @@ import {
   type ResolveResult,
   type ResolveRung,
 } from "./ladder";
-import { evaluate, markerExpression, resolverCallExpression } from "./page";
+import { evaluate, escapeToken, markerExpression, resolverCallExpression } from "./page";
 import { ExecutorError, type ExecutorStep, type RunContext, type StepReport } from "./types";
 
 /** The seams a single step needs: a CDP channel, the resolver source, and any frame contexts. */
@@ -516,6 +516,228 @@ export function stepTimeoutMs(step: ExecutorStep, deps: StepRunDeps): number {
 /** How often the popup is re-read while it opens: a debounced widget inserts its options late. */
 export const AUTOCOMPLETE_POLL_MS = 100;
 
+/** How long a picker's list must hold the same options before they are read as settled (PL-110). */
+export const PICKER_SETTLE_MS = 300;
+
+/**
+ * Whether a field is a box that searches as you type (PL-110).
+ *
+ * Three shapes say so, and none of them is one product's: an explicit `role="combobox"`, an
+ * `aria-autocomplete` hint, or `aria-controls`/`aria-owns` naming a listbox that is in the page. A
+ * plain text input has none of them and keeps the strict fill check.
+ */
+async function isPickerField(
+  cdp: CdpTransport,
+  token: string,
+  contextId: number | undefined,
+): Promise<boolean> {
+  const expression = `(() => {
+    const el = ${markerExpression(token)};
+    if (!el) return false;
+    const role = String(el.getAttribute("role") || "").split(/\\s+/)[0].toLowerCase();
+    if (role === "combobox") return true;
+    if (String(el.getAttribute("aria-autocomplete") || "").trim() !== "") return true;
+    const ids = (String(el.getAttribute("aria-controls") || "") + " " + String(el.getAttribute("aria-owns") || ""))
+      .split(/\\s+/)
+      .filter(Boolean);
+    for (const id of ids) {
+      const box = document.getElementById(id);
+      if (!box) continue;
+      if (String(box.getAttribute("role") || "").toLowerCase() === "listbox") return true;
+      if (box.querySelector('[role="option"]')) return true;
+    }
+    return false;
+  })()`;
+  const answer = await evaluate(cdp, expression, contextId !== undefined ? { contextId } : {});
+  return answer === true;
+}
+
+/** One read of a listbox's options, as text, for the picker's settle wait and choice. */
+function optionTextsExpression(descriptor: string): string {
+  return `(() => {
+    const box = document.getElementById(${JSON.stringify(listboxIdOf(descriptor))});
+    if (!box) return null;
+    return Array.from(box.querySelectorAll('[role="option"]')).map((el) =>
+      String(el.textContent || "").replace(/\\s+/g, " ").trim(),
+    );
+  })()`;
+}
+
+/** The attribute that keeps the picker's own field findable after an option is stamped. */
+const PICK_FIELD_MARKER = "data-pl-pick-field";
+
+/** The value a text field currently shows, for the after-pick check. */
+function fieldTextExpression(token: string): string {
+  return `(() => {
+    const el = ${markerExpression(token)};
+    if (!el) return null;
+    return typeof el.value === "string" ? el.value : String(el.textContent || "");
+  })()`;
+}
+
+/** The same read, by the marker that survives the option stamp. */
+function pickedFieldTextExpression(token: string): string {
+  return `(() => {
+    const el = document.querySelector('[${PICK_FIELD_MARKER}="${escapeToken(token)}"]');
+    if (!el) return null;
+    return typeof el.value === "string" ? el.value : String(el.textContent || "");
+  })()`;
+}
+
+/** The field's own name for a sentence: its role rung's name, else the step's name. */
+function fillFieldName(step: ExecutorStep): string {
+  for (const rung of step.targets ?? []) {
+    const name = (rung as { by?: string; name?: string }).name;
+    if (rung.by === "role" && typeof name === "string" && name.trim() !== "") return name.trim();
+  }
+  const own = (step.name ?? "").replace(/^Fill\s+/i, "").trim();
+  return own !== "" ? own : "this field";
+}
+
+/** Fold a name for comparison: lowercased, quotes and whitespace flattened. */
+function foldName(text: string): string {
+  return text.replace(/[\u201c\u201d"]/g, '"').replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+/** The option a person would choose for this value: exact, then the Create wording. */
+function chooseOption(texts: string[], value: string): string | null {
+  const wanted = foldName(value);
+  const exact = texts.find((text) => foldName(text) === wanted);
+  if (exact !== undefined) return exact;
+  const create = texts.find((text) => foldName(text) === foldName(`Create "${value}"`));
+  return create ?? null;
+}
+
+/** The one plain sentence a pick with nothing to choose says. */
+function noMatchSentence(step: ExecutorStep, value: string): string {
+  return `No match for “${value}” in ${fillFieldName(step)}, and no way to create it.`;
+}
+
+/**
+ * Wait until the listbox offers a settled set of options, then return their texts.
+ *
+ * Settled means the same option texts read on two polls at least `PICKER_SETTLE_MS` apart: a
+ * search-as-you-type widget filters and re-renders, and reading mid-render picks an option the next
+ * keystroke would have removed. The step's own timeout bounds the wait; whatever the list shows at
+ * the deadline is what is used.
+ */
+async function settledOptionTexts(
+  cdp: CdpTransport,
+  descriptor: string,
+  contextId: number | undefined,
+  timeoutMs: number,
+): Promise<string[]> {
+  const scope = contextId !== undefined ? { contextId } : {};
+  const deadline = Date.now() + timeoutMs;
+  let latest: string[] = [];
+  let since = 0;
+  for (;;) {
+    const read = (await evaluate(cdp, optionTextsExpression(descriptor), scope)) as
+      | string[]
+      | null
+      | undefined;
+    if (Array.isArray(read)) {
+      const same =
+        read.length === latest.length && read.every((text, index) => text === latest[index]);
+      if (!same) {
+        latest = read;
+        since = Date.now();
+      } else if (read.length > 0 && Date.now() - since >= PICKER_SETTLE_MS) {
+        return read;
+      }
+    }
+    if (Date.now() >= deadline) return latest;
+    await delay(Math.max(0, Math.min(AUTOCOMPLETE_POLL_MS, deadline - Date.now())));
+  }
+}
+
+/**
+ * Stamp the option whose text is exactly `text`, then click it through the guarded click path.
+ *
+ * The stamp is page-side and exact (not by containment), so the Create wording can never be
+ * confused with the record it would create.
+ */
+async function pickOption(
+  deps: StepRunDeps,
+  step: ExecutorStep,
+  contextId: number | undefined,
+  descriptor: string,
+  text: string,
+  fieldToken: string,
+  timeoutMs: number,
+  hooks: InputHooks,
+): Promise<void> {
+  const token = nextToken();
+  const expression = `(() => {
+    const field = ${markerExpression(fieldToken)};
+    if (field) field.setAttribute(${JSON.stringify(PICK_FIELD_MARKER)}, ${JSON.stringify(fieldToken)});
+    const box = document.getElementById(${JSON.stringify(listboxIdOf(descriptor))});
+    if (!box) return { ok: false, reason: "the listbox is no longer in the document" };
+    const fold = (value) => String(value === null || value === undefined ? "" : value)
+      .replace(/[\u201c\u201d"]/g, '"')
+      .replace(/\\s+/g, " ")
+      .trim()
+      .toLowerCase();
+    const wanted = fold(${JSON.stringify(text)});
+    const options = Array.from(box.querySelectorAll('[role="option"]'));
+    const el = options.find((option) => fold(option.textContent) === wanted) || null;
+    if (!el) return { ok: false, reason: "the option is no longer in the listbox" };
+    if (el.hasAttribute("hidden")) return { ok: false, reason: "the option is hidden" };
+    if (el.disabled === true || String(el.getAttribute("aria-disabled") || "").toLowerCase() === "true") {
+      return { ok: false, reason: "the option is disabled" };
+    }
+    const marker = ${JSON.stringify(TARGET_MARKER)};
+    for (const marked of Array.from(document.querySelectorAll("[" + marker + "]"))) {
+      marked.removeAttribute(marker);
+    }
+    el.setAttribute(marker, ${JSON.stringify(token)});
+    return { ok: true };
+  })()`;
+  const stamped = (await evaluate(
+    deps.cdp,
+    expression,
+    contextId !== undefined ? { contextId } : {},
+  )) as { ok?: boolean; reason?: string } | undefined;
+  if (stamped?.ok !== true) {
+    throw new ExecutorError(
+      `the option ${JSON.stringify(text)} for step ${step.id} could not be picked: ${stamped?.reason ?? "the page refused it"}`,
+      step.id,
+      "park",
+    );
+  }
+  await dispatchClick(deps.cdp, token, contextId, hooks, timeoutMs);
+}
+
+/**
+ * After a pick, check the box shows the chosen option's name.
+ *
+ * The box's text is deliberately NOT compared to what was typed: a picker is allowed to rewrite it
+ * into the record's own display. What must be true is that the box now carries the option that was
+ * picked. Either side may be the longer string (a widget that shows "Name <address>" and one that
+ * shows only the name), so a containment either way passes; an empty box does not.
+ */
+async function requireBoxShows(
+  deps: StepRunDeps,
+  step: ExecutorStep,
+  token: string,
+  chosen: string,
+  contextId: number | undefined,
+): Promise<void> {
+  const shown = (await evaluate(
+    deps.cdp,
+    pickedFieldTextExpression(token),
+    contextId !== undefined ? { contextId } : {},
+  )) as string | null | undefined;
+  const shownFold = foldName(shown ?? "");
+  const chosenFold = foldName(chosen.replace(/^Create\s+"/i, "").replace(/"$/, ""));
+  if (shownFold !== "" && (shownFold.includes(chosenFold) || chosenFold.includes(shownFold))) return;
+  throw new ExecutorError(
+    `Picked “${chosen}” but the box shows “${shown ?? "nothing"}”; check the row's ${fillFieldName(step)}.`,
+    step.id,
+    "park",
+  );
+}
+
 /** One read of a listbox: how many suggestions match, which they are, and which the widget has active. */
 interface SuggestionPoll {
   ok?: boolean;
@@ -685,7 +907,16 @@ async function completeAutocomplete(
   const scope = contextId !== undefined ? { contextId } : {};
   const listbox = await resolveListboxDescriptor(deps.cdp, token, contextId);
   if (!listbox.ok) {
-    if (listbox.kind === "no_listbox") return;
+    if (listbox.kind === "no_listbox") {
+      // The widget never opened a popup. When the box still holds what was typed, the fill stands;
+      // when a picker rewrote it and offers nothing to pick, the row parks rather than guessing.
+      const shown = (await evaluate(deps.cdp, fieldTextExpression(token), scope)) as
+        | string
+        | null
+        | undefined;
+      if (shown === null || shown === undefined || foldName(shown) === foldName(typed)) return;
+      throw new ExecutorError(noMatchSentence(step, typed), step.id, "park");
+    }
     throw new ExecutorError(
       `the autocomplete step ${step.id} has a listbox it cannot use for the value ${JSON.stringify(
         typed,
@@ -693,6 +924,17 @@ async function completeAutocomplete(
       step.id,
       "park",
     );
+  }
+
+  // PL-110: a picker rewrites the box while it searches, so the option list is not read the instant
+  // the typing stops. Wait for it to settle (the same options for PICKER_SETTLE_MS), then choose the
+  // way a person would: an existing record whose name is the value, else the Create option.
+  const settled = await settledOptionTexts(deps.cdp, listbox.descriptor, contextId, timeoutMs);
+  const chosen = chooseOption(settled, typed);
+  if (chosen !== null) {
+    await pickOption(deps, step, contextId, listbox.descriptor, chosen, token, timeoutMs, hooks);
+    await requireBoxShows(deps, step, token, chosen, contextId);
+    return;
   }
 
   // The popup opens (and filters) asynchronously after the last keystroke, so read it again on a
@@ -715,13 +957,8 @@ async function completeAutocomplete(
 
   const matches = found.options ?? [];
   if (matches.length === 0) {
-    throw new ExecutorError(
-      `no suggestion contains ${JSON.stringify(
-        typed,
-      )} in the listbox of step ${step.id}; the fill is refused rather than submitted half-written`,
-      step.id,
-      "park",
-    );
+    // PL-110: no exact record, no Create option, and nothing that even contains the value.
+    throw new ExecutorError(noMatchSentence(step, typed), step.id, "park");
   }
   if (matches.length > 1) {
     throw new ExecutorError(
@@ -860,14 +1097,18 @@ export async function performStep(
         "park",
       );
     }
+    // PL-110: a box that searches as you type is a picker. It is one the recorder marked (a fill
+    // followed by a click on an option) or one the page shows by its own role/aria hints.
+    const picker = step.autocomplete === true || (await isPickerField(deps.cdp, token, contextId));
     await dispatchFill(deps.cdp, token, text, {
       clearFirst: step.clear_first,
       contextId,
       hooks,
+      tolerateRewrite: picker,
     });
-    // A fill the recorder witnessed as an autocomplete is not finished until its suggestion is
-    // accepted; an ordinary fill is byte-identical to before — no listbox read, no poll, no click.
-    if (step.autocomplete === true) {
+    // A pick is not finished until its option is chosen; an ordinary fill is byte-identical to
+    // before — no listbox read, no poll, no click.
+    if (picker) {
       await completeAutocomplete(deps, step, contextId, token, text, stepTimeoutMs(step, deps), hooks);
     }
     return { id: step.id, action: step.action, outcome: "done", rung: result.rung, by: result.by };

@@ -265,12 +265,22 @@ export async function dispatchPress(
  * Tab — and the value is read back afterwards, so a fill that did not stick is
  * a failure rather than a reported success. A password field is refused, not
  * typed into.
+ *
+ * PL-110: `tolerateRewrite` is for a box that searches as you type. Such a picker rewrites its own
+ * text while it searches, so the read-back is not a fair test of whether the typing landed; the
+ * caller then lets the listbox settle and picks the option a person would. A field the page leaves
+ * empty is still a failed fill, because nothing was typed into it.
  */
 export async function dispatchFill(
   cdp: CdpTransport,
   token: string,
   value: string,
-  options: { clearFirst?: boolean; contextId?: number; hooks?: InputHooks } = {},
+  options: {
+    clearFirst?: boolean;
+    contextId?: number;
+    hooks?: InputHooks;
+    tolerateRewrite?: boolean;
+  } = {},
 ): Promise<void> {
   const clearFirst = options.clearFirst !== false;
   const gate = inputGate(options.hooks);
@@ -302,6 +312,9 @@ export async function dispatchFill(
     actual.value === expected ||
     (actual.oneLine && actual.value === expected.replace(/\n/g, ""));
   if (!kept) {
+    // PL-110: a picker rewrites its own text as it searches. The typing did land when the box holds
+    // anything at all; an empty box is a failed fill whatever the reason.
+    if (options.tolerateRewrite === true && actual.value.trim() !== "") return;
     throw new ExecutorError(
       `the fill did not stick: the recipe typed ${JSON.stringify(
         value,

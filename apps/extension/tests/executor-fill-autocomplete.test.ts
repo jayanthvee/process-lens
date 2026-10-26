@@ -230,7 +230,10 @@ describe("a witnessed fill whose suggestion is missing", () => {
 
     expect(error).toBeInstanceOf(ExecutorError);
     expect((error as ExecutorError).disposition).toBe("park");
-    expect((error as ExecutorError).message).toContain('no suggestion contains "zzz"');
+    // PL-110: one plain sentence, naming the value and the field.
+    expect((error as ExecutorError).message).toBe(
+      "No match for \u201czzz\u201d in this field, and no way to create it.",
+    );
     expect(mouseTypes(fake)).toHaveLength(0);
     expect(enterKeys(fake)).toHaveLength(0);
   });
@@ -291,12 +294,14 @@ describe("a witnessed fill whose suggestion is missing", () => {
   });
 });
 
-describe("a fill without the autocomplete witness", () => {
-  it("resolves no listbox, polls nothing, and sends no extra input", async () => {
+describe("a fill that is not a picker", () => {
+  it("polls nothing and sends no extra input", async () => {
     withLayout();
-    document.body.innerHTML = comboboxHtml(
-      `<ul id="dd" role="listbox"><li id="opt-1" role="option">ann@example.com</li></ul>`,
-    );
+    // A plain text box. A listbox elsewhere on the page does not make this box a picker (PL-110):
+    // only the field's own role/aria hints, or a witnessed option click, do.
+    document.body.innerHTML =
+      `<input id="to">` +
+      `<ul id="dd" role="listbox"><li id="opt-1" role="option">ann@example.com</li></ul>`;
     const fake = fakeCdp(undefined, { simulateInput: true });
 
     const report = await performStep(fillStep(), { row: { email: "ann" } }, undefined, {
@@ -304,12 +309,12 @@ describe("a fill without the autocomplete witness", () => {
     });
 
     expect(report.outcome).toBe("done");
-    // The plain fill's own three reads: resolve the field, prepare it, read it back. Nothing else.
+    // The picker probe runs (it is how the field is known not to be one); nothing else does.
     const evaluates = fake.callsTo("Runtime.evaluate").map((call) => String(call.params["expression"]));
-    expect(evaluates).toHaveLength(3);
-    // The autocomplete probe is the thing that must not run — not the substring "listbox", which
-    // the ladder's own source mentions in prose.
     expect(evaluates.some((expression) => expression.includes("plSuggestionMatches"))).toBe(false);
+    expect(
+      evaluates.some((expression) => expression.includes("aria-autocomplete")),
+    ).toBe(true);
     // The only key events are the Backspace pair that clears the field.
     expect(keyEvents(fake).map((params) => params["key"])).toEqual(["Backspace", "Backspace"]);
     expect(mouseTypes(fake)).toHaveLength(0);

@@ -165,7 +165,32 @@ export class RecorderSession {
     if (this.stored.length > this.maxEvents) {
       this.stored.splice(0, this.stored.length - this.maxEvents);
     }
+    // PL-110: a fill followed by a click on an option is a pick, not a plain fill — the box
+    // searched as the person typed and they took a suggestion. Marking the fill lets the replay
+    // wait for the list and choose the option instead of refusing a box that rewrote itself.
+    if (this.stepIsOption(event.step)) this.markNewestFillAsPick();
     return event;
+  }
+
+  /** Whether a step's own ladder names a suggestion option. */
+  private stepIsOption(step: RecordedEvent["step"]): boolean {
+    for (const rung of step?.targets ?? []) {
+      if (rung.by === "role" && (rung as { role?: string }).role?.toLowerCase() === "option") {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** Mark the newest fill as a pick, once. It is the fill the option belongs to. */
+  private markNewestFillAsPick(): void {
+    for (let index = this.stored.length - 1; index >= 0; index -= 1) {
+      const event = this.stored[index]!;
+      if (event.step?.action !== "fill") continue;
+      if (event.autocomplete === true) return;
+      this.stored[index] = { ...event, autocomplete: true };
+      return;
+    }
   }
 
   /** Record a navigation nobody's click caused. It has no step: it moved the page, nothing acted. */

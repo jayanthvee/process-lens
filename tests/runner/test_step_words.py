@@ -118,3 +118,20 @@ def test_a_recorders_numbered_column_is_named_as_its_field() -> None:
     sentence = describe_step_failure(step, {"product_2": "Desk Lamp"}, {}, COVERED)
 
     assert sentence == "“Desk Lamp” isn't in the Product list"
+
+
+# PL-110: a picker that had nothing to choose already says it in plain words.
+def test_a_picker_with_no_match_keeps_its_own_sentence() -> None:
+    error = "No match for “Priya Ramen” in Salesperson, and no way to create it."
+
+    sentence = describe_step_failure(SALESPERSON_FILL, ROW, {}, error)
+
+    assert sentence == error
+
+
+def test_a_pick_that_did_not_reach_the_box_keeps_its_own_sentence() -> None:
+    error = "Picked “Priya Ramen” but the box shows “nothing”; check the row's Salesperson."
+
+    sentence = describe_step_failure(SALESPERSON_FILL, ROW, {}, error)
+
+    assert sentence == error

@@ -26,6 +26,9 @@ from .templates import TemplateError, render
 # extension composes them from a locator's own error -- so each phrase is a signal, not a grammar.
 _EMPTY_FILL = "resolved to an empty value"
 _DID_NOT_STICK = "did not stick"
+# PL-110: the extension's own plain sentences for a picker. They already name the value and the
+# field, so they are shown as written rather than wrapped in "Step … didn't finish".
+_ALREADY_PLAIN = ("no match for ", "no way to create it", "but the box shows")
 _NOT_CLICKABLE = ("not clickable", "covered by", "is covered")
 _NOT_FOUND = ("no rung matched", "could not be resolved", "not found")
 
@@ -63,6 +66,9 @@ def describe_step_failure(
     if action == "fill":
         if _EMPTY_FILL in lowered:
             return _fit(f"No {_column_phrase(step)} in this row")
+        # PL-110: a picker's own sentence is already written for a person.
+        if _mentions(lowered, _ALREADY_PLAIN):
+            return _fit(text)
         if _DID_NOT_STICK in lowered:
             column = _column_phrase(step)
             return _fit(f"The page changed the {column} as it was typed; check the row's {column}")
