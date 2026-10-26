@@ -19,6 +19,7 @@ import {
   PARK_WHEN_NOTHING_FOUND,
   recordedValues,
   recordedWarnings,
+  SAVE_ANYWAY,
   searchDetected,
   SKIP_IF_THERE,
   type FormStorage,
@@ -1151,5 +1152,89 @@ describe("the team access code on compile and save (PL-086)", () => {
     expect(seen[0]?.["authorization"]).toBe("Bearer c");
     expect(seen[1]?.["authorization"]).toBe("Bearer c");
     expect(seen[2]).not.toHaveProperty("authorization");
+  });
+});
+
+describe("a record key picked from a list (PL-101)", () => {
+  const KEY_WARNING =
+    "Salesperson is picked from a list, so many rows can share it. ProcessLens does each key once, ever: a later row with the same salesperson would be skipped. Pick a column that is different on every row, like an email or a reference.";
+
+  /** Typed search, the suggestion picked from the list, Save. */
+  function listKeyRecording(): RecordedEvent[] {
+    return [
+      fillEvent(1, "fill-1", "Salesperson", "Priya"),
+      {
+        seq: 2,
+        at: STAMP,
+        kind: "click",
+        url: PAGE,
+        step: {
+          id: "click-1",
+          action: "click",
+          name: "Click Priya Raman",
+          targets: [{ by: "role", role: "option", name: "Priya Raman" }],
+        },
+      },
+      clickEvent(3, "click-2", "Save"),
+    ];
+  }
+
+  it("warns before saving and Change the key takes the person back to the picker", async () => {
+    const { fetchImpl, calls } = fakeFetch({
+      recipe: { id: "new-lead", steps: [] },
+      warnings: [KEY_WARNING],
+      key_warning: KEY_WARNING,
+    });
+    const storage = fakeStorage();
+    const form = mount(fetchImpl, storage);
+
+    form.refresh(listKeyRecording());
+    const key = control<HTMLSelectElement>("make-key");
+    key.value = "salesperson";
+    await form.submit();
+
+    // The warning comes before the save: nothing is stored until the person decides.
+    expect(calls.map((call) => call.url)).toEqual([
+      "http://127.0.0.1:8000/api/v1/recipes/compile",
+    ]);
+    expect(storage.writes).toHaveLength(0);
+    const warning = control("make-key-warning");
+    expect(warning.hidden).toBe(false);
+    expect(control("make-key-warning-text").textContent).toBe(KEY_WARNING);
+    // Saving anyway stays possible, and the button now says so.
+    expect(control<HTMLButtonElement>("make-go").textContent).toContain(SAVE_ANYWAY);
+
+    control<HTMLButtonElement>("make-change-key").click();
+
+    expect(document.activeElement).toBe(key);
+    expect(warning.hidden).toBe(true);
+    expect(control<HTMLButtonElement>("make-go").textContent).toContain("Save as task");
+  });
+
+  it("saves anyway when the same key is submitted again", async () => {
+    const recipe = { id: "new-lead", steps: [] };
+    const { fetchImpl, calls } = fakeFetch(
+      { recipe, warnings: [KEY_WARNING], key_warning: KEY_WARNING },
+      {},
+      { body: { workflow_id: "wf-abc123" } },
+    );
+    const storage = fakeStorage();
+    const form = mount(fetchImpl, storage);
+
+    form.refresh(listKeyRecording());
+    control<HTMLSelectElement>("make-key").value = "salesperson";
+
+    // First submit shows the warning and stops; the next one is the person saying "save anyway".
+    await form.submit();
+    await form.submit();
+
+    expect(calls.map((call) => call.url)).toEqual([
+      "http://127.0.0.1:8000/api/v1/recipes/compile",
+      "http://127.0.0.1:8000/api/v1/recipes/compile",
+      "http://127.0.0.1:8000/api/v1/tasks",
+    ]);
+    expect(storage.writes).toHaveLength(1);
+    expect(control("make-result").textContent).toContain("is ready");
+    expect(control("make-key-warning").hidden).toBe(true);
   });
 });

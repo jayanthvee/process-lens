@@ -38,6 +38,13 @@ export const SAVING_NOTE = "Turning your recording into a task…";
 const SAVE_TASK_PATH = "/api/v1/tasks";
 /** The saved line's button text: the task's page opens in a real tab (PL-033 requirement 2). */
 export const SAVED_OPEN = "Open in ProcessLens";
+/**
+ * The primary button's words once a key warning is shown (PL-101): the warning never blocks the
+ * save, and this is how the person says they meant the key.
+ */
+export const SAVE_ANYWAY = "Save anyway";
+/** The primary button's usual words, restored whenever the warning goes away. */
+const SAVE_AS_TASK = "Save as task";
 /** The prefix a failed save shows. The frozen contract needs "Could not"; this says more. */
 export const SAVE_TASK_REFUSAL = "Could not save the task";
 /** Shown under the duplicate checkbox when the recording holds no search at all: no fill of a
@@ -94,6 +101,8 @@ export type CompileOutcome =
       warnings: string[];
       /** PL-077: `"update"`, `"create"`, or null when the recording holds no search. */
       searchKind: string | null;
+      /** PL-101: why this record key may be shared by many rows, or null when it is safe. */
+      keyWarning: string | null;
     }
   | { ok: false; problems: string[] };
 
@@ -581,6 +590,7 @@ export async function compileRecording(
     recipe?: unknown;
     warnings?: unknown;
     search_kind?: unknown;
+    key_warning?: unknown;
   };
   const recipe = payload.recipe;
   if (!recipe || typeof recipe !== "object") {
@@ -599,7 +609,18 @@ export async function compileRecording(
     typeof payload.search_kind === "string" && payload.search_kind.length > 0
       ? payload.search_kind
       : null;
-  return { ok: true, recipe: recipe as Record<string, unknown>, warnings, searchKind };
+  // PL-101: the compiler says when the chosen key is a value picked from a list.
+  const keyWarning =
+    typeof payload.key_warning === "string" && payload.key_warning.trim().length > 0
+      ? payload.key_warning
+      : null;
+  return {
+    ok: true,
+    recipe: recipe as Record<string, unknown>,
+    warnings,
+    searchKind,
+    keyWarning,
+  };
 }
 
 /**
@@ -733,16 +754,42 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
   const goEl = control<HTMLButtonElement>(deps.root, scope, "make-go");
   const resultEl = control<HTMLParagraphElement>(deps.root, scope, "make-result");
   const warningsEl = control<HTMLParagraphElement>(deps.root, scope, "make-warnings");
+  // PL-101: the key warning sits above the save result, with the button back to the key picker.
+  const keyWarningEl = control<HTMLElement>(deps.root, scope, "make-key-warning");
+  const keyWarningTextEl = control<HTMLParagraphElement>(
+    deps.root,
+    scope,
+    "make-key-warning-text",
+  );
+  const changeKeyEl = control<HTMLButtonElement>(deps.root, scope, "make-change-key");
   // The two plain sentences under the save result; a page without the element (an older markup)
   // simply shows none.
   const plainEl = deps.root.querySelector<HTMLParagraphElement>("#make-plain");
 
   let events: RecordedEvent[] = [];
   let busy = false;
+  // PL-101: the key whose warning has been shown. Submitting the same key again is the person
+  // choosing to save anyway; changing the key clears it so the new choice is judged afresh.
+  let warnedKey: string | null = null;
 
   function notice(message: string): void {
     resultEl.textContent = message;
     deps.onNotice?.(message);
+  }
+
+  /** Put the key warning away and return the primary button to its usual words. */
+  function clearKeyWarning(): void {
+    warnedKey = null;
+    keyWarningEl.hidden = true;
+    keyWarningTextEl.textContent = "";
+    goEl.textContent = SAVE_AS_TASK;
+  }
+
+  /** Show why the chosen key is risky, and name the save-anyway path on the primary button. */
+  function showKeyWarning(warning: string): void {
+    keyWarningEl.hidden = false;
+    keyWarningTextEl.textContent = warning;
+    goEl.textContent = SAVE_ANYWAY;
   }
 
   /** The button follows the recording, the busy flag, and whether a key is chosen. */
@@ -808,12 +855,20 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
   }
 
   // A key the person picks re-evaluates the park ticks, the duplicate check, the plain notes and
-  // the button.
+  // the button. A new key is a new decision, so an earlier key warning no longer applies.
   keyEl.addEventListener("change", () => {
+    clearKeyWarning();
     syncGo();
     syncDuplicate();
     renderParkFields();
     renderPlainNotes();
+  });
+
+  // "Change the key" is the warning's own way back: the picker takes focus and the warning goes
+  // away until the next save attempt judges the key that is chosen then.
+  changeKeyEl.addEventListener("click", () => {
+    clearKeyWarning();
+    keyEl.focus();
   });
 
   /**
@@ -862,6 +917,7 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
 
   function refresh(next: RecordedEvent[]): void {
     events = Array.isArray(next) ? next : [];
+    clearKeyWarning();
     // A recording that has not been compiled is not yet a shape: until the compiler says
     // otherwise, the rule is worded as the create's (PL-077).
     applySearchKind(null);
@@ -955,6 +1011,20 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
         showProblems(outcome.problems);
         return;
       }
+      // PL-101: a key picked from a list is shared by many rows by its nature. Show the compiler's
+      // sentence before saving, so the person can change the key; the same button, pressed again,
+      // saves anyway.
+      const key = keyEl.value;
+      if (outcome.keyWarning !== null) {
+        if (warnedKey !== key) {
+          warnedKey = key;
+          showKeyWarning(outcome.keyWarning);
+          notice("");
+          return;
+        }
+      } else {
+        clearKeyWarning();
+      }
       // The compiler decides the shape; the rule's own sentence follows it (PL-077).
       applySearchKind(outcome.searchKind);
       // The run controls read these two keys, and the row is the sample row the route compiled.
@@ -970,6 +1040,9 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
         return;
       }
       showSaved(name, saved.workflowId);
+      // The task is saved; the warning has done its job and its button now points at a task that
+      // already exists.
+      clearKeyWarning();
       // The recorder's caveats come first: they describe the recording itself, and the
       // route's warnings describe the task the compiler wrote from it. Both are for support
       // now; the person reads the save result and the two plain notes (PL-033 requirement 3).

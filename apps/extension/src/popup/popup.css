@@ -272,6 +272,15 @@ body {
 /* The problems the compile reported, one per line, in the needs-your-help colour. */
 .panel__note--warning { color: var(--help); }
 
+/* PL-101: the record-key warning, with the one button that takes the person back to the key. */
+.panel__warning {
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+}
+
+.panel__warning[hidden] { display: none; }
+
 .hint {
   margin: 0;
   color: var(--muted);

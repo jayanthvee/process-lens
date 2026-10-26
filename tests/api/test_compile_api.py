@@ -85,9 +85,11 @@ def test_a_recorded_demonstration_compiles_to_a_problem_free_recipe(
 
     assert response.status_code == 200, response.text
     body = response.json()
-    assert set(body) == {"recipe", "warnings", "search_kind"}
+    assert set(body) == {"recipe", "warnings", "search_kind", "key_warning"}
     # No search in this demonstration, so there is no searched shape to report.
     assert body["search_kind"] is None
+    # The key is a typed email address, so it is safe to do once and never again.
+    assert body["key_warning"] is None
     assert recipe_problems(body["recipe"]) == []
 
 
@@ -284,3 +286,51 @@ def test_the_route_says_which_searched_shape_it_compiled(
     # An update parks a row whose search found nothing; it never skips one it found.
     assert branch["when"]["element_absent"] is not None
     assert branch["then"][0]["outcome"] == "parked"
+
+
+# ------------------------------------------------------------------ PL-101
+
+
+def test_a_record_key_picked_from_a_list_is_warned_about(client: TestClient) -> None:
+    """The compile route carries the warning the popup shows before the task is saved."""
+    salesperson = [{"by": "role", "role": "combobox", "name": "Salesperson"}]
+    option = [{"by": "role", "role": "option", "name": "Priya Raman"}]
+    recording = [
+        action_event(1, "fill", "fill", salesperson, value="Priya", name="Fill Salesperson"),
+        action_event(2, "click", "click", option, name="Click Priya Raman"),
+        action_event(
+            3,
+            "click",
+            "click",
+            SAVE_TARGETS,
+            name="Click Save",
+            observation={"text_visible": "Record created"},
+        ),
+    ]
+
+    response = client.post(
+        "/api/v1/recipes/compile",
+        json=request_body(
+            recording,
+            sample_row={
+                "email": "ravi@example.com",
+                "salesperson": "Priya",
+                "salesperson_2": "Priya Raman",
+            },
+            record_key_column="salesperson_2",
+            commit_step_ids=["click-3"],
+        ),
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["key_warning"].startswith("Salesperson is picked from a list")
+    assert body["key_warning"] in body["warnings"]
+
+
+def test_a_typed_record_key_has_no_key_warning(client: TestClient) -> None:
+    """A key that the person typed, with no list picked, is the safe case."""
+    response = client.post("/api/v1/recipes/compile", json=request_body(a_demonstration()))
+
+    assert response.status_code == 200, response.text
+    assert response.json()["key_warning"] is None

@@ -90,6 +90,87 @@ class CompileResult:
     # its rule. ``"update"`` is a find-then-update (the search finds the record to change),
     # ``"create"`` is everything else, and ``None`` means the recording holds no search at all.
     search_kind: str | None = None
+    # PL-101: the sentence a builder must read when the record key is a value picked from a list.
+    # Such a key is shared by many rows by its nature, and ProcessLens does each key once, ever.
+    key_warning: str | None = None
+
+
+# PL-101: a `{{row.<column>}}` reference inside a template, without its filters.
+_ROW_COLUMN = re.compile(r"\{\{\s*row\.([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def _row_columns(text: Any) -> list[str]:
+    """The input columns a template mentions, in the order they appear."""
+    if not isinstance(text, str):
+        return []
+    return _ROW_COLUMN.findall(text)
+
+
+def _key_column(options: CompileOptions) -> str | None:
+    """The column the record key is built from (PL-101).
+
+    The caller may name it directly, or pass a custom ``record_key`` whose first row reference is
+    the column that carries the key. Anything else (a constant key, a template with no row) has no
+    column to judge.
+    """
+    if options.record_key_column:
+        return options.record_key_column
+    if options.record_key:
+        columns = _row_columns(options.record_key)
+        if columns:
+            return columns[0]
+    return None
+
+
+def _list_fed_columns(candidates: list[Candidate]) -> set[str]:
+    """The input columns that feed a pick-from-a-list control (PL-101).
+
+    Two signals, both already in the recording: a column templated into a ``role: option`` rung
+    (the suggestion the person picked was the row's value), and the column typed into the field
+    immediately before that option was clicked (the text that searched the list). A plain typed
+    value that never opens a list is not one of these.
+    """
+    columns: set[str] = set()
+    for index, candidate in enumerate(candidates):
+        option_rungs = [
+            rung
+            for rung in candidate.targets or []
+            if str(rung.get("role", "")).lower() == "option"
+        ]
+        if not option_rungs:
+            continue
+        for rung in option_rungs:
+            for field_name in ("name", "text", "value"):
+                columns.update(_row_columns(rung.get(field_name)))
+        if candidate.action != "click" or index == 0:
+            continue
+        previous = candidates[index - 1]
+        if previous.action != "fill" or not isinstance(previous.value, dict):
+            continue
+        if previous.value.get("kind") != "input":
+            continue
+        column = previous.value.get("column")
+        if isinstance(column, str) and column:
+            columns.add(column)
+    return columns
+
+
+def _column_label(column: str) -> str:
+    """A column's words for a sentence: `salesperson_2` becomes `Salesperson`."""
+    base = re.sub(r"_\d+$", "", column).replace("_", " ").strip()
+    if not base:
+        return column
+    return base[0].upper() + base[1:]
+
+
+def _key_from_list_warning(column: str) -> str:
+    """The sentence that warns a record key is picked from a list (PL-101)."""
+    label = _column_label(column)
+    return (
+        f"{label} is picked from a list, so many rows can share it. ProcessLens does each key "
+        f"once, ever: a later row with the same {label.lower()} would be skipped. Pick a column "
+        "that is different on every row, like an email or a reference."
+    )
 
 
 def _next_actionable_url(events: list[Event], index: int) -> str | None:
@@ -1503,6 +1584,14 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
 
     parameterized = _expand_create_option(parameterized)
 
+    # PL-101: a record key that came from a list is shared by many rows by its nature, so a later
+    # row with the same value would be skipped as already done. Say so before the task is saved.
+    key_warning: str | None = None
+    key_column = _key_column(options)
+    if key_column is not None and key_column in _list_fed_columns(parameterized):
+        key_warning = _key_from_list_warning(key_column)
+        warnings.append(key_warning)
+
     # PL-017: a search for a record's value is a fill followed by the step that runs it. A search
     # button submits its own form, so the recorder collapses it into a commit; it changes nothing in
     # the destination, so it is demoted before any assertion is required of it, and the branch that
@@ -1661,4 +1750,6 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
     }
 
     assert_valid_recipe(recipe)
-    return CompileResult(recipe=recipe, warnings=warnings, search_kind=search_kind)
+    return CompileResult(
+        recipe=recipe, warnings=warnings, search_kind=search_kind, key_warning=key_warning
+    )

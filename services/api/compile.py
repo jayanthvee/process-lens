@@ -58,6 +58,9 @@ class CompileResponse(BaseModel):
     # The Make recipe form words its search rule from this, so the person reads the rule the
     # compiler actually applied.
     search_kind: str | None = None
+    # PL-101: the sentence warning that the record key is picked from a list, or null when the key
+    # is a value that differs on every row. The popup shows it before the task is saved.
+    key_warning: str | None = None
 
 
 @router.post("/recipes/compile", response_model=CompileResponse)
@@ -89,5 +92,8 @@ def compile_recipe(request: CompileRequest) -> CompileResponse:
             detail={"message": message, "problems": list(exc.problems) or [message]},
         ) from exc
     return CompileResponse(
-        recipe=result.recipe, warnings=result.warnings, search_kind=result.search_kind
+        recipe=result.recipe,
+        warnings=result.warnings,
+        search_kind=result.search_kind,
+        key_warning=result.key_warning,
     )
