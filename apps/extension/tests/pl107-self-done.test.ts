@@ -40,14 +40,20 @@ function step(overrides: Partial<ExecutorStep> = {}): ExecutorStep {
 }
 
 describe("a click whose target the site already handled", () => {
-  it("is done, with no press, when a busy target's own assertion already holds", async () => {
-    document.body.innerHTML =
-      "<button id='continue' aria-busy='true'>Continuing</button>" +
-      "<p role='status'>You are signed in</p>";
+  it("is done, with no press, when a busy target's confirmation appears while waiting", async () => {
+    // Legitimate case: nothing proves it before the step; the page adds the confirmation while the
+    // button is busy, which is the site finishing the work the click would have started.
+    document.body.innerHTML = "<button id='continue' aria-busy='true'>Continuing</button>";
     const { cdp, callsTo } = fakeCdp();
+    setTimeout(() => {
+      const status = document.createElement("p");
+      status.setAttribute("role", "status");
+      status.textContent = "You are signed in";
+      document.body.appendChild(status);
+    }, 20);
 
     const report = await performStep(
-      step({ assert_after: { text_visible: "You are signed in" } }),
+      step({ assert_after: { text_visible: "You are signed in", timeout_ms: 400 } }),
       { row: {} },
       undefined,
       { ...deps(), cdp },
@@ -55,17 +61,21 @@ describe("a click whose target the site already handled", () => {
 
     expect(report.outcome).toBe("done");
     expect(report.detail).toBe("the page moved on by itself");
+    expect(report.assertionAlreadySatisfied).toBe(true);
     expect(callsTo("Input.dispatchMouseEvent")).toHaveLength(0);
   });
 
-  it("is done when a disabled target's assertion already holds", async () => {
-    document.body.innerHTML =
-      "<button id='continue' disabled>Continue</button>" +
-      "<p role='status'>Code accepted</p>";
+  it("is done when a disabled target's confirmation appears while waiting", async () => {
+    document.body.innerHTML = "<button id='continue' disabled>Continue</button>";
     const { cdp, callsTo } = fakeCdp();
+    setTimeout(() => {
+      const status = document.createElement("p");
+      status.textContent = "Code accepted";
+      document.body.appendChild(status);
+    }, 20);
 
     const report = await performStep(
-      step({ assert_after: { text_visible: "Code accepted" } }),
+      step({ assert_after: { text_visible: "Code accepted", timeout_ms: 400 } }),
       { row: {} },
       undefined,
       { ...deps(), cdp },
@@ -83,6 +93,52 @@ describe("a click whose target the site already handled", () => {
     await expect(
       performStep(step(), { row: {} }, undefined, { ...deps(), cdp }),
     ).rejects.toThrow(/could not be resolved/);
+    expect(callsTo("Input.dispatchMouseEvent")).toHaveLength(0);
+  });
+
+  it("waits on a busy Save when the confirmation is ALREADY on screen, never skipping it", async () => {
+    // The review's blocking case: a confirmation left from the previous row makes text_visible true
+    // before this step. Because it was true before, the probe must never claim the click is done.
+    document.body.innerHTML =
+      "<button id='continue' aria-busy='true'>Save</button>" +
+      "<p role='status'>Saved</p>";
+    const { cdp, callsTo } = fakeCdp();
+
+    await expect(
+      performStep(
+        step({ timeout_ms: 200, assert_after: { text_visible: "Saved", timeout_ms: 200 } }),
+        { row: {} },
+        undefined,
+        { ...deps(), cdp },
+      ),
+    ).rejects.toThrow(/could not be resolved/);
+    // It waited on the busy control instead of treating the stale confirmation as success.
+    expect(callsTo("Input.dispatchMouseEvent")).toHaveLength(0);
+  });
+
+  it("counts a busy Save as done when the page adds the confirmation while waiting", async () => {
+    // A count condition: the baseline is taken before the step, so an increase after it is real
+    // evidence the page moved on. The button stays busy, so there is nothing to click.
+    document.body.innerHTML = "<button id='continue' aria-busy='true'>Save</button>";
+    const { cdp, callsTo } = fakeCdp();
+    setTimeout(() => {
+      const saved = document.createElement("p");
+      saved.textContent = "Saved";
+      document.body.appendChild(saved);
+    }, 20);
+
+    const report = await performStep(
+      step({
+        timeout_ms: 800,
+        assert_after: { text_count_increases: "Saved", timeout_ms: 400 },
+      }),
+      { row: {} },
+      undefined,
+      { ...deps(), cdp },
+    );
+
+    expect(report.outcome).toBe("done");
+    expect(report.detail).toBe("the page moved on by itself");
     expect(callsTo("Input.dispatchMouseEvent")).toHaveLength(0);
   });
 });

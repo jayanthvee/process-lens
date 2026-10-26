@@ -62,6 +62,12 @@ export interface StepReport {
   by?: string;
   detail?: string;
   /**
+   * PL-107 item 11: the step's own `assert_after` was proven false before the step and true after
+   * it, so the caller must not poll it again. A count condition forgets its baseline on a pass, and
+   * re-polling would wait for a second increase that will never come.
+   */
+  assertionAlreadySatisfied?: boolean;
+  /**
    * What the step observed beyond its own success, for the runner's ledger (PL-027). A navigate
    * puts the requests the abandon guard refused here: the guard is released by that arrival, and
    * the page that was abandoned is the only thing that could have made them.

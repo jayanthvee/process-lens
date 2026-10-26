@@ -209,7 +209,12 @@ export async function runRecipe(
       }
 
       const report = await performStep(step, context, allowedOrigins, deps);
-      await verifyCondition(deps.cdp, step, step.assert_after, deps, () => control.aborted);
+      // PL-107 item 11: a click the page already did by itself was proven against its own check
+      // before and after; polling it again would ask a count condition for a second increase that
+      // will never come.
+      if (report.assertionAlreadySatisfied !== true) {
+        await verifyCondition(deps.cdp, step, step.assert_after, deps, () => control.aborted);
+      }
       if (committing) trace.commitInFlight = false;
       reports.push(report);
       completed += 1;

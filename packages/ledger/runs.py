@@ -232,7 +232,6 @@ UPDATE runs
 SET status = 'queued',
     worker_id = NULL,
     heartbeat_at = NULL,
-    lease_epoch = 0,
     cancel_requested_at = NULL,
     pause_reason = NULL,
     finished_at = NULL
@@ -245,6 +244,10 @@ def reopen_completed_run(conn: psycopg.Connection, run_id: uuid.UUID) -> bool:
 
     Returns whether the run was ``completed`` and is now queued. A ``running``, ``paused`` or
     already re-queued run is left exactly as it is: its own worker keeps going.
+
+    ``lease_epoch`` is deliberately left alone. It is the fence (B1) and may only ever go up: a
+    worker from before the reopen that still holds an old epoch must never match again after the
+    next claim. The claim increments it.
     """
     with conn.cursor() as cur:
         cur.execute(_REOPEN_COMPLETED_RUN, {"run": run_id})
