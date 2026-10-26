@@ -124,7 +124,7 @@ const PAUSE_REASONS: Record<string, string> = {
   admin_freeze: "An admin paused all runs. Resume when an admin lets runs start again.",
   // PL-040: the reasons the runner sets that used to reach the page as "Paused: Canary failed".
   window_hidden:
-    "The ProcessLens window was hidden behind other windows, so the site stopped drawing. Press Resume and it will come to the front.",
+    "The ProcessLens window was hidden or minimized, so the site stopped drawing. Press Show it and continue.",
   executor_disconnected:
     "Chrome disconnected. Open the ProcessLens extension, press Connect, then resume.",
   canary_failed:
@@ -388,6 +388,9 @@ export function codePromptWords(heading?: string | null): string {
 
 /** The moment between pressing Continue and the work window reporting back. */
 export const ENTERING_CODE = "Entering the code…";
+
+/** PL-104: the one button for a run paused because the ProcessLens window was hidden. */
+export const SHOW_AND_CONTINUE = "Show it and continue";
 
 /** The work window could not find the code field: the person types it there and resumes. */
 export const CODE_NOT_FOUND =

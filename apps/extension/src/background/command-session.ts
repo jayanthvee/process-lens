@@ -153,6 +153,10 @@ const RECONNECT_SCHEDULE_MS = [500, 1000, 2000, 4000];
 
 /** Trim trailing slashes so a hub URL composes cleanly. */
 /** What the popup shows when a hosted ProcessLens refuses the team access code (PL-086). */
+/** PL-104: Chrome would not open the work window, so nothing was connected. */
+export const WORK_WINDOW_REFUSED =
+  "Chrome didn't let ProcessLens open its own window. Close a few Chrome windows, then press Connect again.";
+
 export const ACCESS_REFUSED =
   "ProcessLens needs the team access code. Open More and check Team access code.";
 
@@ -268,8 +272,15 @@ export class CommandSession {
     this.setState("pairing");
     const info = await this.activeTabInfo();
     if (overtaken()) return;
-    const boundTabId = (await this.deps.bindActiveTab()) ?? info.id ?? -1;
+    // PL-104: the session works in a window of its own, or not at all. Falling back to the person's
+    // own tab meant every look at the run page hid the work and the run paused or failed.
+    const boundTabId = await this.deps.bindActiveTab();
     if (overtaken()) return;
+    if (boundTabId === null) {
+      this.stopped = true;
+      this.setState("idle");
+      throw new Error(WORK_WINDOW_REFUSED);
+    }
 
     const fetchFn = (globalThis as { fetch?: typeof fetch }).fetch;
     if (typeof fetchFn !== "function") throw new Error("fetch is unavailable in this context");

@@ -5,10 +5,11 @@ import { ApprovalPanel } from "../components/ApprovalPanel";
 import { DestinationCheck } from "../components/DestinationCheck";
 import { WaitingRun } from "../components/WaitingRun";
 import { apiPost, errorText } from "../lib/api";
-import { useSessionPath } from "../lib/browser";
+import { showWorkWindow, useSessionPath } from "../lib/browser";
 import { POLL_INTERVAL_MS, useJson } from "../lib/useJson";
 import {
   RUNNING_AGAIN,
+  SHOW_AND_CONTINUE,
   CODE_NOT_FOUND,
   ENTERING_CODE,
   codePromptWords,
@@ -359,6 +360,21 @@ export function RunDetail(): JSX.Element {
           <p className="pause-reason cap-note">
             The count resets at midnight UTC. This button works again then.
           </p>
+        ) : null}
+        {detail.status === "paused" && detail.pause_reason === "window_hidden" ? (
+          // PL-104: one click brings the ProcessLens window forward and carries on, right where the
+          // reason is said.
+          <button
+            type="button"
+            className="btn run-action-show"
+            disabled={busy !== null}
+            onClick={() => {
+              showWorkWindow();
+              void act("resume");
+            }}
+          >
+            {SHOW_AND_CONTINUE}
+          </button>
         ) : null}
         {!wantsCode ? null : (
           <div className="code-prompt" role="status">
