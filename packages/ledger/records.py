@@ -19,6 +19,10 @@ from .lease import require_lease
 from .models import RecordClaim, _row
 from .runs import get_run, reopen_completed_run
 
+# The one note a requeue writes in front of a row's own reason (PL-107 item 15). Stripping it first
+# keeps a second Try again from nesting it.
+_REQUEUE_PREFIX = "Trying again — last time: "
+
 # sql-patterns.md § Claim the next record in a run. attempts is raised by the database trigger.
 # The order is the input row's row_index, not created_at: a batch's records are inserted together,
 # so created_at ties to the microsecond and the random uuid breaks the tie, which made the canary
@@ -213,9 +217,13 @@ def requeue_record(
     if run.status == "cancelled":
         raise StateConflict("This run was stopped. Start a new run to try this row again.")
 
-    # Keep why the row stopped, so the person can still see it after pressing Try again.
+    # Keep why the row stopped, so the person can still see it after pressing Try again. The
+    # prefix is added once: a row that was re-queued before already carries it (PL-107 review), and
+    # pressing Try again twice must not nest it into "Trying again — last time: Trying again …".
     previous = (record.reason or "").strip()
-    requeue_reason = f"Trying again — last time: {previous}" if previous else reason
+    while previous.startswith(_REQUEUE_PREFIX):
+        previous = previous[len(_REQUEUE_PREFIX) :].strip()
+    requeue_reason = f"{_REQUEUE_PREFIX}{previous}" if previous else reason
 
     if record.commit_attempted and destination_checked_by is None:
         with conn.cursor() as cur, guard_refusal_is_typed():

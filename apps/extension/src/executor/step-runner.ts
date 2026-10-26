@@ -948,20 +948,39 @@ export async function performStep(
   // the pre-press "the marked element is no longer in the document" is ever retried.
   const clickDeadline = Date.now() + stepTimeoutMs(step, deps);
   const condition = step.assert_after;
+  // PL-107 item 11 (review): "already done" may only be claimed when the assertion was FALSE
+  // before this step and is TRUE now. A confirmation still on screen from the previous row (a toast,
+  // a heading, a name already on the board) makes the assertion true while the button is merely
+  // slow; counting that would mark the row done without clicking it. So the answer is taken once,
+  // before any wait, and a step whose check already held is never skipped. For a count condition
+  // this first evaluation is also the baseline the later check counts against.
+  let assertHeldBefore = true;
+  if (condition) {
+    try {
+      const before = await waitForCondition(deps.cdp, condition, assertionContext(deps), {
+        timeoutMs: 0,
+        ...(contextId !== undefined ? { contextId } : {}),
+      });
+      assertHeldBefore = before.ok === true;
+    } catch {
+      // Could not read it before the step: with no proof it was false, never skip the click.
+      assertHeldBefore = true;
+    }
+  }
   for (let attempt = 0; ; attempt += 1) {
-    // PL-107 item 11: while a busy/disabled target is being waited on, a step's own assertion
-    // holding proves the page already moved on, so the click is done. A probe answers the condition
-    // once; it is passed only when the step has an assertion, so a step with none keeps today's wait.
-    const probe = condition
-      ? async (): Promise<boolean> => {
-          if (Date.now() >= clickDeadline) return false;
-          const outcome = await waitForCondition(deps.cdp, condition, assertionContext(deps), {
-            timeoutMs: 0,
-            ...(contextId !== undefined ? { contextId } : {}),
-          });
-          return outcome.ok;
-        }
-      : undefined;
+    // The probe answers the condition once. It is offered only when the assertion is one this step
+    // can newly satisfy (false before it) and the step has a deadline left to wait within.
+    const probe =
+      condition && !assertHeldBefore
+        ? async (): Promise<boolean> => {
+            if (Date.now() >= clickDeadline) return false;
+            const outcome = await waitForCondition(deps.cdp, condition, assertionContext(deps), {
+              timeoutMs: 0,
+              ...(contextId !== undefined ? { contextId } : {}),
+            });
+            return outcome.ok;
+          }
+        : undefined;
     const {
       result,
       token,
@@ -981,6 +1000,10 @@ export async function performStep(
         action: step.action,
         outcome: "done",
         detail: "the page moved on by itself",
+        // The assertion was proven false before the step and true just now, so the caller must not
+        // poll it again: a count condition forgets its baseline on a pass, and re-polling would
+        // wait for a second increase that will never come.
+        assertionAlreadySatisfied: true,
       };
     }
     if (!result.ok) {
