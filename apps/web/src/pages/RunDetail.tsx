@@ -9,7 +9,13 @@ import { useSessionPath } from "../lib/browser";
 import { POLL_INTERVAL_MS, useJson } from "../lib/useJson";
 import {
   RUNNING_AGAIN,
+  CODE_FROM_EMAIL_BUTTON,
+  CODE_FROM_EMAIL_LATER,
+  CODE_FROM_EMAIL_OFFER,
   CODE_NOT_FOUND,
+  CODE_STILL_ASKED,
+  LOOKING_IN_GMAIL,
+  codeFromEmailWords,
   ENTERING_CODE,
   codePromptWords,
   isOpenStatus,
@@ -141,6 +147,7 @@ export function RunDetail(): JSX.Element {
   const [code, setCode] = useState("");
   const [codeBusy, setCodeBusy] = useState(false);
   const [codeProblem, setCodeProblem] = useState<string | null>(null);
+  const [lookingInGmail, setLookingInGmail] = useState(false);
   // PL-041: the in-flight flag for Try all again. It is a ref because the second click of a double
   // click arrives before `batchBusy` re-renders the button off.
   const tryingAll = useRef(false);
@@ -272,14 +279,38 @@ export function RunDetail(): JSX.Element {
     try {
       const answer = (await apiPost(`/api/v1/runs/${runId}/code`, { code: value })) as {
         entered?: boolean;
+        resumed?: boolean;
       };
       if (answer?.entered !== true) setCodeProblem(CODE_NOT_FOUND);
+      // PL-102: a code that took the page on resumes the run by itself; one that did not says so.
+      else if (answer.resumed === false) setCodeProblem(CODE_STILL_ASKED);
     } catch (failure) {
       setCodeProblem(refusalWords(errorText(failure)));
     } finally {
       // The code is never kept: not in state, not on screen, not anywhere after the send.
       setCode("");
       setCodeBusy(false);
+      run.reload();
+    }
+  }
+  // PL-102: the person's yes to reading the code from their Gmail. The work window reads and types
+  // it; the code never reaches this page or the API.
+  async function readCodeFromEmail(): Promise<void> {
+    if (codeBusy) return;
+    setCodeBusy(true);
+    setLookingInGmail(true);
+    setCodeProblem(null);
+    try {
+      const answer = (await apiPost(`/api/v1/runs/${runId}/code-from-email`, {
+        remember: true,
+      })) as { entered?: boolean; reason?: string; resumed?: boolean };
+      if (answer?.entered !== true) setCodeProblem(codeFromEmailWords(String(answer?.reason ?? "")));
+      else if (answer.resumed === false) setCodeProblem(CODE_STILL_ASKED);
+    } catch (failure) {
+      setCodeProblem(refusalWords(errorText(failure)));
+    } finally {
+      setCodeBusy(false);
+      setLookingInGmail(false);
       run.reload();
     }
   }
@@ -387,7 +418,21 @@ export function RunDetail(): JSX.Element {
                 Continue
               </button>
             </form>
-            {codeBusy ? <p className="code-prompt-note">{ENTERING_CODE}</p> : null}
+            <div className="code-prompt-email">
+              <p className="code-prompt-note">{CODE_FROM_EMAIL_OFFER}</p>
+              <button
+                type="button"
+                className="btn code-prompt-from-email"
+                disabled={codeBusy}
+                onClick={() => void readCodeFromEmail()}
+              >
+                {CODE_FROM_EMAIL_BUTTON}
+              </button>
+              <p className="code-prompt-note">{CODE_FROM_EMAIL_LATER}</p>
+            </div>
+            {codeBusy ? (
+              <p className="code-prompt-note">{lookingInGmail ? LOOKING_IN_GMAIL : ENTERING_CODE}</p>
+            ) : null}
             {codeProblem === null ? null : (
               <p className="code-prompt-note code-prompt-problem">{codeProblem}</p>
             )}

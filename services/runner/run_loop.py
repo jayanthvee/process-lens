@@ -104,6 +104,9 @@ _ABANDONED_OUTCOMES = frozenset({"parked", "failed", "cancelled", "paused", "awa
 # guard: a released record's half-filled form must not autosave on the way out.
 PAGE_KEEPING_PAUSES = frozenset({"code_required"})
 
+# PL-102: the ledger's reason when a record was released because the code was read from email.
+CODE_FROM_EMAIL_REASON = "the site's sign-in code was read from email"
+
 # PL-027: the message a person reads on a step event when the abandon guard refused a request.
 BLOCKED_REQUEST_MESSAGE = "blocked an unsaved change from leaving the page"
 
@@ -1397,6 +1400,12 @@ class RunLoop:
         detail: str,
     ) -> str | None:
         """Turn one event into a record outcome and, where the ticket says so, a run pause."""
+        if kind == "code_required" and box.state in WORKING_STATES and self._code_from_email():
+            # PL-102: the code came from the person's email and the page moved on. The record is
+            # released (its attempt refunded) and claimed again, and the run carries on.
+            self._stop_record_for_event(conn, record, run, epoch, box, kind, CODE_FROM_EMAIL_REASON)
+            logger.info("run %s: the site's code was read from email", run.id)
+            return "pending"
         if kind in PAUSE_EVENTS or kind in DISCONNECT_EVENTS:
             self._stop_record_for_event(conn, record, run, epoch, box, kind, detail)
             with conn.transaction():
@@ -1417,6 +1426,23 @@ class RunLoop:
                 box.state = "parked"
                 return "parked"
         return None
+
+    def _code_from_email(self) -> bool:
+        """PL-102: ask the extension to read the site's code from email and type it.
+
+        True only when a code was typed and the code page went away. An executor that cannot read
+        email, a person who has not said yes, no single code, or a wrong code: False, and the run
+        pauses for the person as before. Nothing about the code reaches the runner.
+        """
+        ask = getattr(self.executor, "code_from_email", None)
+        if ask is None:
+            return False
+        try:
+            answer = ask()
+        except Exception:  # noqa: BLE001 -- the person can still type it; never crash the run
+            logger.warning("reading the code from email failed", exc_info=True)
+            return False
+        return bool(answer.get("entered")) and bool(answer.get("cleared"))
 
     def _stop_record_for_event(
         self,

@@ -30,6 +30,7 @@ from packages.ledger import (
     request_cancel,
     requeue_record,
     resume_run,
+    run_browser,
     set_run_status,
 )
 from services.runner.creation import CreationError, create_run, workflow_tenant
@@ -178,10 +179,24 @@ class EnterCodeRequest(BaseModel):
 
 
 class EnterCodeResult(BaseModel):
-    """What the extension did with the code: typed it, or could not find the field."""
+    """What the extension did with the code: typed it, or could not find the field.
+
+    PL-102: ``resumed`` says the code page went away and the run was resumed, so nobody has to
+    press Resume after typing a code.
+    """
 
     entered: bool
     reason: str
+    resumed: bool = False
+
+
+class CodeFromEmailRequest(BaseModel):
+    """PL-102: the person's yes to reading this site's code from their Gmail.
+
+    ``remember`` keeps the yes in their Chrome, so later runs read codes without asking.
+    """
+
+    remember: bool = True
 
 
 class RequeueRequest(BaseModel):
@@ -458,14 +473,9 @@ def cancel_run_endpoint(run_id: uuid.UUID) -> RunDetail:
     return get_run_endpoint(run_id)
 
 
-@router.post("/runs/{run_id}/code", response_model=EnterCodeResult)
-async def enter_code_endpoint(run_id: uuid.UUID, payload: EnterCodeRequest) -> EnterCodeResult:
-    """PL-068: hand a person's verification code to the paused run's work window, once.
-
-    Only a run paused waiting for a code accepts one, and only a person in that run's tenant may
-    send it. The code goes over the session's socket and nowhere else: no database write, no log
-    line, and no echo in the answer.
-    """
+def _run_waiting_for_code(run_id: uuid.UUID) -> tuple[Any, str | None]:
+    """The run, and the Chrome it is pinned to, when it is paused for a code and the person may
+    answer it: in that run's tenant. Anything else is refused before a frame is sent."""
     with connection() as conn:
         run = _fetch_run(conn, run_id)
         person = require_operator_user(conn)
@@ -476,16 +486,69 @@ async def enter_code_endpoint(run_id: uuid.UUID, payload: EnterCodeRequest) -> E
                 status_code=409,
                 detail=f"run {run_id} is {run.status}, not waiting for a verification code",
             )
+        browser_id = run_browser(conn, run_id)
+    return run, browser_id
 
-    # The run's own lease epoch: the extension refuses a command older than the newest it has seen
-    # for this run, so a code sent with a made-up epoch would be refused as stale.
-    outcome = await hub.send_enter_code(payload.code, run_id=run_id, lease_epoch=run.lease_epoch)
+
+def _answer_and_resume(run_id: uuid.UUID, outcome: dict[str, Any]) -> EnterCodeResult:
+    """PL-102: a code that was typed and took the page past the code prompt resumes the run."""
     if outcome.get("reason") == "no_extension":
         raise HTTPException(status_code=503, detail="the work window is not connected")
+    entered = bool(outcome.get("entered"))
+    resumed = False
+    if entered and outcome.get("cleared"):
+        with connection() as conn:
+            run = _fetch_run(conn, run_id)
+            try:
+                # The same gate as the Resume button: a frozen workspace stays paused.
+                require_runs_allowed(conn, run.tenant_id)
+            except HTTPException:
+                return EnterCodeResult(entered=True, reason="submitted", resumed=False)
+            resumed = resume_run(conn, run_id)
+            conn.commit()
     return EnterCodeResult(
-        entered=bool(outcome.get("entered")),
-        reason=str(outcome.get("reason") or "not_found"),
+        entered=entered, reason=str(outcome.get("reason") or "not_found"), resumed=resumed
     )
+
+
+@router.post("/runs/{run_id}/code", response_model=EnterCodeResult)
+async def enter_code_endpoint(run_id: uuid.UUID, payload: EnterCodeRequest) -> EnterCodeResult:
+    """PL-068: hand a person's verification code to the paused run's work window, once.
+
+    Only a run paused waiting for a code accepts one, and only a person in that run's tenant may
+    send it. The code goes over the session's socket and nowhere else: no database write, no log
+    line, and no echo in the answer. PL-102: when the page moves on, the run resumes by itself.
+    """
+    run, browser_id = _run_waiting_for_code(run_id)
+    # The run's own lease epoch: the extension refuses a command older than the newest it has seen
+    # for this run, so a code sent with a made-up epoch would be refused as stale.
+    outcome = await hub.send_enter_code(
+        payload.code, run_id=run_id, lease_epoch=run.lease_epoch, browser_id=browser_id
+    )
+    return _answer_and_resume(run_id, outcome)
+
+
+@router.post("/runs/{run_id}/code-from-email", response_model=EnterCodeResult)
+async def code_from_email_endpoint(
+    run_id: uuid.UUID, payload: Annotated[CodeFromEmailRequest, Body()] | None = None
+) -> EnterCodeResult:
+    """PL-102: the person said yes to reading the site's code from their Gmail.
+
+    The paused run's Chrome reads the code from the person's own inbox and types it; the code never
+    reaches this API. ``reason`` says why not, when it could not: ``none``, ``ambiguous`` or
+    ``no_gmail``.
+    """
+    body = payload or CodeFromEmailRequest()
+    run, browser_id = _run_waiting_for_code(run_id)
+    outcome = await hub.send_enter_code(
+        None,
+        run_id=run_id,
+        lease_epoch=run.lease_epoch,
+        browser_id=browser_id,
+        from_email=True,
+        remember=body.remember,
+    )
+    return _answer_and_resume(run_id, outcome)
 
 
 @router.post("/records/{record_id}/requeue", response_model=RequeueResponse)

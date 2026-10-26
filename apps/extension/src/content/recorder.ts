@@ -17,6 +17,7 @@ import {
   normalizeText,
   semanticRole,
 } from "../shared/fingerprint";
+import { scrubCodes } from "../shared/email-code";
 import { makeEvent, nextStepId, resetStepIds, type PendingEvent } from "../shared/events";
 import { installBrowserBridge, type Whoami } from "./browser-bridge";
 import {
@@ -448,6 +449,9 @@ export type RecorderHandle = (() => void) & { checkpoint: () => void };
  * collector for `send`, and a flag for `isActive`.
  */
 export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHandle {
+  // PL-102: every event leaves the page with its names scrubbed, so a code shown in the page's
+  // text (an email row in Gmail) never reaches a recording.
+  const send = (event: PendingEvent): void => hooks.send(scrubEvent(event));
   const pending = new Map<Element, string>();
   /**
    * The value each element's typing was last recorded with. A combobox reports the same entry
@@ -577,7 +581,7 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
   }
 
   function emitStep(kind: PendingEvent["kind"], step: RecordedStep, required = false): void {
-    hooks.send(stepEvent(kind, step, required));
+    send(stepEvent(kind, step, required));
   }
 
   /**
@@ -754,7 +758,7 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
       const typed = touched.has(fill.element);
       const count = typed ? (keystrokes.get(fill.element) ?? 0) : 0;
       keystrokes.delete(fill.element);
-      hooks.send(
+      send(
         annotatedStepEvent("fill", step, {
           ...(typed ? {} : { warning: PAGE_SET_VALUE_WARNING, page_set: true }),
           ...(isRequiredField(fill.element) ? { required: true } : {}),
@@ -798,7 +802,7 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
         clear_first: false,
       };
       if (field) lastFillElement = field;
-      hooks.send(
+      send(
         annotatedStepEvent("fill", step, {
           chip: true,
           autocomplete: field ? witnessedAutocomplete.has(field) : false,
@@ -811,7 +815,7 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
       // A remove control the person clicked is the step for the chip going away; a chip that
       // vanished with no click is not replayable, so it is reported rather than dropped.
       if (removedByControl.has(removed.value)) continue;
-      hooks.send(
+      send(
         annotatedStepEvent("unrecordable", null, {
           reason: "chip-removal",
           warning: UNRECORDABLE_CHIP_WARNING,
@@ -945,14 +949,14 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
 
   /** Emit a click or a submit, then watch the page for what it changed. */
   function emitAction(kind: "click" | "submit", step: RecordedStep | null, control: Element | null): void {
-    hooks.send(stepEvent(kind, step));
+    send(stepEvent(kind, step));
     actionAwaitingEvidence = true;
     beginObservation(control);
   }
 
   function emitObservation(payload: Record<string, unknown>, at: string): void {
     actionAwaitingEvidence = false;
-    hooks.send(
+    send(
       makeEvent({
         kind: OBSERVATION_KIND,
         url: at,
@@ -1279,7 +1283,7 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
     rememberEmittedFill(el, value);
     lastFillElement = el;
     lastTypedFillId.set(el, step.id);
-    hooks.send(
+    send(
       annotatedStepEvent("fill", step, {
         required: isRequiredField(el),
         keystrokes: count,
@@ -1427,7 +1431,7 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
         rememberEmittedFill(el, value);
         lastFillElement = el;
         lastTypedFillId.set(el, step.id);
-        hooks.send(annotatedStepEvent("fill", step, { keystrokes: count }));
+        send(annotatedStepEvent("fill", step, { keystrokes: count }));
         return;
       }
       lastEmitted.set(el, value);
@@ -1617,4 +1621,23 @@ if (typeof window !== "undefined" && bridgeExt?.runtime?.id) {
       | undefined;
     return answer ?? {};
   });
+}
+
+/** The event with every name a person reads, and every text rung, cut free of one-time codes. */
+function scrubEvent(event: PendingEvent): PendingEvent {
+  const step = event.step as (Record<string, unknown> & { targets?: unknown[] }) | null;
+  if (!step) return event;
+  const clean: Record<string, unknown> = { ...step };
+  if (typeof step["name"] === "string") clean["name"] = scrubCodes(step["name"]);
+  if (Array.isArray(step.targets)) {
+    clean["targets"] = step.targets.map((target) => {
+      if (target === null || typeof target !== "object") return target;
+      const rung = { ...(target as Record<string, unknown>) };
+      for (const key of ["name", "value", "text"]) {
+        if (typeof rung[key] === "string") rung[key] = scrubCodes(rung[key] as string);
+      }
+      return rung;
+    });
+  }
+  return { ...event, step: clean as unknown as PendingEvent["step"] };
 }

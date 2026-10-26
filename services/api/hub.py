@@ -342,6 +342,9 @@ async def _read_loop(session: Session, peer: Peer) -> None:
 _pending_codes: dict[str, asyncio.Future[dict[str, Any]]] = {}
 
 ENTER_CODE_TIMEOUT_SECONDS = 15.0
+# PL-102: reading the code from email waits for the email to arrive, then types it.
+CODE_LOOK_SECONDS = 45.0
+CODE_FROM_EMAIL_TIMEOUT_SECONDS = CODE_LOOK_SECONDS + ENTER_CODE_TIMEOUT_SECONDS
 
 
 def _resolve_enter_code(text: str) -> bool:
@@ -368,23 +371,43 @@ def _resolve_enter_code(text: str) -> bool:
     if not entered and not reason:
         reason = frame.get("error") or frame.get("status")
     waiter.set_result(
-        {"entered": entered, "reason": "submitted" if entered else str(reason or "not_found")[:200]}
+        {
+            "entered": entered,
+            "reason": "submitted" if entered else str(reason or "not_found")[:200],
+            # PL-102: whether the code page went away after the code was typed.
+            "cleared": bool(entered and isinstance(observed, dict) and observed.get("cleared")),
+        }
     )
     return True
 
 
 async def send_enter_code(
-    code: str, *, run_id: str | uuid.UUID, lease_epoch: int = 0
+    code: str | None,
+    *,
+    run_id: str | uuid.UUID,
+    lease_epoch: int = 0,
+    browser_id: str | None = None,
+    from_email: bool = False,
+    remember: bool = False,
 ) -> dict[str, Any]:
     """Forward a person's code to the attached extension, once, and wait for what it did.
 
     The code is carried in this frame and nowhere else: not in a database row, not in a log line,
-    not in the answer. The answer says only whether the page's code field was found.
+    not in the answer. The answer says only whether the page's code field was found, and (PL-102)
+    whether the code page went away.
+
+    PL-102: with ``from_email`` there is no code: the extension reads it from the person's own
+    Gmail, and ``remember`` keeps the person's yes for later runs. A run pinned to a Chrome
+    (``browser_id``, PL-087) is answered by that Chrome only, never by someone else's.
     """
     async with _sessions_lock:
         _purge_expired(time.time())
         session = next(
-            (row for row in reversed(_sessions.values()) if row.extension is not None),
+            (
+                row
+                for row in reversed(_sessions.values())
+                if row.extension is not None and (not browser_id or row.browser_id == browser_id)
+            ),
             None,
         )
         peer = session.extension if session is not None else None
@@ -395,6 +418,12 @@ async def send_enter_code(
     loop = asyncio.get_running_loop()
     waiter: asyncio.Future[dict[str, Any]] = loop.create_future()
     _pending_codes[command_id] = waiter
+    timeout = CODE_FROM_EMAIL_TIMEOUT_SECONDS if from_email else ENTER_CODE_TIMEOUT_SECONDS
+    what: dict[str, Any] = (
+        {"from_email": True, "remember": remember, "look_ms": int(CODE_LOOK_SECONDS * 1000)}
+        if from_email
+        else {"code": code}
+    )
     frame = _frame(
         "enter_code",
         command_id=command_id,
@@ -402,14 +431,14 @@ async def send_enter_code(
         run_id=str(run_id),
         run_record_id="",
         lease_epoch=lease_epoch,
-        expires_at=(time.time() + ENTER_CODE_TIMEOUT_SECONDS) * 1000,
-        code=code,
+        expires_at=(time.time() + timeout) * 1000,
+        **what,
     )
     if not _enqueue(peer, _encode(frame)):
         _pending_codes.pop(command_id, None)
         return {"entered": False, "reason": "no_extension"}
     try:
-        return await asyncio.wait_for(waiter, timeout=ENTER_CODE_TIMEOUT_SECONDS)
+        return await asyncio.wait_for(waiter, timeout=timeout)
     except TimeoutError:
         _pending_codes.pop(command_id, None)
         return {"entered": False, "reason": "not_found"}
