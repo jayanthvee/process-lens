@@ -76,7 +76,9 @@ export type ToWorker =
   | { type: "executor:session" }
   | { type: "executor:get" }
   // PL-087: a dashboard tab's content script asking for this install's browser id.
-  | { type: "executor:whoami" };
+  | { type: "executor:whoami" }
+  // PL-104: bring the work window to the front, when a run paused because it was hidden.
+  | { type: "executor:show-window" };
 
 /** Sent from the service worker to content scripts and the popup. */
 export type FromWorker =

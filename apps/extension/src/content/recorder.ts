@@ -1657,12 +1657,19 @@ bootstrap();
 // PL-087: the ProcessLens dashboard asks which Chrome it is in, so its runs come here.
 const bridgeExt = (globalThis as { chrome?: typeof chrome }).chrome;
 if (typeof window !== "undefined" && bridgeExt?.runtime?.id) {
-  installBrowserBridge(window, async () => {
-    const answer = (await bridgeExt.runtime.sendMessage({ type: "executor:whoami" })) as
-      | Whoami
-      | undefined;
-    return answer ?? {};
-  });
+  installBrowserBridge(
+    window,
+    async () => {
+      const answer = (await bridgeExt.runtime.sendMessage({ type: "executor:whoami" })) as
+        | Whoami
+        | undefined;
+      return answer ?? {};
+    },
+    // PL-104: the run page's "Show the ProcessLens window".
+    async () => {
+      await bridgeExt.runtime.sendMessage({ type: "executor:show-window" });
+    },
+  );
 }
 
 /** The event with every name a person reads, and every text rung, cut free of one-time codes. */

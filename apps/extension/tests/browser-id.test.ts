@@ -2,7 +2,12 @@
 import { describe, expect, it } from "vitest";
 
 import { BROWSER_ID_KEY, browserId, originOf } from "../src/background/browser-id";
-import { BROWSER_ANSWER, WHICH_BROWSER, installBrowserBridge } from "../src/content/browser-bridge";
+import {
+  BROWSER_ANSWER,
+  SHOW_WINDOW,
+  WHICH_BROWSER,
+  installBrowserBridge,
+} from "../src/content/browser-bridge";
 
 function memoryStore(): { data: Record<string, unknown>; get: (k: string[]) => Promise<Record<string, unknown>>; set: (i: Record<string, unknown>) => Promise<void> } {
   const data: Record<string, unknown> = {};
@@ -68,5 +73,39 @@ describe("the dashboard bridge", () => {
   it("tells any other site nothing, and ignores messages from other windows", async () => {
     expect(await ask("https://processlens-api.example")).toEqual([]);
     expect(await ask("https://processlens-api-a2bl.onrender.com", false)).toEqual([]);
+  });
+});
+
+describe("Show the ProcessLens window (PL-104)", () => {
+  async function askToShow(hubOrigin: string, fromSelf = true): Promise<number> {
+    let shown = 0;
+    const listeners: Array<(event: MessageEvent) => void> = [];
+    const fake = {
+      location: { origin: "https://processlens-api-a2bl.onrender.com" },
+      addEventListener: (_type: string, fn: (event: MessageEvent) => void) => {
+        listeners.push(fn);
+      },
+      postMessage: () => undefined,
+    } as unknown as Window & { top: Window };
+    (fake as { top: Window }).top = fake;
+    installBrowserBridge(
+      fake,
+      async () => ({ browserId: "browser-anna-0001", hubOrigin }),
+      async () => {
+        shown += 1;
+      },
+    );
+    listeners[0]?.({ source: fromSelf ? fake : {}, data: { type: SHOW_WINDOW } } as MessageEvent);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    return shown;
+  }
+
+  it("brings the window forward when the ProcessLens run page asks", async () => {
+    expect(await askToShow("https://processlens-api-a2bl.onrender.com")).toBe(1);
+  });
+
+  it("does nothing for any other site or window", async () => {
+    expect(await askToShow("https://processlens-api.example")).toBe(0);
+    expect(await askToShow("https://processlens-api-a2bl.onrender.com", false)).toBe(0);
   });
 });

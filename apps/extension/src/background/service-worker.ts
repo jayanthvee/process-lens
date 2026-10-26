@@ -901,7 +901,8 @@ function getCommandSession(): CommandSession {
     // and an app like Odoo never finishes rendering there. A separate visible window keeps drawing
     // while the person works in their own tabs, and lets them watch the run.
     // Chrome refuses bounds it thinks are off screen, so the window takes the right half of the
-    // person's own window, then no bounds at all. It never falls back to a tab the person is using.
+    // person's own window, then no bounds at all. It never falls back to a tab the person is using:
+    // with no window, nothing connects (PL-104).
     bindActiveTab: async () => {
       const attempts: chrome.windows.CreateData[] = [];
       try {
@@ -927,16 +928,21 @@ function getCommandSession(): CommandSession {
         try {
           const win = await chrome.windows.create(data);
           tabId = win?.tabs?.[0]?.id ?? null;
+          // PL-104: Chrome may answer with a window but leave its tab list out. Ask for it, rather
+          // than counting the window as refused.
+          if (tabId === null && win?.id !== undefined) {
+            const [first] = await chrome.tabs.query({ windowId: win.id });
+            tabId = first?.id ?? null;
+          }
           if (tabId !== null) break;
         } catch (error) {
           console.warn("ProcessLens: could not open the work window", error);
         }
       }
-      if (tabId === null) {
-        const tab = await chrome.tabs.create({ url: "about:blank", active: true });
-        tabId = tab?.id ?? null;
-      }
+      // PL-104: never a tab in the person's own window. Looking at the run page hid that tab, and
+      // the run paused or failed; the session refuses to connect instead, and says so.
       commandBoundTabId = tabId;
+      if (tabId !== null) await explainWorkWindow(tabId);
       return tabId;
     },
     // B2: after a worker restart, adopt the STORED bound tab — never the active one, which at
@@ -1003,6 +1009,57 @@ function getCommandSession(): CommandSession {
   return commandSession;
 }
 
+/**
+ * PL-104: bring the work window back: out of minimized, in front, its work tab active. True when
+ * there was a work window to show.
+ */
+export async function showWorkWindow(): Promise<boolean> {
+  const tabId = commandBoundTabId;
+  if (tabId === null || tabId < 0) return false;
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    await chrome.windows.update(tab.windowId, { state: "normal", focused: true });
+    await chrome.tabs.update(tabId, { active: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** PL-104: the words on the work window's first page, so a blank window does not look broken. */
+export const WORK_WINDOW_TITLE = "ProcessLens is working here";
+export const WORK_WINDOW_WORDS =
+  "ProcessLens does its work in this window. Leave it open. You can keep using your other windows; just don't minimize this one while a task is running.";
+
+/**
+ * PL-104: write a short explanation into the work window's blank first page. The page stays
+ * `about:blank` (the run navigates from it, and the abandon guard retires to it), only its words
+ * change. A page that cannot be written to is left blank: this is a courtesy, never a blocker.
+ */
+async function explainWorkWindow(tabId: number): Promise<void> {
+  try {
+    const cdp = await ensureDebugger(tabId);
+    const expression =
+      `(() => { if (location.href !== "about:blank") return;` +
+      ` document.title = ${JSON.stringify(WORK_WINDOW_TITLE)};` +
+      ` document.body.style.cssText = "margin:0;display:grid;place-items:center;height:100vh;` +
+      `font:16px/1.5 system-ui,sans-serif;color:#2a2d2b;background:#f4f5f3";` +
+      ` const box = document.createElement("div"); box.style.cssText = "max-width:420px;padding:24px";` +
+      ` const h = document.createElement("h1"); h.style.cssText = "font-size:20px;margin:0 0 8px";` +
+      ` h.textContent = ${JSON.stringify(WORK_WINDOW_TITLE)};` +
+      ` const p = document.createElement("p"); p.style.margin = "0";` +
+      ` p.textContent = ${JSON.stringify(WORK_WINDOW_WORDS)};` +
+      ` box.append(h, p); document.body.replaceChildren(box); })()`;
+    await evaluate(cdp, expression, {});
+  } catch (error) {
+    console.warn("ProcessLens: could not label the work window", error);
+  } finally {
+    // Released again at once: connecting must not hold the debugger, so nothing about how a
+    // session attaches for its first command changes.
+    await releaseDebugger().catch(() => undefined);
+  }
+}
+
 /** PL-102: the person's yes to reading sign-in codes from their Gmail, kept in this Chrome. */
 const CODES_FROM_EMAIL_KEY = "processlens.codesFromEmail";
 
@@ -1067,6 +1124,8 @@ async function handleExecutor(message: ToWorker): Promise<unknown> {
       const lastHub = local ? (await local.get([LAST_HUB_KEY]))[LAST_HUB_KEY] : undefined;
       return { ok: true, browserId: await browserId(local), hubOrigin: originOf(lastHub) };
     }
+    case "executor:show-window":
+      return { ok: await showWorkWindow() };
     case "executor:disconnect":
       await getCommandSession().disconnect();
       break;

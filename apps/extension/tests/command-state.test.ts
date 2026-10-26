@@ -4,6 +4,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   ACCESS_REFUSED,
+  WORK_WINDOW_REFUSED,
   CommandSession,
   type CheckAnswer,
   type SessionDeps,
@@ -85,6 +86,7 @@ interface HarnessOptions {
     aborted: () => boolean,
   ) => Promise<CheckAnswer>;
   restoreBoundTab?: (tabId: number) => Promise<boolean>;
+  bindActiveTab?: () => Promise<number | null>;
   enterCode?: (code: string) => Promise<{ entered: boolean; reason: string }>;
   codeFromEmail?: SessionDeps["codeFromEmail"];
   now?: () => number;
@@ -125,7 +127,7 @@ function makeHarness(options: HarnessOptions = {}): Harness {
         timer.cancelled = true;
       };
     },
-    bindActiveTab: async () => 7,
+    bindActiveTab: options.bindActiveTab ?? (async () => 7),
     ...(options.browserId ? { browserId: async () => options.browserId ?? "" } : {}),
     restoreBoundTab: async (tabId: number) => {
       restoredTabs.push(tabId);
@@ -857,6 +859,34 @@ describe("connect when nothing answers", () => {
 
     expect(socket).toBeDefined();
     expect(harness.states.at(-1)).toBe("ready");
+  });
+});
+
+
+describe("the work window (PL-104)", () => {
+  it("does not connect in the person's own tab when Chrome refuses a window of its own", async () => {
+    // On the pilot call the session fell back to the active tab. Every look at the run page then
+    // hid it, and the run paused or failed with "Couldn't find Contact".
+    let asked = false;
+    globalThis.fetch = (async () => {
+      asked = true;
+      return { status: 201, json: async () => ({ session_id: "s", session_token: "t" }) };
+    }) as unknown as typeof fetch;
+    const harness = makeHarness({ bindActiveTab: async () => null });
+
+    await expect(harness.session.connect("http://127.0.0.1:8000")).rejects.toThrow(
+      WORK_WINDOW_REFUSED,
+    );
+
+    expect(asked).toBe(false);
+    expect(harness.states.at(-1)).toBe("idle");
+    expect(harness.sockets).toHaveLength(0);
+  });
+
+  it("says what to do in plain words", () => {
+    expect(WORK_WINDOW_REFUSED).toBe(
+      "Chrome didn't let ProcessLens open its own window. Close a few Chrome windows, then press Connect again.",
+    );
   });
 });
 
