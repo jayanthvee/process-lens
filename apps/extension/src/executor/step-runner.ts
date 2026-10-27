@@ -425,9 +425,21 @@ export async function resolveStepTarget(
     // so the marked option is gone when its box is measured. Nothing has been pressed yet, so the
     // ladder is climbed again, bounded by the ready wait.
     const prepareDeadline = Date.now() + readyWaitMs(step);
+    // PL-116: once a measure has said the target is busy, the step is waiting on the page rather
+    // than on a missing target. If the ladder then cannot see it either (the page disabled it, or
+    // it went away), the busy sentence is still the honest one -- and the runner's commit check
+    // keys on it -- so it is kept across the wait.
+    let busyMessage: string | null = null;
     for (;;) {
       const { result, token } = await resolveWhenReady(deps.cdp, step, deps, contextId);
       if (!result.ok) {
+        if (busyMessage !== null) {
+          if (Date.now() < prepareDeadline) {
+            await delay(READY_WAIT_POLL_MS);
+            continue;
+          }
+          return { ok: false, error: busyMessage };
+        }
         return { ok: false, error: `${result.error ?? "no rung matched"}${attemptTrail(result)}` };
       }
       // A click lands at a measured box center, so its target is hit-tested here.
@@ -438,6 +450,19 @@ export async function resolveStepTarget(
           await measureTarget(deps.cdp, token, contextId);
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
+          // PL-116: a busy button (disabled, aria-busy, or taking no clicks) is the app still
+          // working, not a dead target. A person does not see the spinner because it is gone
+          // before they click; the prepare used to give up at its first look. Wait inside the
+          // existing ready wait, like a target that was re-rendered, and fail with the same
+          // sentence only when it is over. Nothing is pressed while waiting.
+          if (message.includes("the target is busy")) {
+            busyMessage = message;
+            if (Date.now() < prepareDeadline) {
+              await delay(READY_WAIT_POLL_MS);
+              continue;
+            }
+            return { ok: false, error: message };
+          }
           if (message.includes("no longer in the document") && Date.now() < prepareDeadline) {
             await delay(READY_WAIT_POLL_MS);
             continue;
