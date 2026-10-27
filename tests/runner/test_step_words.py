@@ -80,9 +80,10 @@ def test_a_fill_the_page_changed_says_what_it_kept() -> None:
 
 
 def test_a_button_that_cannot_be_clicked_names_the_button() -> None:
+    """PL-113 S3 changed the sentence: a covered button now says what covered it."""
     sentence = describe_step_failure(SAVE_CLICK, ROW, {}, COVERED)
 
-    assert sentence == "Couldn't click “Save manually”: something was in front of it"
+    assert sentence == "Couldn't click “Save manually”: it was covered by a div"
 
 
 def test_a_target_that_is_not_on_the_page_names_it() -> None:

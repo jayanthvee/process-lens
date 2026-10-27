@@ -31,6 +31,11 @@ _DID_NOT_STICK = "did not stick"
 _ALREADY_PLAIN = ("no match for ", "no way to create it", "but the box shows")
 _NOT_CLICKABLE = ("not clickable", "covered by", "is covered")
 _NOT_FOUND = ("no rung matched", "could not be resolved", "not found")
+# PL-113 S3: the two cases that used to read as "something was in front of it" when nothing was.
+_BUSY = "target is busy"
+_OUTSIDE_WINDOW = "outside the window"
+# The covering element's description, as the extension writes it: `covered by <button "Sign up">`.
+_COVERED_BY = re.compile(r"covered by <([^>]*)>", re.IGNORECASE)
 
 # The filters a template may carry after its column, as `templates` documents them.
 _ROW_COLUMN = re.compile(r"\{\{\s*row\.(?P<column>[A-Za-z_][A-Za-z0-9_]*)\s*(?:\|[^{}]*)?\}\}")
@@ -82,8 +87,19 @@ def describe_step_failure(
             field = re.sub(r"_\d+$", "", column) or column
             return _with_value("“", value, f"” isn't in the {_label(field)} list")
         name = _element_name(step, row, variables)
+        # PL-113 S3: the three cases, most specific first. A busy button and one that is outside
+        # the window are not covered by anything, and saying they are is what sent a person looking
+        # for an overlay that was not there.
+        if _BUSY in lowered:
+            return _with_value("Couldn't click “", name, "”: the button was busy")
+        if _OUTSIDE_WINDOW in lowered:
+            return _with_value(
+                "Couldn't click “",
+                name,
+                "”: the button is outside the window and the page didn't scroll to it",
+            )
         if _mentions(lowered, _NOT_CLICKABLE):
-            return _with_value("Couldn't click “", name, "”: something was in front of it")
+            return _with_value("Couldn't click “", name, f"”: {_covered_phrase(text)}")
         if _mentions(lowered, _NOT_FOUND):
             return _with_value("Couldn't find “", name, "” on the page")
 
@@ -121,6 +137,27 @@ def _is_sign_in_step(step: Mapping[str, Any]) -> bool:
         return False
     lowered = name.lower()
     return "sign-in" in lowered or "sign in" in lowered
+
+
+def _covered_phrase(error: str) -> str:
+    """What was in the way, from the extension's own description of it (PL-113 S3).
+
+    The extension writes the covering element's name when it has one
+    (``covered by <button "Sign up">``) and its kind when it does not (``covered by <div>``). A
+    person reading the row gets either the thing they can see or at least what sort of thing it is;
+    an error that carries neither keeps a plain sentence rather than inventing one.
+    """
+    match = _COVERED_BY.search(error)
+    described = match.group(1).strip() if match else ""
+    if not described:
+        return "something on the page was in front of it"
+    tag, _, rest = described.partition(" ")
+    label = rest.strip()
+    if len(label) >= 2 and label.startswith('"') and label.endswith('"'):
+        return f"it was covered by “{label[1:-1]}”"
+    kind = described.split()[0]
+    article = "an" if kind[:1].lower() in "aeiou" else "a"
+    return f"it was covered by {article} {kind}"
 
 
 def _is_locator_failure(lowered: str) -> bool:

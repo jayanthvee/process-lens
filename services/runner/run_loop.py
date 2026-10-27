@@ -925,6 +925,26 @@ class RunLoop:
             return "parked"
 
         if prepared.status != "ok":
+            # PL-113 S3: a button that was busy when it was clicked (disabled, aria-busy, or taking
+            # no clicks) may still do the work by itself. The step's own check is the proof: when
+            # the page now shows the change, the record is Done rather than parked. Nothing was
+            # pressed here, so this row writes no committed key -- the check is what it has.
+            if _is_busy_failure(prepared.error) and step.get("assert_after"):
+                verdict = self._check(
+                    step["assert_after"],
+                    step_id=step.get("id"),
+                    record_key=record.record_key,
+                    row=row,
+                    variables=variables,
+                )
+                stopped = self._drain_events(conn, record, run, epoch, box)
+                if stopped is not None:
+                    return stopped
+                if verdict.passed:
+                    self._transition(
+                        conn, record, "filling", "verified", "the page did it by itself"
+                    )
+                    return "verified"
             self._transition(
                 conn,
                 record,
@@ -1762,6 +1782,11 @@ class RunLoop:
 
 
 # -- helpers the loop uses ------------------------------------------------
+
+
+def _is_busy_failure(error: str | None) -> bool:
+    """Whether the extension said the control was busy rather than absent or covered (PL-113 S3)."""
+    return bool(error) and "target is busy" in str(error).lower()
 
 
 def max_step_timeout_seconds(recipe: Mapping[str, Any]) -> float:
