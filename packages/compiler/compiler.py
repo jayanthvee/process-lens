@@ -182,7 +182,14 @@ def _is_page_set_fill(
 def to_candidates(
     events: list[Event], options: CompileOptions
 ) -> tuple[list[Candidate], list[str]]:
-    """Read each actionable event into a candidate step, dropping empty actions."""
+    """Read each actionable event into a candidate step, dropping empty actions.
+
+    PL-112: when the request names the commit steps, that choice is the whole rule. An empty list
+    is the person's "Nothing gets saved", so a submit's own ``commit`` (set while folding a
+    click/submit pair) is not a commit any more. A caller that predates the field sends ``None``
+    and keeps the compiler's earlier behaviour.
+    """
+    chosen_commits = options.commit_step_ids is not None
     commit_ids = set(options.commit_step_ids or ())
     candidates: list[Candidate] = []
     warnings: list[str] = []
@@ -256,7 +263,11 @@ def to_candidates(
                 url=event.url,
                 after_url=_next_actionable_url(events, index),
                 seq=event.seq,
-                commit=event.commit or (recorded_id is not None and recorded_id in commit_ids),
+                commit=(
+                    recorded_id is not None and recorded_id in commit_ids
+                    if chosen_commits
+                    else event.commit or (recorded_id is not None and recorded_id in commit_ids)
+                ),
                 observation=event.observation,
                 recorded_id=recorded_id,
                 frame=step.get("frame") if isinstance(step.get("frame"), list) else None,
