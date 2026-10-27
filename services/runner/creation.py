@@ -26,7 +26,9 @@ from .templates import TemplateError, render
 
 # The actions this runner understands. Executor actions are sent to the browser; the rest are
 # runner steps, evaluated here. Anything else is refused at creation (fail closed).
-EXECUTOR_ACTIONS = frozenset({"navigate", "fill", "select", "click", "press", "wait_for", "assert"})
+EXECUTOR_ACTIONS = frozenset(
+    {"navigate", "fill", "select", "check", "click", "press", "wait_for", "assert"}
+)
 RUNNER_ACTIONS = frozenset({"branch", "end_record", "approval_gate"})
 SUPPORTED_ACTIONS = EXECUTOR_ACTIONS | RUNNER_ACTIONS
 

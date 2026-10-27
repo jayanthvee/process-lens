@@ -289,6 +289,7 @@ def to_candidates(
                 observation=event.observation,
                 recorded_id=recorded_id,
                 frame=step.get("frame") if isinstance(step.get("frame"), list) else None,
+                checked=step.get("checked") if isinstance(step.get("checked"), bool) else None,
                 chip=event.chip,
                 autocomplete=event.autocomplete,
                 supersedes=event.supersedes,
@@ -436,6 +437,13 @@ def _render_candidate(candidate: Candidate) -> dict[str, Any]:
         # destination record -- so neither is ever emitted for one.
         step["key"] = candidate.key
         return step
+    if candidate.action == "check":
+        # PL-114: a check sets a yes/no to the value a run should leave behind, and carries the
+        # state the demonstration left when the recording saw it. It is not a fill: no clear_first
+        # and no option_match.
+        step["value"] = candidate.value
+        if candidate.checked is not None:
+            step["checked"] = candidate.checked
     if candidate.action in ("fill", "select"):
         step["value"] = candidate.value
         if candidate.action == "select":
