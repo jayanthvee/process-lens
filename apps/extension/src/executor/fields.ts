@@ -147,6 +147,25 @@ export function fieldActionInPage(query: FieldQuery): FieldResult {
 
   if (query.mode === "choose") {
     const wanted = String(query.value ?? "");
+    // A rating row is one kind of option repeated, whose names do not distinguish the options:
+    // all identical (five stars that all say "★"), all empty, or each carrying its own 1-based
+    // place ("1 of 5", "2 of 5", ...). Anything else -- Goods, Service, Combo -- is a named group,
+    // and a number there is a value it does not offer.
+    const isRatingRow = (options: Element[], labels: string[]): boolean => {
+      if (options.length < 2) return false;
+      const kindOf = (option: Element): string =>
+        `${option.tagName.toLowerCase()}|${(option.getAttribute("role") ?? "").toLowerCase()}`;
+      const kind = kindOf(options[0] as Element);
+      if (!options.every((option) => kindOf(option) === kind)) return false;
+      const uniform = labels.every((label) => label === labels[0]);
+      if (uniform) return true;
+      const shapes = labels.map((label) => label.replace(/\d+/g, "#"));
+      if (!shapes.every((shape) => shape === shapes[0])) return false;
+      return labels.every((label, position) => {
+        const first = /\d+/.exec(label);
+        return first !== null && Number(first[0]) === position + 1;
+      });
+    };
     const selector = [
       "input[type='radio']",
       "[role='radio']",
@@ -174,10 +193,13 @@ export function fieldActionInPage(query: FieldQuery): FieldResult {
     const normalise = (text: string): string => text.replace(/\s+/g, " ").trim().toLowerCase();
     let index = names.findIndex((name) => name === wanted);
     if (index < 0) index = names.findIndex((name) => normalise(name) === normalise(wanted));
-    // PL-114 item 5: a row of stars or buttons has no labels of its own to match, so the row's
-    // number is the option's place in the row: 3 is the third star. The option itself is clicked,
-    // exactly as a person would.
-    if (index < 0 && /^\d+$/.test(wanted.trim())) {
+    // PL-114 item 5, narrowed by T1 review B2: a rating row's options carry no label of their own,
+    // so there the row's number is the option's place: 3 is the third star. Anywhere else a bare
+    // number is a value the group does not offer, and guessing by position in a batch loop is
+    // exactly what the review forbids -- "2" against Goods/Service/Combo must park, not pick
+    // Service. So the row first has to look like a rating row: one kind of option, and names that
+    // do not tell the options apart (all the same, or each one's own place written into it).
+    if (index < 0 && /^\d+$/.test(wanted.trim()) && isRatingRow(shown, names)) {
       const ordinal = Number(wanted.trim());
       if (ordinal >= 1 && ordinal <= shown.length) index = ordinal - 1;
     }
