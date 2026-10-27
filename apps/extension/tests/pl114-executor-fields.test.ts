@@ -1,4 +1,4 @@
-﻿// PL-114: the executor sets the fields the person clicked, and leaves them alone when they are
+// PL-114: the executor sets the fields the person clicked, and leaves them alone when they are
 // already right.
 //
 // The fake CDP evaluates page expressions in jsdom, so the real `fieldActionInPage` runs here and
