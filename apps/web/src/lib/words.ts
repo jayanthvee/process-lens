@@ -146,6 +146,13 @@ const REASONS: Record<string, string> = {
     "ProcessLens couldn't check whether it saved. Look on the site, then Dismiss it or Try again.",
   "the destination check found more than one match":
     "The site shows more than one match for this row.",
+  "the site shows more than one match for this row":
+    "The site shows more than one match for this row.",
+  "nobody decided whether to save this row in time":
+    "Nobody approved this row in time, so it was left for you.",
+  "a reviewer turned this row down": "A reviewer turned this row down.",
+  "the task ended without saying what happened":
+    "The task finished without saying what happened to this row.",
   "the save's check did not pass": "The page didn't show it saved.",
   "the page did not show it saved": "The page didn't show it saved.",
 };

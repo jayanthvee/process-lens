@@ -1309,12 +1309,16 @@ class RunLoop:
 
         if outcome == "pending":
             self._transition(
-                conn, record, "reconciling", "pending", "the destination does not have it; retry"
+                conn,
+                record,
+                "reconciling",
+                "pending",
+                "the site does not have it yet; trying again",
             )
             return "pending"
 
         # S2: an ambiguous match or a search error parks the record; it never fails it.
-        reason = diff.error or "the destination check found more than one match"
+        reason = diff.error or "the site shows more than one match for this row"
         if check_sentence is not None:
             reason = parking_reason(check_sentence, run.destination_key)
         self._transition(conn, record, "reconciling", "parked", reason)
