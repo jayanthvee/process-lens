@@ -58,11 +58,19 @@ export const CONNECT_CHROME = "Click the ProcessLens icon in Chrome's toolbar to
 /**
  * Whether a row's reason says its search did not find the record.
  *
- * The compiler writes this prefix, whether or not the page had a host to name, and both the row's
- * outcome and its action read it (PL-106 item 7).
+ * Two shapes reach a row, and both mean the same thing to the page:
+ *
+ * * ``Not found in <site>.`` -- the reason earlier recordings still carry (PL-106 item 7);
+ * * ``No <column> called ‘<value>’ was found.`` -- the plain sentence PL-113 item 6 added, kept by
+ *   T1's review (B2) while the outcome went back to a park.
+ *
+ * The row's outcome and its action both read this, so a new spelling has to be added here rather
+ * than at each call site.
  */
 export function isNotFoundReason(reason?: string | null): boolean {
-  return (reason ?? "").trim().startsWith("Not found in");
+  const text = (reason ?? "").trim();
+  if (text.startsWith("Not found in")) return true;
+  return /^No .+ called .+ was found\.$/.test(text);
 }
 
 /**

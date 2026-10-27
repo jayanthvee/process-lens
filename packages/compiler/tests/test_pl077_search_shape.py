@@ -100,7 +100,7 @@ def _branches(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
 # ---------------------------------------------------------- find-then-update
 
 
-def test_a_find_then_update_skips_a_row_whose_search_finds_nothing() -> None:
+def test_a_find_then_update_parks_a_row_whose_search_finds_nothing() -> None:
     result = compile_recording(_find_then_update(), _options(commit_step_ids=["save-1"]))
     steps = result.recipe["steps"]
 
@@ -108,8 +108,9 @@ def test_a_find_then_update_skips_a_row_whose_search_finds_nothing() -> None:
     assert len(branches) == 1, [step["action"] for step in steps]
     branch = branches[0]
     # The rule is the opposite of the duplicate check: no result in the table means the record is
-    # not there, so the row stops instead of typing into whatever page it is on. It is SKIPPED, in
-    # plain words (PL-113 item 6; PL-106's review had parked it instead).
+    # not there, so the row stops instead of typing into whatever page it is on. It parks, because
+    # an absent cell can also be a page that has not drawn yet, and a skip is final (PL-106 review,
+    # restored by T1's review of PL-113). The sentence says which value was not found.
     assert branch["when"] == {
         "element_absent": {
             "targets": [{"by": "role", "role": "cell", "name": "{{row.sku | lower}}"}]
@@ -119,14 +120,16 @@ def test_a_find_then_update_skips_a_row_whose_search_finds_nothing() -> None:
         {
             "id": "end-record-1",
             "action": "end_record",
-            "outcome": "skipped",
+            "outcome": "parked",
             "reason": "No sku called ‘{{row.sku}}’ was found.",
         }
     ]
-    assert branch["name"] == "Skip a record when the search finds nothing"
+    assert branch["name"] == "Park a record when the search finds nothing"
 
 
-def test_the_skip_branch_goes_after_the_search_and_before_the_click_that_opens_a_result() -> None:
+def test_the_not_found_branch_goes_after_the_search_and_before_the_click_that_opens_a_result() -> (
+    None
+):
     steps = compile_recording(_find_then_update(), _options(commit_step_ids=["save-1"])).recipe[
         "steps"
     ]

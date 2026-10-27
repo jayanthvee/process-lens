@@ -282,9 +282,11 @@ def test_the_route_says_which_searched_shape_it_compiled(
     body = response.json()
     assert body["search_kind"] == "update"
     branch = next(step for step in body["recipe"]["steps"] if step["action"] == "branch")
-    # An update skips a row whose search found nothing, in plain words (PL-113 item 6).
+    # An update parks a row whose search found nothing, in plain words (PL-113 item 6, restored to
+    # a park by T1's review: the run page's Skip it button is the person's decision).
     assert branch["when"]["element_absent"] is not None
-    assert branch["then"][0]["outcome"] == "skipped"
+    assert branch["then"][0]["outcome"] == "parked"
+    assert branch["then"][0]["reason"].startswith("No ")
 
 
 def test_a_task_with_no_recorded_inputs_compiles_with_the_run_once_key(

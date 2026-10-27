@@ -925,11 +925,34 @@ class RunLoop:
             return "parked"
 
         if prepared.status != "ok":
-            # PL-113 S3: a button that was busy when it was clicked (disabled, aria-busy, or taking
-            # no clicks) may still do the work by itself. The step's own check is the proof: when
-            # the page now shows the change, the record is Done rather than parked. Nothing was
-            # pressed here, so this row writes no committed key -- the check is what it has.
+            # PL-113 S3 + T1 review B1: a button that was busy when it was clicked (disabled,
+            # aria-busy, or taking no clicks) may still do the work by itself. Two invariants decide
+            # whether that can be a commit:
+            #
+            # * PL-107 item 11: "already done" only holds when the check was FALSE before the step
+            #   and TRUE now. A confirmation left on screen from the previous row -- or a check that
+            #   is always true, the exact PL-113 item 1 bug -- must never mark this row Done. The
+            #   "before" read sits here because `prepare` sends no input: nothing has happened to
+            #   this row yet, and the post-assertion event drain keeps its own place.
+            # * AGENTS.md section 4: a commit's `verified` comes from `verify_commit`, which writes
+            #   `committed_keys` in the same transaction. `filling -> verified` here would leave no
+            #   key, so a re-run of the same row would save again.
+            #
+            # So this path needs a definite false-before, and it ends through the normal commit
+            # window: write-ahead, then reconcile, whose destination check ends in `verify_commit`.
+            held_before: bool | None = None
             if _is_busy_failure(prepared.error) and step.get("assert_after"):
+                try:
+                    held_before = self._check_before_step(
+                        step["assert_after"],
+                        step_id=step.get("id"),
+                        record_key=record.record_key,
+                        row=row,
+                        variables=variables,
+                    )
+                except TemplateError as exc:
+                    return self._park_for_template_error(conn, record, box, exc)
+            if held_before is False:
                 verdict = self._check(
                     step["assert_after"],
                     step_id=step.get("id"),
@@ -940,11 +963,8 @@ class RunLoop:
                 stopped = self._drain_events(conn, record, run, epoch, box)
                 if stopped is not None:
                     return stopped
-                if verdict.passed:
-                    self._transition(
-                        conn, record, "filling", "verified", "the page did it by itself"
-                    )
-                    return "verified"
+                if verdict.passed and verdict.status == "ok":
+                    return self._commit_busy_step(conn, record, run, epoch, step, box)
             self._transition(
                 conn,
                 record,
@@ -1162,6 +1182,67 @@ class RunLoop:
             step,
             check_sentence=describe_check(condition, row, variables),
         )
+
+    def _check_before_step(
+        self,
+        condition: Mapping[str, Any],
+        *,
+        step_id: str | None,
+        record_key: str | None,
+        row: Mapping[str, Any] | None = None,
+        variables: Mapping[str, Any] | None = None,
+    ) -> bool | None:
+        """Whether the step's check already held *before* the step ran (PL-107 item 11).
+
+        ``True`` means the confirmation was on the page before this row did anything, so it proves
+        nothing about this row. ``False`` is a definite "not there yet" and is the only answer that
+        lets a saved-by-the-page path run. ``None`` is no answer at all: the executor could not
+        read the page, and an unknown is never treated as a false.
+        """
+        rendered = dict(condition)
+        rendered["timeout_ms"] = 0
+        verdict = self._check(
+            rendered,
+            step_id=step_id,
+            record_key=record_key,
+            row=row,
+            variables=variables,
+        )
+        if verdict.status != "ok":
+            return None
+        return verdict.passed
+
+    def _commit_busy_step(
+        self,
+        conn: psycopg.Connection,
+        record: RecordClaim,
+        run: RunClaim,
+        epoch: int,
+        step: Mapping[str, Any],
+        box: _Box,
+    ) -> str:
+        """End a busy step's row through the commit window (PL-113 S3, T1 review B1).
+
+        Nothing was pressed, but the page showed the change after the step -- so the row enters the
+        commit window exactly as a dispatched save does: write-ahead first, then reconcile. The
+        destination check is what ends in ``verify_commit``, which writes ``committed_keys`` in the
+        same transaction; a destination without the record sends the row back to pending rather
+        than calling it Done.
+        """
+        with conn.transaction():
+            begin_commit(conn, record.id, worker=self.worker_id, epoch=epoch)
+        box.state = "submitting"
+        self._transition(
+            conn,
+            record,
+            "submitting",
+            "reconciling",
+            "the page saved it by itself; checking the destination",
+            step=step,
+            outcome="failed",
+        )
+        box.state = "reconciling"
+        return self._reconcile(conn, record, run, epoch, step)
 
     def _simple_step(
         self,
