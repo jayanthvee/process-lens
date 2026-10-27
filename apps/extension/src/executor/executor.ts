@@ -44,7 +44,7 @@ export {
 } from "./step-runner";
 
 /** The actions the attended executor performs itself. */
-const EXECUTED_ACTIONS = new Set(["navigate", "fill", "select", "click", "press"]);
+const EXECUTED_ACTIONS = new Set(["navigate", "fill", "select", "check", "click", "press"]);
 
 export interface RunDeps {
   cdp: CdpTransport;
@@ -91,7 +91,11 @@ export function validateRecipe(recipe: ExecutorRecipe | undefined | null): strin
       continue;
     }
     if (
-      (action === "click" || action === "fill" || action === "select" || action === "press") &&
+      (action === "click" ||
+        action === "fill" ||
+        action === "select" ||
+        action === "check" ||
+        action === "press") &&
       !(step.targets ?? []).length
     ) {
       problems.push(`step ${step.id} has action ${action} but no target ladder`);
