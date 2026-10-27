@@ -1,18 +1,16 @@
-"""PL-106 item 7: an update whose search finds nothing parks the row, and a person can skip it.
+"""PL-106 item 7, restored by T1's review of PL-113 (B2): a search that finds nothing parks.
 
-PL-077 parked such a row. PL-106 first ended it ``skipped``, but T1's review sent that back: the
-branch's ``element_absent`` condition can hold before a slow results table has drawn, and on a
-login wall, an expired-session dialog or an error page -- the executor's wall probe only runs when
-a check answers false. A skip is final, so that would lose the row for good. The branch parks
-instead, with the reason "Not found in <site>." where <site> is the host the search ran on. The run
-page then offers a one-click Skip it through the existing parked -> skipped dismiss.
+PL-106 first ended such a row ``skipped``; T1's review sent that back and it parked instead, with
+the site named ("Not found in <site>."), because ``element_absent`` can hold before a slow results
+table has drawn, on a login wall or on an error page, and a skip is final.
 
-The file keeps the ticket's name; the review changed the branch's outcome, not the item.
+PL-113 item 6 changed it to a skip again. T1's review of PL-113 called that the ticket's error and
+sent it back: the row parks, and the run page's **Skip it** button is how a person turns it into a
+skip after looking. What PL-113 added and this file keeps is the plain sentence -- the column's own
+name and the value the row searched for -- so the row says exactly what was not found.
 
-Ledger: the branch runs after the search and before any commit step, so the record is in
-``filling`` with ``commit_attempted`` false. ``filling -> parked`` is legal, and the person's skip
-is the ordinary ``parked -> skipped`` dismiss (migration 0003, LEDGER_SPEC). No ledger change is
-needed.
+``filling -> parked`` is legal here: the search is a read and nothing was committed, and the
+person's skip is the ordinary ``parked -> skipped`` dismiss (migration 0003).
 """
 
 from __future__ import annotations
@@ -30,16 +28,15 @@ def _compile():
     return compile_recording(_find_then_update(), _options(commit_step_ids=["save-1"]))
 
 
-def test_a_search_that_finds_nothing_parks_the_row_and_names_the_site() -> None:
-    result = _compile()
+def test_a_search_that_finds_nothing_parks_the_row_and_names_the_value() -> None:
+    branch = _branches(_compile().recipe["steps"])[0]
 
-    branch = _branches(result.recipe["steps"])[0]
     assert branch["then"] == [
         {
             "id": "end-record-1",
             "action": "end_record",
             "outcome": "parked",
-            "reason": "Not found in crm.example.com.",
+            "reason": "No sku called ‘{{row.sku}}’ was found.",
         }
     ]
     assert branch["name"] == "Park a record when the search finds nothing"
@@ -51,19 +48,14 @@ def test_the_compile_warning_tells_a_person_what_happens_in_plain_words() -> Non
     assert warnings == [PLAIN_WARNING]
 
 
-def test_a_search_page_with_no_host_still_says_not_found_in() -> None:
-    """``rowOutcome`` reads this prefix; an empty host must not change that (PL-106 review).
+def test_the_sentence_is_the_tickets_shape_and_the_row_is_parked() -> None:
+    """The column's plain name and the row's own value, not the site and not a field's hint."""
+    from services.runner.templates import render
 
-    The search's own step carries no URL; the other steps still name the site, so the compile can
-    derive ``allowed_origins`` and the host lookup has nothing to read.
-    """
-    events = _find_then_update()
-    events[1]["url"] = ""
+    branch = _branches(_compile().recipe["steps"])[0]
+    sentence = render(branch["then"][0]["reason"], row={"sku": "Ceramic Coffee Mug"}, variables={})
 
-    result = compile_recording(events, _options(commit_step_ids=["save-1"]))
-
-    branch = _branches(result.recipe["steps"])[0]
-    reason = branch["then"][0]["reason"]
+    assert sentence == "No sku called ‘Ceramic Coffee Mug’ was found."
+    assert sentence.startswith("No ")
+    assert sentence.endswith(" was found.")
     assert branch["then"][0]["outcome"] == "parked"
-    assert reason == "Not found in the app."
-    assert reason.startswith("Not found in")

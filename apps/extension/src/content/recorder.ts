@@ -20,7 +20,8 @@ import {
 import { scrubCodes } from "../shared/email-code";
 import { makeEvent, nextStepId, resetStepIds, type PendingEvent } from "../shared/events";
 import { installBrowserBridge, type Whoami } from "./browser-bridge";
-import { teachCodeOnPage, type TeachCodePageState } from "./teach-code";
+import { watchCodePage, type CodeWatchHandle } from "./code-watch";
+import type { TeachCodePageState } from "./teach-code";
 import { codePromptInPage, enterCodeInPage } from "../shared/code-page";
 import type { TeachCodeAnswer } from "../shared/messages";
 import {
@@ -1578,8 +1579,6 @@ export function shouldResetStepIds(
   return false;
 }
 
-/** How long after an action to look for a code page the page has just shown. */
-const TEACH_CODE_SETTLE_MS = 250;
 
 /**
  * Wire the recorder to the extension runtime. Kept out of `attachRecorder` so the
@@ -1605,7 +1604,10 @@ function bootstrap(): void {
   // extension is typing right now. While it is, the recorder is off: what it types is not a step.
   let teachCode: TeachCodePageState = { attempted: false };
   let typingCode = false;
-  let codeCheckTimer: ReturnType<typeof setTimeout> | null = null;
+  // PL-113 S1: the watch that keeps looking while the page is still changing, and when the last
+  // action was recorded -- the Gmail lookup starts from there, not from the moment a probe fires.
+  let codeWatch: CodeWatchHandle | null = null;
+  let lastActionAt: number | null = null;
 
   const quietly = <T,>(work: () => T): T => {
     typingCode = true;
@@ -1616,13 +1618,21 @@ function bootstrap(): void {
     }
   };
 
-  const checkCodePage = (): void => {
+  /**
+   * Look for a code page now, and keep looking while the page keeps changing (PL-113 S1).
+   *
+   * One action used to get one look 250 ms later, so a site that answers Continue with a loading
+   * state and a server call had its code boxes missed; typing the code is never recorded, so no
+   * later action looked again. The watch replaces that single look, for up to 15 s after the last
+   * action, and stops at the first code page found.
+   */
+  const watchCode = (): void => {
     if (!recording || typingCode) return;
-    // Only the page the person is looking at, and only once per page: a background tab or a
-    // frame must never be filled, and a code page is not asked about again after every action.
     if (typeof window === "undefined" || window.top !== window) return;
     if (document.visibilityState !== "visible") return;
-    void teachCodeOnPage(
+    codeWatch?.stop();
+    codeWatch = watchCodePage(
+      document,
       {
         probe: () => codePromptInPage({}),
         enter: (input) => enterCodeInPage(input),
@@ -1641,24 +1651,19 @@ function bootstrap(): void {
         quietly,
         now: () => Date.now(),
         site: () => location.href,
+        lastActionAt: () => lastActionAt ?? Date.now(),
       },
       teachCode,
-    ).catch(() => undefined);
-  };
-
-  const scheduleCodeCheck = (): void => {
-    if (codeCheckTimer !== null) return;
-    codeCheckTimer = setTimeout(() => {
-      codeCheckTimer = null;
-      checkCodePage();
-    }, TEACH_CODE_SETTLE_MS);
+    );
   };
 
   const send = (event: PendingEvent): void => {
     if (!recording) return;
+    lastActionAt = Date.now();
     void ext.runtime.sendMessage({ type: "record:event", event }).catch(() => undefined);
-    // The page may have shown a code field in answer to this action (or navigated to one).
-    scheduleCodeCheck();
+    // The page may have shown a code field in answer to this action (or navigated to one), and
+    // may take seconds to do it.
+    watchCode();
   };
 
   const attach = (arrivalStepId: string | null): void => {
@@ -1678,12 +1683,12 @@ function bootstrap(): void {
     });
     // A page that arrives already asking for a code (a reload of the code page, or a return to
     // it) is filled without waiting for the person to act again.
-    scheduleCodeCheck();
+    watchCode();
   };
 
   // A code page that was loaded in a background tab is looked at once it is shown.
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") scheduleCodeCheck();
+    if (document.visibilityState === "visible") watchCode();
   });
 
   ext.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
@@ -1704,12 +1709,12 @@ function bootstrap(): void {
       }
       previousStatus = status;
       recording = status?.state === "recording";
-      if (recording) scheduleCodeCheck();
+      if (recording) watchCode();
     }
     if (incoming?.type === "record:code-retry") {
       // The person said yes in the panel, so the code page already open gets its look now.
       teachCode = { attempted: false };
-      scheduleCodeCheck();
+      watchCode();
     }
     return undefined;
   });

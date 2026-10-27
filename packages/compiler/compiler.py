@@ -28,6 +28,7 @@ from .assertions import (
     observation_is_generated_reference,
     origin_of,
     path_pattern,
+    sign_in_landing_pattern,
 )
 from .coalesce import coalesce_fills, collapse_presses, collapse_submits
 from .errors import CompileError
@@ -47,6 +48,15 @@ UNRECORDABLE_REFUSAL = (
 )
 # The keys a person sends with: a press of one of these may be the send itself.
 COMMITTING_KEYS = frozenset({"Enter", "Control+Enter", "Meta+Enter"})
+
+# PL-113 item 1: roles that only move around the page. Their own names are the page's frame, so a
+# check that waits for one of them is true whether or not anything was saved.
+CHROME_ROLES = frozenset(
+    {"tab", "link", "menuitem", "menuitemradio", "menuitemcheckbox", "treeitem"}
+)
+
+# PL-113 S2: how long a sign-in wait gives the code email to arrive.
+SIGN_IN_WAIT_MS = 90_000
 
 
 @dataclass
@@ -78,6 +88,11 @@ class CompileOptions:
     # rules that park a record before the browser is touched.
     duplicate_check: bool = True
     park_fields: list[str] | None = None
+    # PL-113 S2: this demonstration signed in, and the page it reached after the code page. A
+    # sign-in recipe ends by waiting for that page; without it a run that clicked Continue was
+    # Done before the code page had even loaded.
+    sign_in: bool = False
+    sign_in_after_path: str | None = None
 
 
 @dataclass
@@ -827,7 +842,7 @@ def _is_combobox(candidate: Candidate) -> bool:
 
 # A suggestion box's own prompt, not a record: "Start typing...", "Search More...".
 _HINT_OPTION = re.compile(
-    r"^(start typing|search more|type to search|no records?)|(\.\.\.|…)$", re.I
+    r"^(start typing|search more|type to search|no records?)\b|(\.\.\.|…)$", re.I
 )
 
 
@@ -1226,7 +1241,7 @@ def _duplicate_branch(value_template: str) -> dict[str, Any]:
     }
 
 
-def _not_found_branch(value_template: str, host: str) -> dict[str, Any]:
+def _not_found_branch(column: str, value_template: str) -> dict[str, Any]:
     """A branch that ends a record ``parked`` when the search finds nothing (PL-077, PL-106).
 
     The mirror image of :func:`_duplicate_branch`, and built from the same machinery: the same
@@ -1234,20 +1249,25 @@ def _not_found_branch(value_template: str, host: str) -> dict[str, Any]:
     results cell. For an update, an empty result means the record the row would change is not in
     the app, so carrying on would type into whatever page the run happens to be on.
 
-    It parks rather than skips (PL-106 review). ``element_absent`` is not proof the record is gone:
-    it is also true before a slow results table has drawn, and on a login wall, an expired-session
-    dialog or an error page -- the executor's wall probe runs only when a check answers false, not
-    when an absence answers true. A skip is final, so that would lose the row for good. Parking
-    puts the row in front of a person, who can skip it in one click after looking. The reason names
-    the site the search ran on; with no host it still starts with "Not found in", which is how the
-    web app tells this skip from "already there". It never ends ``failed``: a recipe's
-    ``end_record`` cannot fail a record (D-017).
+    It parks rather than skips (PL-106 review, restored by T1's review of PL-113).
+    ``element_absent`` is not proof the record is gone: it is also true before a slow results table
+    has drawn, and on a login wall, an expired-session dialog or an error page -- the executor's
+    wall probe runs only
+    when a check answers false, not when an absence answers true. A skip is final, so a skip here
+    would lose the row for good. Parking puts the row in front of a person, who can skip it in one
+    click -- the run page's **Skip it** button -- after looking. It never ends ``failed``: a
+    recipe's ``end_record`` cannot fail a record (D-017).
+
+    PL-113 item 6 asked for the skip, and its review sent that back as the ticket's error. What is
+    kept from it is the plain sentence: the column's own name and the value the row searched for, so
+    the parked row says exactly what was not found.
 
     Ledger: the branch runs after the search and before any commit, so the record is in ``filling``
     with ``commit_attempted`` false; ``filling -> parked`` is legal there, and the person's skip is
     the ordinary ``parked -> skipped`` dismiss (migration 0003). ``run_loop.end_record`` still turns
     a commit-attempted skip into a park (B2).
     """
+    label = " ".join(str(column).replace("_", " ").split()).lower()
     return {
         "action": "branch",
         "name": "Park a record when the search finds nothing",
@@ -1263,7 +1283,7 @@ def _not_found_branch(value_template: str, host: str) -> dict[str, Any]:
                 "id": "end-record-1",
                 "action": "end_record",
                 "outcome": "parked",
-                "reason": f"Not found in {host}." if host else "Not found in the app.",
+                "reason": f"No {label} called ‘{{{{row.{column}}}}}’ was found.",
             }
         ],
     }
@@ -1482,6 +1502,38 @@ def _infer_assertion_from_fills(
     }
 
 
+def _chrome_names(candidates: list[Candidate]) -> set[str]:
+    """The names of the page's own frame: its tabs, links and menu items (PL-113 item 1).
+
+    A recording that clicks the Sales tab on its way to a product puts "Sales" in the steps. If a
+    save's check later waits for that same word, the check is the tab -- true on every page -- and
+    not a change. The names are read from the recorded clicks' first rung, lower-cased.
+    """
+    names: set[str] = set()
+    for candidate in candidates:
+        if candidate.action != "click":
+            continue
+        for rung in candidate.targets or []:
+            if rung.get("by") != "role":
+                continue
+            if str(rung.get("role", "")).lower() not in CHROME_ROLES:
+                continue
+            name = rung.get("name")
+            if isinstance(name, str) and name.strip():
+                names.add(name.strip().lower())
+    return names
+
+
+def _is_chrome_assertion(assert_after: Any, chrome_names: set[str]) -> str | None:
+    """The frame text a commit's check waits for, when that text is the page's own frame."""
+    if not isinstance(assert_after, dict) or not chrome_names:
+        return None
+    text = assert_after.get("text_visible")
+    if not isinstance(text, str):
+        return None
+    return text.strip() if text.strip().lower() in chrome_names else None
+
+
 def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
     """Compile a recorded event stream into a recipe that matches the schema.
 
@@ -1568,11 +1620,10 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
         value_template = f"{{{{row.{searched_column} | lower}}}}"
         if search_kind == "update":
             # The search finds the record to change: skipping it would skip every row, and finding
-            # nothing leaves nothing to change, so that row is parked with the site named. The
-            # condition is also true before a slow results table has drawn and on a login or error
-            # page, so a person -- not the branch -- decides whether to skip it (PL-106 review).
-            host = urlsplit(candidates[search_run].url).hostname or ""
-            search_branch = _not_found_branch(value_template, host)
+            # nothing leaves nothing to change, so that row is parked with the column and value
+            # named -- a person decides whether to skip it (PL-106 review; PL-113 item 6 restored
+            # the park at T1's review, keeping the plain sentence).
+            search_branch = _not_found_branch(searched_column, value_template)
             warnings.append(
                 "the search finds the record to change; if it finds nothing, the row is left for "
                 "you to skip"
@@ -1593,6 +1644,8 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
             )
 
     without_assertion: list[str] = []
+    chrome_assertions: list[str] = []
+    chrome_names = _chrome_names(parameterized)
     for index, candidate in enumerate(parameterized):
         if not candidate.commit:
             continue
@@ -1628,6 +1681,16 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
                 inferred_from_fill = True
                 warnings.append("this save is checked by the new record's name appearing")
         candidate.assert_after = assert_after
+        frame_text = _is_chrome_assertion(candidate.assert_after, chrome_names)
+        if frame_text is not None:
+            chrome_assertions.append(
+                f"commit step {candidate.recorded_id or candidate.seq} is checked by "
+                f"“{frame_text}”, which is part of the page's own frame (a tab, a link or a "
+                "menu): it is there whether or not the change was saved, so it cannot prove one; "
+                "re-record the save with a check that shows the change, or type the new value "
+                "and leave the field"
+            )
+            continue
         if candidate.assert_after is None:
             without_assertion.append(
                 f"commit step {candidate.recorded_id or candidate.seq} has no assert_after: "
@@ -1674,6 +1737,11 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
                     f"page the step ran on ({pattern!r}), so it cannot tell an accepted commit "
                     "from a refused one; re-record a step whose confirmation is visible"
                 )
+    if chrome_assertions:
+        raise CompileError(
+            "a commit step is checked by part of the page's own frame, so nothing proves the save",
+            problems=chrome_assertions,
+        )
     if without_assertion:
         raise CompileError(
             "a commit step must carry an assertion, and none could be inferred",
@@ -1696,6 +1764,27 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
             already_branch=already_branch,
         ),
     }
+
+    # PL-113 S2: a sign-in is not finished by clicking Continue. The run waits (up to 90 s, so the
+    # code email has time to arrive) for the page the demonstration reached after the code page,
+    # and the record is Done only when that page is reached.
+    if options.sign_in:
+        landing = sign_in_landing_pattern(options.sign_in_after_path or "")
+        if landing is None:
+            warnings.append(
+                "this task is a sign-in, but the recording couldn't see the page after the code, "
+                "so nothing checks that the sign-in finished"
+            )
+        else:
+            recipe["steps"].append(
+                {
+                    "id": "sign-in-finished",
+                    "action": "wait_for",
+                    "name": "Wait until the sign-in finishes",
+                    "condition": {"url_matches": landing, "timeout_ms": SIGN_IN_WAIT_MS},
+                    "timeout_ms": SIGN_IN_WAIT_MS,
+                }
+            )
 
     _fit_step_names(recipe.get("steps"))
     try:

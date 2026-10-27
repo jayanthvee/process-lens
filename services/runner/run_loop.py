@@ -86,7 +86,7 @@ from .clock import Clock
 from .conditions import condition_timeout
 from .executor import ConditionResult, ConfirmationProbe, Executor, StepCommand
 from .reconcile import Reconciler, outcome_of
-from .step_words import describe_step_failure
+from .step_words import describe_step_failure, describe_wait_failure
 from .templates import TemplateError, is_template, render
 
 logger = logging.getLogger("processlens.runner")
@@ -807,6 +807,60 @@ class RunLoop:
                 self._transition(conn, record, box.state, outcome, reason)
                 return outcome
 
+            # PL-113 S2: a wait step is a real check, not a command. A sign-in recipe ends with
+            # one: the page after the code page must be reached, or the row parks saying the
+            # sign-in did not finish. A code page that appears while the wait runs is drained
+            # below, so PL-102 reads the code from the person's email exactly as before.
+            if action == "wait_for":
+                if box.state == "prechecked":
+                    self._transition(conn, record, "prechecked", "filling", "steps begin")
+                    box.state = "filling"
+
+                if not self._pace_for_step(conn, record, run, epoch, box):
+                    return "paused"
+
+                condition = step.get("condition")
+                if not isinstance(condition, dict):
+                    self._transition(
+                        conn, record, box.state, "parked", "a wait step carries no condition"
+                    )
+                    box.state = "parked"
+                    return "parked"
+
+                try:
+                    verdict = self._check(
+                        condition,
+                        step_id=step.get("id"),
+                        record_key=record.record_key,
+                        row=row,
+                        variables=variables,
+                    )
+                except TemplateError as exc:
+                    return self._park_for_template_error(conn, record, box, exc)
+
+                # R6: a check is an executor call, so an event that arrived while it ran beats its
+                # verdict -- a code page is asked for its code here, not after the wait gave up.
+                stopped = self._drain_events(conn, record, run, epoch, box)
+                if stopped is not None:
+                    return stopped
+
+                if not verdict.passed:
+                    self._transition(
+                        conn,
+                        record,
+                        box.state,
+                        "parked",
+                        describe_wait_failure(step, row, variables),
+                        step=step,
+                        outcome="failed",
+                    )
+                    box.state = "parked"
+                    return "parked"
+
+                with conn.transaction():
+                    record_step_event(conn, record=record, step_id=step["id"], outcome="ok")
+                continue
+
             # An executor step. Enter `filling` on the first one.
             if box.state == "prechecked":
                 self._transition(conn, record, "prechecked", "filling", "steps begin")
@@ -871,6 +925,46 @@ class RunLoop:
             return "parked"
 
         if prepared.status != "ok":
+            # PL-113 S3 + T1 review B1: a button that was busy when it was clicked (disabled,
+            # aria-busy, or taking no clicks) may still do the work by itself. Two invariants decide
+            # whether that can be a commit:
+            #
+            # * PL-107 item 11: "already done" only holds when the check was FALSE before the step
+            #   and TRUE now. A confirmation left on screen from the previous row -- or a check that
+            #   is always true, the exact PL-113 item 1 bug -- must never mark this row Done. The
+            #   "before" read sits here because `prepare` sends no input: nothing has happened to
+            #   this row yet, and the post-assertion event drain keeps its own place.
+            # * AGENTS.md section 4: a commit's `verified` comes from `verify_commit`, which writes
+            #   `committed_keys` in the same transaction. `filling -> verified` here would leave no
+            #   key, so a re-run of the same row would save again.
+            #
+            # So this path needs a definite false-before, and it ends through the normal commit
+            # window: write-ahead, then reconcile, whose destination check ends in `verify_commit`.
+            held_before: bool | None = None
+            if _is_busy_failure(prepared.error) and step.get("assert_after"):
+                try:
+                    held_before = self._check_before_step(
+                        step["assert_after"],
+                        step_id=step.get("id"),
+                        record_key=record.record_key,
+                        row=row,
+                        variables=variables,
+                    )
+                except TemplateError as exc:
+                    return self._park_for_template_error(conn, record, box, exc)
+            if held_before is False:
+                verdict = self._check(
+                    step["assert_after"],
+                    step_id=step.get("id"),
+                    record_key=record.record_key,
+                    row=row,
+                    variables=variables,
+                )
+                stopped = self._drain_events(conn, record, run, epoch, box)
+                if stopped is not None:
+                    return stopped
+                if verdict.passed and verdict.status == "ok":
+                    return self._commit_busy_step(conn, record, run, epoch, step, box)
             self._transition(
                 conn,
                 record,
@@ -1088,6 +1182,67 @@ class RunLoop:
             step,
             check_sentence=describe_check(condition, row, variables),
         )
+
+    def _check_before_step(
+        self,
+        condition: Mapping[str, Any],
+        *,
+        step_id: str | None,
+        record_key: str | None,
+        row: Mapping[str, Any] | None = None,
+        variables: Mapping[str, Any] | None = None,
+    ) -> bool | None:
+        """Whether the step's check already held *before* the step ran (PL-107 item 11).
+
+        ``True`` means the confirmation was on the page before this row did anything, so it proves
+        nothing about this row. ``False`` is a definite "not there yet" and is the only answer that
+        lets a saved-by-the-page path run. ``None`` is no answer at all: the executor could not
+        read the page, and an unknown is never treated as a false.
+        """
+        rendered = dict(condition)
+        rendered["timeout_ms"] = 0
+        verdict = self._check(
+            rendered,
+            step_id=step_id,
+            record_key=record_key,
+            row=row,
+            variables=variables,
+        )
+        if verdict.status != "ok":
+            return None
+        return verdict.passed
+
+    def _commit_busy_step(
+        self,
+        conn: psycopg.Connection,
+        record: RecordClaim,
+        run: RunClaim,
+        epoch: int,
+        step: Mapping[str, Any],
+        box: _Box,
+    ) -> str:
+        """End a busy step's row through the commit window (PL-113 S3, T1 review B1).
+
+        Nothing was pressed, but the page showed the change after the step -- so the row enters the
+        commit window exactly as a dispatched save does: write-ahead first, then reconcile. The
+        destination check is what ends in ``verify_commit``, which writes ``committed_keys`` in the
+        same transaction; a destination without the record sends the row back to pending rather
+        than calling it Done.
+        """
+        with conn.transaction():
+            begin_commit(conn, record.id, worker=self.worker_id, epoch=epoch)
+        box.state = "submitting"
+        self._transition(
+            conn,
+            record,
+            "submitting",
+            "reconciling",
+            "the page saved it by itself; checking the destination",
+            step=step,
+            outcome="failed",
+        )
+        box.state = "reconciling"
+        return self._reconcile(conn, record, run, epoch, step)
 
     def _simple_step(
         self,
@@ -1708,6 +1863,11 @@ class RunLoop:
 
 
 # -- helpers the loop uses ------------------------------------------------
+
+
+def _is_busy_failure(error: str | None) -> bool:
+    """Whether the extension said the control was busy rather than absent or covered (PL-113 S3)."""
+    return bool(error) and "target is busy" in str(error).lower()
 
 
 def max_step_timeout_seconds(recipe: Mapping[str, Any]) -> float:

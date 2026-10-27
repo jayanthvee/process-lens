@@ -159,6 +159,8 @@ class RecordDetail(BaseModel):
     max_attempts: int
     commit_attempted: bool
     destination_ref: str | None
+    # PL-113 S3: the step's own raw error, for support, under the row. Never a value from the row.
+    last_step_error: str | None = None
 
 
 class TransitionDetail(BaseModel):
@@ -363,6 +365,7 @@ def list_records_endpoint(run_id: uuid.UUID) -> list[RecordDetail]:
     with connection() as conn:
         _fetch_run(conn, run_id)
         records = reads.list_run_records(conn, run_id)
+        errors = reads.latest_step_errors(conn, [record.id for record in records])
     return [
         RecordDetail(
             id=record.id,
@@ -376,6 +379,7 @@ def list_records_endpoint(run_id: uuid.UUID) -> list[RecordDetail]:
             max_attempts=record.max_attempts,
             commit_attempted=record.commit_attempted,
             destination_ref=record.destination_ref,
+            last_step_error=errors.get(record.id),
         )
         for record in records
     ]
