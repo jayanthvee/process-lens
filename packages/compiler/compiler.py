@@ -271,6 +271,15 @@ def to_candidates(
         # PL-112: a step that absorbed another event (a click and its submit) is named by either
         # id, so the person's choice is honoured whichever row they picked.
         named_ids = {recorded_id, *event.also_ids} - {None}
+        # PL-114, T1 review B1: a checkbox is never the save. AGENTS.md section 4 lists the steps a
+        # commit may be, and a check is not one of them: it sets a field's state. A person who picks
+        # its row by mistake is told so, and the compile carries on with the step as an ordinary
+        # check rather than producing a recipe the schema would refuse.
+        named_as_commit = bool(named_ids & commit_ids)
+        if action == "check" and named_as_commit:
+            warnings.append(
+                "a checkbox can't be the step that saves your work; pick the click that saves it"
+            )
         candidates.append(
             Candidate(
                 action=action,
@@ -282,13 +291,16 @@ def to_candidates(
                 after_url=_next_actionable_url(events, index),
                 seq=event.seq,
                 commit=(
-                    bool(named_ids & commit_ids)
+                    False
+                    if action == "check"
+                    else bool(named_ids & commit_ids)
                     if chosen_commits
                     else event.commit or (recorded_id is not None and recorded_id in commit_ids)
                 ),
                 observation=event.observation,
                 recorded_id=recorded_id,
                 frame=step.get("frame") if isinstance(step.get("frame"), list) else None,
+                checked=step.get("checked") if isinstance(step.get("checked"), bool) else None,
                 chip=event.chip,
                 autocomplete=event.autocomplete,
                 supersedes=event.supersedes,
@@ -436,6 +448,13 @@ def _render_candidate(candidate: Candidate) -> dict[str, Any]:
         # destination record -- so neither is ever emitted for one.
         step["key"] = candidate.key
         return step
+    if candidate.action == "check":
+        # PL-114: a check sets a yes/no to the value a run should leave behind, and carries the
+        # state the demonstration left when the recording saw it. It is not a fill: no clear_first
+        # and no option_match.
+        step["value"] = candidate.value
+        if candidate.checked is not None:
+            step["checked"] = candidate.checked
     if candidate.action in ("fill", "select"):
         step["value"] = candidate.value
         if candidate.action == "select":

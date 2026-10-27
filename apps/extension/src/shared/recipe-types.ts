@@ -73,6 +73,23 @@ export interface SelectStep extends StepCommon {
 }
 
 /**
+ * PL-114: a checkbox or switch, set to the state it ended in rather than clicked.
+ *
+ * The recorder used to record the click, which flips the box on replay: a row whose box was
+ * already ticked while teaching was unticked by every run. `checked` is what the demonstration
+ * left the field in, for the panel's words; `value` is what a run sets, and it can be bound to a
+ * column like any other value.
+ */
+export interface CheckStep extends StepCommon {
+  action: "check";
+  targets: LocatorRung[];
+  within?: string;
+  frame?: FrameStep[];
+  value: ValueSource;
+  checked?: boolean;
+}
+
+/**
  * The keys the recorder records as a `press`: the ones that do something other than type a
  * character (accept a suggestion, move focus with intent, dismiss a listbox, delete a token) and
  * the two chorded forms a composer sends with. A printable single character is never one of these.
@@ -100,7 +117,7 @@ export interface PressStep extends StepCommon {
 }
 
 /** The step shapes the recorder emits. It never emits a commit step. */
-export type RecordedStep = ClickStep | FillStep | SelectStep | PressStep;
+export type RecordedStep = ClickStep | FillStep | SelectStep | CheckStep | PressStep;
 
 /**
  * The kinds the recorder captures: click, fill/input, change/select, submit, a
@@ -124,6 +141,7 @@ export type RecordedKind =
   | "click"
   | "fill"
   | "select"
+  | "check"
   | "submit"
   | "navigate"
   | "observation"

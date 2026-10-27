@@ -15,10 +15,12 @@ from typing import Any
 # scroll, mousemove, and the like say nothing about what the workflow does.
 # ``press`` is a recorded key; ``unrecordable`` is the recorder's own mark that something
 # happened it could not describe as a step, which the compiler must see so it can refuse.
-ACTIONABLE_KINDS = frozenset({"click", "fill", "select", "submit", "press", "unrecordable"})
+ACTIONABLE_KINDS = frozenset(
+    {"click", "fill", "select", "check", "submit", "press", "unrecordable"}
+)
 
 # The step actions the recorder can produce. A submit collapses into a click.
-STEP_ACTIONS = ("click", "fill", "select", "press")
+STEP_ACTIONS = ("click", "fill", "select", "check", "press")
 
 
 @dataclass(frozen=True)
@@ -73,6 +75,8 @@ class Candidate:
     autocomplete: bool = False
     supersedes: str | None = None
     page_set: bool = False
+    # PL-114: the state a recorded check left the field in; `value` is what a run sets.
+    checked: bool | None = None
     notes: list[str] = field(default_factory=list)
 
 

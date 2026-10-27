@@ -154,10 +154,22 @@ export function stepSentence(step: RecordedStep | null, kind?: string): string {
   }
   const name = ownWords(step);
   if (step.action === "click") return name ? `Clicked ${name}` : "Clicked a control on the page";
+  if (step.action === "check") {
+    // PL-114 item 1: the state the field ended in, in a person's words.
+    const on =
+      step.value?.kind === "constant"
+        ? step.value.value === true
+        : (step as { checked?: boolean }).checked === true;
+    const what = name ?? "a box";
+    return on ? `Ticked ${what}` : `Unticked ${what}`;
+  }
   if (step.action === "fill") return name ? `Typed ${withArticle(name)}` : "Typed into a field";
   if (step.action === "select") {
     const value = constantValue(step);
-    return value ? `Chose ${value}` : "Chose an option";
+    if (!value) return "Chose an option";
+    // PL-114 items 2 and 6: a radio group or a status bar names the field as well as the choice.
+    if (name && name.toLowerCase() !== value.toLowerCase()) return `Chose ${value} for ${name}`;
+    return `Chose ${value}`;
   }
   if (step.action === "press") return `Pressed ${step.key}`;
   return UNNAMED_STEP;

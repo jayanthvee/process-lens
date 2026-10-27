@@ -1807,7 +1807,13 @@ class RunLoop:
             rendered["url"] = _safe_text(step["url"], row, variables)
         if isinstance(rendered.get("within"), str):
             rendered["within"] = _safe_text(rendered["within"], row, variables)
-        if "value" in step:
+        if step.get("action") == "check":
+            # PL-114: a check is a yes/no, not text. The extension receives the boolean itself so
+            # it never has to guess, and a cell that says neither parks the record here.
+            rendered["value"] = _check_boolean(step.get("value"), row, variables, step)
+            if "checked" in step:
+                rendered["checked"] = step["checked"]
+        elif "value" in step:
             # The runner resolves the value source; the extension receives a constant it can use
             # as-is. A bare literal here would arrive with no `kind` and the extension would refuse
             # it, and an `input` source would have nothing to read against in command mode.
@@ -1961,6 +1967,49 @@ def _safe_text(text: Any, row: Mapping[str, Any], variables: Mapping[str, Any]) 
         return render(text, row=row, variables=variables)
     except TemplateError:
         return text
+
+
+# PL-114: the words a sheet cell may use for yes or no, the same vocabulary the compiler binds on.
+_CHECK_YES_WORDS = frozenset({"yes", "y", "true", "1", "x", "\u2713", "\u2714", "on"})
+_CHECK_NO_WORDS = frozenset({"no", "n", "false", "0", "", "off"})
+
+
+def _check_boolean(
+    source: Any,
+    row: Mapping[str, Any],
+    variables: Mapping[str, Any],
+    step: Mapping[str, Any],
+) -> bool:
+    """The yes/no a check step sets, or the ticket's sentence when the value says neither."""
+    value = _render_value_source(source, row, variables)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in _CHECK_YES_WORDS:
+            return True
+        if text in _CHECK_NO_WORDS:
+            return False
+    raise TemplateError(f"\u2018{value}\u2019 isn't a yes or no for {_check_field_name(step)}.")
+
+
+def _check_field_name(step: Mapping[str, Any]) -> str:
+    """The field a check sets, in plain words, for the sentence a parked row shows."""
+    for target in step.get("targets") or []:
+        if isinstance(target, Mapping) and target.get("by") == "role":
+            name = target.get("name")
+            if isinstance(name, str) and name.strip():
+                return name.strip()
+    name = step.get("name")
+    if isinstance(name, str) and name.strip():
+        plain = name.strip()
+        for prefix in ("Check ", "Tick "):
+            if plain.startswith(prefix):
+                plain = plain[len(prefix) :].strip()
+                break
+        if plain:
+            return plain
+    return str(step.get("id") or "")
 
 
 def _render_value_source(source: Any, row: Mapping[str, Any], variables: Mapping[str, Any]) -> Any:

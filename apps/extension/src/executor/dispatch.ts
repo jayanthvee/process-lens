@@ -7,6 +7,7 @@
 // by a wait for the document to load. The element is always addressed by the
 // marker the resolver stamped on it.
 import type { CdpTransport } from "./cdp";
+import { fieldActionSource, type FieldQuery, type FieldResult } from "./fields";
 import { hitTestExpression, measureExpression, settleExpression, type MeasureResult } from "./ladder";
 import { evaluate, markerExpression } from "./page";
 import { ExecutorError } from "./types";
@@ -110,6 +111,34 @@ export async function measureTarget(
     );
   }
   return result;
+}
+
+/**
+ * PL-114: set, choose in, or read a field the person clicks rather than types.
+ *
+ * One round trip, one self-contained page function: `fieldActionInPage` carries its own helpers
+ * because it is serialized with `toString()`.
+ */
+export async function dispatchFieldAction(
+  cdp: CdpTransport,
+  query: FieldQuery,
+  contextId?: number,
+  hooks?: InputHooks,
+): Promise<FieldResult> {
+  // A check or a choose IS this step's input, so the gate runs before it: a withdrawn or expired
+  // command must not change the field.
+  const gate = inputGate(hooks);
+  gate();
+  const expression = `(() => { const fieldActionInPage = ${fieldActionSource()}; return fieldActionInPage(${JSON.stringify(
+    query,
+  )}); })()`;
+  const result = (await evaluate(
+    cdp,
+    expression,
+    contextId !== undefined ? { contextId } : {},
+  )) as FieldResult | undefined;
+  if (result?.changed === true) noteInputSent();
+  return result ?? { ok: false, reason: "the page did not answer" };
 }
 
 /**

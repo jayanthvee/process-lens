@@ -34,6 +34,7 @@ import {
   type Snapshot,
 } from "./snapshot";
 import type {
+  CheckStep,
   ClickStep,
   Condition,
   FillStep,
@@ -1306,6 +1307,65 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
     };
   }
 
+  /** Whether a checkbox or switch is on, by its own input state or its ARIA state. */
+  function toggleStateOf(el: Element): boolean {
+    if (el.tagName.toUpperCase() === "INPUT") return (el as HTMLInputElement).checked === true;
+    return (
+      el.getAttribute("aria-checked") === "true" || el.getAttribute("aria-pressed") === "true"
+    );
+  }
+
+  /**
+   * PL-114 item 1: a checkbox or switch as the state it ended in, not as the click that flipped it.
+   *
+   * The click was the bug: replaying it flipped a box that was already ticked while teaching. The
+   * value is what the field holds now, so a run sets it to that state and stops.
+   */
+  function checkStep(el: Element): CheckStep {
+    const state = toggleStateOf(el);
+    return {
+      id: nextStepId("check"),
+      action: "check",
+      name: `Check ${describeElement(el)}`,
+      targets: computeTargets(el),
+      value: { kind: "constant", value: state },
+      checked: state,
+    };
+  }
+
+  /** The group a radio belongs to: its own radiogroup, its fieldset, its form, or its parent. */
+  function radioGroupOf(el: Element): Element | null {
+    return (
+      el.closest("[role='radiogroup']") ??
+      el.closest("fieldset") ??
+      (el as HTMLInputElement).form ??
+      el.parentElement
+    );
+  }
+
+  /**
+   * PL-114 item 2/6: a radio group (or a status bar of aria-checked buttons) as a `select` on the
+   * group, with the chosen option's own label.
+   *
+   * The group is the target, not the chosen button, because a run chooses a different option for a
+   * different row: the executor matches the row's value against every option the group offers.
+   * Returns null when the option has no label to match on, so the caller records nothing rather
+   * than a step that cannot be replayed.
+   */
+  function radioStep(el: Element): SelectStep | null {
+    const group = radioGroupOf(el);
+    const label = accessibleName(el) || ownNameOf(el);
+    if (!group || !label) return null;
+    return {
+      id: nextStepId("select"),
+      action: "select",
+      name: `Select ${describeElement(group)}`,
+      targets: computeTargets(group),
+      value: { kind: "constant", value: label },
+      option_match: "text",
+    };
+  }
+
   function flushFill(el: Element): void {
     const value = pending.get(el);
     pending.delete(el);
@@ -1381,7 +1441,25 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
     // still records itself through its change event, so those are left to it rather than
     // recording the same action twice.
     if (!viaLabel && TYPING_ROLES.has(role)) return; // typing is captured as a fill
-    if (TOGGLE_ROLES.has(role)) return; // the change event captures the toggle
+    if (TOGGLE_ROLES.has(role)) {
+      // PL-114: a native input reports itself through `change`, which knows the state it ended in.
+      // A control built from a div and an ARIA role has no change event, so its own click is the
+      // moment to read the state -- after the page's own handler has run.
+      const native = el.tagName.toUpperCase() === "INPUT";
+      if (!native) {
+        const control = el;
+        setTimeout(() => {
+          if (!active()) return;
+          if (role === "radio") {
+            const step = radioStep(control);
+            if (step) emitStep("select", step);
+            return;
+          }
+          emitStep("check", checkStep(control));
+        }, 0);
+      }
+      return; // the change event captures a native toggle
+    }
     if (el.tagName.toUpperCase() === "SELECT") return; // the change event captures it
 
     if (role === "option") {
@@ -1442,8 +1520,17 @@ export function attachRecorder(doc: Document, hooks: RecorderHooks): RecorderHan
     }
     if (tag === "INPUT") {
       const type = inputType(el);
-      if (type === "checkbox" || type === "radio") {
-        emitAction("click", clickStep(el), el);
+      if (type === "checkbox") {
+        // PL-114 item 1: the state it ended in, not the click. `change` fires after the browser
+        // has flipped the box, so this is the value a run should set.
+        emitStep("check", checkStep(el), isRequiredField(el));
+        return;
+      }
+      if (type === "radio") {
+        // PL-114 item 2: the group and the chosen option's label, so another row can choose
+        // another option instead of replaying this click.
+        const step = radioStep(el);
+        if (step) emitStep("select", step, isRequiredField(el));
         return;
       }
       if (type === "file") return;

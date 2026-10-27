@@ -87,11 +87,10 @@ describe("only the fields the person changed (PL-113 item 3)", () => {
     const text = JSON.stringify(recorded.events);
     expect(text).not.toContain('"on"');
     expect(fills(recorded.events)).toEqual([]);
+    // PL-114 item 1: the state it ended in, not a click that would flip it on replay.
     expect(
       recorded.events.some(
-        (event) =>
-          event.step?.action === "click" &&
-          JSON.stringify(event.step.targets).toLowerCase().includes("checkbox"),
+        (event) => event.step?.action === "check" && event.step.value !== undefined,
       ),
     ).toBe(true);
   });

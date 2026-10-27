@@ -104,6 +104,46 @@ def parameterize_value(
     return {"kind": "input", "column": column}, f"bound a literal value to column {column!r}"
 
 
+# PL-114: the words a sheet cell may use for a checkbox. A real boolean means itself.
+YES_WORDS = frozenset({"yes", "y", "true", "1", "x", "\u2713", "\u2714", "on"})
+NO_WORDS = frozenset({"no", "n", "false", "0", "", "off"})
+
+
+def yes_no(value: Any) -> bool | None:
+    """The yes/no a cell means, or None when it says neither."""
+    if isinstance(value, bool):
+        return value
+    if not isinstance(value, str):
+        return None
+    text = value.strip().lower()
+    if text in YES_WORDS:
+        return True
+    if text in NO_WORDS:
+        return False
+    return None
+
+
+def bind_check_column(taught: bool, sample_row: dict[str, Any]) -> tuple[Any, list[str]]:
+    """Bind a taught check to the one column whose cell means the same yes/no.
+
+    With no such column the taught value stands and every row gets it, as it did before. With
+    several, the step is left as taught and the warning says why: a wrong bound column would tick
+    the box for the wrong rows, which is worse than repeating the demonstration.
+    """
+    columns = [column for column, cell in sample_row.items() if yes_no(cell) == taught]
+    if len(columns) == 1:
+        return (
+            {"kind": "input", "column": columns[0]},
+            [f'the "check" step\'s yes/no is bound to the {columns[0]} column'],
+        )
+    if columns:
+        return (
+            {"kind": "constant", "value": taught},
+            ['more than one column looks like a yes/no for the "check" step; it is left as taught'],
+        )
+    return {"kind": "constant", "value": taught}, []
+
+
 def parameterize_text(text: str, sample_row: dict[str, Any]) -> tuple[str, str | None]:
     """Replace recorded literals embedded in a rung's text with templates."""
     result = text
@@ -223,8 +263,17 @@ def parameterize_candidate(
 
     value = candidate.value
     if value is not None:
-        value, note = parameterize_value(value, sample_row, prefer=_field_tokens(candidate))
-        if note:
-            warnings.append(note)
+        if (
+            candidate.action == "check"
+            and isinstance(value, dict)
+            and value.get("kind") == "constant"
+            and isinstance(value.get("value"), bool)
+        ):
+            value, check_warnings = bind_check_column(value["value"], sample_row)
+            warnings.extend(check_warnings)
+        else:
+            value, note = parameterize_value(value, sample_row, prefer=_field_tokens(candidate))
+            if note:
+                warnings.append(note)
 
     return replace(candidate, targets=targets, value=value), warnings

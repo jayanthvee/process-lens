@@ -7,7 +7,7 @@ import type { Condition, FrameStep, LocatorRung, ValueSource } from "../shared/r
 import type { EventKind } from "../shared/command-protocol";
 
 /** The actions the attended executor performs itself. */
-export type ExecutedAction = "navigate" | "fill" | "select" | "click" | "press";
+export type ExecutedAction = "navigate" | "fill" | "select" | "check" | "click" | "press";
 
 /** One recipe step, narrowed to the fields the executor reads. */
 export interface ExecutorStep {
@@ -19,6 +19,8 @@ export interface ExecutorStep {
   timeout_ms?: number;
   on_failure?: "park" | "fail";
   targets?: LocatorRung[];
+  /** PL-114: the state a check leaves the field in while teaching. */
+  checked?: boolean;
   within?: string;
   frame?: FrameStep[];
   value?: ValueSource;

@@ -560,6 +560,7 @@
             { "$ref": "#/$defs/step_navigate" },
             { "$ref": "#/$defs/step_fill" },
             { "$ref": "#/$defs/step_select" },
+            { "$ref": "#/$defs/step_check" },
             { "$ref": "#/$defs/step_click" },
             { "$ref": "#/$defs/step_press" },
             { "$ref": "#/$defs/step_upload_file" },
@@ -649,6 +650,34 @@
           "enum": ["text", "value", "index"],
           "default": "text",
           "description": "How the option is identified from the value."
+        }
+      }
+    },
+
+    "step_check": {
+      "title": "check",
+      "description": "Set a checkbox or switch to a yes/no value. Setting it to the state it already has changes nothing and passes (PL-114).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "action", "targets", "value"],
+      "properties": {
+        "id": { "$ref": "#/$defs/step_id" },
+        "name": { "$ref": "#/$defs/step_name" },
+        "description": { "$ref": "#/$defs/step_description" },
+        "labels": { "$ref": "#/$defs/labels" },
+        "timeout_ms": { "$ref": "#/$defs/timeout_ms" },
+        "on_failure": { "$ref": "#/$defs/on_failure" },
+        "action": { "const": "check" },
+        "targets": { "$ref": "#/$defs/targets" },
+        "within": { "$ref": "#/$defs/template" },
+        "frame": { "$ref": "#/$defs/frame" },
+        "value": {
+          "allOf": [{ "$ref": "#/$defs/value_source" }],
+          "description": "Yes/no for this row. Accepts yes/no, true/false, 1/0, x/blank and a tick, case-insensitively; anything else parks the record rather than guessing."
+        },
+        "checked": {
+          "type": "boolean",
+          "description": "The state the field was left in while teaching. The value above is what a run sets; this is what the demonstration showed."
         }
       }
     },
