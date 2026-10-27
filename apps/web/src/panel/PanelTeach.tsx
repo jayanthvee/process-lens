@@ -447,6 +447,14 @@ export function PanelTeach(): JSX.Element {
             </p>
           ) : (
             <>
+              {clickChoices.length === 0 ? (
+                // PL-113 item 2: no click in the recording changes data. Say so plainly instead
+                // of letting a tab or a link stand in for the save.
+                <p className="panel-note">
+                  We didn't see a Save click. Some apps save by themselves. Click Save while
+                  teaching, or choose how your work is saved.
+                </p>
+              ) : null}
               <label className="panel-label" htmlFor="panel-commit">
                 Which click saves your work?
               </label>

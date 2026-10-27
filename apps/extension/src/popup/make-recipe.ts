@@ -564,9 +564,33 @@ export function defaultCommitStepId(events: RecordedEvent[]): string | null {
   let last: string | null = null;
   for (const event of events) {
     const step = event?.step ?? null;
-    if (step && step.action === "click" && step.id) last = step.id;
+    if (step && step.action === "click" && step.id && !movesAround(step)) last = step.id;
   }
   return last;
+}
+
+/**
+ * PL-113 item 2: the roles that only move around the page. A click on one of these is never the
+ * save: a tab, a link, a menu item and a tree node are there on every page, so a check that waits
+ * for one of them proves nothing about the row.
+ */
+const CHROME_ROLES = new Set([
+  "tab",
+  "link",
+  "menuitem",
+  "menuitemradio",
+  "menuitemcheckbox",
+  "treeitem",
+]);
+
+/** Whether this click only moved around the page (PL-113 item 2). */
+function movesAround(step: RecordedStep | null): boolean {
+  if (!step) return false;
+  for (const target of step.targets ?? []) {
+    const role = String((target as { role?: string }).role ?? "").toLowerCase();
+    if (CHROME_ROLES.has(role)) return true;
+  }
+  return false;
 }
 
 /** Every recorded step that can be the commit, labelled by its own words for the select. */
@@ -575,6 +599,9 @@ export function commitChoices(events: RecordedEvent[]): { id: string; label: str
   for (const event of events) {
     const step = event?.step ?? null;
     if (!step || step.action !== "click" || !step.id) continue;
+    // PL-113 item 2: a click that only moves around the page cannot save anything, so it is not
+    // offered as "the click that saves your work".
+    if (movesAround(step)) continue;
     // The value stays the step id -- that is what `commit_step_ids` sends. Only the label a
     // person reads is plain words, and never the id.
     choices.push({ id: step.id, label: humanName(step) ?? UNNAMED_CLICK });
