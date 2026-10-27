@@ -116,41 +116,26 @@ describe("item 1: task cards name the app, not the address", () => {
 });
 
 describe("item 2: default task names are not names", () => {
-  it("shows Untitled task with the site, and renames it from the same card", async () => {
+  it("shows Untitled task with the site, and offers no Rename until the server can rename", async () => {
     const fetchStub = createFetchStub(
-      panelRoutes(
-        [
-          task({
-            workflow_id: "wf-default",
-            name: "Recorded on goodlabs.com",
-            app: "goodlabs.com",
-          }),
-        ],
-        {
-          "/api/v1/tasks/wf-default": (call: { method: string; body: unknown }) =>
-            call.method === "PATCH"
-              ? { body: { workflow_id: "wf-default" } }
-              : { status: 404, body: { detail: "Not found" } },
-        },
-      ),
+      panelRoutes([
+        task({
+          workflow_id: "wf-default",
+          name: "Recorded on goodlabs.com",
+          app: "goodlabs.com",
+        }),
+      ]),
     );
     stub = fetchStub;
     renderPanel();
     await settle();
 
     expect(screen.getByText("Untitled task · goodlabs.com")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Rename" }));
-    fireEvent.change(screen.getByRole("textbox", { name: /task name/i }), {
-      target: { value: "Add goodlabs leads" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    await settle();
-
-    const renamed = fetchStub.requests.find(
-      (call) => call.method === "PATCH" && call.path === "/api/v1/tasks/wf-default",
-    );
-    expect(renamed?.body).toEqual({ name: "Add goodlabs leads" });
-    expect(await screen.findByText("Add goodlabs leads")).toBeTruthy();
+    // T1 review B1: services/api serves no PATCH /tasks/{id}, so a Save here could only 404.
+    // The card names the task and leaves renaming to the report's "Needs PL-113/114" list.
+    expect(screen.queryByRole("button", { name: "Rename" })).toBeNull();
+    expect(screen.queryByRole("textbox", { name: /task name/i })).toBeNull();
+    expect(fetchStub.requests.filter((call) => call.method === "PATCH")).toHaveLength(0);
   });
 
   it("shows Recorded task as Untitled task when there is no site", async () => {
@@ -452,6 +437,32 @@ describe("item 6: only the five status words", () => {
     ]) {
       expect(text.toLowerCase()).not.toContain(banned.toLowerCase());
     }
+  });
+});
+
+describe("a finished run that left rows for you (T1 review B2)", () => {
+  it("says Needs you, never a bare Finished", async () => {
+    stub = createFetchStub({
+      ...SHELL,
+      "/api/v1/runs": {
+        body: [
+          run({
+            id: "run-needs",
+            status: "completed",
+            recipe_name: "Add inquiries",
+            counts: { verified: 11, parked: 3, failed: 1 },
+          }),
+        ],
+      },
+    });
+    renderApp("/runs");
+    await settle();
+
+    // The owner's rule (PL-106 item 4): a finished run with rows left for a person is never
+    // labelled a bare Finished. The badge names what is left; the sentence says how much got done.
+    expect(screen.getByText("Needs you")).toBeTruthy();
+    expect(screen.getByText("Finished: 11 done · 4 need you")).toBeTruthy();
+    expect(screen.queryByText("Finished")).toBeNull();
   });
 });
 

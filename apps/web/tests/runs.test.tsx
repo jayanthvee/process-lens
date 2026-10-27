@@ -804,7 +804,10 @@ describe("a finished run with rows left for a person (PL-106 item 4)", () => {
     await settle();
 
     expect(screen.getByText("Finished: 11 done · 4 need you")).toBeTruthy();
-    expect(screen.getAllByText("Finished").length).toBeGreaterThan(0);
+    // The owner's rule, restored after T1 review B2: a run that left rows for a person is never
+    // labelled a bare Finished, so the badge says Needs you instead.
+    expect(screen.getByText("Needs you")).toBeTruthy();
+    expect(screen.queryByText("Finished")).toBeNull();
   });
 
   it("says it on the run's own page too", async () => {
