@@ -49,6 +49,12 @@ UNRECORDABLE_REFUSAL = (
 # The keys a person sends with: a press of one of these may be the send itself.
 COMMITTING_KEYS = frozenset({"Enter", "Control+Enter", "Meta+Enter"})
 
+# PL-113 item 1: roles that only move around the page. Their own names are the page's frame, so a
+# check that waits for one of them is true whether or not anything was saved.
+CHROME_ROLES = frozenset(
+    {"tab", "link", "menuitem", "menuitemradio", "menuitemcheckbox", "treeitem"}
+)
+
 # PL-113 S2: how long a sign-in wait gives the code email to arrive.
 SIGN_IN_WAIT_MS = 90_000
 
@@ -1491,6 +1497,38 @@ def _infer_assertion_from_fills(
     }
 
 
+def _chrome_names(candidates: list[Candidate]) -> set[str]:
+    """The names of the page's own frame: its tabs, links and menu items (PL-113 item 1).
+
+    A recording that clicks the Sales tab on its way to a product puts "Sales" in the steps. If a
+    save's check later waits for that same word, the check is the tab -- true on every page -- and
+    not a change. The names are read from the recorded clicks' first rung, lower-cased.
+    """
+    names: set[str] = set()
+    for candidate in candidates:
+        if candidate.action != "click":
+            continue
+        for rung in candidate.targets or []:
+            if rung.get("by") != "role":
+                continue
+            if str(rung.get("role", "")).lower() not in CHROME_ROLES:
+                continue
+            name = rung.get("name")
+            if isinstance(name, str) and name.strip():
+                names.add(name.strip().lower())
+    return names
+
+
+def _is_chrome_assertion(assert_after: Any, chrome_names: set[str]) -> str | None:
+    """The frame text a commit's check waits for, when that text is the page's own frame."""
+    if not isinstance(assert_after, dict) or not chrome_names:
+        return None
+    text = assert_after.get("text_visible")
+    if not isinstance(text, str):
+        return None
+    return text.strip() if text.strip().lower() in chrome_names else None
+
+
 def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
     """Compile a recorded event stream into a recipe that matches the schema.
 
@@ -1599,6 +1637,8 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
             )
 
     without_assertion: list[str] = []
+    chrome_assertions: list[str] = []
+    chrome_names = _chrome_names(parameterized)
     for index, candidate in enumerate(parameterized):
         if not candidate.commit:
             continue
@@ -1634,6 +1674,16 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
                 inferred_from_fill = True
                 warnings.append("this save is checked by the new record's name appearing")
         candidate.assert_after = assert_after
+        frame_text = _is_chrome_assertion(candidate.assert_after, chrome_names)
+        if frame_text is not None:
+            chrome_assertions.append(
+                f"commit step {candidate.recorded_id or candidate.seq} is checked by "
+                f"“{frame_text}”, which is part of the page's own frame (a tab, a link or a "
+                "menu): it is there whether or not the change was saved, so it cannot prove one; "
+                "re-record the save with a check that shows the change, or type the new value "
+                "and leave the field"
+            )
+            continue
         if candidate.assert_after is None:
             without_assertion.append(
                 f"commit step {candidate.recorded_id or candidate.seq} has no assert_after: "
@@ -1680,6 +1730,11 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
                     f"page the step ran on ({pattern!r}), so it cannot tell an accepted commit "
                     "from a refused one; re-record a step whose confirmation is visible"
                 )
+    if chrome_assertions:
+        raise CompileError(
+            "a commit step is checked by part of the page's own frame, so nothing proves the save",
+            problems=chrome_assertions,
+        )
     if without_assertion:
         raise CompileError(
             "a commit step must carry an assertion, and none could be inferred",
