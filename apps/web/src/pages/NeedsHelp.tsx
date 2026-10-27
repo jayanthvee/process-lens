@@ -100,7 +100,9 @@ export function NeedsHelp(): JSX.Element {
         {rows.length === 0 ? (
           <p className="panel-note">
             {help.error ??
-              "Nothing needs you right now \u2014 the rows that need your decision will appear here."}
+              (help.loading && help.data === null
+                ? "Loading what needs you\u2026"
+                : "Nothing needs you right now.")}
           </p>
         ) : (
           <ul className="rows">

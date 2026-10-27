@@ -45,19 +45,19 @@ function ConnectionLine(): JSX.Element {
     }
   }
 
+  if (attached) return <p className="panel-connect-quiet">Connected</p>;
+
   return (
-    <div className={attached ? "panel-connect on" : "panel-connect"}>
-      <span>{attached ? "Connected" : "Not connected"}</span>
-      {attached ? null : (
-        <button
-          type="button"
-          className="btn quiet"
-          disabled={connecting}
-          onClick={() => void connect()}
-        >
-          Connect
-        </button>
-      )}
+    <div className="panel-connect">
+      <span>Not connected</span>
+      <button
+        type="button"
+        className="btn quiet"
+        disabled={connecting}
+        onClick={() => void connect()}
+      >
+        Connect
+      </button>
     </div>
   );
 }

@@ -2,7 +2,15 @@ import { type CSSProperties } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 
 import { useJson } from "../lib/useJson";
-import { isOpenStatus, pickTaskForCsv, relativeTime, runStatusWords } from "../lib/words";
+import {
+  isDefaultTaskName,
+  isOpenStatus,
+  pickTaskForCsv,
+  relativeTime,
+  runStatusLabel,
+  siteWords,
+  taskTitleWords,
+} from "../lib/words";
 import { KeepsFailingWarning } from "../components/KeepsFailingWarning";
 import type { TaskRow } from "../types";
 import "./tasks.css";
@@ -27,20 +35,23 @@ function taskAction(task: TaskRow): { label: string; to: string } {
   return { label: "Run again", to: `/tasks/${task.workflow_id}` };
 }
 
-/** A task's result in plain words, never a state name (DESIGN.md §2). */
+/**
+ * A task's result in plain words, using only the five status words the owner fixed (PL-115 item 6).
+ * A finished run that left rows for a person still says so, after the status, in a count.
+ */
 function taskResult(task: TaskRow): { label: string; tone: string } {
   const run = task.last_run;
   if (run === null || run === undefined) return { label: "Ready", tone: "idle" };
-  const parked = run.counts?.parked ?? 0;
-  const failed = run.counts?.failed ?? 0;
-  if (isOpenStatus(run.status)) {
-    const outcome = runStatusWords(run.status);
-    return { label: outcome.label, tone: outcome.tone };
+  const outcome = runStatusLabel(run.status);
+  if (isOpenStatus(run.status)) return outcome;
+  const needs = (run.counts?.parked ?? 0) + (run.counts?.failed ?? 0);
+  if (run.status === "completed" && needs > 0) {
+    return {
+      label: `${outcome.label} · ${needs} ${needs === 1 ? "needs you" : "need you"}`,
+      tone: "help",
+    };
   }
-  if (failed > 0) return { label: "Didn't work", tone: "help" };
-  if (parked > 0) return { label: `${parked} needs help`, tone: "help" };
-  const outcome = runStatusWords(run.status);
-  return { label: outcome.label, tone: outcome.tone };
+  return outcome;
 }
 
 /** Every task that has been taught, in one table. */
@@ -119,9 +130,11 @@ export function Tasks(): JSX.Element {
                 <tr key={task.workflow_id}>
                   <td>
                     <Link className="task-name" to={`/tasks/${task.workflow_id}`}>
-                      {task.name}
+                      {taskTitleWords(task.name, task.app)}
                     </Link>
-                    <small>{task.app ?? "No site yet"}</small>
+                    {isDefaultTaskName(task.name) ? null : (
+                      <small>{siteWords(task.app) ?? "No site yet"}</small>
+                    )}
                     {/* PL-041: the task's last two runs both stopped the same way, so the task
                         itself needs recording again. The warning sits on the task's own row. */}
                     {task.keeps_failing == null ? null : (

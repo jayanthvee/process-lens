@@ -545,3 +545,276 @@ export function pickTaskForCsv(fileName: string): string {
 
 export const DOCUMENT_ROWS_GONE =
   "That document's rows are no longer here. Add the Word document again, or pick a file.";
+
+/*
+ * PL-115: the Runs and Tasks screens' own words. Everything below is additive: the older helpers
+ * keep their behavior, and these read only what a run object carries so a screen never has to
+ * invent a sentence.
+ */
+
+/** The site a task works on, as a person says it: "goodlabs.com", "Odoo" or "Twenty". */
+export function siteWords(app: string | null | undefined): string | null {
+  const raw = (app ?? "").trim();
+  if (raw === "") return null;
+  // Accept a full URL and a bare host alike: the scheme, then the path, query and fragment go.
+  const withoutScheme = raw.replace(/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//, "");
+  const authority = (withoutScheme.split(/[/?#]/)[0] ?? "").replace(/^.*@/, "").trim();
+  if (authority === "") return null;
+  let hostname = authority;
+  let port: string | null = null;
+  const colon = authority.lastIndexOf(":");
+  if (colon >= 0) {
+    const after = authority.slice(colon + 1);
+    if (/^\d+$/.test(after)) {
+      hostname = authority.slice(0, colon);
+      port = after;
+    }
+  }
+  const host = hostname.replace(/^www\./i, "").replace(/\.+$/, "");
+  if (host === "") return null;
+  const lower = host.toLowerCase();
+  if (lower.includes("odoo") || port === "8069") return "Odoo";
+  if (lower.includes("twenty") || port === "3000") return "Twenty";
+  return host;
+}
+
+/** Whether a task name is one of the recorder's placeholders rather than a name a person chose. */
+export function isDefaultTaskName(name: string | null | undefined): boolean {
+  const text = (name ?? "").trim();
+  if (text === "") return true;
+  if (text.toLowerCase() === "recorded task") return true;
+  return /^recorded on \S+$/i.test(text);
+}
+
+/** A task's title: the name a person gave it, or "Untitled task" and the site it touched. */
+export function taskTitleWords(name: string | null | undefined, app?: string | null): string {
+  const text = (name ?? "").trim();
+  if (!isDefaultTaskName(text)) return text;
+  let site = siteWords(app);
+  if (site === null) {
+    const match = /^recorded on (\S+)$/i.exec(text);
+    if (match !== null) {
+      const token = match[1] ?? "";
+      site = siteWords(token);
+    }
+  }
+  return site === null ? "Untitled task" : `Untitled task · ${site}`;
+}
+
+/** What a task does, so its run can be counted in the right words. */
+export type TaskKind = "add" | "change" | "signin";
+
+const ADD_FIRST_WORDS: readonly string[] = [
+  "add",
+  "create",
+  "new",
+  "enter",
+  "record",
+  "register",
+  "log",
+  "upload",
+  "send",
+  "invite",
+  "import",
+];
+
+export function taskKind(name: string | null | undefined): TaskKind {
+  const text = (name ?? "").trim();
+  if (/^(sign[\s-]?in|log[\s-]?in|login)\b/i.test(text)) return "signin";
+  const first = (text.split(/\s+/)[0] ?? "").toLowerCase().replace(/[^a-z]/g, "");
+  if (ADD_FIRST_WORDS.includes(first)) return "add";
+  return "change";
+}
+
+/** The word for a row that was already in the site, or `null` when a sign-in has no such rows. */
+export function alreadyWords(name: string | null | undefined): string | null {
+  const kind = taskKind(name);
+  if (kind === "signin") return null;
+  return kind === "add" ? "Already added" : "Already done";
+}
+
+/** A run's status, in the only five words the Runs screen shows. */
+export function runStatusLabel(status: string): Outcome {
+  switch (status) {
+    case "queued":
+      return { label: "Waiting to start", tone: "idle" };
+    case "running":
+      return { label: "Running", tone: "live" };
+    case "paused":
+      return { label: "Waiting for you", tone: "help" };
+    case "completed":
+      return { label: "Finished", tone: "ok" };
+    case "cancelled":
+      return { label: "Stopped", tone: "idle" };
+    case "failed":
+      return { label: "Stopped", tone: "help" };
+    default:
+      return { label: "Waiting to start", tone: "idle" };
+  }
+}
+
+function sameLocalDay(a: Date, b: Date): boolean {
+  return (
+    a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate()
+  );
+}
+
+/** When a run started or finished, as the Runs screen says it: "today 11:49 PM", "Oct 17". */
+export function runTimeWords(iso: string | null, now: Date = new Date()): string {
+  if (iso === null || iso.trim() === "") return "Never";
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return "Never";
+  if (sameLocalDay(at, now)) {
+    const clock = new Intl.DateTimeFormat("en-US", {
+      hour: "numeric",
+      minute: "2-digit",
+    }).format(at);
+    return `today ${clock}`;
+  }
+  const dayBefore = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+  if (sameLocalDay(at, dayBefore)) return "yesterday";
+  const month = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" }).format(at);
+  if (at.getFullYear() !== now.getFullYear()) return `${month}, ${at.getFullYear()}`;
+  return month;
+}
+
+/** What a paused run is waiting for, said once with the pause reason's own sentence. */
+export function waitingForYouWords(reason: string | null): string {
+  const key = (reason ?? "").trim().toLowerCase();
+  // Two pauses the generic sentence would name as engine words rather than as a thing to do.
+  if (key === "code_required") {
+    return "Waiting for you: The site is asking for a verification code. Open the run and enter it.";
+  }
+  if (key === "site_daily_cap") {
+    return "Waiting for you: today's limit for this site is reached. It can continue tomorrow.";
+  }
+  const paused = (pauseReasonWords(reason) ?? "").trim();
+  const clean = paused.replace(/^Paused:\s*/i, "").trim();
+  if (clean === "") return "Waiting for you: open the run to see what it needs.";
+  return `Waiting for you: ${clean}`;
+}
+
+/*
+ * A run's rows, counted from the ledger states only. A detail-shaped object carries a `total` of
+ * its own beside these keys, and adding it would count every row twice.
+ */
+const LEDGER_STATES: readonly string[] = [
+  "pending",
+  "claimed",
+  "prechecked",
+  "filling",
+  "submitting",
+  "submitted_unverified",
+  "reconciling",
+  "verified",
+  "skipped",
+  "parked",
+  "failed",
+];
+
+interface RunCount {
+  total: number;
+  done: number;
+  needs: number;
+  verified: number;
+  skipped: number;
+}
+
+function runCount(counts: Record<string, number> | null | undefined): RunCount {
+  const source = counts ?? {};
+  let total = 0;
+  for (const key of LEDGER_STATES) {
+    const value = source[key];
+    if (typeof value === "number" && Number.isFinite(value)) total += value;
+  }
+  const verified = source.verified ?? 0;
+  const skipped = source.skipped ?? 0;
+  const needs = (source.parked ?? 0) + (source.failed ?? 0);
+  return { total, done: verified + skipped, needs, verified, skipped };
+}
+
+function needsYou(count: number): string {
+  return `${count} ${count === 1 ? "needs you" : "need you"}`;
+}
+
+/** One line about a run: what it is doing, or what it left for a person. */
+export function runLineWords(run: {
+  status: string;
+  pause_reason: string | null;
+  counts: Record<string, number>;
+  recipe_name: string | null;
+}): string {
+  const counts = runCount(run.counts);
+  const kind = taskKind(run.recipe_name);
+  switch (run.status) {
+    case "paused":
+      return waitingForYouWords(run.pause_reason);
+    case "queued":
+      return "Waiting to start.";
+    case "running": {
+      if (counts.total === 0) return "Running: just started.";
+      const verb = kind === "add" ? "Added" : kind === "signin" ? "Done" : "Changed";
+      const parts = [`${verb} ${counts.verified} of ${counts.total}`];
+      if (counts.skipped > 0 && kind !== "signin") {
+        const already = alreadyWords(run.recipe_name) ?? "Already done";
+        parts.push(`${counts.skipped} ${already.toLowerCase()}`);
+      }
+      if (counts.needs > 0) parts.push(needsYou(counts.needs));
+      return parts.join(" · ");
+    }
+    case "completed": {
+      if (counts.total === 0) return "Finished: nothing to do.";
+      if (counts.needs > 0) return `Finished: ${counts.done} done · ${needsYou(counts.needs)}`;
+      if (counts.done >= counts.total) return `Finished: all ${counts.done} done`;
+      return `Finished: ${counts.done} of ${counts.total} done`;
+    }
+    case "cancelled":
+      return counts.done === 0
+        ? "Stopped by you before any rows"
+        : `Stopped by you after ${plural(counts.done, "row")}`;
+    case "failed":
+      return counts.done === 0
+        ? "Stopped before any rows"
+        : `Stopped after ${plural(counts.done, "row")}`;
+    default:
+      return "Waiting to start.";
+  }
+}
+
+/**
+ * What a finished run saved at three minutes a row, or `null` when nothing was added or changed.
+ *
+ * Only `verified` rows count: a row that was already there cost the person nothing this time, so
+ * it saved nothing, and a run made only of them shows no figure at all (PL-115 item 8).
+ */
+export function savedTimeWords(run: {
+  status: string;
+  counts: Record<string, number>;
+}): string | null {
+  if (run.status !== "completed") return null;
+  const counts = runCount(run.counts);
+  if (counts.verified < 1) return null;
+  const minutes = counts.verified * 3;
+  return (
+    `Saved about ${plural(minutes, "minute")} ` +
+    `(${plural(counts.verified, "row")} × about 3 min by hand)`
+  );
+}
+
+/**
+ * The badge beside a run's name: the five status words, except a finished run that left rows for a
+ * person. That one is never a bare "Finished" (PL-106 item 4): the badge says what is still owed,
+ * and the line beside it says what the run did.
+ */
+export function runBadgeWords(run: {
+  status: string;
+  counts: Record<string, number>;
+}): Outcome {
+  if (run.status === "completed") {
+    const needs = (run.counts?.parked ?? 0) + (run.counts?.failed ?? 0);
+    if (needs > 0) return { label: "Needs you", tone: "help" };
+  }
+  return runStatusLabel(run.status);
+}

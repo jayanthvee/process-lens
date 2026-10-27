@@ -17,6 +17,9 @@ import {
   CODE_FROM_EMAIL_BUTTON,
   CODE_FROM_EMAIL_OFFER,
   codeFromEmailWords,
+  isDefaultTaskName,
+  siteWords,
+  taskTitleWords,
 } from "../lib/words";
 import type { RunCreated, TaskRow } from "../types";
 import { extensionChrome } from "./extension";
@@ -199,14 +202,19 @@ export function PanelTasks(): JSX.Element {
         {rows.map((task) => {
           const inputs = task.inputs ?? [];
           const message = codeProblem(task);
+          // PL-115 item 2: a placeholder name reads as "Untitled task · <site>". Renaming is not
+          // offered here yet: services/api serves no PATCH /tasks/{id}, so a Save could only 404
+          // (T1 review B1); the report lists it under "Needs PL-113/114".
+          const untitled = isDefaultTaskName(task.name);
+          const site = siteWords(task.app);
+          const title = taskTitleWords(task.name, task.app);
+          const classes = ["panel-task"];
+          if (task.sign_in === true) classes.push("panel-task-signin");
           return (
-            <li
-              className={task.sign_in === true ? "panel-task panel-task-signin" : "panel-task"}
-              key={task.workflow_id}
-            >
+            <li className={classes.join(" ")} key={task.workflow_id}>
               <div className="panel-task-text">
-                <b>{task.name}</b>
-                {task.app === null || task.app === undefined ? null : <small>{task.app}</small>}
+                <b>{title}</b>
+                {untitled || site === null ? null : <small>{site}</small>}
               </div>
               {task.sign_in === true ? (
                 <div className="panel-signin">
@@ -287,7 +295,7 @@ export function PanelTasks(): JSX.Element {
                   disabled={running !== null}
                   onClick={() => void runOnce(task)}
                 >
-                  Run once
+                  Run
                 </button>
               ) : (
                 <Link className="btn quiet" to={`/tasks/${task.workflow_id}/run`}>

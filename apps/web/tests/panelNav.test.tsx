@@ -93,14 +93,14 @@ describe("the side panel", () => {
   });
 });
 
-describe("Run once", () => {
+describe("Run", () => {
   it("is offered only for a task with no spreadsheet columns", async () => {
     stub = stubWith(true);
     renderPanel();
 
-    const once = await screen.findByRole("button", { name: "Run once" });
+    const once = await screen.findByRole("button", { name: "Run" });
     expect(once.closest("li, tr, article")?.textContent).toContain("Close the day");
-    expect(screen.getAllByRole("button", { name: "Run once" })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "Run" })).toHaveLength(1);
     expect(screen.getAllByRole("link", { name: "Run with a spreadsheet" })).toHaveLength(1);
   });
 
@@ -108,7 +108,7 @@ describe("Run once", () => {
     stub = stubWith(true);
     renderPanel();
 
-    fireEvent.click(await screen.findByRole("button", { name: "Run once" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Run" }));
     await settle();
 
     const started = stub.requests.find((call) => call.path === "/api/v1/tasks/w-once/run-once");
