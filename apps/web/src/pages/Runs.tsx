@@ -7,8 +7,8 @@ import { useJson } from "../lib/useJson";
 import {
   isOpenStatus,
   refusalWords,
+  runBadgeWords,
   runLineWords,
-  runStatusLabel,
   runTimeWords,
   savedTimeWords,
   taskTitleWords,
@@ -195,7 +195,7 @@ export function Runs(): JSX.Element {
         </div>
         <ul className="run-list">
           {rows.map((run) => {
-            const badge = runStatusLabel(run.status);
+            const badge = runBadgeWords(run);
             const saved = savedTimeWords(run);
             return (
               <li className="run-line" key={run.id}>

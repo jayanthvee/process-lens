@@ -184,51 +184,6 @@ body,
   padding: 6px 10px;
   font-size: 12.5px;
 }
-/* PL-115: an untitled task can be named on its own card */
-.panel-rename {
-  justify-self: start;
-  margin-top: 2px;
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--ink-2);
-  font: inherit;
-  font-size: 12px;
-  text-decoration: underline;
-  cursor: pointer;
-}
-.panel-rename:hover {
-  color: var(--ink);
-}
-.panel-rename:focus-visible {
-  outline: 2px solid var(--gold);
-  outline-offset: 1px;
-}
-.panel-task-editing {
-  flex-wrap: wrap;
-  align-items: flex-start;
-}
-.panel-rename-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  flex: 1 1 100%;
-  min-width: 0;
-}
-.panel-rename-row .panel-input {
-  flex: 1 1 120px;
-  min-width: 0;
-  padding: 6px 9px;
-  font-size: 13px;
-}
-.panel-rename-row .btn {
-  padding: 6px 10px;
-  font-size: 12.5px;
-}
-.panel-rename-row .panel-problem {
-  flex: 1 1 100%;
-}
 .panel-task-signin {
   flex-wrap: wrap;
   align-items: flex-start;

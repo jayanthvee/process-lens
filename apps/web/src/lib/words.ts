@@ -802,3 +802,19 @@ export function savedTimeWords(run: {
     `(${plural(counts.verified, "row")} × about 3 min by hand)`
   );
 }
+
+/**
+ * The badge beside a run's name: the five status words, except a finished run that left rows for a
+ * person. That one is never a bare "Finished" (PL-106 item 4): the badge says what is still owed,
+ * and the line beside it says what the run did.
+ */
+export function runBadgeWords(run: {
+  status: string;
+  counts: Record<string, number>;
+}): Outcome {
+  if (run.status === "completed") {
+    const needs = (run.counts?.parked ?? 0) + (run.counts?.failed ?? 0);
+    if (needs > 0) return { label: "Needs you", tone: "help" };
+  }
+  return runStatusLabel(run.status);
+}
