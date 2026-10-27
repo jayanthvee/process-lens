@@ -141,8 +141,8 @@ describe("RecorderSession.remove", () => {
     expect(session.pendingTarget()).toBeNull();
   });
 
-  it("is refused while the recording is still running", () => {
-    expect(canRemoveStep("recording")).toBe(false);
+  it("is allowed while the recording is still running (PL-113 item 7)", () => {
+    expect(canRemoveStep("recording")).toBe(true);
     expect(canRemoveStep("idle")).toBe(true);
   });
 });
@@ -170,12 +170,12 @@ describe("the × on a recorded step", () => {
     }
   });
 
-  it("is hidden while the recording is on, and shown after Stop", () => {
+  it("is shown while the recording is on as well as after Stop (PL-113 item 7)", () => {
     const session = recorded();
 
     renderStepList(list(), session.events, { recording: true });
     expect(removeButtons()).toHaveLength(3);
-    for (const button of removeButtons()) expect(button.hidden, "hidden while recording").toBe(true);
+    for (const button of removeButtons()) expect(button.hidden, "shown while recording").toBe(false);
 
     renderStepList(list(), session.events, { recording: false });
     for (const button of removeButtons()) expect(button.hidden, "shown after Stop").toBe(false);

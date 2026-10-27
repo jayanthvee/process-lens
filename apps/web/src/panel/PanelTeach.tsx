@@ -398,7 +398,6 @@ export function PanelTeach(): JSX.Element {
                     type="button"
                     className="panel-remove"
                     aria-label="Remove this step"
-                    hidden={recording}
                     onClick={() => void remove(line.seq)}
                   >
                     ×

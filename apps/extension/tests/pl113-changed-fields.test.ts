@@ -46,6 +46,12 @@ function fills(events: PendingEvent[]): PendingEvent[] {
   return events.filter((event) => event.kind === "fill");
 }
 
+/** The literal a fill recorded, read off the event in the shape the compiler receives. */
+function filledValue(event: PendingEvent | undefined): string | undefined {
+  const step = event?.step as { value?: { value?: string } } | null | undefined;
+  return step?.value?.value;
+}
+
 beforeEach(() => {
   document.body.innerHTML = "";
   resetStepIds();
@@ -66,7 +72,7 @@ describe("only the fields the person changed (PL-113 item 3)", () => {
 
     const recorded_fills = fills(recorded.events);
     expect(recorded_fills).toHaveLength(1);
-    expect(recorded_fills[0].step?.value).toMatchObject({ value: "799" });
+    expect(filledValue(recorded_fills[0])).toBe("799");
   });
 
   it("records a checkbox as a click, never as Typed … \"on\"", () => {
@@ -104,6 +110,6 @@ describe("only the fields the person changed (PL-113 item 3)", () => {
 
     const recorded_fills = fills(recorded.events);
     expect(recorded_fills).toHaveLength(1);
-    expect(recorded_fills[0].step?.value).toMatchObject({ value: "changed" });
+    expect(filledValue(recorded_fills[0])).toBe("changed");
   });
 });
