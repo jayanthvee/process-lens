@@ -22,15 +22,85 @@
   margin: 14px 0 0;
 }
 
-/* "11 of 20 done" over a thin progress bar: the same bar Home shows, with the words under it. */
-.runs td.progress-cell {
+/* One run per line: the task's name and where it got to, one sentence about what it did, then
+   when it started and the one click it needs -- all inside the same card, so a person sees the
+   action where the problem is. The columns are the panel's, first, and drop to one at 780px. */
+.runs .run-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px 20px 18px;
+  display: grid;
+  gap: 10px;
+}
+
+.runs .run-line {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 4px 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--hair-2);
+  border-radius: 12px;
+  background: var(--glass);
+}
+
+.runs .run-line-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--ink);
+  font-size: 14.5px;
+}
+
+.runs .run-line .res {
+  justify-self: end;
+  white-space: nowrap;
+}
+
+.runs .run-line-sentence {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 14px;
+}
+
+.runs .run-line-foot {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 10px 14px;
+  flex-wrap: wrap;
+  color: var(--muted);
+  font-size: 13px;
   font-variant-numeric: tabular-nums;
 }
 
-.runs td.progress-cell .track {
-  display: block;
-  margin-top: 7px;
-  max-width: 180px;
+/* The actions sit at the end of the time line, and wrap under it before they ever squeeze. */
+.runs .run-line-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* A waiting run's decision: two buttons, side by side, and the refusal beside them. */
+.runs .decision-buttons {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.runs .run-line-error {
+  color: var(--help);
+  font-size: 13px;
+}
+
+.runs .run-line-saved {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
 }
 
 .run-detail .pause-reason {
@@ -137,5 +207,24 @@
 
   .runs .empty {
     padding: 4px 16px 18px;
+  }
+
+  .runs .run-list {
+    padding: 4px 16px 16px;
+  }
+
+  /* At panel width the badge goes under the name, and the actions under the time, rather than
+     either of them running off the edge. */
+  .runs .run-line {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .runs .run-line .res {
+    justify-self: start;
+  }
+
+  .runs .run-line-actions {
+    margin-left: 0;
   }
 }

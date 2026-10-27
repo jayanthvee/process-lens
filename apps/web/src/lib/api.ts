@@ -68,7 +68,7 @@ function detailFromPayload(status: number, payload: unknown): string {
 }
 
 async function request<T>(
-  method: "GET" | "POST" | "PUT",
+  method: "GET" | "POST" | "PUT" | "PATCH",
   path: string,
   body?: unknown,
   signal?: AbortSignal,
@@ -125,6 +125,11 @@ export function apiPostFile<T>(path: string, form: FormData, signal?: AbortSigna
 /** `PUT` a JSON body and read the JSON answer. */
 export function apiPut<T>(path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
   return request<T>("PUT", path, body, signal);
+}
+
+/** `PATCH` a JSON body and read the JSON answer. */
+export function apiPatch<T>(path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+  return request<T>("PATCH", path, body, signal);
 }
 
 /** The API's `detail` text, so a refusal can be shown next to the button that caused it. */

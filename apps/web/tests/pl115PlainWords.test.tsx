@@ -193,14 +193,28 @@ describe("item 3: one button per card that says what happens", () => {
 
     const cards = screen.getAllByRole("listitem");
     expect(cards).toHaveLength(3);
+    const byName = (name: string): HTMLElement => {
+      const card = cards.find((entry) => entry.textContent?.includes(name));
+      expect(card, `a card for ${name}`).toBeTruthy();
+      return card as HTMLElement;
+    };
     for (const card of cards) {
       const runButtons = within(card).queryAllByRole("button", { name: /^Run/ });
       const runLinks = within(card).queryAllByRole("link", { name: /^Run/ });
       expect(runButtons.length + runLinks.length).toBe(1);
     }
-    expect(screen.getByRole("button", { name: "Run" })).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Run with a spreadsheet" })).toBeTruthy();
-    expect(screen.getByRole("combobox", { name: /email/i })).toBeTruthy();
+    // A task with no inputs runs once, and its one control says what happens: Run.
+    expect(within(byName("Close the day")).getByRole("button", { name: "Run" })).toBeTruthy();
+    expect(within(byName("Close the day")).queryByRole("link", { name: /Run/ })).toBeNull();
+    // A spreadsheet task keeps its spreadsheet control.
+    expect(
+      within(byName("Add inquiries")).getByRole("link", { name: "Run with a spreadsheet" }),
+    ).toBeTruthy();
+    // A sign-in task shows the PL-112 email pick and one Run that sends it.
+    const signIn = byName("Sign in to the app");
+    expect(within(signIn).getByRole("combobox", { name: /email/i })).toBeTruthy();
+    expect(within(signIn).getByRole("button", { name: "Run" })).toBeTruthy();
+    expect(within(signIn).queryByRole("link", { name: /Run/ })).toBeNull();
     expect(screen.queryByRole("button", { name: "Run once" })).toBeNull();
   });
 });
@@ -264,6 +278,35 @@ describe("item 4: the runs list says what each run did in one line", () => {
         "Waiting for you: Log in to the site in the ProcessLens window, then resume.",
       ),
     ).toBeTruthy();
+    // The button the sentence names sits on the same line, next to Open.
+    expect(screen.getByRole("button", { name: "Resume" })).toBeTruthy();
+  });
+
+  it("sends a pause that needs the run page to Open, not a blind Resume", async () => {
+    stub = createFetchStub({
+      ...SHELL,
+      "/api/v1/runs": {
+        body: [
+          run({
+            id: "run-code",
+            status: "paused",
+            pause_reason: "code_required",
+            recipe_name: "Sign in to the app",
+            counts: { verified: 1 },
+          }),
+        ],
+      },
+    });
+    renderApp("/runs");
+    await settle();
+
+    expect(
+      screen.getByText(
+        "Waiting for you: The site is asking for a verification code. Open the run and enter it.",
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Resume" })).toBeNull();
+    expect(screen.getByRole("link", { name: "Open" }).getAttribute("href")).toBe("/runs/run-code");
   });
 
   it("shows today's time with the hour, yesterday as yesterday, and dates only when older", async () => {
@@ -505,6 +548,12 @@ describe("item 8: time saved only for a finished run that did something", () => 
             recipe_name: "Add inquiries",
             counts: {},
           }),
+          run({
+            id: "run-all-there",
+            status: "completed",
+            recipe_name: "Send invoices",
+            counts: { skipped: 4 },
+          }),
         ],
       },
     });
@@ -641,7 +690,7 @@ describe("the banned words and the port number are absent from every screen", ()
     renderPanel();
     await settle();
     expect(screen.getByText("Add inquiries")).toBeTruthy();
-    expect(screen.getByText("Recorded task")).toBeTruthy();
+    expect(screen.getByText("Untitled task")).toBeTruthy();
     expectPlain(visibleText(), "Tasks");
   });
 
@@ -706,5 +755,66 @@ describe("the banned words and the port number are absent from every screen", ()
     await settle();
     expect(screen.getByText("ACME-1")).toBeTruthy();
     expectPlain(visibleText(), "Needs your help");
+  });
+
+  it("the website's Tasks page", async () => {
+    stub = createFetchStub({
+      ...SHELL,
+      "/api/v1/tasks": {
+        body: [
+          task({
+            workflow_id: "wf-paused",
+            name: "Add inquiries",
+            app: "localhost:8069",
+            last_run: {
+              run_id: "run-1",
+              status: "paused",
+              started_at: "2026-10-27T10:00:00Z",
+              counts: { verified: 1, parked: 1 },
+            },
+          }),
+          task({
+            workflow_id: "wf-queued",
+            name: "Send invoices",
+            app: "www.goodlabs.com",
+            last_run: {
+              run_id: "run-2",
+              status: "queued",
+              started_at: "2026-10-27T10:00:00Z",
+              counts: {},
+            },
+          }),
+          task({
+            workflow_id: "wf-failed",
+            name: "Update prices",
+            app: "crm.example.com",
+            last_run: {
+              run_id: "run-3",
+              status: "failed",
+              started_at: "2026-10-27T10:00:00Z",
+              counts: { failed: 1 },
+            },
+          }),
+          task({
+            workflow_id: "wf-untitled",
+            name: "Recorded on recorded.example.com",
+            app: "recorded.example.com",
+            inputs: [],
+          }),
+        ],
+      },
+    });
+    renderApp("/tasks");
+    await settle();
+
+    expect(screen.getAllByText("Waiting for you").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Waiting to start").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Stopped").length).toBeGreaterThan(0);
+    expect(screen.getByText("Odoo")).toBeTruthy();
+    expect(screen.getByText("goodlabs.com")).toBeTruthy();
+    // The site is named once: in "Untitled task · recorded.example.com", never twice.
+    expect(screen.getByText("Untitled task · recorded.example.com")).toBeTruthy();
+    expect(screen.getAllByText(/recorded\.example\.com/)).toHaveLength(1);
+    expectPlain(visibleText(), "the website's Tasks page");
   });
 });

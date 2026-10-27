@@ -10,13 +10,16 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
-import { apiPost, errorText } from "../lib/api";
+import { apiPatch, apiPost, errorText } from "../lib/api";
 import { knownBrowser } from "../lib/browser";
 import { useJson } from "../lib/useJson";
 import {
   CODE_FROM_EMAIL_BUTTON,
   CODE_FROM_EMAIL_OFFER,
   codeFromEmailWords,
+  isDefaultTaskName,
+  siteWords,
+  taskTitleWords,
 } from "../lib/words";
 import type { RunCreated, TaskRow } from "../types";
 import { extensionChrome } from "./extension";
@@ -39,6 +42,12 @@ export function PanelTasks(): JSX.Element {
   const [selected, setSelected] = useState<Record<string, string>>({});
   const [another, setAnother] = useState<Record<string, string>>({});
   const [rowProblems, setRowProblems] = useState<Record<string, string>>({});
+  // PL-115: a task the recorder left untitled can be named here, on its own card.
+  const [renamed, setRenamed] = useState<Record<string, string>>({});
+  const [editing, setEditing] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
+  const [saving, setSaving] = useState<string | null>(null);
+  const [renameProblems, setRenameProblems] = useState<Record<string, string>>({});
 
   useEffect(() => {
     const storage = extensionChrome()?.storage?.local;
@@ -65,6 +74,53 @@ export function PanelTasks(): JSX.Element {
     const chosen = selected[task.workflow_id];
     if (chosen !== undefined) return chosen;
     return emailsFor(task)[0] ?? ANOTHER_EMAIL;
+  }
+
+  function startRename(task: TaskRow): void {
+    setEditing(task.workflow_id);
+    setDraft(renamed[task.workflow_id] ?? "");
+    setRenameProblems((current) => {
+      const next = { ...current };
+      delete next[task.workflow_id];
+      return next;
+    });
+  }
+
+  function cancelRename(): void {
+    setEditing(null);
+    setDraft("");
+  }
+
+  async function saveName(task: TaskRow): Promise<void> {
+    const trimmed = draft.trim();
+    if (trimmed === "" || saving !== null) return;
+    setSaving(task.workflow_id);
+    setRenameProblems((current) => {
+      const next = { ...current };
+      delete next[task.workflow_id];
+      return next;
+    });
+    try {
+      await apiPatch<{ workflow_id?: string }>("/api/v1/tasks/" + task.workflow_id, {
+        name: trimmed,
+      });
+      setRenamed((current) => ({ ...current, [task.workflow_id]: trimmed }));
+      setEditing(null);
+      setDraft("");
+      tasks.reload();
+    } catch (failure) {
+      const detail = errorText(failure);
+      setRenameProblems((current) => ({
+        ...current,
+        // The rename route is not in services/api yet (PL-115 report, "Needs PL-113/114"): a 404
+        // is said in a person's words rather than as the API's own "Not Found".
+        [task.workflow_id]: /not found/i.test(detail)
+          ? "The name wasn't saved. Renaming isn't available on this server yet."
+          : detail,
+      }));
+    } finally {
+      setSaving(null);
+    }
   }
 
   function setRowProblem(task: TaskRow, message: string | null): void {
@@ -199,15 +255,58 @@ export function PanelTasks(): JSX.Element {
         {rows.map((task) => {
           const inputs = task.inputs ?? [];
           const message = codeProblem(task);
+          const shownName = renamed[task.workflow_id] ?? task.name;
+          const untitled = isDefaultTaskName(shownName);
+          const site = siteWords(task.app);
+          const title = untitled ? taskTitleWords(task.name, task.app) : shownName;
+          const isEditing = editing === task.workflow_id;
+          const classes = ["panel-task"];
+          if (task.sign_in === true) classes.push("panel-task-signin");
+          if (isEditing) classes.push("panel-task-editing");
           return (
-            <li
-              className={task.sign_in === true ? "panel-task panel-task-signin" : "panel-task"}
-              key={task.workflow_id}
-            >
+            <li className={classes.join(" ")} key={task.workflow_id}>
               <div className="panel-task-text">
-                <b>{task.name}</b>
-                {task.app === null || task.app === undefined ? null : <small>{task.app}</small>}
+                <b>{title}</b>
+                {untitled || site === null ? null : <small>{site}</small>}
+                {untitled && !isEditing ? (
+                  <button
+                    type="button"
+                    className="panel-rename"
+                    onClick={() => startRename(task)}
+                  >
+                    Rename
+                  </button>
+                ) : null}
               </div>
+              {isEditing ? (
+                <div className="panel-rename-row">
+                  <input
+                    className="panel-input"
+                    type="text"
+                    aria-label="Task name"
+                    placeholder="Name this task"
+                    autoComplete="off"
+                    value={draft}
+                    onChange={(event) => setDraft(event.target.value)}
+                  />
+                  <button
+                    type="button"
+                    className="btn quiet"
+                    disabled={draft.trim() === "" || saving === task.workflow_id}
+                    onClick={() => void saveName(task)}
+                  >
+                    Save
+                  </button>
+                  <button type="button" className="btn quiet" onClick={cancelRename}>
+                    Cancel
+                  </button>
+                  {renameProblems[task.workflow_id] === undefined ? null : (
+                    <p className="panel-problem" role="status">
+                      {renameProblems[task.workflow_id]}
+                    </p>
+                  )}
+                </div>
+              ) : null}
               {task.sign_in === true ? (
                 <div className="panel-signin">
                   <label className="panel-label" htmlFor={`sign-in-email-${task.workflow_id}`}>
@@ -287,7 +386,7 @@ export function PanelTasks(): JSX.Element {
                   disabled={running !== null}
                   onClick={() => void runOnce(task)}
                 >
-                  Run once
+                  Run
                 </button>
               ) : (
                 <Link className="btn quiet" to={`/tasks/${task.workflow_id}/run`}>
