@@ -842,7 +842,7 @@ def _is_combobox(candidate: Candidate) -> bool:
 
 # A suggestion box's own prompt, not a record: "Start typing...", "Search More...".
 _HINT_OPTION = re.compile(
-    r"^(start typing|search more|type to search|no records?)|(\.\.\.|…)$", re.I
+    r"^(start typing|search more|type to search|no records?)\b|(\.\.\.|…)$", re.I
 )
 
 
@@ -1242,30 +1242,35 @@ def _duplicate_branch(value_template: str) -> dict[str, Any]:
 
 
 def _not_found_branch(column: str, value_template: str) -> dict[str, Any]:
-    """A branch that ends a record ``skipped`` when the search finds nothing (PL-077, PL-106).
+    """A branch that ends a record ``parked`` when the search finds nothing (PL-077, PL-106).
 
     The mirror image of :func:`_duplicate_branch`, and built from the same machinery: the same
     ``element_absent`` condition shape the schema already has (no new keys), reading the same
     results cell. For an update, an empty result means the record the row would change is not in
     the app, so carrying on would type into whatever page the run happens to be on.
 
-    PL-113 item 6: the row is **skipped**, in the ticket's plain words -- the column's own name and
-    the value the row searched for -- because there is nothing to change. PL-106 had parked it: its
-    review worried that ``element_absent`` is also true before a slow results table has drawn, and
-    on a login wall or an error page, and a skip is final. The ticket asks for the skip, and the
-    sentence says exactly why the row was left alone, so a person reading the run can tell a real
-    "not found" from a page that never loaded.
+    It parks rather than skips (PL-106 review, restored by T1's review of PL-113).
+    ``element_absent`` is not proof the record is gone: it is also true before a slow results table
+    has drawn, and on a login wall, an expired-session dialog or an error page -- the executor's
+    wall probe runs only
+    when a check answers false, not when an absence answers true. A skip is final, so a skip here
+    would lose the row for good. Parking puts the row in front of a person, who can skip it in one
+    click -- the run page's **Skip it** button -- after looking. It never ends ``failed``: a
+    recipe's ``end_record`` cannot fail a record (D-017).
+
+    PL-113 item 6 asked for the skip, and its review sent that back as the ticket's error. What is
+    kept from it is the plain sentence: the column's own name and the value the row searched for, so
+    the parked row says exactly what was not found.
 
     Ledger: the branch runs after the search and before any commit, so the record is in ``filling``
-    with ``commit_attempted`` false; ``filling -> skipped`` is legal there (migration 0003). A
-    person can re-queue a skipped row from the run page if the site simply did not have it yet --
-    ``verified`` and ``skipped`` are both terminal in the ledger, so the recipe's own end is what
-    says so, and a skipped row is never a claim that something was saved.
+    with ``commit_attempted`` false; ``filling -> parked`` is legal there, and the person's skip is
+    the ordinary ``parked -> skipped`` dismiss (migration 0003). ``run_loop.end_record`` still turns
+    a commit-attempted skip into a park (B2).
     """
     label = " ".join(str(column).replace("_", " ").split()).lower()
     return {
         "action": "branch",
-        "name": "Skip a record when the search finds nothing",
+        "name": "Park a record when the search finds nothing",
         "when": {
             "element_absent": {
                 "targets": [
@@ -1277,7 +1282,7 @@ def _not_found_branch(column: str, value_template: str) -> dict[str, Any]:
             {
                 "id": "end-record-1",
                 "action": "end_record",
-                "outcome": "skipped",
+                "outcome": "parked",
                 "reason": f"No {label} called ‘{{{{row.{column}}}}}’ was found.",
             }
         ],
@@ -1615,11 +1620,13 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
         value_template = f"{{{{row.{searched_column} | lower}}}}"
         if search_kind == "update":
             # The search finds the record to change: skipping it would skip every row, and finding
-            # nothing leaves nothing to change, so that row is skipped with the column and value
-            # named (PL-113 item 6).
+            # nothing leaves nothing to change, so that row is parked with the column and value
+            # named -- a person decides whether to skip it (PL-106 review; PL-113 item 6 restored
+            # the park at T1's review, keeping the plain sentence).
             search_branch = _not_found_branch(searched_column, value_template)
             warnings.append(
-                "the search finds the record to change; if it finds nothing, the row is skipped"
+                "the search finds the record to change; if it finds nothing, the row is left for "
+                "you to skip"
             )
         else:
             search_branch = _duplicate_branch(value_template)
