@@ -27,17 +27,18 @@ def sign_in_recording() -> list[dict]:
 
 
 def options(**overrides: object) -> CompileOptions:
-    return CompileOptions(
-        name="Sign in to the app",
-        when_to_use="Open the account's own pages.",
-        sample_row={"email": "ravi@example.test"},
-        input_fields={"email": {"type": "string", "required": True}},
-        record_key_column="email",
-        commit_step_ids=[],
-        sign_in=True,
-        sign_in_after_path=HOME_URL,
-        **overrides,
-    )
+    values: dict[str, object] = {
+        "name": "Sign in to the app",
+        "when_to_use": "Open the account's own pages.",
+        "sample_row": {"email": "ravi@example.test"},
+        "input_fields": {"email": {"type": "string", "required": True}},
+        "record_key_column": "email",
+        "commit_step_ids": [],
+        "sign_in": True,
+        "sign_in_after_path": HOME_URL,
+    }
+    values.update(overrides)
+    return CompileOptions(**values)  # type: ignore[arg-type]
 
 
 def test_a_sign_in_recipe_ends_with_a_wait_for_the_page_after_the_code() -> None:

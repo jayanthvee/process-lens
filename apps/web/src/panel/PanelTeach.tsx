@@ -246,6 +246,13 @@ export function PanelTeach(): JSX.Element {
         request.record_key = "{{row.run_once_id}}";
         request.sample_row = { run_once_id: "x" };
       }
+      if (status.signIn === true) {
+        // PL-113 S2: a sign-in recipe ends by waiting for the page after the code page, so the
+        // compile is told that this was a sign-in and where it landed.
+        request.sign_in = true;
+        const after = status.signInAfterUrl ?? "";
+        if (after !== "") request.sign_in_after_path = after;
+      }
       const config = apiConfig();
       const compiled = await compileRecording(request, {
         baseUrl: config.base,

@@ -51,6 +51,10 @@ class CompileRequest(BaseModel):
     # the person marked required in the Make recipe form.
     duplicate_check: bool = True
     park_fields: list[str] = []
+    # PL-113 S2: this demonstration signed in, and the page it reached after the code page. A
+    # sign-in recipe ends by waiting for that page; without one the recipe says so in its warnings.
+    sign_in: bool = False
+    sign_in_after_path: str | None = None
 
 
 class CompileResponse(BaseModel):
@@ -83,6 +87,8 @@ def compile_recipe(request: CompileRequest) -> CompileResponse:
         commit_step_ids=request.commit_step_ids,
         duplicate_check=request.duplicate_check,
         park_fields=request.park_fields,
+        sign_in=request.sign_in,
+        sign_in_after_path=request.sign_in_after_path,
     )
     try:
         result = compile_recording(request.recording, options)

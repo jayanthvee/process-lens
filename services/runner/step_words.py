@@ -19,7 +19,7 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
-from .check_words import MAX_SENTENCE
+from .check_words import MAX_SENTENCE, describe_check
 from .templates import TemplateError, render
 
 # PL-097: the extension's phrases, matched case-insensitively. They are not an enum -- the
@@ -88,6 +88,39 @@ def describe_step_failure(
             return _with_value("Couldn't find “", name, "” on the page")
 
     return _fit(f"Step “{_step_name(step)}” didn't finish: {text}")
+
+
+def describe_wait_failure(
+    step: Mapping[str, Any],
+    row: Mapping[str, Any],
+    variables: Mapping[str, Any],
+) -> str:
+    """Plain words for a wait step that never saw what it waited for (PL-113 S2).
+
+    A sign-in's wait is the row's proof that the person is signed in, so its failure says exactly
+    that: ``Sign-in didn't finish:`` and then what the page never showed, in the same words a
+    commit's failed check uses. Any other wait names its own step.
+    """
+    condition = step.get("condition")
+    detail = describe_check(condition if isinstance(condition, Mapping) else {}, row, variables)
+    if _is_sign_in_step(step):
+        return _fit(f"Sign-in didn't finish: {detail}")
+    return _fit(f"Step “{_step_name(step)}” didn't finish: {detail}")
+
+
+def _is_sign_in_step(step: Mapping[str, Any]) -> bool:
+    """Whether this wait is the one a sign-in recipe ends with (PL-113 S2).
+
+    The compiler writes the id; the name is checked as well so a recipe edited by hand, or one
+    compiled before this ticket, is still read as a sign-in.
+    """
+    if step.get("id") == "sign-in-finished":
+        return True
+    name = step.get("name")
+    if not isinstance(name, str):
+        return False
+    lowered = name.lower()
+    return "sign-in" in lowered or "sign in" in lowered
 
 
 def _is_locator_failure(lowered: str) -> bool:
@@ -227,4 +260,4 @@ def _with_value(prefix: str, value: str, suffix: str) -> str:
     return f"{prefix}{_clip(value, room)}{suffix}"
 
 
-__all__ = ["describe_step_failure"]
+__all__ = ["describe_step_failure", "describe_wait_failure"]

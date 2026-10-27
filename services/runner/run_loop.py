@@ -86,7 +86,7 @@ from .clock import Clock
 from .conditions import condition_timeout
 from .executor import ConditionResult, ConfirmationProbe, Executor, StepCommand
 from .reconcile import Reconciler, outcome_of
-from .step_words import describe_step_failure
+from .step_words import describe_step_failure, describe_wait_failure
 from .templates import TemplateError, is_template, render
 
 logger = logging.getLogger("processlens.runner")
@@ -806,6 +806,60 @@ class RunLoop:
                         return "parked"
                 self._transition(conn, record, box.state, outcome, reason)
                 return outcome
+
+            # PL-113 S2: a wait step is a real check, not a command. A sign-in recipe ends with
+            # one: the page after the code page must be reached, or the row parks saying the
+            # sign-in did not finish. A code page that appears while the wait runs is drained
+            # below, so PL-102 reads the code from the person's email exactly as before.
+            if action == "wait_for":
+                if box.state == "prechecked":
+                    self._transition(conn, record, "prechecked", "filling", "steps begin")
+                    box.state = "filling"
+
+                if not self._pace_for_step(conn, record, run, epoch, box):
+                    return "paused"
+
+                condition = step.get("condition")
+                if not isinstance(condition, dict):
+                    self._transition(
+                        conn, record, box.state, "parked", "a wait step carries no condition"
+                    )
+                    box.state = "parked"
+                    return "parked"
+
+                try:
+                    verdict = self._check(
+                        condition,
+                        step_id=step.get("id"),
+                        record_key=record.record_key,
+                        row=row,
+                        variables=variables,
+                    )
+                except TemplateError as exc:
+                    return self._park_for_template_error(conn, record, box, exc)
+
+                # R6: a check is an executor call, so an event that arrived while it ran beats its
+                # verdict -- a code page is asked for its code here, not after the wait gave up.
+                stopped = self._drain_events(conn, record, run, epoch, box)
+                if stopped is not None:
+                    return stopped
+
+                if not verdict.passed:
+                    self._transition(
+                        conn,
+                        record,
+                        box.state,
+                        "parked",
+                        describe_wait_failure(step, row, variables),
+                        step=step,
+                        outcome="failed",
+                    )
+                    box.state = "parked"
+                    return "parked"
+
+                with conn.transaction():
+                    record_step_event(conn, record=record, step_id=step["id"], outcome="ok")
+                continue
 
             # An executor step. Enter `filling` on the first one.
             if box.state == "prechecked":

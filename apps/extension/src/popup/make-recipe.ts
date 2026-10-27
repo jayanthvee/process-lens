@@ -104,6 +104,10 @@ export interface CompileRequestBody {
   duplicate_check: boolean;
   /** PL-017: columns whose emptiness parks the record before any step runs. */
   park_fields: string[];
+  /** PL-113 S2: this recording signed in; the recipe then waits for the page after the code. */
+  sign_in?: boolean;
+  /** PL-113 S2: the page the site reached after the code page, as teaching saw it. */
+  sign_in_after_path?: string | null;
 }
 
 /** What the compile route answered: a recipe, or the problems it found. */

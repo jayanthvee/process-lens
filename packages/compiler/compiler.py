@@ -28,6 +28,7 @@ from .assertions import (
     observation_is_generated_reference,
     origin_of,
     path_pattern,
+    sign_in_landing_pattern,
 )
 from .coalesce import coalesce_fills, collapse_presses, collapse_submits
 from .errors import CompileError
@@ -47,6 +48,9 @@ UNRECORDABLE_REFUSAL = (
 )
 # The keys a person sends with: a press of one of these may be the send itself.
 COMMITTING_KEYS = frozenset({"Enter", "Control+Enter", "Meta+Enter"})
+
+# PL-113 S2: how long a sign-in wait gives the code email to arrive.
+SIGN_IN_WAIT_MS = 90_000
 
 
 @dataclass
@@ -78,6 +82,11 @@ class CompileOptions:
     # rules that park a record before the browser is touched.
     duplicate_check: bool = True
     park_fields: list[str] | None = None
+    # PL-113 S2: this demonstration signed in, and the page it reached after the code page. A
+    # sign-in recipe ends by waiting for that page; without it a run that clicked Continue was
+    # Done before the code page had even loaded.
+    sign_in: bool = False
+    sign_in_after_path: str | None = None
 
 
 @dataclass
@@ -1696,6 +1705,27 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
             already_branch=already_branch,
         ),
     }
+
+    # PL-113 S2: a sign-in is not finished by clicking Continue. The run waits (up to 90 s, so the
+    # code email has time to arrive) for the page the demonstration reached after the code page,
+    # and the record is Done only when that page is reached.
+    if options.sign_in:
+        landing = sign_in_landing_pattern(options.sign_in_after_path or "")
+        if landing is None:
+            warnings.append(
+                "this task is a sign-in, but the recording couldn't see the page after the code, "
+                "so nothing checks that the sign-in finished"
+            )
+        else:
+            recipe["steps"].append(
+                {
+                    "id": "sign-in-finished",
+                    "action": "wait_for",
+                    "name": "Wait until the sign-in finishes",
+                    "condition": {"url_matches": landing, "timeout_ms": SIGN_IN_WAIT_MS},
+                    "timeout_ms": SIGN_IN_WAIT_MS,
+                }
+            )
 
     _fit_step_names(recipe.get("steps"))
     try:

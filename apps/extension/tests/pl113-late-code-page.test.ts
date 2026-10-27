@@ -74,21 +74,24 @@ function showCodeBoxesLate(): void {
 }
 
 function deps(overrides: Partial<Parameters<typeof watchCodePage>[1]> = {}) {
-  const ask = vi.fn(async () => ({ status: "found" as const, code: "482913" }));
-  return {
+  const ask = vi.fn(async (_query: { since: number; site: string }) => ({
+    status: "found" as const,
+    code: "482913",
+  }));
+  const resolved = {
+    probe: codePromptInPage,
+    enter: enterCodeInPage,
     ask,
-    deps: {
-      probe: codePromptInPage,
-      enter: enterCodeInPage,
-      ask,
-      report: () => undefined,
-      quietly: <T,>(work: () => T): T => work(),
-      now: () => T0,
-      site: () => SITE,
-      lastActionAt: () => T0,
-      ...overrides,
-    },
+    report: () => undefined,
+    quietly: <T,>(work: () => T): T => work(),
+    now: () => T0,
+    site: () => SITE,
+    lastActionAt: () => T0,
+    ...overrides,
   };
+  // The override may replace the ask; the test asserts against whichever one is in use.
+  const spy = resolved.ask as unknown as ReturnType<typeof vi.fn>;
+  return { ask: spy, deps: resolved };
 }
 
 describe("a code page that arrives after the action (PL-113 S1)", () => {
