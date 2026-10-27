@@ -122,6 +122,32 @@ const REASONS: Record<string, string> = {
   duplicate: "It was already there.",
   "the option doesn't exist": "That answer isn't in the list on the site.",
   "a value is missing": "A value it needs is missing from the row.",
+  // PL-112 item 3: a finished row says what happened, never the engine's own words. The old
+  // spellings stay here for rows already stored with them.
+  "assertion passed": "Added and checked.",
+  "the destination has this commit": "Added and checked.",
+  "added and checked": "Added and checked.",
+  "steps completed": "Done.",
+  done: "Done.",
+  "the assertion did not pass": "The page didn't show it saved, so ProcessLens checked the site.",
+  "the page didn't show it saved": "The page didn't show it saved, so ProcessLens checked the site.",
+  "precheck passed": "Checked the row.",
+  "checked the row": "Checked the row.",
+  "commit write-ahead": "Saving it now.",
+  "saving it now": "Saving it now.",
+  dispatched: "Sent it to the site; checking it arrived.",
+  "sent it; checking it arrived": "Sent it to the site; checking it arrived.",
+  "no dispatch proof": "ProcessLens couldn't tell whether the click was sent.",
+  "the commit command was never dispatched": "The click was never sent.",
+  "the click was never sent.": "The click was never sent.",
+  "the extension refused the commit": "ProcessLens stopped before sending it.",
+  "processlens stopped before sending it.": "ProcessLens stopped before sending it.",
+  "could not verify the save automatically; check the destination":
+    "ProcessLens couldn't check whether it saved. Look on the site, then Dismiss it or Try again.",
+  "the destination check found more than one match":
+    "The site shows more than one match for this row.",
+  "the save's check did not pass": "The page didn't show it saved.",
+  "the page did not show it saved": "The page didn't show it saved.",
 };
 
 /** "some_reason_code" -> "Some reason code", so a code nobody taught us is still readable. */

@@ -83,7 +83,7 @@ def begin_commit(
     *,
     worker: str,
     epoch: int,
-    reason: str = "commit write-ahead",
+    reason: str = "saving it now",
 ) -> None:
     """``filling -> submitting``. The caller must commit before sending the command."""
     with conn.cursor() as cur, guard_refusal_is_typed():
@@ -101,7 +101,7 @@ def mark_submitted_unverified(
     *,
     worker: str,
     epoch: int,
-    reason: str = "dispatched",
+    reason: str = "sent it; checking it arrived",
 ) -> None:
     """``submitting -> submitted_unverified``. Called from the dispatch acknowledgement."""
     with conn.cursor() as cur, guard_refusal_is_typed():
@@ -120,7 +120,7 @@ def verify_commit(
     worker: str,
     epoch: int,
     destination_ref: str | None,
-    reason: str = "assertion passed",
+    reason: str = "added and checked",
 ) -> VerifyResult:
     """One transaction: ``-> verified`` and the ``committed_keys`` insert.
 

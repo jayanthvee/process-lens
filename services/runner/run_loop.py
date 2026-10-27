@@ -658,7 +658,7 @@ class RunLoop:
                     self._transition(conn, record, "claimed", target, reason)
                 return target
 
-        self._transition(conn, record, "claimed", "prechecked", "precheck passed")
+        self._transition(conn, record, "claimed", "prechecked", "checked the row")
         # Past the precheck, the recipe's own steps run: from here the tab is being driven, so a
         # record that leaves it has something to leave behind (PL-027).
         self._browser_touched = True
@@ -672,7 +672,7 @@ class RunLoop:
         if box.state == "prechecked":
             self._transition(conn, record, "prechecked", "parked", "no terminal step")
             return "parked"
-        self._transition(conn, record, "filling", "verified", "steps completed")
+        self._transition(conn, record, "filling", "verified", "done")
         return "verified"
 
     def _run_steps(
@@ -988,7 +988,7 @@ class RunLoop:
                 record,
                 "submitting",
                 "failed",
-                result.error or "the commit command was never dispatched",
+                result.error or "The click was never sent.",
                 step=step,
                 outcome="failed",
                 error=result.error,
@@ -1003,7 +1003,7 @@ class RunLoop:
                 record,
                 "submitting",
                 "failed",
-                result.error or "the extension refused the commit",
+                result.error or "ProcessLens stopped before sending it.",
                 step=step,
                 outcome="failed",
                 error=result.error,
@@ -1015,7 +1015,7 @@ class RunLoop:
                 record,
                 "submitting",
                 "reconciling",
-                "no dispatch proof",
+                "ProcessLens couldn't tell whether the click was sent",
                 step=step,
                 outcome="failed",
                 rung=result.rung,
@@ -1076,7 +1076,7 @@ class RunLoop:
             record,
             "submitted_unverified",
             "reconciling",
-            "the assertion did not pass",
+            "the page didn't show it saved",
             step=step,
             outcome="failed",
         )
@@ -1284,7 +1284,7 @@ class RunLoop:
                     worker=self.worker_id,
                     epoch=epoch,
                     destination_ref=diff.destination_ref,
-                    reason="the destination has this commit",
+                    reason="added and checked",
                 )
                 if step is not None:
                     record_step_event(
