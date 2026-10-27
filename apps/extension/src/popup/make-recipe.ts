@@ -1048,6 +1048,11 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
     changingCommit = true;
     renderCommitDecision();
   });
+  // PL-112: a refusal was about the choice that produced it, so changing the choice clears it.
+  commitEl.addEventListener("change", () => {
+    resultEl.textContent = "";
+    deps.onNotice?.("");
+  });
 
   // A key the person picks re-evaluates the park ticks, the duplicate check, the plain notes and
   // the button.
@@ -1077,7 +1082,7 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
     // PL-103/PL-107: the refusal's one plain sentence (the step it is about and its fix, or why
     // the save click could not be checked) is said right here, under Save, not only under support.
     notice(
-      `Could not save this as a task (${count}). ${compileRefusalSentence(sentences, events)}`,
+      `Could not save this as a task (${count}). ${compileRefusalSentence(sentences, events, { nothingSaved: commitEl.value.length === 0 })}`,
     );
     // PL-033: the refusal's own sentences are for support. The person reads the headline and the
     // two plain notes; everything else stays reachable under More → "Notes for support".

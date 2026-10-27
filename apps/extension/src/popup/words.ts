@@ -243,9 +243,15 @@ function clickNameIn(text: string, events: RecordedEvent[]): string | null {
  * says so. A schema or step-name refusal keeps PL-103's plain sentence. Anything else is said in the
  * same shape, so the panel never shows a bare "Could not save this as a task.".
  */
-export function compileRefusalSentence(problems: string[], events: RecordedEvent[]): string {
+export function compileRefusalSentence(
+  problems: string[],
+  events: RecordedEvent[],
+  choice: { nothingSaved?: boolean } = {},
+): string {
   const text = problems.join("\n");
-  if (NO_ASSERTION_REFUSAL.test(text)) {
+  // PL-112: the person already answered "Nothing gets saved". Telling them to choose it is the
+  // contradiction the ticket is about, so a refusal under that answer uses the general shape.
+  if (NO_ASSERTION_REFUSAL.test(text) && choice.nothingSaved !== true) {
     const click = clickNameIn(text, events) ?? "that click";
     return `ProcessLens couldn't see anything change after “${click}”, so it can't check that click worked. Pick a different answer for “Which click saves your work?”, or choose “Nothing gets saved”.`;
   }

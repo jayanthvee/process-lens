@@ -251,7 +251,9 @@ export function PanelTeach(): JSX.Element {
         headers: config.headers,
       });
       if (!compiled.ok) {
-        setProblem(compileRefusalSentence(compiled.problems, events));
+        setProblem(
+          compileRefusalSentence(compiled.problems, events, { nothingSaved: commitStepId === "" }),
+        );
         setNote(null);
         return;
       }
@@ -430,7 +432,11 @@ export function PanelTeach(): JSX.Element {
                 id="panel-commit"
                 className="panel-input"
                 value={commitStepId}
-                onChange={(event) => setCommitStepId(event.target.value)}
+                onChange={(event) => {
+                  setCommitStepId(event.target.value);
+                  // PL-112: an old refusal was about the old answer; it is no longer true.
+                  setProblem(null);
+                }}
               >
                 {clickChoices.map((choice) => (
                   <option key={choice.id} value={choice.id}>
