@@ -493,7 +493,9 @@ export function PanelTeach(): JSX.Element {
           spellCheck={false}
           onChange={(event) => setName(event.target.value)}
         />
-        {values.length === 0 ? null : (
+        {/* PL-116: a sign-in runs with one email; the duplicate-key line describes a spreadsheet
+            task and is noise here. The key is still worked out and sent on save, unchanged. */}
+        {values.length === 0 || status.signIn === true ? null : (
           <div className="panel-key">
             {keyColumn !== "" && !changingKey ? (
               <p className="panel-note">
