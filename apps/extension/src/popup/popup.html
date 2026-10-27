@@ -45,7 +45,11 @@
               spellcheck="false"
             />
           </label>
-          <label class="field" for="make-key">
+          <div class="field" id="make-key-decided" hidden>
+            <p class="panel__note" id="make-key-decided-note" role="status"></p>
+            <button id="make-key-change" type="button" class="button button--quiet">Change</button>
+          </div>
+          <label class="field" id="make-key-ask" for="make-key">
             <span class="field__label">Which value is different for every row?</span>
             <span class="panel__note">We use it so nothing gets added twice.</span>
             <select id="make-key" class="field__input"></select>
@@ -85,8 +89,13 @@
       <details class="more" id="more">
         <summary>More</summary>
 
-        <label class="field" for="make-commit">
-          <span class="field__label">Which click finishes the row?</span>
+        <div class="field" id="make-commit-decided" hidden>
+          <p class="panel__note" id="make-commit-decided-note" role="status"></p>
+          <button id="make-commit-change" type="button" class="button button--quiet">Change</button>
+        </div>
+
+        <label class="field" id="make-commit-ask" for="make-commit">
+          <span class="field__label">Which click saves your work?</span>
           <select id="make-commit" class="field__input"></select>
         </label>
 

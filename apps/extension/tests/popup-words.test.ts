@@ -301,10 +301,16 @@ describe("the popup's words", () => {
   it("keeps the step id as the commit option's value and never as its label", () => {
     mountForm();
     const commit = document.getElementById("make-commit") as HTMLSelectElement;
-    expect(Array.from(commit.options).map((option) => option.value)).toEqual(["click-1", "click-2"]);
+    // PL-109 item 6: the person can also choose to save nothing; that option's value is empty.
+    expect(Array.from(commit.options).map((option) => option.value)).toEqual([
+      "click-1",
+      "click-2",
+      "",
+    ]);
     expect(Array.from(commit.options).map((option) => option.textContent)).toEqual([
       "New lead",
       "Save",
+      "Nothing gets saved",
     ]);
   });
 
