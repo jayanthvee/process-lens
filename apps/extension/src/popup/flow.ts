@@ -197,8 +197,8 @@ export interface StepListOptions {
 /**
  * Draw the live list of recorded steps into `list`.
  *
- * Each line carries a quiet × that removes that step (PL-043). While the recording is still
- * running the × is hidden: the list is being built, and the worker refuses a removal either way.
+ * Each line carries a quiet × that removes that step (PL-043). PL-113 item 7: the × is there while
+ * the recording is still running too, so a mistake is fixed where it happens.
  * The sentence is the element's own words, never a step id.
  */
 export function renderStepList(
@@ -239,7 +239,7 @@ function stepItem(line: StepLine, options: StepListOptions, problem?: StepProble
   remove.className = "steps__remove";
   remove.setAttribute("aria-label", REMOVE_STEP_LABEL);
   remove.textContent = "×";
-  remove.hidden = options.recording;
+  remove.hidden = false;
   remove.addEventListener("click", () => options.onRemove?.(line.seq));
   item.append(text, remove);
   if (problem) {

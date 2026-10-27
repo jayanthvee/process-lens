@@ -189,6 +189,24 @@ def path_pattern(url: str) -> str | None:
     return f"{head}/" if head else path
 
 
+def sign_in_landing_pattern(url: str) -> str | None:
+    """The pattern of the page a sign-in lands on after the code page (PL-113 S2).
+
+    A sign-in's proof is that the page after the code was reached. The pattern is the landing
+    page's own path, escaped, with anything below it allowed: ``/home`` matches ``/home`` and
+    ``/home/inbox``, and does not match the sign-in page (``/login``) or a neighbouring path
+    (``/homework``). The last path segment is kept whole here -- unlike a record page, the landing
+    page's own name is what the demonstration reached, and dropping it would make the pattern fit
+    the page the click ran on.
+    """
+    path = urlsplit(url).path if url else ""
+    if not path:
+        return None
+    if path == "/":
+        return r"/$"
+    return re.escape(path.rstrip("/")) + r"(?:/.*)?$"
+
+
 def path_shape_pattern(url: str) -> str | None:
     """A path pattern that keeps the observed page's shape, with digit runs generalised.
 

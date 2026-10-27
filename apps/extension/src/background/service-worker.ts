@@ -1,7 +1,7 @@
 // The service worker: the recorder's single place of state.
 //
 // It owns the start/stop/clear state, stamps each event with its order, keeps the
-// session history, and — when a WebSocket URL is configured — streams events out
+// session history, and â€” when a WebSocket URL is configured â€” streams events out
 // as JSON lines. The content scripts hold no state of their own.
 import {
   EMPTY_EXECUTOR_STATUS,
@@ -56,7 +56,7 @@ import { lookForCode, readGmailFeeds } from "./code-lookup";
 import { dispatchCommandStep, prepareCommandStep } from "./command-step";
 import { canRemoveStep, RecorderSession, shouldRecordNavigation } from "./recorder-session";
 import { codeForTeaching, enteredCodeState } from "./teach-code";
-import { clearSignIn, markSignIn } from "./sign-in";
+import { clearSignIn, markSignIn, noteSignInPage } from "./sign-in";
 import { REFRESH_PAGE_WARNING, UNRECORDABLE_PAGE_WARNING } from "../popup/words";
 import {
   CommandSession,
@@ -600,7 +600,7 @@ function stopCommandDetachWatch(): void {
  *
  * Chrome detaches on its own when the person cancels the banner, the tab closes, or another
  * debugger takes over. Without this the cached transport would still look alive and every later
- * command would fail only when its next CDP call rejected — the runner would wait out its whole
+ * command would fail only when its next CDP call rejected â€” the runner would wait out its whole
  * ack budget instead of learning at once. One listener per bound tab: re-attaching to the same tab
  * keeps the existing one.
  */
@@ -669,7 +669,7 @@ async function releaseDebugger(): Promise<void> {
  * Perform one command's step: guard, resolve, then dispatch.
  *
  * The step body itself lives in `command-step`, dependency-injected, so the prepare phase can be
- * driven in a test with a fake CDP; this keeps only what needs Chrome — the bound tab, the
+ * driven in a test with a fake CDP; this keeps only what needs Chrome â€” the bound tab, the
  * debugger, and the error classification. A policy-blocked attach becomes the readable sentence
  * instead of Chrome's raw error.
  */
@@ -773,7 +773,7 @@ function workTabVisibility(cdp: CdpTransport, tabId: number): VisibilityDeps {
  * Probe the bound tab for a challenge or a login wall (C3).
  *
  * A `check` carries no step, so the guard gets a minimal one: with no targets declared, any visible
- * password field is a login this check is not performing — exactly the wall this is looking for —
+ * password field is a login this check is not performing â€” exactly the wall this is looking for â€”
  * and the step id is only a label (the guard's reasons name the marker, not the step). A probe
  * that itself throws changes nothing: the poll's answer already stands and a wall is never guessed
  * from a failed evaluation, so the caller keeps the "no" it had.
@@ -799,7 +799,7 @@ async function probeWallForCheck(
  *
  * B1: a check that could not be evaluated is a *refusal*, not a "no". Returning `false` for a
  * missing tab, a throwing evaluate, or a malformed condition would reach the runner as a real
- * answered "no" — a failed duplicate search would then take the `else` branch and create the
+ * answered "no" â€” a failed duplicate search would then take the `else` branch and create the
  * lead a second time, and a failed fresh-confirmation probe would report "absent".
  *
  * C2: a poll that never evaluated cleanly is the same kind of not-answered. `waitForCondition`
@@ -958,7 +958,7 @@ function getCommandSession(): CommandSession {
       if (tabId !== null) await explainWorkWindow(tabId);
       return tabId;
     },
-    // B2: after a worker restart, adopt the STORED bound tab — never the active one, which at
+    // B2: after a worker restart, adopt the STORED bound tab â€” never the active one, which at
     // restore time is whatever the person is looking at. A tab that no longer exists is reported
     // so the session can announce `tab_closed`.
     restoreBoundTab: async (tabId: number) => {
@@ -1231,6 +1231,8 @@ async function handle(message: ToWorker, sender?: chrome.runtime.MessageSender):
     case "record:event":
       if (status.state === "recording") {
         if (sendingTabId !== undefined) recordedTabId = sendingTabId;
+        // PL-113 S2: the first page reached after the code page is where the sign-in landed.
+        status = noteSignInPage(status, sender?.tab?.url);
         const event = appendEvent(message.event);
         if (event === null) break;
         broadcast();
@@ -1260,7 +1262,8 @@ async function handle(message: ToWorker, sender?: chrome.runtime.MessageSender):
       if (recordedTabId !== null && sendingTabId !== recordedTabId) break;
       if (recordedTabId === null && sendingTabId !== undefined) recordedTabId = sendingTabId;
       // PL-112: the page only asks this when it found a code prompt, so this is a sign-in task.
-      status = markSignIn(status);
+      // PL-113 S2: this page's address is where the wait for the landing page starts.
+      status = noteSignInPage(markSignIn(status), sender?.tab?.url);
       codeAnswer = await codeForTeaching(
         {
           allowed: async () => {
@@ -1311,6 +1314,12 @@ async function handle(message: ToWorker, sender?: chrome.runtime.MessageSender):
       break;
     }
     case "record:pending-observation":
+      // PL-113 S2: a page loaded after the code page reports itself here. That page is the one a
+      // sign-in recipe waits for, and no further step is needed for it to be recorded.
+      if (status.state === "recording") {
+        status = noteSignInPage(status, sender?.tab?.url);
+      }
+      break;
     case "record:get":
       break;
   }

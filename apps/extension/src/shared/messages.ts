@@ -38,6 +38,10 @@ export interface RecorderStatus {
   code?: TeachCodeState | null;
   /** PL-112: this recording reached a page that asks for an emailed code. */
   signIn?: boolean;
+  /** PL-113 S2: the page the code was asked on. A page address, never a code. */
+  signInCodeUrl?: string | null;
+  /** PL-113 S2: the page the site reached after the code -- the sign-in recipe waits for it. */
+  signInAfterUrl?: string | null;
 }
 
 export const EMPTY_STATUS: RecorderStatus = {

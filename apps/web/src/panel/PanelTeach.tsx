@@ -246,6 +246,13 @@ export function PanelTeach(): JSX.Element {
         request.record_key = "{{row.run_once_id}}";
         request.sample_row = { run_once_id: "x" };
       }
+      if (status.signIn === true) {
+        // PL-113 S2: a sign-in recipe ends by waiting for the page after the code page, so the
+        // compile is told that this was a sign-in and where it landed.
+        request.sign_in = true;
+        const after = status.signInAfterUrl ?? "";
+        if (after !== "") request.sign_in_after_path = after;
+      }
       const config = apiConfig();
       const compiled = await compileRecording(request, {
         baseUrl: config.base,
@@ -391,7 +398,6 @@ export function PanelTeach(): JSX.Element {
                     type="button"
                     className="panel-remove"
                     aria-label="Remove this step"
-                    hidden={recording}
                     onClick={() => void remove(line.seq)}
                   >
                     ×
@@ -440,6 +446,14 @@ export function PanelTeach(): JSX.Element {
             </p>
           ) : (
             <>
+              {clickChoices.length === 0 ? (
+                // PL-113 item 2: no click in the recording changes data. Say so plainly instead
+                // of letting a tab or a link stand in for the save.
+                <p className="panel-note">
+                  We didn't see a Save click. Some apps save by themselves. Click Save while
+                  teaching, or choose how your work is saved.
+                </p>
+              ) : null}
               <label className="panel-label" htmlFor="panel-commit">
                 Which click saves your work?
               </label>

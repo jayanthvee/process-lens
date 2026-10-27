@@ -86,7 +86,9 @@ const OBSERVABLE_KINDS = new Set(["click", "submit"]);
  * decision lives here so both read the same rule.
  */
 export function canRemoveStep(state: RecordingState): boolean {
-  return state === "idle";
+  // PL-113 item 7: a mistake is fixed while it is still being made, not only after Stop. Both
+  // states offer removal; a removed step's own evidence goes with it.
+  return state === "idle" || state === "recording";
 }
 
 export class RecorderSession {

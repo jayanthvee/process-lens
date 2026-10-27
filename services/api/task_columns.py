@@ -26,7 +26,7 @@ SELECT id, recipe FROM recipe_versions WHERE id = ANY(%(ids)s)
 """
 
 _SELECT_LATEST_TASK = """
-SELECT rv.id, rv.tenant_id, rv.recipe
+SELECT rv.id, rv.tenant_id, rv.recipe, w.sign_in, w.sign_in_column
 FROM workflows w
 JOIN recipe_versions rv ON rv.workflow_id = w.id
 WHERE w.id = %(workflow)s AND w.archived_at IS NULL
@@ -97,7 +97,11 @@ def examples_for_versions(
 
 
 def latest_task_version(conn: psycopg.Connection, workflow_id: uuid.UUID) -> dict[str, Any] | None:
-    """A non-archived task's newest recipe version: ``id``, ``tenant_id`` and ``recipe``."""
+    """A non-archived task's newest recipe version, with its sign-in marker.
+
+    ``sign_in`` and ``sign_in_column`` come from the workflow row (PL-112): a sign-in task is the
+    only kind that may be run from one row instead of a spreadsheet.
+    """
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(_SELECT_LATEST_TASK, {"workflow": workflow_id})
         return cur.fetchone()

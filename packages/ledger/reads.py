@@ -113,6 +113,28 @@ def list_run_records(conn: psycopg.Connection, run_id: uuid.UUID) -> list[Record
         return [_row(RecordClaim, row) for row in cur.fetchall()]
 
 
+def latest_step_errors(
+    conn: psycopg.Connection, record_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, str]:
+    """The latest step error each record has, for the run page's support detail (PL-113 S3).
+
+    A step's raw error is the extension's own diagnosis, kept on ``step_events``. The record's
+    ``reason`` is the plain sentence a person reads; this is what whoever debugs the run needs.
+    The column may be a JSON string (the common case) or an object, so both are read as text.
+    """
+    if not record_ids:
+        return {}
+    query = (
+        "SELECT DISTINCT ON (run_record_id) run_record_id, "
+        "CASE WHEN jsonb_typeof(error) = 'string' THEN error #>> '{}' ELSE error::text END "
+        "FROM step_events WHERE run_record_id = ANY(%(records)s) AND error IS NOT NULL "
+        "ORDER BY run_record_id, id DESC"
+    )
+    with conn.cursor() as cur:
+        cur.execute(query, {"records": record_ids})
+        return {row[0]: row[1] for row in cur.fetchall() if row[1]}
+
+
 def list_transitions(
     conn: psycopg.Connection, run_id: uuid.UUID, *, after_id: int = 0
 ) -> list[TransitionRow]:

@@ -191,15 +191,71 @@ export function measureTargetInPage(query: MeasureQuery): MeasureResult {
     }
   }
 
-  const rect = element.getBoundingClientRect();
-  const width = rect.width;
-  const height = rect.height;
+  // PL-113 S3: a control that is disabled, busy, or taking no pointer events is not "covered".
+  // A very common button style sets `pointer-events: none` and `disabled` at the moment it is
+  // clicked, and `elementFromPoint` then passes through it and returns the card behind it. Telling
+  // the two apart is the difference between "something is in the way" and "the app is working".
+  const busyReason = (el: Element): string | null => {
+    const style =
+      typeof window.getComputedStyle === "function" ? window.getComputedStyle(el) : null;
+    const disabled =
+      (el as HTMLButtonElement).disabled === true ||
+      el.getAttribute("aria-disabled") === "true" ||
+      el.hasAttribute("disabled");
+    const busy = el.getAttribute("aria-busy") === "true";
+    const inert = style !== null && style.pointerEvents === "none";
+    if (!disabled && !busy && !inert) return null;
+    const why = disabled ? "disabled" : busy ? "busy" : "not taking clicks";
+    return `the target is busy (${why})`;
+  };
+
+  // PL-113 S3: the covering element's own name or text, so a sentence can name it; its kind alone
+  // when it has none.
+  const describeElement = (el: Element): string => {
+    const tag = el.tagName.toLowerCase();
+    const label = (el.getAttribute("aria-label") ?? "").replace(/\s+/g, " ").trim();
+    const text = (el.textContent ?? "").replace(/\s+/g, " ").trim();
+    const name = (label || text).slice(0, 60);
+    return name ? `<${tag} "${name}">` : `<${tag}>`;
+  };
+
+  // PL-113 S3: a full-height layout (100vh with its own scrolling panel) puts the target below the
+  // window. `scrollIntoView` on the document does nothing there, because the document is not what
+  // scrolls: the nearest scrollable ancestor is. Returns whether it moved anything.
+  const scrollAncestor = (el: Element): boolean => {
+    const box = el.getBoundingClientRect();
+    const viewHeight = window.innerHeight || 0;
+    if (box.top >= 0 && box.bottom <= viewHeight) return false;
+    let node: Element | null = el.parentElement;
+    while (node !== null) {
+      const ancestor: Element = node;
+      const style =
+        typeof window.getComputedStyle === "function"
+          ? window.getComputedStyle(ancestor)
+          : null;
+      if (style !== null && /(auto|scroll)/.test(style.overflowY)) {
+        const height = ancestor.clientHeight;
+        const total = ancestor.scrollHeight;
+        if (total > height) {
+          const delta = box.top + box.height / 2 - viewHeight / 2;
+          ancestor.scrollTop = Math.max(0, Math.min(total - height, ancestor.scrollTop + delta));
+          return true;
+        }
+      }
+      node = ancestor.parentElement;
+    }
+    return false;
+  };
+
+  let rect = element.getBoundingClientRect();
+  let width = rect.width;
+  let height = rect.height;
   if (!(width > 0) || !(height > 0)) {
     return reject(`the element has no clickable area (${width}x${height})`);
   }
 
-  const x = rect.left + width / 2;
-  const y = rect.top + height / 2;
+  let x = rect.left + width / 2;
+  let y = rect.top + height / 2;
 
   // A hit test confirms nothing covers the target. jsdom has no layout and no
   // elementFromPoint; in a browser it is present, so the check is real wherever
@@ -207,8 +263,27 @@ export function measureTargetInPage(query: MeasureQuery): MeasureResult {
   const fromPoint =
     typeof document.elementFromPoint === "function" ? document.elementFromPoint : null;
   if (fromPoint) {
-    const hit = fromPoint.call(document, x, y);
-    if (!hit) return reject("the hit test found no element at the box center");
+    let hit = fromPoint.call(document, x, y);
+    if (!hit) {
+      // Nothing at that point at all: the target is below (or beside) the window and the page did
+      // not scroll to it. Scroll the panel that actually scrolls, then measure once more.
+      if (!scrollAncestor(element)) {
+        return reject("the target is outside the window and the page didn't scroll to it");
+      }
+      rect = element.getBoundingClientRect();
+      width = rect.width;
+      height = rect.height;
+      x = rect.left + width / 2;
+      y = rect.top + height / 2;
+      hit = fromPoint.call(document, x, y);
+      if (!hit) {
+        return reject("the target is outside the window and the page didn't scroll to it");
+      }
+    }
+    // A busy control is the app still working, not something in the way. Checked before the
+    // coverage sentence, because the point passing through such a control makes it look covered.
+    const busy = busyReason(element);
+    if (busy !== null) return reject(busy);
     // Only the target itself, a descendant of it, or the host of the shadow tree it lives in is
     // a hit. An ANCESTOR is not: a click at the box center would land on the wrapper that
     // contains the target. A shadow target reports its host here, because the point lookup
@@ -231,7 +306,7 @@ export function measureTargetInPage(query: MeasureQuery): MeasureResult {
       node = hostEl;
     }
     if (hit !== element && !element.contains(hit) && !hostChain.includes(hit)) {
-      return reject(`the box center is covered by <${hit.tagName.toLowerCase()}>`);
+      return reject(`the box center is covered by ${describeElement(hit)}`);
     }
     return { ok: true, ...toTop(x, y), width, height, hit: hit.tagName.toLowerCase(), topFrame };
   }
