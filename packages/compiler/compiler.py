@@ -253,6 +253,9 @@ def to_candidates(
             continue
 
         recorded_id = step.get("id") if isinstance(step.get("id"), str) else None
+        # PL-112: a step that absorbed another event (a click and its submit) is named by either
+        # id, so the person's choice is honoured whichever row they picked.
+        named_ids = {recorded_id, *event.also_ids} - {None}
         candidates.append(
             Candidate(
                 action=action,
@@ -264,7 +267,7 @@ def to_candidates(
                 after_url=_next_actionable_url(events, index),
                 seq=event.seq,
                 commit=(
-                    recorded_id is not None and recorded_id in commit_ids
+                    bool(named_ids & commit_ids)
                     if chosen_commits
                     else event.commit or (recorded_id is not None and recorded_id in commit_ids)
                 ),
@@ -1578,6 +1581,16 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
             search_branch = _duplicate_branch(value_template)
     else:
         searched_column = ""
+
+    # PL-112: a choice that names a step the folds removed would silently compile a task that never
+    # saves. The person is told instead, in the same warnings list every other fold reports through.
+    if options.commit_step_ids:
+        surviving = {candidate.recorded_id for candidate in parameterized}
+        if any(step_id not in surviving for step_id in options.commit_step_ids):
+            warnings.append(
+                "the click chosen to save your work is not in the steps this recording compiles "
+                "to, so nothing will be saved; record it again and pick that click"
+            )
 
     without_assertion: list[str] = []
     for index, candidate in enumerate(parameterized):

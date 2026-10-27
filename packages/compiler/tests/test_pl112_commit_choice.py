@@ -98,3 +98,25 @@ def test_a_named_click_with_evidence_is_the_one_commit_step() -> None:
     assert commits[0]["name"] == "Click Continue"
     assert commits[0]["assert_after"] == {"text_visible": "Welcome", "timeout_ms": 8000}
     assert len([step for step in result.recipe["steps"] if step["action"] == "click"]) == 1
+
+
+def test_the_submits_own_id_names_the_step_it_folded_into() -> None:
+    """A person may pick the submit's row; the click that folded it in is the same step."""
+    recording = sign_in_recording()
+    recording[2]["observation"] = {"text_visible": "Welcome"}
+
+    result = compile_recording(recording, options(commit_step_ids=["click-3"]))
+
+    commits = [step for step in result.recipe["steps"] if step.get("commit")]
+    assert len(commits) == 1
+    assert commits[0]["name"] == "Click Continue"
+
+
+def test_a_choice_that_names_no_compiled_step_says_nothing_will_be_saved() -> None:
+    """A stale id compiles read-only, and the warnings say so rather than staying silent."""
+    recording = sign_in_recording()
+
+    result = compile_recording(recording, options(commit_step_ids=["click-9"]))
+
+    assert [step for step in result.recipe["steps"] if step.get("commit")] == []
+    assert any("nothing will be saved" in warning for warning in result.warnings)
