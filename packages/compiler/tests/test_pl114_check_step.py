@@ -7,9 +7,7 @@ yes/no column of the sample row, and a check is not a commit unless the person n
 
 from __future__ import annotations
 
-import pytest
-
-from packages.compiler import CompileError, CompileOptions, compile_recording
+from packages.compiler import CompileOptions, compile_recording
 
 ORIGIN = "https://app.example.com"
 CHECK_URL = f"{ORIGIN}/events/new"
@@ -96,9 +94,18 @@ def test_a_check_never_commits_unless_it_is_named() -> None:
     assert [step for step in result.recipe["steps"] if step.get("commit")] == []
 
 
-def test_a_named_check_commit_still_needs_an_assertion() -> None:
-    """PL-112's rule holds for a check: naming it as the save is not evidence of a save."""
-    with pytest.raises(CompileError) as refusal:
-        compile_recording(check_recording(), options(commit_step_ids=["check-1"]))
+def test_a_named_check_is_never_the_save() -> None:
+    """T1 review B1: a checkbox is never the save (AGENTS.md section 4 lists the commit steps).
 
-    assert "a commit step must carry an assertion" in str(refusal.value)
+    A person can pick the check's row by mistake. Rather than compiling a recipe the schema then
+    refuses, the compile leaves the step as an ordinary check and says why in plain words.
+    """
+    result = compile_recording(check_recording(), options(commit_step_ids=["check-1"]))
+
+    assert [step for step in result.recipe["steps"] if step.get("commit")] == []
+    assert "commit" not in check_step(result)
+    assert "assert_after" not in check_step(result)
+    assert any(
+        "a checkbox can't be the step that saves your work" in warning
+        for warning in result.warnings
+    ), result.warnings

@@ -175,6 +175,40 @@ describe("a radio group (PL-114 item 2)", () => {
     expect(String(summary.error ?? "")).toContain("Overnight");
   });
 
+  it("parks a bare number instead of guessing an option by its place (T1 review B2)", async () => {
+    // A radio group's options are named; "2" is not one of them, so it is not the second one.
+    // Positional matching belongs to a rating row, whose options carry no name of their own. In an
+    // ordinary group it would silently pick Goods/Service/Combo's second option for a row that
+    // said something else entirely.
+    document.body.innerHTML = `
+      <fieldset aria-label="Product type">
+        <legend>Product type</legend>
+        <label><input type="radio" name="kind" value="goods" /> Goods</label>
+        <label><input type="radio" name="kind" value="service" /> Service</label>
+        <label><input type="radio" name="kind" value="combo" /> Combo</label>
+      </fieldset>`;
+    const { cdp } = fakeCdp(undefined, { simulateInput: true });
+
+    const summary = await runRecipe(
+      recipe([
+        {
+          id: "kind",
+          action: "select",
+          targets: [{ by: "role", role: "group", name: "Product type" }] as LocatorRung[],
+          value: { kind: "constant", value: "2" } as ValueSource,
+        },
+      ]),
+      { row: {} },
+      { cdp },
+    );
+
+    expect(summary.state).toBe("failed");
+    expect(String(summary.error ?? "")).toContain("Goods");
+    expect(String(summary.error ?? "")).toContain("Combo");
+    const radios = document.querySelectorAll("input[type='radio']");
+    expect(Array.from(radios).some((radio) => (radio as HTMLInputElement).checked)).toBe(false);
+  });
+
   it("chooses in a status bar of aria-checked buttons", async () => {    document.body.innerHTML = `
       <div role="radiogroup" aria-label="Stage">
         <button type="button" role="radio" aria-checked="true">New</button>

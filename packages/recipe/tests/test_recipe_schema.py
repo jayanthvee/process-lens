@@ -366,6 +366,29 @@ def test_a_step_that_writes_nothing_cannot_commit(
     ), action
 
 
+# --- a check is never the save ---------------------------------------------
+
+
+def test_a_check_step_cannot_commit(validator: Draft202012Validator) -> None:
+    """T1 review B1: AGENTS.md section 4 lists the commit steps, and a checkbox is not one.
+
+    A check sets a field's state; it never is the save. Allowing `commit` here would let a recipe
+    claim that a checkbox clicks the destination's save button.
+    """
+    document = recipe()
+    document["steps"] = [step("check", commit=True, assert_after=CONDITION)]
+    assert any(
+        "unexpected" in message and "commit" in message for message in messages(validator, document)
+    )
+
+
+def test_a_check_step_needs_no_assertion(validator: Draft202012Validator) -> None:
+    """Without `commit`, the commit-assertion rule does not reach a check at all."""
+    document = recipe()
+    document["steps"] = [step("check")]
+    assert messages(validator, document) == []
+
+
 # --- meta -----------------------------------------------------------------
 
 
