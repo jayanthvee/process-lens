@@ -42,9 +42,7 @@ def test_the_skip_names_the_column_and_the_row_value() -> None:
 
 
 def test_the_compile_warning_says_the_row_is_skipped() -> None:
-    warnings = [
-        line for line in _compile().warnings if "search finds the record to change" in line
-    ]
+    warnings = [line for line in _compile().warnings if "search finds the record to change" in line]
 
     assert warnings == [
         "the search finds the record to change; if it finds nothing, the row is skipped"

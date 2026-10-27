@@ -16,8 +16,8 @@ from collections.abc import Callable
 
 import psycopg
 
-from services.runner.worker import Worker
 from services.runner.testing import ScriptedRun
+from services.runner.worker import Worker
 from tests.runner.conftest import ORIGIN, Seed, recipe
 
 WAIT_STEP = {
