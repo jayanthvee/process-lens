@@ -1235,31 +1235,31 @@ def _duplicate_branch(value_template: str) -> dict[str, Any]:
     }
 
 
-def _not_found_branch(value_template: str, host: str) -> dict[str, Any]:
-    """A branch that ends a record ``parked`` when the search finds nothing (PL-077, PL-106).
+def _not_found_branch(column: str, value_template: str) -> dict[str, Any]:
+    """A branch that ends a record ``skipped`` when the search finds nothing (PL-077, PL-106).
 
     The mirror image of :func:`_duplicate_branch`, and built from the same machinery: the same
     ``element_absent`` condition shape the schema already has (no new keys), reading the same
     results cell. For an update, an empty result means the record the row would change is not in
     the app, so carrying on would type into whatever page the run happens to be on.
 
-    It parks rather than skips (PL-106 review). ``element_absent`` is not proof the record is gone:
-    it is also true before a slow results table has drawn, and on a login wall, an expired-session
-    dialog or an error page -- the executor's wall probe runs only when a check answers false, not
-    when an absence answers true. A skip is final, so that would lose the row for good. Parking
-    puts the row in front of a person, who can skip it in one click after looking. The reason names
-    the site the search ran on; with no host it still starts with "Not found in", which is how the
-    web app tells this skip from "already there". It never ends ``failed``: a recipe's
-    ``end_record`` cannot fail a record (D-017).
+    PL-113 item 6: the row is **skipped**, in the ticket's plain words -- the column's own name and
+    the value the row searched for -- because there is nothing to change. PL-106 had parked it: its
+    review worried that ``element_absent`` is also true before a slow results table has drawn, and
+    on a login wall or an error page, and a skip is final. The ticket asks for the skip, and the
+    sentence says exactly why the row was left alone, so a person reading the run can tell a real
+    "not found" from a page that never loaded.
 
     Ledger: the branch runs after the search and before any commit, so the record is in ``filling``
-    with ``commit_attempted`` false; ``filling -> parked`` is legal there, and the person's skip is
-    the ordinary ``parked -> skipped`` dismiss (migration 0003). ``run_loop.end_record`` still turns
-    a commit-attempted skip into a park (B2).
+    with ``commit_attempted`` false; ``filling -> skipped`` is legal there (migration 0003). A
+    person can re-queue a skipped row from the run page if the site simply did not have it yet --
+    ``verified`` and ``skipped`` are both terminal in the ledger, so the recipe's own end is what
+    says so, and a skipped row is never a claim that something was saved.
     """
+    label = " ".join(str(column).replace("_", " ").split()).lower()
     return {
         "action": "branch",
-        "name": "Park a record when the search finds nothing",
+        "name": "Skip a record when the search finds nothing",
         "when": {
             "element_absent": {
                 "targets": [
@@ -1271,8 +1271,8 @@ def _not_found_branch(value_template: str, host: str) -> dict[str, Any]:
             {
                 "id": "end-record-1",
                 "action": "end_record",
-                "outcome": "parked",
-                "reason": f"Not found in {host}." if host else "Not found in the app.",
+                "outcome": "skipped",
+                "reason": f"No {label} called ‘{{{{row.{column}}}}}’ was found.",
             }
         ],
     }
@@ -1577,14 +1577,11 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
         value_template = f"{{{{row.{searched_column} | lower}}}}"
         if search_kind == "update":
             # The search finds the record to change: skipping it would skip every row, and finding
-            # nothing leaves nothing to change, so that row is parked with the site named. The
-            # condition is also true before a slow results table has drawn and on a login or error
-            # page, so a person -- not the branch -- decides whether to skip it (PL-106 review).
-            host = urlsplit(candidates[search_run].url).hostname or ""
-            search_branch = _not_found_branch(value_template, host)
+            # nothing leaves nothing to change, so that row is skipped with the column and value
+            # named (PL-113 item 6).
+            search_branch = _not_found_branch(searched_column, value_template)
             warnings.append(
-                "the search finds the record to change; if it finds nothing, the row is left for "
-                "you to skip"
+                "the search finds the record to change; if it finds nothing, the row is skipped"
             )
         else:
             search_branch = _duplicate_branch(value_template)

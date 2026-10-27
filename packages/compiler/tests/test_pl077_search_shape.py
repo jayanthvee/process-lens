@@ -100,7 +100,7 @@ def _branches(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
 # ---------------------------------------------------------- find-then-update
 
 
-def test_a_find_then_update_parks_a_row_whose_search_finds_nothing() -> None:
+def test_a_find_then_update_skips_a_row_whose_search_finds_nothing() -> None:
     result = compile_recording(_find_then_update(), _options(commit_step_ids=["save-1"]))
     steps = result.recipe["steps"]
 
@@ -108,9 +108,8 @@ def test_a_find_then_update_parks_a_row_whose_search_finds_nothing() -> None:
     assert len(branches) == 1, [step["action"] for step in steps]
     branch = branches[0]
     # The rule is the opposite of the duplicate check: no result in the table means the record is
-    # not there, so the row stops instead of typing into whatever page it is on. It parks, not
-    # skips: the absence can be a page that has not drawn yet or a login page, and a person decides
-    # whether to skip it (PL-106 item 7 review).
+    # not there, so the row stops instead of typing into whatever page it is on. It is SKIPPED, in
+    # plain words (PL-113 item 6; PL-106's review had parked it instead).
     assert branch["when"] == {
         "element_absent": {
             "targets": [{"by": "role", "role": "cell", "name": "{{row.sku | lower}}"}]
@@ -120,11 +119,11 @@ def test_a_find_then_update_parks_a_row_whose_search_finds_nothing() -> None:
         {
             "id": "end-record-1",
             "action": "end_record",
-            "outcome": "parked",
-            "reason": "Not found in crm.example.com.",
+            "outcome": "skipped",
+            "reason": "No sku called ‘{{row.sku}}’ was found.",
         }
     ]
-    assert branch["name"] == "Park a record when the search finds nothing"
+    assert branch["name"] == "Skip a record when the search finds nothing"
     # The reason names the site the search ran on, so a person reading it knows where to look.
     assert branch["then"][0]["reason"] == "Not found in crm.example.com."
 

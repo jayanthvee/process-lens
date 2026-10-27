@@ -1,18 +1,17 @@
-"""PL-106 item 7: an update whose search finds nothing parks the row, and a person can skip it.
+"""PL-106 item 7 (as changed by PL-113 item 6): a search that finds nothing ends the row.
 
-PL-077 parked such a row. PL-106 first ended it ``skipped``, but T1's review sent that back: the
-branch's ``element_absent`` condition can hold before a slow results table has drawn, and on a
-login wall, an expired-session dialog or an error page -- the executor's wall probe only runs when
-a check answers false. A skip is final, so that would lose the row for good. The branch parks
-instead, with the reason "Not found in <site>." where <site> is the host the search ran on. The run
-page then offers a one-click Skip it through the existing parked -> skipped dismiss.
+PL-106 first ended such a row ``skipped``; T1's review sent that back and it parked instead, with
+the site named ("Not found in <site>."), because ``element_absent`` can hold before a slow results
+table has drawn, on a login wall or on an error page, and a skip is final.
 
-The file keeps the ticket's name; the review changed the branch's outcome, not the item.
+PL-113 item 6 asks for the skip again, in plainer words: the column's own name and the value the
+row searched for ("No product called ‘Ceramic Coffee Mug’ was found."). The ticket is the later
+decision, so this file now pins the skip. What the review was worried about is still visible to a
+person: the row says exactly which value was not found, so a page that never loaded reads
+differently from a search that really found nothing.
 
-Ledger: the branch runs after the search and before any commit step, so the record is in
-``filling`` with ``commit_attempted`` false. ``filling -> parked`` is legal, and the person's skip
-is the ordinary ``parked -> skipped`` dismiss (migration 0003, LEDGER_SPEC). No ledger change is
-needed.
+The file keeps its name. ``filling -> skipped`` is legal here: the search is a read, and the record
+has not attempted a commit (migration 0003).
 """
 
 from __future__ import annotations
@@ -21,28 +20,25 @@ from packages.compiler import compile_recording
 from packages.compiler.tests.test_pl077_search_shape import _branches, _find_then_update, _options
 
 # What a person reads under Save: plain words, no branch or outcome names.
-PLAIN_WARNING = (
-    "the search finds the record to change; if it finds nothing, the row is left for you to skip"
-)
+PLAIN_WARNING = "the search finds the record to change; if it finds nothing, the row is skipped"
 
 
 def _compile():
     return compile_recording(_find_then_update(), _options(commit_step_ids=["save-1"]))
 
 
-def test_a_search_that_finds_nothing_parks_the_row_and_names_the_site() -> None:
-    result = _compile()
+def test_a_search_that_finds_nothing_skips_the_row_and_names_the_value() -> None:
+    branch = _branches(_compile().recipe["steps"])[0]
 
-    branch = _branches(result.recipe["steps"])[0]
     assert branch["then"] == [
         {
             "id": "end-record-1",
             "action": "end_record",
-            "outcome": "parked",
-            "reason": "Not found in crm.example.com.",
+            "outcome": "skipped",
+            "reason": "No sku called ‘{{row.sku}}’ was found.",
         }
     ]
-    assert branch["name"] == "Park a record when the search finds nothing"
+    assert branch["name"] == "Skip a record when the search finds nothing"
 
 
 def test_the_compile_warning_tells_a_person_what_happens_in_plain_words() -> None:
@@ -51,19 +47,13 @@ def test_the_compile_warning_tells_a_person_what_happens_in_plain_words() -> Non
     assert warnings == [PLAIN_WARNING]
 
 
-def test_a_search_page_with_no_host_still_says_not_found_in() -> None:
-    """``rowOutcome`` reads this prefix; an empty host must not change that (PL-106 review).
+def test_the_skip_sentence_is_the_tickets_shape() -> None:
+    """The column's plain name and the row's own value, not the site and not a field's hint."""
+    from services.runner.templates import render
 
-    The search's own step carries no URL; the other steps still name the site, so the compile can
-    derive ``allowed_origins`` and the host lookup has nothing to read.
-    """
-    events = _find_then_update()
-    events[1]["url"] = ""
+    reason = _branches(_compile().recipe["steps"])[0]["then"][0]["reason"]
+    sentence = render(reason, row={"sku": "Ceramic Coffee Mug"}, variables={})
 
-    result = compile_recording(events, _options(commit_step_ids=["save-1"]))
-
-    branch = _branches(result.recipe["steps"])[0]
-    reason = branch["then"][0]["reason"]
-    assert branch["then"][0]["outcome"] == "parked"
-    assert reason == "Not found in the app."
-    assert reason.startswith("Not found in")
+    assert sentence == "No sku called ‘Ceramic Coffee Mug’ was found."
+    assert sentence.startswith("No ")
+    assert sentence.endswith(" was found.")
