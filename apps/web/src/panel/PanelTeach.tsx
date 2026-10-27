@@ -494,8 +494,10 @@ export function PanelTeach(): JSX.Element {
           onChange={(event) => setName(event.target.value)}
         />
         {/* PL-116: a sign-in runs with one email; the duplicate-key line describes a spreadsheet
-            task and is noise here. The key is still worked out and sent on save, unchanged. */}
-        {values.length === 0 || status.signIn === true ? null : (
+            task and is noise here. The key is still worked out and sent on save, unchanged. A
+            sign-in that typed no identifiable value still needs the question -- hiding it would
+            leave Save disabled with no way out -- so only its note is left out. */}
+        {values.length === 0 || (status.signIn === true && keyColumn !== "") ? null : (
           <div className="panel-key">
             {keyColumn !== "" && !changingKey ? (
               <p className="panel-note">
@@ -514,7 +516,9 @@ export function PanelTeach(): JSX.Element {
                 <label className="panel-label" htmlFor="panel-task-key">
                   Which value is different for every row?
                 </label>
-                <p className="panel-note">We use it so nothing gets added twice.</p>
+                {status.signIn === true ? null : (
+                  <p className="panel-note">We use it so nothing gets added twice.</p>
+                )}
                 <select
                   id="panel-task-key"
                   className="panel-input"
