@@ -14,6 +14,7 @@ import pytest
 from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
 
+from tests.api.test_batches_api import add_task, recipe_document
 from tests.db.seed import Ledger
 
 ENV_VAR = "PROCESSLENS_OPERATOR_ID"
@@ -175,3 +176,144 @@ def test_a_run_page_can_say_why_the_code_read_failed(
 
     assert response.status_code == 200, response.text
     assert response.json()["pause_detail"] == "none"
+
+
+# ------------------------------------------------------------------ PL-112, T1 review
+#
+# ``run-once`` builds its row with a fresh ``run_once_id``, so the row's record key can never
+# repeat and the committed-keys guard has nothing to compare. That is right for a sign-in task
+# (running it twice IS two pieces of work) and wrong for anything that saves: a task with inputs
+# belongs in the normal run flow, where the key comes from the spreadsheet. So ``values`` is only
+# accepted for a sign-in task, and then only the one column and one address it needs.
+
+
+def a_sign_in_task(connected: TestClient) -> str:
+    """A saved sign-in task, marked as one, and its workflow id as a string."""
+    created = connected.post(
+        "/api/v1/tasks",
+        json={
+            "name": "Sign in to the app",
+            "recipe": sign_in_document(),
+            "sign_in": True,
+            "sign_in_column": "email",
+        },
+    )
+    assert created.status_code == 201, created.text
+    return str(created.json()["workflow_id"])
+
+
+def test_run_once_refuses_a_row_for_a_task_that_saves(
+    connected: TestClient, conn: psycopg.Connection, ledger: Ledger, operator: str
+) -> None:
+    """A task with spreadsheet columns keeps the spreadsheet path: its key must come from the
+    file, not from a fresh id that would defeat the duplicate guard.
+    """
+    workflow_id, _ = add_task(conn, ledger.tenant_id, name="Add inquiries")
+
+    response = connected.post(
+        f"/api/v1/tasks/{workflow_id}/run-once",
+        json={"values": {"email": "someone@example.com"}},
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"] == "This task runs from a spreadsheet, not from one row."
+    written = conn.execute(
+        "SELECT count(*) FROM input_batches WHERE workflow_id = %s", (workflow_id,)
+    ).fetchone()[0]
+    assert written == 0, "a refused run writes no batch"
+
+
+def test_run_once_refuses_a_row_for_a_task_that_saves_nothing_but_was_not_taught_as_a_sign_in(
+    connected: TestClient, conn: psycopg.Connection, ledger: Ledger, operator: str
+) -> None:
+    """The rule is the marker, not the shape: a read-only task without it takes no row."""
+    workflow_id, _ = add_task(
+        conn,
+        ledger.tenant_id,
+        document=recipe_document(
+            fields={"run_once_id": {"type": "string", "example": "x"}},
+            record_key="{{row.run_once_id}}",
+        ),
+        name="Close the day",
+    )
+
+    response = connected.post(
+        f"/api/v1/tasks/{workflow_id}/run-once",
+        json={"values": {"email": "someone@example.com"}},
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"] == "This task runs from a spreadsheet, not from one row."
+
+
+def test_run_once_refuses_a_row_in_the_wrong_column(connected: TestClient, operator: str) -> None:
+    workflow_id = a_sign_in_task(connected)
+
+    response = connected.post(
+        f"/api/v1/tasks/{workflow_id}/run-once",
+        json={"values": {"name": "someone@example.com"}},
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"] == "Run this task with one email address, in its own field."
+
+
+def test_run_once_refuses_a_row_with_an_extra_column(connected: TestClient, operator: str) -> None:
+    workflow_id = a_sign_in_task(connected)
+
+    response = connected.post(
+        f"/api/v1/tasks/{workflow_id}/run-once",
+        json={"values": {"email": "someone@example.com", "name": "Someone"}},
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"] == "Run this task with one email address, in its own field."
+
+
+def test_run_once_refuses_an_empty_or_non_string_email(
+    connected: TestClient, operator: str
+) -> None:
+    workflow_id = a_sign_in_task(connected)
+
+    for value in ("", "   ", 42, None):
+        response = connected.post(
+            f"/api/v1/tasks/{workflow_id}/run-once",
+            json={"values": {"email": value}},
+        )
+        assert response.status_code == 422, (value, response.text)
+        assert response.json()["detail"] == "Type the email this run should use.", value
+
+
+def test_run_once_refuses_an_email_longer_than_the_column_holds(
+    connected: TestClient, operator: str
+) -> None:
+    workflow_id = a_sign_in_task(connected)
+
+    response = connected.post(
+        f"/api/v1/tasks/{workflow_id}/run-once",
+        json={"values": {"email": f"{'a' * 315}@x.test"}},
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"] == "That email is too long to use here."
+
+
+def test_run_once_trims_the_email_it_is_given(
+    connected: TestClient, conn: psycopg.Connection, operator: str
+) -> None:
+    workflow_id = a_sign_in_task(connected)
+
+    started = connected.post(
+        f"/api/v1/tasks/{workflow_id}/run-once",
+        json={"values": {"email": "  picked@example.com  "}},
+    )
+
+    assert started.status_code == 201, started.text
+    run_id = uuid.UUID(started.json()["run_id"])
+    batch_id = conn.execute("SELECT input_batch_id FROM runs WHERE id = %s", (run_id,)).fetchone()[
+        0
+    ]
+    stored = conn.execute(
+        "SELECT clean ->> 'email' FROM input_records WHERE batch_id = %s", (batch_id,)
+    ).fetchone()[0]
+    assert stored == "picked@example.com"

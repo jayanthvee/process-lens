@@ -84,6 +84,15 @@ class RunOnceResponse(BaseModel):
 
 
 NEEDS_A_SPREADSHEET = "This task needs a spreadsheet."
+# PL-112, T1 review: a run-once row's record key is a fresh id, so it can never repeat and the
+# committed-keys guard has nothing to compare. Only a task that saves nothing (a sign-in) may be
+# run that way, and then only with the one address its own column holds.
+VALUES_NOT_FOR_THIS_TASK = "This task runs from a spreadsheet, not from one row."
+ONE_EMAIL_ONLY = "Run this task with one email address, in its own field."
+EMAIL_REQUIRED = "Type the email this run should use."
+EMAIL_TOO_LONG = "That email is too long to use here."
+# The recipe schema's own limit on an input field's example, and far more than an address needs.
+EMAIL_MAX_LENGTH = 320
 
 
 def destination_key_of(origins: list[str]) -> str:
@@ -169,6 +178,31 @@ def create_task(payload: Annotated[CreateTaskRequest, Body()]) -> CreateTaskResp
     return CreateTaskResponse(workflow_id=workflow_id, recipe_version_id=stored["id"])
 
 
+def sign_in_row(task: dict[str, Any], values: dict[str, Any] | None) -> dict[str, str]:
+    """The one cell a sign-in task's run-once row may carry; empty when no values were sent.
+
+    A run-once row is keyed by a fresh ``run_once_id``, so its key never repeats. That is right
+    only for a task that saves nothing: for a task that commits it would bypass the
+    ``committed_keys`` duplicate guard, and a spreadsheet row's own key would never be consulted.
+    So ``values`` is refused for every task the person did not teach through a code page, and a
+    sign-in task accepts exactly its own column and one non-empty address.
+    """
+    if not values:
+        return {}
+    if task.get("sign_in") is not True:
+        raise HTTPException(status_code=422, detail=VALUES_NOT_FOR_THIS_TASK)
+    column = task.get("sign_in_column")
+    if not isinstance(column, str) or column == "" or set(values) != {column}:
+        raise HTTPException(status_code=422, detail=ONE_EMAIL_ONLY)
+    email = values[column]
+    if not isinstance(email, str) or email.strip() == "":
+        raise HTTPException(status_code=422, detail=EMAIL_REQUIRED)
+    trimmed = email.strip()
+    if len(trimmed) > EMAIL_MAX_LENGTH:
+        raise HTTPException(status_code=422, detail=EMAIL_TOO_LONG)
+    return {column: trimmed}
+
+
 @router.post("/tasks/{workflow_id}/run-once", response_model=RunOnceResponse, status_code=201)
 def run_task_once(
     workflow_id: uuid.UUID, payload: Annotated[RunOnceRequest, Body()] | None = None
@@ -181,7 +215,8 @@ def run_task_once(
     skipped as already done.
 
     A task whose pinned recipe version asks for spreadsheet columns is refused rather than handed
-    an empty row: it belongs in the normal run flow (PL-105).
+    an empty row: it belongs in the normal run flow (PL-105). The one exception is a sign-in task
+    (PL-112), which may be given the single address it signs in with; see :func:`sign_in_row`.
     """
     body = payload or RunOnceRequest()
     with connection() as conn:
@@ -189,7 +224,7 @@ def run_task_once(
         if task is None:
             raise HTTPException(status_code=404, detail=f"task {workflow_id} does not exist")
         fields = input_fields(task["recipe"])
-        row_values = {str(key): value for key, value in (body.values or {}).items()}
+        row_values = sign_in_row(task, body.values)
         if fields and not row_values:
             raise HTTPException(status_code=422, detail=NEEDS_A_SPREADSHEET)
 
@@ -234,9 +269,15 @@ def run_task_once(
 __all__ = [
     "CreateTaskRequest",
     "CreateTaskResponse",
+    "EMAIL_MAX_LENGTH",
+    "EMAIL_REQUIRED",
+    "EMAIL_TOO_LONG",
     "NEEDS_A_SPREADSHEET",
+    "ONE_EMAIL_ONLY",
     "RunOnceRequest",
     "RunOnceResponse",
+    "VALUES_NOT_FOR_THIS_TASK",
     "destination_key_of",
     "router",
+    "sign_in_row",
 ]
