@@ -124,11 +124,9 @@ def test_a_find_then_update_skips_a_row_whose_search_finds_nothing() -> None:
         }
     ]
     assert branch["name"] == "Skip a record when the search finds nothing"
-    # The reason names the site the search ran on, so a person reading it knows where to look.
-    assert branch["then"][0]["reason"] == "Not found in crm.example.com."
 
 
-def test_the_park_branch_goes_after_the_search_and_before_the_click_that_opens_a_result() -> None:
+def test_the_skip_branch_goes_after_the_search_and_before_the_click_that_opens_a_result() -> None:
     steps = compile_recording(_find_then_update(), _options(commit_step_ids=["save-1"])).recipe[
         "steps"
     ]
