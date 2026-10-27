@@ -665,8 +665,6 @@
         "name": { "$ref": "#/$defs/step_name" },
         "description": { "$ref": "#/$defs/step_description" },
         "labels": { "$ref": "#/$defs/labels" },
-        "commit": { "$ref": "#/$defs/commit_flag" },
-        "assert_after": { "$ref": "#/$defs/assert_after" },
         "timeout_ms": { "$ref": "#/$defs/timeout_ms" },
         "on_failure": { "$ref": "#/$defs/on_failure" },
         "action": { "const": "check" },
