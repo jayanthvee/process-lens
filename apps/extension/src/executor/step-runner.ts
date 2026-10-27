@@ -19,6 +19,7 @@ import type { CdpTransport } from "./cdp";
 import {
   DEFAULT_NAVIGATE_TIMEOUT_MS,
   dispatchClick,
+  dispatchFieldAction,
   dispatchFill,
   dispatchNavigate,
   dispatchPress,
@@ -1100,6 +1101,28 @@ export async function performStep(
     // PL-110: a box that searches as you type is a picker. It is one the recorder marked (a fill
     // followed by a click on an option) or one the page shows by its own role/aria hints.
     const picker = step.autocomplete === true || (await isPickerField(deps.cdp, token, contextId));
+    // PL-114 item 5: a range input or a slider is set through its own value setter. Typing at it
+    // does nothing, and the recorded value is the number the demonstration left it on. A field
+    // that is not a number control answers "not a number control" without changing anything, so
+    // an ordinary text field still falls through to the typing path below.
+    const numeric = Number(text);
+    if (!picker && text.trim() !== "" && Number.isFinite(numeric)) {
+      const set = await dispatchFieldAction(
+        deps.cdp,
+        { mode: "number", token, value: numeric },
+        contextId,
+        hooks,
+      );
+      if (set.ok) {
+        return {
+          id: step.id,
+          action: step.action,
+          outcome: "done",
+          rung: result.rung,
+          by: result.by,
+        };
+      }
+    }
     await dispatchFill(deps.cdp, token, text, {
       clearFirst: step.clear_first,
       contextId,
@@ -1150,6 +1173,28 @@ export async function performStep(
       );
     }
     if (!chosen.matched && chosen.custom) {
+      // PL-114 item 2/6: a radio group, a status bar or a row of stars has no `<select>` and no
+      // listbox; its options are its own children. The row's value is matched against their own
+      // labels, and a value the group does not offer is parked with every option it does offer.
+      const picked = await dispatchFieldAction(
+        deps.cdp,
+        { mode: "choose", token, value: wanted },
+        contextId,
+        hooks,
+      );
+      if (picked.ok && picked.matched) {
+        return { id: step.id, action: step.action, outcome: "done", rung: result.rung, by: result.by };
+      }
+      if (picked.matched === false && picked.reason !== "not a group") {
+        const options = (picked.options ?? []).filter((name) => name !== "");
+        throw new ExecutorError(
+          `the select step ${step.id} found no option matching ${JSON.stringify(wanted)}${options.length > 0 ? `; the options are ${options.join(", ")}` : ""}`,
+          step.id,
+          "park",
+        );
+      }
+      // Not a group: a custom combobox, opened and clicked below.
+      //
       // A custom combobox: open it, then click the option inside the listbox it
       // owns. The search is `role=option` only, scoped to that listbox: a
       // document-wide search, or a fuzzy text fallback, could click an option of
@@ -1174,6 +1219,57 @@ export async function performStep(
         );
       }
       await dispatchClick(deps.cdp, option.token, contextId, hooks);
+    }
+    return { id: step.id, action: step.action, outcome: "done", rung: result.rung, by: result.by };
+  }
+
+  if (step.action === "check") {
+    // PL-114 item 1: a checkbox or switch is SET, never clicked. The value is the one the row
+    // asks for; a field already in that state is left alone, which is what stops the flip that
+    // unticked boxes for every row after the demonstration.
+    const value = resolveValue(step.value, context);
+    const wanted =
+      typeof value === "boolean"
+        ? value
+        : /^(yes|y|true|1|x|✓|✔|on)$/i.test(String(value ?? "").trim())
+          ? true
+          : /^(no|n|false|0|off)$/i.test(String(value ?? "").trim())
+            ? false
+            : null;
+    if (wanted === null) {
+      throw new ExecutorError(
+        `the check step ${step.id} has no yes or no value`,
+        step.id,
+        "park",
+      );
+    }
+    const { result, token } = await resolveWhenReady(
+      deps.cdp,
+      step,
+      deps,
+      contextId,
+      undefined,
+      preset,
+    );
+    if (!result.ok) {
+      throw new ExecutorError(
+        `the check target for step ${step.id} could not be resolved: ${result.error ?? "no rung matched"}${attemptTrail(result)}`,
+        step.id,
+        "park",
+      );
+    }
+    const set = await dispatchFieldAction(
+      deps.cdp,
+      { mode: "check", token, value: wanted },
+      contextId,
+      hooks,
+    );
+    if (!set.ok) {
+      throw new ExecutorError(
+        `the check step ${step.id} could not set ${JSON.stringify(wanted)}: ${set.reason ?? "the field did not take the value"}`,
+        step.id,
+        "park",
+      );
     }
     return { id: step.id, action: step.action, outcome: "done", rung: result.rung, by: result.by };
   }

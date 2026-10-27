@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { attachRecorder } from "../src/content/recorder";
 import type { PendingEvent } from "../src/shared/events";
 import { resetStepIds } from "../src/shared/events";
+import type { CheckStep } from "../src/shared/recipe-types";
 
 interface Harness {
   events: PendingEvent[];
@@ -134,7 +135,7 @@ describe("select capture", () => {
     });
   });
 
-  it("records a checkbox toggle as a click step", () => {
+  it("records a checkbox toggle as a check step, with the state it ended in", () => {
     document.body.innerHTML = "<input id='agree' type='checkbox'>";
     const recorded = harness();
     const box = document.getElementById("agree") as HTMLInputElement;
@@ -142,8 +143,13 @@ describe("select capture", () => {
     box.dispatchEvent(new Event("change", { bubbles: true }));
 
     expect(recorded.events).toHaveLength(1);
-    expect(recorded.events[0]!.kind).toBe("click");
-    expect(recorded.events[0]!.step?.action).toBe("click");
+    // PL-114 item 1: the click flipped the box on replay, so the step is the state it ended in.
+    expect(recorded.events[0]!.kind).toBe("check");
+    expect(recorded.events[0]!.step?.action).toBe("check");
+    expect((recorded.events[0]!.step as CheckStep).value).toEqual({
+      kind: "constant",
+      value: true,
+    });
   });
 });
 
