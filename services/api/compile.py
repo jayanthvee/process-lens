@@ -44,7 +44,9 @@ class CompileRequest(BaseModel):
     # panel supplies the key template itself (`{{row.run_once_id}}`).
     record_key: str | None = None
     allowed_origins: list[str] | None = None
-    commit_step_ids: list[str] = []
+    # PL-112: ``None`` means the caller predates the field (the compiler keeps its earlier rule);
+    # ``[]`` means the person chose "Nothing gets saved" and no step may commit.
+    commit_step_ids: list[str] | None = None
     # PL-017 built-in rules. ``duplicate_check`` is on by default; ``park_fields`` are the columns
     # the person marked required in the Make recipe form.
     duplicate_check: bool = True

@@ -305,7 +305,12 @@ describe("the make-recipe form", () => {
 
     const commit = control<HTMLSelectElement>("make-commit");
     expect(commit.value).toBe("click-2");
-    expect(Array.from(commit.options).map((item) => item.textContent)).toEqual(["New lead", "Save"]);
+    // PL-109 item 6: "Nothing gets saved" is an option under Change, never the preselected one.
+    expect(Array.from(commit.options).map((item) => item.textContent)).toEqual([
+      "New lead",
+      "Save",
+      "Nothing gets saved",
+    ]);
     expect(control<HTMLButtonElement>("make-go").disabled).toBe(false);
   });
 
@@ -558,7 +563,7 @@ describe("the default record key", () => {
     await form.submit();
     expect(calls).toHaveLength(0);
     expect(control("make-result").textContent).toContain(
-      "Choose which column identifies each row first.",
+      "Choose which value is different for every row first.",
     );
 
     key.value = "interest";
@@ -1179,7 +1184,7 @@ describe("why Save as task is greyed out (PL-106 item 1)", () => {
   // sentence right under the button, in `#make-go-why`; an enabled button says nothing there.
   const NOTHING_RECORDED = "Record some steps first.";
   const NO_VALUES = "Type at least one value while teaching, so each row has something to fill in.";
-  const NO_KEY = "Pick the column that identifies each row.";
+  const NO_KEY = "Pick the value that is different for every row.";
 
   it("sits right under the button in the popup markup", () => {
     const go = control<HTMLButtonElement>("make-go");

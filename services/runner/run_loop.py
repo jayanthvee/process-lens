@@ -658,7 +658,7 @@ class RunLoop:
                     self._transition(conn, record, "claimed", target, reason)
                 return target
 
-        self._transition(conn, record, "claimed", "prechecked", "precheck passed")
+        self._transition(conn, record, "claimed", "prechecked", "checked the row")
         # Past the precheck, the recipe's own steps run: from here the tab is being driven, so a
         # record that leaves it has something to leave behind (PL-027).
         self._browser_touched = True
@@ -672,7 +672,7 @@ class RunLoop:
         if box.state == "prechecked":
             self._transition(conn, record, "prechecked", "parked", "no terminal step")
             return "parked"
-        self._transition(conn, record, "filling", "verified", "steps completed")
+        self._transition(conn, record, "filling", "verified", "done")
         return "verified"
 
     def _run_steps(
@@ -988,7 +988,7 @@ class RunLoop:
                 record,
                 "submitting",
                 "failed",
-                result.error or "the commit command was never dispatched",
+                result.error or "The click was never sent.",
                 step=step,
                 outcome="failed",
                 error=result.error,
@@ -1003,7 +1003,7 @@ class RunLoop:
                 record,
                 "submitting",
                 "failed",
-                result.error or "the extension refused the commit",
+                result.error or "ProcessLens stopped before sending it.",
                 step=step,
                 outcome="failed",
                 error=result.error,
@@ -1015,7 +1015,7 @@ class RunLoop:
                 record,
                 "submitting",
                 "reconciling",
-                "no dispatch proof",
+                "ProcessLens couldn't tell whether the click was sent",
                 step=step,
                 outcome="failed",
                 rung=result.rung,
@@ -1076,7 +1076,7 @@ class RunLoop:
             record,
             "submitted_unverified",
             "reconciling",
-            "the assertion did not pass",
+            "the page didn't show it saved",
             step=step,
             outcome="failed",
         )
@@ -1284,7 +1284,7 @@ class RunLoop:
                     worker=self.worker_id,
                     epoch=epoch,
                     destination_ref=diff.destination_ref,
-                    reason="the destination has this commit",
+                    reason="added and checked",
                 )
                 if step is not None:
                     record_step_event(
@@ -1309,12 +1309,16 @@ class RunLoop:
 
         if outcome == "pending":
             self._transition(
-                conn, record, "reconciling", "pending", "the destination does not have it; retry"
+                conn,
+                record,
+                "reconciling",
+                "pending",
+                "the site does not have it yet; trying again",
             )
             return "pending"
 
         # S2: an ambiguous match or a search error parks the record; it never fails it.
-        reason = diff.error or "the destination check found more than one match"
+        reason = diff.error or "the site shows more than one match for this row"
         if check_sentence is not None:
             reason = parking_reason(check_sentence, run.destination_key)
         self._transition(conn, record, "reconciling", "parked", reason)
@@ -1400,12 +1404,19 @@ class RunLoop:
         detail: str,
     ) -> str | None:
         """Turn one event into a record outcome and, where the ticket says so, a run pause."""
-        if kind == "code_required" and box.state in WORKING_STATES and self._code_from_email():
-            # PL-102: the code came from the person's email and the page moved on. The record is
-            # released (its attempt refunded) and claimed again, and the run carries on.
-            self._stop_record_for_event(conn, record, run, epoch, box, kind, CODE_FROM_EMAIL_REASON)
-            logger.info("run %s: the site's code was read from email", run.id)
-            return "pending"
+        code_detail: str | None = None
+        if kind == "code_required" and box.state in WORKING_STATES:
+            entered, reason = self._code_from_email()
+            if entered:
+                # PL-102: the code came from the person's email and the page moved on. The record
+                # is released (its attempt refunded) and claimed again, and the run carries on.
+                self._stop_record_for_event(
+                    conn, record, run, epoch, box, kind, CODE_FROM_EMAIL_REASON
+                )
+                logger.info("run %s: the site's code was read from email", run.id)
+                return "pending"
+            # PL-112: why the read did not happen, so the task's row can say it in plain words.
+            code_detail = reason or "could_not_read"
         if kind in PAUSE_EVENTS or kind in DISCONNECT_EVENTS:
             self._stop_record_for_event(conn, record, run, epoch, box, kind, detail)
             with conn.transaction():
@@ -1414,6 +1425,7 @@ class RunLoop:
                     run.id,
                     "paused",
                     pause_reason=_pause_reason_for(kind),
+                    pause_detail=code_detail,
                     worker=self.worker_id,
                     epoch=epoch,
                 )
@@ -1427,22 +1439,26 @@ class RunLoop:
                 return "parked"
         return None
 
-    def _code_from_email(self) -> bool:
+    def _code_from_email(self) -> tuple[bool, str]:
         """PL-102: ask the extension to read the site's code from email and type it.
 
-        True only when a code was typed and the code page went away. An executor that cannot read
-        email, a person who has not said yes, no single code, or a wrong code: False, and the run
-        pauses for the person as before. Nothing about the code reaches the runner.
+        The first value is True only when a code was typed and the code page went away. The second
+        is the extension's own reason when it did not (`none`, `ambiguous`, `not_allowed`, ...), so
+        the run can carry it to the row without inventing a second vocabulary. An executor that
+        cannot read email, a person who has not said yes, no single code, or a wrong code: no
+        entry, and the run pauses for the person as before. Nothing about the code reaches the
+        runner.
         """
         ask = getattr(self.executor, "code_from_email", None)
         if ask is None:
-            return False
+            return False, "not_connected"
         try:
             answer = ask()
         except Exception:  # noqa: BLE001 -- the person can still type it; never crash the run
             logger.warning("reading the code from email failed", exc_info=True)
-            return False
-        return bool(answer.get("entered")) and bool(answer.get("cleared"))
+            return False, "could_not_read"
+        entered = bool(answer.get("entered")) and bool(answer.get("cleared"))
+        return entered, str(answer.get("reason") or "")
 
     def _stop_record_for_event(
         self,

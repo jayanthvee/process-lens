@@ -26,7 +26,7 @@ SELECT id, recipe FROM recipe_versions WHERE id = ANY(%(ids)s)
 """
 
 _SELECT_LATEST_TASK = """
-SELECT rv.id, rv.tenant_id, rv.recipe
+SELECT rv.id, rv.tenant_id, rv.recipe, w.sign_in, w.sign_in_column
 FROM workflows w
 JOIN recipe_versions rv ON rv.workflow_id = w.id
 WHERE w.id = %(workflow)s AND w.archived_at IS NULL
@@ -51,6 +51,29 @@ def input_fields(recipe: Any) -> list[str]:
     return [str(name) for name in fields if str(name) != RUN_ONCE_FIELD]
 
 
+def input_examples(recipe: Any) -> dict[str, str]:
+    """Each input field's teaching example, when the recipe carries one."""
+    if not isinstance(recipe, dict):
+        return {}
+    meta = recipe.get("meta")
+    if not isinstance(meta, dict):
+        return {}
+    schema = meta.get("input_schema")
+    if not isinstance(schema, dict):
+        return {}
+    fields = schema.get("fields")
+    if not isinstance(fields, dict):
+        return {}
+    examples: dict[str, str] = {}
+    for name, spec in fields.items():
+        if not isinstance(spec, dict):
+            continue
+        example = spec.get("example")
+        if isinstance(example, str) and example.strip():
+            examples[str(name)] = example
+    return examples
+
+
 def inputs_for_versions(
     conn: psycopg.Connection, recipe_version_ids: list[uuid.UUID]
 ) -> dict[uuid.UUID, list[str]]:
@@ -62,8 +85,23 @@ def inputs_for_versions(
         return {row["id"]: input_fields(row["recipe"]) for row in cur.fetchall()}
 
 
+def examples_for_versions(
+    conn: psycopg.Connection, recipe_version_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, dict[str, str]]:
+    """Each pinned recipe version's teaching examples, keyed by the version's id."""
+    if not recipe_version_ids:
+        return {}
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(_SELECT_RECIPES, {"ids": recipe_version_ids})
+        return {row["id"]: input_examples(row["recipe"]) for row in cur.fetchall()}
+
+
 def latest_task_version(conn: psycopg.Connection, workflow_id: uuid.UUID) -> dict[str, Any] | None:
-    """A non-archived task's newest recipe version: ``id``, ``tenant_id`` and ``recipe``."""
+    """A non-archived task's newest recipe version, with its sign-in marker.
+
+    ``sign_in`` and ``sign_in_column`` come from the workflow row (PL-112): a sign-in task is the
+    only kind that may be run from one row instead of a spreadsheet.
+    """
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(_SELECT_LATEST_TASK, {"workflow": workflow_id})
         return cur.fetchone()
@@ -71,6 +109,8 @@ def latest_task_version(conn: psycopg.Connection, workflow_id: uuid.UUID) -> dic
 
 __all__ = [
     "RUN_ONCE_FIELD",
+    "examples_for_versions",
+    "input_examples",
     "input_fields",
     "inputs_for_versions",
     "latest_task_version",

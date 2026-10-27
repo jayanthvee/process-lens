@@ -31,7 +31,20 @@ export const UNRECORDABLE_PAGE_WARNING =
 export const GO_WHY_NOTHING_RECORDED = "Record some steps first.";
 export const GO_WHY_NO_VALUES =
   "Type at least one value while teaching, so each row has something to fill in.";
-export const GO_WHY_NO_KEY = "Pick the column that identifies each row.";
+export const GO_WHY_NO_KEY = "Pick the value that is different for every row.";
+
+/**
+ * PL-109 items 5 and 6: the decision the popup shows in place of a question. The label between
+ * the two pieces is the person's own (their field's name, their click's name), in bold.
+ */
+export const KEY_DECIDED_BEFORE = "We'll use ";
+export const KEY_DECIDED_AFTER = " so nothing gets added twice.";
+export const COMMIT_DECIDED_BEFORE = "The ";
+export const COMMIT_DECIDED_AFTER = " click saves your work.";
+
+/** PL-107 item 6 / PL-109 item 6: the answer that saves nothing, and its stand-alone line. */
+export const NOTHING_SAVED_CHOICE = "Nothing gets saved";
+export const NOTHING_SAVED_LINE = "Nothing gets saved.";
 
 /** A click with no name of its own: never its step id. */
 export const UNNAMED_CLICK = "This click";
@@ -230,9 +243,15 @@ function clickNameIn(text: string, events: RecordedEvent[]): string | null {
  * says so. A schema or step-name refusal keeps PL-103's plain sentence. Anything else is said in the
  * same shape, so the panel never shows a bare "Could not save this as a task.".
  */
-export function compileRefusalSentence(problems: string[], events: RecordedEvent[]): string {
+export function compileRefusalSentence(
+  problems: string[],
+  events: RecordedEvent[],
+  choice: { nothingSaved?: boolean } = {},
+): string {
   const text = problems.join("\n");
-  if (NO_ASSERTION_REFUSAL.test(text)) {
+  // PL-112: the person already answered "Nothing gets saved". Telling them to choose it is the
+  // contradiction the ticket is about, so a refusal under that answer uses the general shape.
+  if (NO_ASSERTION_REFUSAL.test(text) && choice.nothingSaved !== true) {
     const click = clickNameIn(text, events) ?? "that click";
     return `ProcessLens couldn't see anything change after “${click}”, so it can't check that click worked. Pick a different answer for “Which click saves your work?”, or choose “Nothing gets saved”.`;
   }

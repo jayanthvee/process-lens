@@ -9,10 +9,16 @@
 import { accessHeaders } from "../shared/access";
 import type { RecordedEvent, RecordedStep } from "../shared/recipe-types";
 import {
+  COMMIT_DECIDED_AFTER,
+  COMMIT_DECIDED_BEFORE,
   DUPLICATES_BLOCKED,
   GO_WHY_NO_KEY,
   GO_WHY_NO_VALUES,
   GO_WHY_NOTHING_RECORDED,
+  KEY_DECIDED_AFTER,
+  KEY_DECIDED_BEFORE,
+  NOTHING_SAVED_CHOICE,
+  NOTHING_SAVED_LINE,
   UNNAMED_CLICK,
   UNNAMED_STEP,
   compileRefusalSentence,
@@ -647,6 +653,10 @@ export type SaveTaskOutcome =
 export interface SaveTaskBody {
   name: string;
   recipe: Record<string, unknown>;
+  /** PL-112: this recording reached a page that asked for an emailed code. */
+  sign_in?: boolean;
+  /** PL-112: the column the email was typed into while teaching. */
+  sign_in_column?: string | null;
 }
 
 /** Turns the route's error body into sentences a person can read. */
@@ -854,6 +864,15 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
   const nameEl = control<HTMLInputElement>(deps.root, scope, "make-name");
   const keyEl = control<HTMLSelectElement>(deps.root, scope, "make-key");
   const commitEl = control<HTMLSelectElement>(deps.root, scope, "make-commit");
+  // PL-109 items 5 and 6: the decision lines and the Change buttons that open the questions.
+  const keyDecidedEl = control<HTMLElement>(deps.root, scope, "make-key-decided");
+  const keyDecidedNote = control<HTMLElement>(deps.root, scope, "make-key-decided-note");
+  const keyChangeEl = control<HTMLButtonElement>(deps.root, scope, "make-key-change");
+  const keyAskEl = control<HTMLElement>(deps.root, scope, "make-key-ask");
+  const commitDecidedEl = control<HTMLElement>(deps.root, scope, "make-commit-decided");
+  const commitDecidedNote = control<HTMLElement>(deps.root, scope, "make-commit-decided-note");
+  const commitChangeEl = control<HTMLButtonElement>(deps.root, scope, "make-commit-change");
+  const commitAskEl = control<HTMLElement>(deps.root, scope, "make-commit-ask");
   const duplicateEl = control<HTMLInputElement>(deps.root, scope, "make-duplicate");
   const duplicateHintEl = control<HTMLParagraphElement>(deps.root, scope, "make-duplicate-hint");
   const originsEl = control<HTMLFieldSetElement>(deps.root, scope, "make-origins");
@@ -870,6 +889,9 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
 
   let events: RecordedEvent[] = [];
   let busy = false;
+  // PL-109: the question is only on show when the form could not decide, or the person asked.
+  let changingKey = false;
+  let changingCommit = false;
 
   function notice(message: string): void {
     resultEl.textContent = message;
@@ -956,6 +978,86 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
     plainEl.textContent = notes.join(" ");
   }
 
+  /**
+   * A decision line with the person's own name in it, bold: "We'll use **Email** so nothing gets
+   * added twice." The name is a separate node so a screen reader reads the sentence, not a string
+   * built from an id, and the test can read the same words a person does.
+   */
+  function decidedSentence(prefix: string, label: string, suffix: string): DocumentFragment {
+    const sentence = document.createDocumentFragment();
+    const name = document.createElement("b");
+    name.textContent = label;
+    sentence.append(prefix, name, suffix);
+    return sentence;
+  }
+
+  /**
+   * PL-109 item 5: show the key the form decided, or ask only when no value can identify a row.
+   * "Change" opens the select, exactly as the panel's line does.
+   */
+  function renderKeyDecision(): void {
+    const values = recordedValues(events);
+    if (values.length === 0) {
+      keyDecidedEl.hidden = true;
+      keyAskEl.hidden = true;
+      return;
+    }
+    const decided = defaultRecordKeyColumn(events);
+    if (decided !== null && !changingKey) {
+      const label = values.find((value) => value.column === decided)?.label ?? decided;
+      keyDecidedNote.replaceChildren(
+        decidedSentence(KEY_DECIDED_BEFORE, label, KEY_DECIDED_AFTER),
+      );
+      keyDecidedEl.hidden = false;
+      keyAskEl.hidden = true;
+      return;
+    }
+    keyDecidedEl.hidden = true;
+    keyAskEl.hidden = false;
+  }
+
+  /**
+   * PL-109 item 6: show the click that saves, or say plainly that nothing gets saved. "Nothing
+   * gets saved" is also an option under Change, so the person can choose it deliberately.
+   */
+  function renderCommitDecision(): void {
+    const choices = commitChoices(events);
+    if (choices.length === 0) {
+      commitDecidedNote.textContent = NOTHING_SAVED_LINE;
+      commitChangeEl.hidden = true;
+      commitDecidedEl.hidden = false;
+      commitAskEl.hidden = true;
+      return;
+    }
+    commitChangeEl.hidden = false;
+    const decided = defaultCommitStepId(events);
+    if (decided !== null && !changingCommit) {
+      const label = choices.find((choice) => choice.id === decided)?.label ?? "Save";
+      commitDecidedNote.replaceChildren(
+        decidedSentence(COMMIT_DECIDED_BEFORE, label, COMMIT_DECIDED_AFTER),
+      );
+      commitDecidedEl.hidden = false;
+      commitAskEl.hidden = true;
+      return;
+    }
+    commitDecidedEl.hidden = true;
+    commitAskEl.hidden = false;
+  }
+
+  keyChangeEl.addEventListener("click", () => {
+    changingKey = true;
+    renderKeyDecision();
+  });
+  commitChangeEl.addEventListener("click", () => {
+    changingCommit = true;
+    renderCommitDecision();
+  });
+  // PL-112: a refusal was about the choice that produced it, so changing the choice clears it.
+  commitEl.addEventListener("change", () => {
+    resultEl.textContent = "";
+    deps.onNotice?.("");
+  });
+
   // A key the person picks re-evaluates the park ticks, the duplicate check, the plain notes and
   // the button.
   keyEl.addEventListener("change", () => {
@@ -984,7 +1086,7 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
     // PL-103/PL-107: the refusal's one plain sentence (the step it is about and its fix, or why
     // the save click could not be checked) is said right here, under Save, not only under support.
     notice(
-      `Could not save this as a task (${count}). ${compileRefusalSentence(sentences, events)}`,
+      `Could not save this as a task (${count}). ${compileRefusalSentence(sentences, events, { nothingSaved: commitEl.value.length === 0 })}`,
     );
     // PL-033: the refusal's own sentences are for support. The person reads the headline and the
     // two plain notes; everything else stays reachable under More → "Notes for support".
@@ -1015,6 +1117,9 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
 
   function refresh(next: RecordedEvent[]): void {
     events = Array.isArray(next) ? next : [];
+    // A fresh recording starts on its decisions, never on the last one's open question.
+    changingKey = false;
+    changingCommit = false;
     // A recording that has not been compiled is not yet a shape: until the compiler says
     // otherwise, the rule is worded as the create's (PL-077).
     applySearchKind(null);
@@ -1027,9 +1132,17 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
     keyEl.disabled = values.length === 0;
 
     const choices = commitChoices(events);
-    commitEl.replaceChildren(...choices.map((choice) => option(choice.id, choice.label)));
+    commitEl.replaceChildren(
+      ...choices.map((choice) => option(choice.id, choice.label)),
+      // PL-109 item 6: "Nothing gets saved" stays a choice, not only a default.
+      option("", NOTHING_SAVED_CHOICE),
+    );
     commitEl.value = defaultCommitStepId(events) ?? "";
     commitEl.disabled = choices.length === 0;
+
+    // PL-109 items 5 and 6: the decisions are shown, not asked, when they can be made.
+    renderKeyDecision();
+    renderCommitDecision();
 
     // Every origin starts ticked; the legend stays put when the recording has none.
     const legend = originsEl.querySelector("legend");
@@ -1078,7 +1191,7 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
       return;
     }
     if (keyEl.value.length === 0) {
-      notice("Choose which column identifies each row first.");
+      notice("Choose which value is different for every row first.");
       return;
     }
 

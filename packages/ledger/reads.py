@@ -286,7 +286,8 @@ SELECT workflow_id, recipe_version_id, name,
            '/', 1
          )
        END AS app,
-       last_run_id, last_run_status, last_run_started_at, last_run_counts
+       last_run_id, last_run_status, last_run_started_at, last_run_counts,
+       sign_in, sign_in_column, last_run_pause_reason, last_run_pause_detail
 FROM (
   SELECT rv.workflow_id, rv.id AS recipe_version_id,
          coalesce(rv.recipe -> 'meta' ->> 'name', w.name) AS name,
@@ -294,11 +295,14 @@ FROM (
          last.id AS last_run_id, last.status::text AS last_run_status,
          last.started_at AS last_run_started_at,
          coalesce(last.counts, '{}'::jsonb) AS last_run_counts,
+         last.pause_reason AS last_run_pause_reason,
+         last.pause_detail AS last_run_pause_detail,
+         w.sign_in, w.sign_in_column,
          rv.created_at AS created_at
   FROM recipe_versions rv
   JOIN workflows w ON w.id = rv.workflow_id
   LEFT JOIN LATERAL (
-    SELECT ru.id, ru.status, ru.started_at,
+    SELECT ru.id, ru.status, ru.started_at, ru.pause_reason, ru.pause_detail,
            (SELECT coalesce(jsonb_object_agg(s.state::text, s.n), '{}'::jsonb)
             FROM (
               SELECT state, count(*) AS n FROM run_records WHERE run_id = ru.id GROUP BY state

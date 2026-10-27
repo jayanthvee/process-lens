@@ -180,6 +180,21 @@ body,
   padding: 6px 10px;
   font-size: 12.5px;
 }
+.panel-task-signin {
+  flex-wrap: wrap;
+  align-items: flex-start;
+}
+.panel-signin {
+  display: grid;
+  gap: 6px;
+  flex: 1 1 100%;
+}
+.panel-signin .panel-input {
+  width: 100%;
+}
+.panel-signin .btn {
+  justify-self: start;
+}
 
 .panel-steps {
   list-style: none;

@@ -122,10 +122,19 @@ def collapse_submits(events: list[Event]) -> tuple[list[Event], list[str]]:
 
         previous = collapsed[-1] if collapsed else None
         if previous is not None and previous.kind == "click" and _same_target(previous, event):
+            # PL-112: the submit's own id stays with the step it folded into, so a choice that
+            # names the submit still names this step.
+            submitted = (event.step or {}).get("id")
+            absorbed = (
+                (*previous.also_ids, submitted)
+                if isinstance(submitted, str) and submitted
+                else previous.also_ids
+            )
             collapsed[-1] = replace(
                 previous,
                 commit=True,
                 observation=previous.observation or event.observation,
+                also_ids=absorbed,
             )
             merged += 1
             continue

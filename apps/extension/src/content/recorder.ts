@@ -20,6 +20,9 @@ import {
 import { scrubCodes } from "../shared/email-code";
 import { makeEvent, nextStepId, resetStepIds, type PendingEvent } from "../shared/events";
 import { installBrowserBridge, type Whoami } from "./browser-bridge";
+import { teachCodeOnPage, type TeachCodePageState } from "./teach-code";
+import { codePromptInPage, enterCodeInPage } from "../shared/code-page";
+import type { TeachCodeAnswer } from "../shared/messages";
 import {
   chipAncestorOf,
   chipListAncestor,
@@ -1575,6 +1578,9 @@ export function shouldResetStepIds(
   return false;
 }
 
+/** How long after an action to look for a code page the page has just shown. */
+const TEACH_CODE_SETTLE_MS = 250;
+
 /**
  * Wire the recorder to the extension runtime. Kept out of `attachRecorder` so the
  * recorder can be tested with a plain document and no browser APIs.
@@ -1595,15 +1601,70 @@ function bootstrap(): void {
 
   let recording = false;
   let previousStatus: { state?: string; count?: number } | undefined;
+  // PL-107 item 12: the code page this document has already asked about, and whether the
+  // extension is typing right now. While it is, the recorder is off: what it types is not a step.
+  let teachCode: TeachCodePageState = { attempted: false };
+  let typingCode = false;
+  let codeCheckTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const quietly = <T,>(work: () => T): T => {
+    typingCode = true;
+    try {
+      return work();
+    } finally {
+      typingCode = false;
+    }
+  };
+
+  const checkCodePage = (): void => {
+    if (!recording || typingCode) return;
+    // Only the page the person is looking at, and only once per page: a background tab or a
+    // frame must never be filled, and a code page is not asked about again after every action.
+    if (typeof window === "undefined" || window.top !== window) return;
+    if (document.visibilityState !== "visible") return;
+    void teachCodeOnPage(
+      {
+        probe: () => codePromptInPage({}),
+        enter: (input) => enterCodeInPage(input),
+        ask: async (query) => {
+          const answer = (await ext.runtime.sendMessage({
+            type: "record:code-from-email",
+            ...query,
+          })) as { code?: TeachCodeAnswer } | undefined;
+          return answer?.code ?? { status: "none" };
+        },
+        report: (answer) => {
+          void ext.runtime
+            .sendMessage({ type: "record:code-entered", ...answer })
+            .catch(() => undefined);
+        },
+        quietly,
+        now: () => Date.now(),
+        site: () => location.href,
+      },
+      teachCode,
+    ).catch(() => undefined);
+  };
+
+  const scheduleCodeCheck = (): void => {
+    if (codeCheckTimer !== null) return;
+    codeCheckTimer = setTimeout(() => {
+      codeCheckTimer = null;
+      checkCodePage();
+    }, TEACH_CODE_SETTLE_MS);
+  };
+
   const send = (event: PendingEvent): void => {
     if (!recording) return;
     void ext.runtime.sendMessage({ type: "record:event", event }).catch(() => undefined);
+    // The page may have shown a code field in answer to this action (or navigated to one).
+    scheduleCodeCheck();
   };
 
   const attach = (arrivalStepId: string | null): void => {
     attachRecorder(document, {
       send,
-      isActive: () => recording,
+      isActive: () => recording && !typingCode,
       onLeaving: () => {
         if (!recording) return;
         void ext.runtime.sendMessage({ type: "record:leaving" }).catch(() => undefined);
@@ -1615,7 +1676,15 @@ function bootstrap(): void {
       },
       ...(arrivalStepId ? { arrival: { stepId: arrivalStepId } } : {}),
     });
+    // A page that arrives already asking for a code (a reload of the code page, or a return to
+    // it) is filled without waiting for the person to act again.
+    scheduleCodeCheck();
   };
+
+  // A code page that was loaded in a background tab is looked at once it is shown.
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") scheduleCodeCheck();
+  });
 
   ext.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
     const incoming = message as { type?: string; status?: { state?: string; count?: number } };
@@ -1629,9 +1698,18 @@ function bootstrap(): void {
     if (incoming?.type === "record:state") {
       const status = incoming.status;
       // A new recording, or a clear, restarts the ids; a stop and an ongoing recording do not.
-      if (shouldResetStepIds(status, previousStatus)) resetStepIds();
+      if (shouldResetStepIds(status, previousStatus)) {
+        resetStepIds();
+        teachCode = { attempted: false };
+      }
       previousStatus = status;
       recording = status?.state === "recording";
+      if (recording) scheduleCodeCheck();
+    }
+    if (incoming?.type === "record:code-retry") {
+      // The person said yes in the panel, so the code page already open gets its look now.
+      teachCode = { attempted: false };
+      scheduleCodeCheck();
     }
     return undefined;
   });

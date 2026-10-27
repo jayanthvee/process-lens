@@ -33,17 +33,29 @@ from .task_columns import RUN_ONCE_FIELD, input_fields, latest_task_version
 router = APIRouter(prefix="/api/v1", tags=["tasks"])
 
 _INSERT_WORKFLOW = """
-INSERT INTO workflows (tenant_id, name, destination_key, allowed_origins, created_by)
-VALUES (%s, %s, %s, %s, %s)
+INSERT INTO workflows
+  (tenant_id, name, destination_key, allowed_origins, created_by, sign_in, sign_in_column)
+VALUES (%s, %s, %s, %s, %s, %s, %s)
 RETURNING id
+"""
+
+_UPDATE_WORKFLOW_SIGN_IN = """
+UPDATE workflows SET sign_in = %s, sign_in_column = %s WHERE id = %s
 """
 
 
 class CreateTaskRequest(BaseModel):
-    """What the popup sends: the name the person chose, and the recipe that compiled."""
+    """What the popup sends: the name the person chose, and the recipe that compiled.
+
+    PL-112: a recording that reached a page asking for an emailed code is a sign-in task. The
+    marker and the column its email was typed into ride with the save; the taught email itself is
+    already the recipe's own example, so the server keeps no second copy.
+    """
 
     name: str
     recipe: dict[str, Any]
+    sign_in: bool = False
+    sign_in_column: str | None = None
 
 
 class CreateTaskResponse(BaseModel):
@@ -54,9 +66,14 @@ class CreateTaskResponse(BaseModel):
 
 
 class RunOnceRequest(BaseModel):
-    """The Chrome that should drive this one-row run; absent lets any Chrome take it."""
+    """The Chrome that should drive this one-row run, and optionally the row itself.
+
+    PL-112: a sign-in task's row is one picked email, placed in the column the recording typed it
+    into. A task with inputs still needs a spreadsheet when no row is supplied.
+    """
 
     browser_id: Annotated[str, Field(pattern=r"^[A-Za-z0-9_-]{8,64}$")] | None = None
+    values: dict[str, Any] | None = None
 
 
 class RunOnceResponse(BaseModel):
@@ -67,6 +84,15 @@ class RunOnceResponse(BaseModel):
 
 
 NEEDS_A_SPREADSHEET = "This task needs a spreadsheet."
+# PL-112, T1 review: a run-once row's record key is a fresh id, so it can never repeat and the
+# committed-keys guard has nothing to compare. Only a task that saves nothing (a sign-in) may be
+# run that way, and then only with the one address its own column holds.
+VALUES_NOT_FOR_THIS_TASK = "This task runs from a spreadsheet, not from one row."
+ONE_EMAIL_ONLY = "Run this task with one email address, in its own field."
+EMAIL_REQUIRED = "Type the email this run should use."
+EMAIL_TOO_LONG = "That email is too long to use here."
+# The recipe schema's own limit on an input field's example, and far more than an address needs.
+EMAIL_MAX_LENGTH = 320
 
 
 def destination_key_of(origins: list[str]) -> str:
@@ -112,9 +138,16 @@ def create_task(payload: Annotated[CreateTaskRequest, Body()]) -> CreateTaskResp
         if existing is not None:
             workflow_id = uuid.UUID(str(existing[0]))
             stored = store_recipe_version(conn, workflow_id=workflow_id, document=document)
-            conn.commit()
             if stored is None:  # pragma: no cover - the row was read in this same connection
                 raise HTTPException(status_code=404, detail=f"workflow {workflow_id} is gone")
+            # A re-teach is the task's current shape: a task taught again without a code page is
+            # no longer a sign-in task.
+            with conn.cursor() as cur:
+                cur.execute(
+                    _UPDATE_WORKFLOW_SIGN_IN,
+                    (payload.sign_in, payload.sign_in_column, workflow_id),
+                )
+            conn.commit()
             return CreateTaskResponse(workflow_id=workflow_id, recipe_version_id=stored["id"])
         try:
             with conn.transaction():
@@ -127,6 +160,8 @@ def create_task(payload: Annotated[CreateTaskRequest, Body()]) -> CreateTaskResp
                             destination_key_of(origins),
                             origins,
                             person.id,
+                            payload.sign_in,
+                            payload.sign_in_column,
                         ),
                     )
                     workflow_id = uuid.UUID(str(cur.fetchone()[0]))
@@ -143,6 +178,31 @@ def create_task(payload: Annotated[CreateTaskRequest, Body()]) -> CreateTaskResp
     return CreateTaskResponse(workflow_id=workflow_id, recipe_version_id=stored["id"])
 
 
+def sign_in_row(task: dict[str, Any], values: dict[str, Any] | None) -> dict[str, str]:
+    """The one cell a sign-in task's run-once row may carry; empty when no values were sent.
+
+    A run-once row is keyed by a fresh ``run_once_id``, so its key never repeats. That is right
+    only for a task that saves nothing: for a task that commits it would bypass the
+    ``committed_keys`` duplicate guard, and a spreadsheet row's own key would never be consulted.
+    So ``values`` is refused for every task the person did not teach through a code page, and a
+    sign-in task accepts exactly its own column and one non-empty address.
+    """
+    if not values:
+        return {}
+    if task.get("sign_in") is not True:
+        raise HTTPException(status_code=422, detail=VALUES_NOT_FOR_THIS_TASK)
+    column = task.get("sign_in_column")
+    if not isinstance(column, str) or column == "" or set(values) != {column}:
+        raise HTTPException(status_code=422, detail=ONE_EMAIL_ONLY)
+    email = values[column]
+    if not isinstance(email, str) or email.strip() == "":
+        raise HTTPException(status_code=422, detail=EMAIL_REQUIRED)
+    trimmed = email.strip()
+    if len(trimmed) > EMAIL_MAX_LENGTH:
+        raise HTTPException(status_code=422, detail=EMAIL_TOO_LONG)
+    return {column: trimmed}
+
+
 @router.post("/tasks/{workflow_id}/run-once", response_model=RunOnceResponse, status_code=201)
 def run_task_once(
     workflow_id: uuid.UUID, payload: Annotated[RunOnceRequest, Body()] | None = None
@@ -155,19 +215,22 @@ def run_task_once(
     skipped as already done.
 
     A task whose pinned recipe version asks for spreadsheet columns is refused rather than handed
-    an empty row: it belongs in the normal run flow (PL-105).
+    an empty row: it belongs in the normal run flow (PL-105). The one exception is a sign-in task
+    (PL-112), which may be given the single address it signs in with; see :func:`sign_in_row`.
     """
     body = payload or RunOnceRequest()
     with connection() as conn:
         task = latest_task_version(conn, workflow_id)
         if task is None:
             raise HTTPException(status_code=404, detail=f"task {workflow_id} does not exist")
-        if input_fields(task["recipe"]):
+        fields = input_fields(task["recipe"])
+        row_values = sign_in_row(task, body.values)
+        if fields and not row_values:
             raise HTTPException(status_code=422, detail=NEEDS_A_SPREADSHEET)
 
         require_runs_allowed(conn, task["tenant_id"])
         run_once_id = uuid.uuid4()
-        row = {RUN_ONCE_FIELD: str(run_once_id)}
+        row = {**row_values, RUN_ONCE_FIELD: str(run_once_id)}
         try:
             with conn.transaction():
                 batch_id = insert_batch(
@@ -206,9 +269,15 @@ def run_task_once(
 __all__ = [
     "CreateTaskRequest",
     "CreateTaskResponse",
+    "EMAIL_MAX_LENGTH",
+    "EMAIL_REQUIRED",
+    "EMAIL_TOO_LONG",
     "NEEDS_A_SPREADSHEET",
+    "ONE_EMAIL_ONLY",
     "RunOnceRequest",
     "RunOnceResponse",
+    "VALUES_NOT_FOR_THIS_TASK",
     "destination_key_of",
     "router",
+    "sign_in_row",
 ]

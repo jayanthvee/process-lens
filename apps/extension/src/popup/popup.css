@@ -172,6 +172,8 @@ body {
 
 .button:hover:not(:disabled) { border-color: var(--ink-2); }
 .button:disabled { opacity: .5; cursor: not-allowed; transform: none; }
+/* A button the form decides not to offer is hidden; author display beats the browser's rule. */
+.button[hidden] { display: none; }
 
 .button--quiet {
   background: var(--glass-strong);
@@ -215,6 +217,10 @@ body {
   flex-direction: column;
   gap: 5px;
 }
+
+/* A field the form decides rather than asks is hidden until Change: author display beats the
+   browser's own [hidden] rule, so say it here. */
+.field[hidden] { display: none; }
 
 .field__label {
   color: var(--ink-2);

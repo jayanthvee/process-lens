@@ -46,6 +46,9 @@ class Event:
     # PL-031: the ISO timestamp the recorder stamped on the event, used to detect fills that
     # arrived in a burst without keystrokes information.
     at: str = ""
+    # PL-112: the ids of events this one absorbed. A click and the submit it caused are one step,
+    # so a person who chose the submit's row has named this step too.
+    also_ids: tuple[str, ...] = ()
 
 
 @dataclass

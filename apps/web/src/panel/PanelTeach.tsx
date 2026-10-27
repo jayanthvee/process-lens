@@ -25,6 +25,13 @@ import {
   type StepProblem,
 } from "../../../extension/src/popup/flow";
 import { compileRefusalSentence, plainSentences, stepSentence } from "../../../extension/src/popup/words";
+import {
+  CODE_FROM_EMAIL_BUTTON,
+  CODE_FROM_EMAIL_LATER,
+  CODE_FROM_EMAIL_OFFER,
+  READING_CODE_FROM_GMAIL,
+  codeFromEmailWords,
+} from "../lib/words";
 import type { RecordedEvent } from "../../../extension/src/shared/recipe-types";
 import {
   EMPTY_STATUS,
@@ -32,6 +39,7 @@ import {
   type ToWorker,
 } from "../../../extension/src/shared/messages";
 import { extensionChrome, type ExtensionMessageListener } from "./extension";
+import { rememberSignInEmail, taughtSignIn } from "./signInEmails";
 
 interface RecorderResponse {
   ok: boolean;
@@ -80,6 +88,8 @@ export function PanelTeach(): JSX.Element {
   const [changingCommit, setChangingCommit] = useState(false);
 
   const recording = status.state === "recording";
+  // PL-107 item 12: what the recorder is doing about a code page, if it is on one.
+  const codeState = status.code ?? null;
   const values = recordedValues(events);
   // PL-107: one choice per recorded click, labelled by the click's own sentence.
   const clickChoices: { id: string; label: string }[] = [];
@@ -182,6 +192,11 @@ export function PanelTeach(): JSX.Element {
     apply(answer);
   }
 
+  /** PL-107 item 12: the panel's yes to reading a code from Gmail, for this and later tasks. */
+  async function allowCodes(): Promise<void> {
+    apply(await send({ type: "record:code-consent" }));
+  }
+
   async function remove(seq: number): Promise<void> {
     const answer = await send({ type: "record:remove", seq });
     apply(answer);
@@ -237,12 +252,20 @@ export function PanelTeach(): JSX.Element {
         headers: config.headers,
       });
       if (!compiled.ok) {
-        setProblem(compileRefusalSentence(compiled.problems, events));
+        setProblem(
+          compileRefusalSentence(compiled.problems, events, { nothingSaved: commitStepId === "" }),
+        );
         setNote(null);
         return;
       }
+      const signIn =
+        status.signIn === true ? taughtSignIn(values, keyColumn) : null;
       const saved = await saveTask(
-        { name: trimmed, recipe: compiled.recipe },
+        {
+          name: trimmed,
+          recipe: compiled.recipe,
+          ...(signIn === null ? {} : { sign_in: true, sign_in_column: signIn.column }),
+        },
         { baseUrl: config.base, headers: config.headers },
       );
       if (!saved.ok) {
@@ -250,6 +273,14 @@ export function PanelTeach(): JSX.Element {
         setProblem(plain ?? "Could not save the task.");
         setNote(null);
         return;
+      }
+      if (signIn !== null) {
+        // The taught address is the first choice in Tasks, and the list stays in this Chrome.
+        await rememberSignInEmail(
+          extensionChrome()?.storage?.local,
+          saved.workflowId,
+          signIn.email,
+        );
       }
       setNote(`${trimmed} is ready. It is in Tasks.`);
       setName(trimmed);
@@ -316,6 +347,30 @@ export function PanelTeach(): JSX.Element {
           {status.warning}
         </p>
       )}
+      {codeState?.state === "looking" ? (
+        <p className="panel-note" role="status">
+          {READING_CODE_FROM_GMAIL}
+        </p>
+      ) : null}
+      {codeState?.state === "offer" ? (
+        <div className="panel-code">
+          <p className="panel-note">{CODE_FROM_EMAIL_OFFER}</p>
+          <button type="button" className="btn quiet" onClick={() => void allowCodes()}>
+            {CODE_FROM_EMAIL_BUTTON}
+          </button>
+          <p className="panel-note">{CODE_FROM_EMAIL_LATER}</p>
+        </div>
+      ) : null}
+      {codeState?.state === "typed" ? (
+        <p className="panel-note" role="status">
+          The code from your Gmail was typed for you.
+        </p>
+      ) : null}
+      {codeState?.state === "missed" ? (
+        <p className="panel-problem" role="status">
+          {codeFromEmailWords(codeState.reason)}
+        </p>
+      ) : null}
       {lines.length === 0 ? (
         <p className="panel-note">The steps you take will appear here.</p>
       ) : listLines.length === 0 ? null : (
@@ -392,7 +447,11 @@ export function PanelTeach(): JSX.Element {
                 id="panel-commit"
                 className="panel-input"
                 value={commitStepId}
-                onChange={(event) => setCommitStepId(event.target.value)}
+                onChange={(event) => {
+                  setCommitStepId(event.target.value);
+                  // PL-112: an old refusal was about the old answer; it is no longer true.
+                  setProblem(null);
+                }}
               >
                 {clickChoices.map((choice) => (
                   <option key={choice.id} value={choice.id}>
