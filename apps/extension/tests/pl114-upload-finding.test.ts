@@ -43,7 +43,8 @@ describe("a file upload while teaching (PL-114 item 7)", () => {
     recorded.detach();
 
     // The finding, recorded here rather than assumed: teaching produces no upload step at all.
-    expect(recorded.events.some((event) => event.step?.action === "upload_file")).toBe(false);
+    const actions = recorded.events.map((event) => String(event.step?.action ?? ""));
+    expect(actions).not.toContain("upload_file");
     expect(JSON.stringify(recorded.events)).not.toContain("scan.pdf");
   });
 });
