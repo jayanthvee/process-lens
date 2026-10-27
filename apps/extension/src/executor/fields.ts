@@ -174,6 +174,13 @@ export function fieldActionInPage(query: FieldQuery): FieldResult {
     const normalise = (text: string): string => text.replace(/\s+/g, " ").trim().toLowerCase();
     let index = names.findIndex((name) => name === wanted);
     if (index < 0) index = names.findIndex((name) => normalise(name) === normalise(wanted));
+    // PL-114 item 5: a row of stars or buttons has no labels of its own to match, so the row's
+    // number is the option's place in the row: 3 is the third star. The option itself is clicked,
+    // exactly as a person would.
+    if (index < 0 && /^\d+$/.test(wanted.trim())) {
+      const ordinal = Number(wanted.trim());
+      if (ordinal >= 1 && ordinal <= shown.length) index = ordinal - 1;
+    }
     if (index < 0) {
       return {
         ok: false,

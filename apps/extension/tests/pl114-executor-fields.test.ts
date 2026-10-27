@@ -175,8 +175,7 @@ describe("a radio group (PL-114 item 2)", () => {
     expect(String(summary.error ?? "")).toContain("Overnight");
   });
 
-  it("chooses in a status bar of aria-checked buttons", async () => {
-    document.body.innerHTML = `
+  it("chooses in a status bar of aria-checked buttons", async () => {    document.body.innerHTML = `
       <div role="radiogroup" aria-label="Stage">
         <button type="button" role="radio" aria-checked="true">New</button>
         <button type="button" role="radio" aria-checked="false">Booked</button>
@@ -205,6 +204,45 @@ describe("a radio group (PL-114 item 2)", () => {
 
     expect(summary.steps[0]?.outcome ?? summary.error).toBe("done");
     expect(buttons[1]?.getAttribute("aria-checked")).toBe("true");
+  });
+});
+
+describe("a row of stars (PL-114 item 5)", () => {
+  it("clicks the third star when the row says 3", async () => {
+    document.body.innerHTML = `
+      <div role="radiogroup" aria-label="Rating">
+        ${[1, 2, 3, 4, 5]
+          .map(
+            (n) =>
+              `<button type="button" role="radio" aria-checked="false" aria-label="${n} of 5">&#9733;</button>`,
+          )
+          .join("")}
+      </div>`;
+    const stars = document.querySelectorAll("[role='radio']");
+    stars.forEach((star) =>
+      star.addEventListener("click", () => {
+        stars.forEach((other) => other.setAttribute("aria-checked", "false"));
+        star.setAttribute("aria-checked", "true");
+      }),
+    );
+    const { cdp } = fakeCdp(undefined, { simulateInput: true });
+
+    const summary = await runRecipe(
+      recipe([
+        {
+          id: "stars",
+          action: "select",
+          targets: [{ by: "role", role: "radiogroup", name: "Rating" }] as LocatorRung[],
+          value: { kind: "constant", value: "3" } as ValueSource,
+        },
+      ]),
+      { row: {} },
+      { cdp },
+    );
+
+    expect(summary.steps[0]?.outcome ?? summary.error).toBe("done");
+    expect(stars[2]?.getAttribute("aria-checked")).toBe("true");
+    expect(stars[0]?.getAttribute("aria-checked")).toBe("false");
   });
 });
 
