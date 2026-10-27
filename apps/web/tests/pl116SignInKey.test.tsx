@@ -83,8 +83,8 @@ afterEach(() => {
   configureApi({ base: "", headers: {} });
 });
 
-async function saveScreen(signIn: boolean): Promise<void> {
-  installChrome(SIGN_IN, signIn);
+async function saveScreen(events: RecordedEvent[], signIn: boolean): Promise<void> {
+  installChrome(events, signIn);
   render(<PanelTeach />);
   // The click choice is on screen once the recording has been read back.
   await screen.findByText(/click saves your work/i);
@@ -93,7 +93,7 @@ async function saveScreen(signIn: boolean): Promise<void> {
 
 describe("a sign-in's save screen has no add-twice line (PL-116)", () => {
   it("does not show the key line, its Change button, or the note", async () => {
-    await saveScreen(true);
+    await saveScreen(SIGN_IN, true);
 
     expect(screen.queryByText(/nothing gets added twice/i)).toBeNull();
     expect(screen.queryByText(/We'll use/i)).toBeNull();
@@ -104,12 +104,40 @@ describe("a sign-in's save screen has no add-twice line (PL-116)", () => {
   });
 
   it("still shows the key line for a recording that is not a sign-in", async () => {
-    await saveScreen(false);
+    await saveScreen(SIGN_IN, false);
 
     await screen.findByText("Email", { selector: "b" });
     expect(screen.getByText(/so nothing gets added twice/i)).toBeTruthy();
     expect(
       screen.getByRole("button", { name: "Change the value that is different for every row" }),
     ).toBeTruthy();
+  });
+
+  it("still asks which value is different when a sign-in typed no identifiable one", async () => {
+    // A username sign-in: "jsmith" is not an email, an id or a person's name, so no key can be
+    // picked for the person. Hiding the question too would leave Save disabled with no way out.
+    const username: RecordedEvent[] = [
+      {
+        seq: 1,
+        at: "2026-10-27T10:00:00Z",
+        kind: "fill",
+        url: LOGIN,
+        step: {
+          id: "fill-1",
+          action: "fill",
+          targets: [{ by: "role", role: "textbox", name: "Username" }],
+          value: { kind: "constant", value: "jsmith" },
+        },
+      },
+      SIGN_IN[1] as RecordedEvent,
+    ];
+
+    await saveScreen(username, true);
+
+    expect(
+      screen.getByRole("combobox", { name: "Which value is different for every row?" }),
+    ).toBeTruthy();
+    // The note that says why it is asked is still the one thing a sign-in does not need.
+    expect(screen.queryByText(/nothing gets added twice/i)).toBeNull();
   });
 });

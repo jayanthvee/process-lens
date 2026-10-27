@@ -62,16 +62,27 @@ function measures(fake: FakeCdp): number {
   }).length;
 }
 
+/** Whether this evaluate call is the prepare's own measure, not a climb or a settle. */
+function isMeasure(params: Record<string, unknown>): boolean {
+  const expression = String(params["expression"] ?? "");
+  return expression.includes("return measureTargetInPage(") && !expression.includes("const resolve =");
+}
+
 describe("preparing a click on a busy button (PL-116)", () => {
   it("waits while the button takes no clicks, then prepares and clicks it once", async () => {
     const button = signInPage();
     // The spinner state Goodlabs shows after the email is typed: disabled and taking no clicks.
     // `pointer-events` is what reaches the separate measure; the resolver sees a usable button.
+    // The state is released on the second measure, not on a timer, so the test cannot race one.
     button.style.pointerEvents = "none";
-    setTimeout(() => {
-      button.style.pointerEvents = "";
-    }, 300);
-    const fake = fakeCdp();
+    let seen = 0;
+    const fake = fakeCdp((method, params) => {
+      if (method === "Runtime.evaluate" && isMeasure(params)) {
+        seen += 1;
+        if (seen >= 2) button.style.pointerEvents = "";
+      }
+      return undefined;
+    });
 
     const report = await dispatchCommandStep(clickContinue(), {
       cdp: fake.cdp,
