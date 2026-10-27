@@ -226,17 +226,23 @@ export function measureTargetInPage(query: MeasureQuery): MeasureResult {
     const box = el.getBoundingClientRect();
     const viewHeight = window.innerHeight || 0;
     if (box.top >= 0 && box.bottom <= viewHeight) return false;
-    for (let node = el.parentElement; node; node = node.parentElement) {
+    let node: Element | null = el.parentElement;
+    while (node !== null) {
+      const ancestor: Element = node;
       const style =
-        typeof window.getComputedStyle === "function" ? window.getComputedStyle(node) : null;
-      if (style === null || !/(auto|scroll)/.test(style.overflowY)) continue;
-      if (!(node.scrollHeight > node.clientHeight)) continue;
-      const delta = box.top + box.height / 2 - viewHeight / 2;
-      node.scrollTop = Math.max(
-        0,
-        Math.min(node.scrollHeight - node.clientHeight, node.scrollTop + delta),
-      );
-      return true;
+        typeof window.getComputedStyle === "function"
+          ? window.getComputedStyle(ancestor)
+          : null;
+      if (style !== null && /(auto|scroll)/.test(style.overflowY)) {
+        const height = ancestor.clientHeight;
+        const total = ancestor.scrollHeight;
+        if (total > height) {
+          const delta = box.top + box.height / 2 - viewHeight / 2;
+          ancestor.scrollTop = Math.max(0, Math.min(total - height, ancestor.scrollTop + delta));
+          return true;
+        }
+      }
+      node = ancestor.parentElement;
     }
     return false;
   };

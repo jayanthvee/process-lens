@@ -1,8 +1,8 @@
-﻿"""PL-113 item 1 (blocking): a commit is Done only when its own check proves the change.
+"""PL-113 item 1 (blocking): a commit is Done only when its own check proves the change.
 
-The owner's run said Done for rows where nothing changed: the commit's check was the page's chrome
-(a tab label, true everywhere) and the field still showed the old value. These are the runner's three
-guarantees:
+The owner's run said Done for rows where nothing changed: the commit's check was the page's
+chrome (a tab label, true everywhere) and the field still showed the old value. These are the
+runner's three guarantees:
 
 * a check that already held before the step ran is not proof -- the row parks;
 * a check the page does not satisfy after the save parks (typed 799, the page still shows 910);

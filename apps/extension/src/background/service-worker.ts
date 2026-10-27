@@ -1,4 +1,4 @@
-﻿// The service worker: the recorder's single place of state.
+// The service worker: the recorder's single place of state.
 //
 // It owns the start/stop/clear state, stamps each event with its order, keeps the
 // session history, and â€” when a WebSocket URL is configured â€” streams events out
