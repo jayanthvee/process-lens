@@ -22,7 +22,7 @@ from .templates import TemplateError, render
 MAX_SENTENCE = 160
 
 # PL-047: the schema's condition kinds are closed, but a future kind must still produce a sentence.
-UNKNOWN_CHECK = "the page did not show it saved"
+UNKNOWN_CHECK = "the save's check did not pass"
 
 # PL-047: a kind the schema allows but this module cannot name gets this neutral phrase.
 _GENERIC_ELEMENT = "the element the check looked for"

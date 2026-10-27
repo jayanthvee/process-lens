@@ -653,6 +653,10 @@ export type SaveTaskOutcome =
 export interface SaveTaskBody {
   name: string;
   recipe: Record<string, unknown>;
+  /** PL-112: this recording reached a page that asked for an emailed code. */
+  sign_in?: boolean;
+  /** PL-112: the column the email was typed into while teaching. */
+  sign_in_column?: string | null;
 }
 
 /** Turns the route's error body into sentences a person can read. */

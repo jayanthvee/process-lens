@@ -56,6 +56,7 @@ import { lookForCode, readGmailFeeds } from "./code-lookup";
 import { dispatchCommandStep, prepareCommandStep } from "./command-step";
 import { canRemoveStep, RecorderSession, shouldRecordNavigation } from "./recorder-session";
 import { codeForTeaching, enteredCodeState } from "./teach-code";
+import { clearSignIn, markSignIn } from "./sign-in";
 import { REFRESH_PAGE_WARNING, UNRECORDABLE_PAGE_WARNING } from "../popup/words";
 import {
   CommandSession,
@@ -244,13 +245,13 @@ function attachArrivalObservation(stepId: string, observation: RecordedEvent["ob
 }
 
 function start(): void {
-  status = {
+  status = clearSignIn({
     ...status,
     state: "recording",
     startedAt: new Date().toISOString(),
     // A new teaching starts with no code page behind it.
     code: null,
-  };
+  });
   // The tab this recording follows is adopted from its first event, not remembered from the
   // last demonstration, and a fresh demonstration owes the last one no evidence.
   recordedTabId = null;
@@ -267,7 +268,7 @@ function stop(): void {
 
 function clear(): void {
   session.clear();
-  status = {
+  status = clearSignIn({
     ...status,
     count: 0,
     // A clear is a fresh start: whatever the last refused start said no longer applies, and a
@@ -275,7 +276,7 @@ function clear(): void {
     warning: null,
     code: null,
     startedAt: status.state === "recording" ? new Date().toISOString() : null,
-  };
+  });
   updateBadge();
 }
 
@@ -1258,6 +1259,8 @@ async function handle(message: ToWorker, sender?: chrome.runtime.MessageSender):
       if (status.state !== "recording" || sender?.frameId !== 0) break;
       if (recordedTabId !== null && sendingTabId !== recordedTabId) break;
       if (recordedTabId === null && sendingTabId !== undefined) recordedTabId = sendingTabId;
+      // PL-112: the page only asks this when it found a code prompt, so this is a sign-in task.
+      status = markSignIn(status);
       codeAnswer = await codeForTeaching(
         {
           allowed: async () => {
@@ -1288,7 +1291,7 @@ async function handle(message: ToWorker, sender?: chrome.runtime.MessageSender):
     case "record:code-entered":
       // The page's own answer is the last word on a code it was handed.
       if (status.state === "recording") {
-        status = { ...status, code: enteredCodeState(message.entered) };
+        status = markSignIn({ ...status, code: enteredCodeState(message.entered) });
       }
       break;
     case "record:code-consent": {

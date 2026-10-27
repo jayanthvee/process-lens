@@ -87,7 +87,8 @@ SET status = (CASE
       WHEN worker_id IS NULL OR heartbeat_at < now() - %(timeout)s::interval THEN 'queued'
       ELSE 'running'
     END)::run_status,
-    pause_reason = NULL
+    pause_reason = NULL,
+    pause_detail = NULL
 WHERE id = %(run)s AND status = 'paused'
 RETURNING id, status
 """
@@ -234,6 +235,7 @@ SET status = 'queued',
     heartbeat_at = NULL,
     cancel_requested_at = NULL,
     pause_reason = NULL,
+    pause_detail = NULL,
     finished_at = NULL
 WHERE id = %(run)s AND status = 'completed'
 """
@@ -260,6 +262,7 @@ def set_run_status(
     status: str,
     *,
     pause_reason: str | None = None,
+    pause_detail: str | None = None,
     worker: str | None = None,
     epoch: int | None = None,
 ) -> None:
@@ -274,11 +277,20 @@ def set_run_status(
 
     terminal = ", finished_at = now()" if status in _TERMINAL_STATUSES else ""
     sql = (
-        f"UPDATE runs SET status = %(status)s, pause_reason = %(reason)s{terminal}"
+        f"UPDATE runs SET status = %(status)s, pause_reason = %(reason)s, "
+        f"pause_detail = %(detail)s{terminal}"
         " WHERE id = %(run)s"
     )
     with conn.cursor() as cur:
-        cur.execute(sql, {"status": status, "reason": pause_reason, "run": run_id})
+        cur.execute(
+            sql,
+            {
+                "status": status,
+                "reason": pause_reason,
+                "detail": pause_detail,
+                "run": run_id,
+            },
+        )
 
 
 def release_run(conn: psycopg.Connection, run_id: uuid.UUID, worker_id: str) -> bool:

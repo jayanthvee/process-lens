@@ -122,6 +122,9 @@ class RunDetail(BaseModel):
     mode: str
     status: str
     pause_reason: str | None
+    # PL-112: the extension's own reason a code read failed ("none", "ambiguous", ...). The
+    # pause reason stays the stable code every screen already reads.
+    pause_detail: str | None = None
     cancel_requested_at: datetime | None
     # The wall clock, for the results screen's "about N minutes saved". ``started_at`` is null until
     # a worker claims the run; ``finished_at`` is null until it ends.
@@ -321,6 +324,7 @@ def get_run_endpoint(run_id: uuid.UUID) -> RunDetail:
         mode=run.mode,
         status=run.status,
         pause_reason=run.pause_reason,
+        pause_detail=run.pause_detail,
         cancel_requested_at=run.cancel_requested_at,
         started_at=run.started_at,
         finished_at=run.finished_at,

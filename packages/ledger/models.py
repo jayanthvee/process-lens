@@ -41,6 +41,9 @@ class RunClaim:
     # by hand does not have to invent them.
     started_at: datetime | None = None
     finished_at: datetime | None = None
+    # PL-112: the extension's own reason a code read failed, e.g. "none" or "ambiguous". A test
+    # that builds a run by hand need not invent it.
+    pause_detail: str | None = None
 
 
 @dataclass(frozen=True)
@@ -231,6 +234,11 @@ class TaskListRow:
     last_run_status: str | None
     last_run_started_at: datetime | None
     last_run_counts: dict[str, int]
+    # PL-112: a sign-in task is run from a picked email, not a spreadsheet.
+    sign_in: bool
+    sign_in_column: str | None
+    last_run_pause_reason: str | None
+    last_run_pause_detail: str | None
 
 
 @dataclass(frozen=True)

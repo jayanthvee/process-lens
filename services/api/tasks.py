@@ -33,17 +33,29 @@ from .task_columns import RUN_ONCE_FIELD, input_fields, latest_task_version
 router = APIRouter(prefix="/api/v1", tags=["tasks"])
 
 _INSERT_WORKFLOW = """
-INSERT INTO workflows (tenant_id, name, destination_key, allowed_origins, created_by)
-VALUES (%s, %s, %s, %s, %s)
+INSERT INTO workflows
+  (tenant_id, name, destination_key, allowed_origins, created_by, sign_in, sign_in_column)
+VALUES (%s, %s, %s, %s, %s, %s, %s)
 RETURNING id
+"""
+
+_UPDATE_WORKFLOW_SIGN_IN = """
+UPDATE workflows SET sign_in = %s, sign_in_column = %s WHERE id = %s
 """
 
 
 class CreateTaskRequest(BaseModel):
-    """What the popup sends: the name the person chose, and the recipe that compiled."""
+    """What the popup sends: the name the person chose, and the recipe that compiled.
+
+    PL-112: a recording that reached a page asking for an emailed code is a sign-in task. The
+    marker and the column its email was typed into ride with the save; the taught email itself is
+    already the recipe's own example, so the server keeps no second copy.
+    """
 
     name: str
     recipe: dict[str, Any]
+    sign_in: bool = False
+    sign_in_column: str | None = None
 
 
 class CreateTaskResponse(BaseModel):
@@ -54,9 +66,14 @@ class CreateTaskResponse(BaseModel):
 
 
 class RunOnceRequest(BaseModel):
-    """The Chrome that should drive this one-row run; absent lets any Chrome take it."""
+    """The Chrome that should drive this one-row run, and optionally the row itself.
+
+    PL-112: a sign-in task's row is one picked email, placed in the column the recording typed it
+    into. A task with inputs still needs a spreadsheet when no row is supplied.
+    """
 
     browser_id: Annotated[str, Field(pattern=r"^[A-Za-z0-9_-]{8,64}$")] | None = None
+    values: dict[str, Any] | None = None
 
 
 class RunOnceResponse(BaseModel):
@@ -112,9 +129,16 @@ def create_task(payload: Annotated[CreateTaskRequest, Body()]) -> CreateTaskResp
         if existing is not None:
             workflow_id = uuid.UUID(str(existing[0]))
             stored = store_recipe_version(conn, workflow_id=workflow_id, document=document)
-            conn.commit()
             if stored is None:  # pragma: no cover - the row was read in this same connection
                 raise HTTPException(status_code=404, detail=f"workflow {workflow_id} is gone")
+            # A re-teach is the task's current shape: a task taught again without a code page is
+            # no longer a sign-in task.
+            with conn.cursor() as cur:
+                cur.execute(
+                    _UPDATE_WORKFLOW_SIGN_IN,
+                    (payload.sign_in, payload.sign_in_column, workflow_id),
+                )
+            conn.commit()
             return CreateTaskResponse(workflow_id=workflow_id, recipe_version_id=stored["id"])
         try:
             with conn.transaction():
@@ -127,6 +151,8 @@ def create_task(payload: Annotated[CreateTaskRequest, Body()]) -> CreateTaskResp
                             destination_key_of(origins),
                             origins,
                             person.id,
+                            payload.sign_in,
+                            payload.sign_in_column,
                         ),
                     )
                     workflow_id = uuid.UUID(str(cur.fetchone()[0]))
@@ -162,12 +188,14 @@ def run_task_once(
         task = latest_task_version(conn, workflow_id)
         if task is None:
             raise HTTPException(status_code=404, detail=f"task {workflow_id} does not exist")
-        if input_fields(task["recipe"]):
+        fields = input_fields(task["recipe"])
+        row_values = {str(key): value for key, value in (body.values or {}).items()}
+        if fields and not row_values:
             raise HTTPException(status_code=422, detail=NEEDS_A_SPREADSHEET)
 
         require_runs_allowed(conn, task["tenant_id"])
         run_once_id = uuid.uuid4()
-        row = {RUN_ONCE_FIELD: str(run_once_id)}
+        row = {**row_values, RUN_ONCE_FIELD: str(run_once_id)}
         try:
             with conn.transaction():
                 batch_id = insert_batch(

@@ -36,6 +36,8 @@ export interface RecorderStatus {
   warning: string | null;
   /** PL-107 item 12: the code page this recording is on, if any. */
   code?: TeachCodeState | null;
+  /** PL-112: this recording reached a page that asks for an emailed code. */
+  signIn?: boolean;
 }
 
 export const EMPTY_STATUS: RecorderStatus = {
@@ -46,6 +48,7 @@ export const EMPTY_STATUS: RecorderStatus = {
   wsConnected: false,
   warning: null,
   code: null,
+  signIn: false,
 };
 
 /** Where an attended execution is, for the status line. */

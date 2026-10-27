@@ -43,7 +43,7 @@ from packages.ledger import (
 )
 
 from .db import connection
-from .task_columns import inputs_for_versions
+from .task_columns import examples_for_versions, inputs_for_versions
 
 router = APIRouter(prefix="/api/v1", tags=["home"])
 
@@ -85,12 +85,18 @@ class RunningEntry(BaseModel):
 
 
 class TaskLastRun(BaseModel):
-    """A task's newest run, or nothing at all when it has never run."""
+    """A task's newest run, or nothing at all when it has never run.
+
+    PL-112: ``pause_reason``/``pause_detail`` let the Tasks row say why a sign-in run could not
+    read its code, in the same words the run page uses.
+    """
 
     run_id: uuid.UUID
     status: str
     started_at: datetime | None
     counts: dict[str, int]
+    pause_reason: str | None = None
+    pause_detail: str | None = None
 
 
 class TaskEntry(BaseModel):
@@ -115,10 +121,18 @@ class TaskListEntry(TaskEntry):
 
     ``inputs`` is empty for a task taught with no recorded inputs; such a task is run once from
     the side panel, with no spreadsheet at all (PL-105).
+
+    PL-112: ``sign_in`` is true for a task taught through a page that asked for an emailed code.
+    ``sign_in_column`` is the column its email was typed into, and ``sign_in_email`` is the value
+    used while teaching (the recipe's own example). The list of emails typed later is kept in the
+    extension's storage, never here.
     """
 
     keeps_failing: KeepsFailing | None = None
     inputs: list[str] = Field(default_factory=list)
+    sign_in: bool = False
+    sign_in_column: str | None = None
+    sign_in_email: str | None = None
 
 
 class HomeSummary(BaseModel):
@@ -166,6 +180,8 @@ def _tasks(rows: list[TaskListRow]) -> list[TaskEntry]:
                 status=row.last_run_status or "queued",
                 started_at=row.last_run_started_at,
                 counts=row.last_run_counts,
+                pause_reason=row.last_run_pause_reason,
+                pause_detail=row.last_run_pause_detail,
             )
         entries.append(
             TaskEntry(
@@ -242,21 +258,34 @@ def tasks(tenant_id: Annotated[uuid.UUID | None, Query()] = None) -> list[TaskLi
     with connection() as conn:
         rows = list_tasks(conn, tenant_id=tenant_id, limit=None)
         inputs = inputs_for_versions(conn, [row.recipe_version_id for row in rows])
+        examples = examples_for_versions(conn, [row.recipe_version_id for row in rows])
         failing = {
             row.workflow_id: row.reason for row in keeps_failing_tasks(conn, tenant_id=tenant_id)
         }
-    return [
-        TaskListEntry(
-            **entry.model_dump(),
-            inputs=inputs.get(entry.recipe_version_id, []),
-            keeps_failing=(
-                KeepsFailing(reason=failing[entry.workflow_id])
-                if entry.workflow_id in failing
-                else None
-            ),
+    by_id = {row.workflow_id: row for row in rows}
+    entries: list[TaskListEntry] = []
+    for entry in _tasks(rows):
+        source = by_id[entry.workflow_id]
+        example = (
+            examples.get(entry.recipe_version_id, {}).get(source.sign_in_column or "")
+            if source.sign_in
+            else None
         )
-        for entry in _tasks(rows)
-    ]
+        entries.append(
+            TaskListEntry(
+                **entry.model_dump(),
+                inputs=inputs.get(entry.recipe_version_id, []),
+                sign_in=source.sign_in,
+                sign_in_column=source.sign_in_column,
+                sign_in_email=example,
+                keeps_failing=(
+                    KeepsFailing(reason=failing[entry.workflow_id])
+                    if entry.workflow_id in failing
+                    else None
+                ),
+            )
+        )
+    return entries
 
 
 __all__ = ["router"]

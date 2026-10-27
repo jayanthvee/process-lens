@@ -23,6 +23,8 @@ export interface RunDetail {
   pause_reason: string | null;
   counts: Record<string, number>;
   open_approval: ApprovalRequest | null;
+  /** PL-112: the extension's own reason a code read failed, while the run is paused. */
+  pause_detail?: string | null;
   /** PL-067: set while a `site_daily_cap` pause stands, so the page can name the site and limit. */
   site_cap?: { origin: string; limit: number; used: number } | null;
   started_at?: string | null;
@@ -138,6 +140,12 @@ export interface TaskRow {
    * task needs no spreadsheet and can be run once; set on `GET /api/v1/tasks` only.
    */
   inputs?: string[];
+  /** PL-112: this task signs in with a code emailed to one picked address. */
+  sign_in?: boolean;
+  /** PL-112: the column that address was typed into while teaching. */
+  sign_in_column?: string | null;
+  /** PL-112: the address used while teaching (the recipe's own example). */
+  sign_in_email?: string | null;
 }
 
 /** The reason a task's last two runs both stopped for, in the runner's own words. */
@@ -151,6 +159,10 @@ export interface TaskLastRun {
   status: string;
   started_at: string | null;
   counts: Record<string, number>;
+  /** PL-112: why a paused sign-in run stopped, in the codes the engine already sends. */
+  pause_reason?: string | null;
+  /** PL-112: the extension's own reason a code read failed (none, ambiguous, not_allowed). */
+  pause_detail?: string | null;
 }
 
 /** `GET /api/v1/home`. */

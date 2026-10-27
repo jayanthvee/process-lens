@@ -39,6 +39,7 @@ import {
   type ToWorker,
 } from "../../../extension/src/shared/messages";
 import { extensionChrome, type ExtensionMessageListener } from "./extension";
+import { rememberSignInEmail, taughtSignIn } from "./signInEmails";
 
 interface RecorderResponse {
   ok: boolean;
@@ -257,8 +258,14 @@ export function PanelTeach(): JSX.Element {
         setNote(null);
         return;
       }
+      const signIn =
+        status.signIn === true ? taughtSignIn(values, keyColumn) : null;
       const saved = await saveTask(
-        { name: trimmed, recipe: compiled.recipe },
+        {
+          name: trimmed,
+          recipe: compiled.recipe,
+          ...(signIn === null ? {} : { sign_in: true, sign_in_column: signIn.column }),
+        },
         { baseUrl: config.base, headers: config.headers },
       );
       if (!saved.ok) {
@@ -266,6 +273,14 @@ export function PanelTeach(): JSX.Element {
         setProblem(plain ?? "Could not save the task.");
         setNote(null);
         return;
+      }
+      if (signIn !== null) {
+        // The taught address is the first choice in Tasks, and the list stays in this Chrome.
+        await rememberSignInEmail(
+          extensionChrome()?.storage?.local,
+          saved.workflowId,
+          signIn.email,
+        );
       }
       setNote(`${trimmed} is ready. It is in Tasks.`);
       setName(trimmed);
