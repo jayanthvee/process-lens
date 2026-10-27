@@ -109,7 +109,7 @@ describe("the runs list", () => {
 
     expect(screen.getByText("Add inquiries")).toBeTruthy();
     expect(screen.getAllByText("Running").length).toBeGreaterThan(0);
-    expect(screen.getByText("11 of 20 done")).toBeTruthy();
+    expect(screen.getByText("Added 11 of 20")).toBeTruthy();
     expect(screen.getByRole("link", { name: "Open" }).getAttribute("href")).toBe("/runs/run-1");
   });
 
@@ -123,7 +123,7 @@ describe("the runs list", () => {
     renderApp("/runs");
     await settle();
 
-    expect(screen.getByText("10 of 10 done")).toBeTruthy();
+    expect(screen.getByText("Finished: all 10 done")).toBeTruthy();
     expect(screen.getAllByText("Finished").length).toBeGreaterThan(0);
   });
 
@@ -132,7 +132,7 @@ describe("the runs list", () => {
     renderApp("/runs");
     await settle();
 
-    expect(screen.getByText(/Nothing has run yet/)).toBeTruthy();
+    expect(screen.getByText("No runs yet. Pick a task in Tasks and press Run.")).toBeTruthy();
     expect(screen.getByRole("link", { name: "Go to your tasks" }).getAttribute("href")).toBe(
       "/tasks",
     );
@@ -803,8 +803,8 @@ describe("a finished run with rows left for a person (PL-106 item 4)", () => {
     renderApp("/runs");
     await settle();
 
-    expect(screen.getByText("Finished — 4 need you")).toBeTruthy();
-    expect(screen.queryByText("Finished")).toBeNull();
+    expect(screen.getByText("Finished: 11 done · 4 need you")).toBeTruthy();
+    expect(screen.getAllByText("Finished").length).toBeGreaterThan(0);
   });
 
   it("says it on the run's own page too", async () => {
