@@ -27,3 +27,6 @@
 - Self-save refused: the steps after the fill are stray clicks (All Apps, the tab strip, Close
   menu) and the back button (`button.o_back_button`). The leave was not recognised, so
   `end-record-unchecked` was compiled.
+- Events run a22a17be: parked at click-1 (role=main, glued "demo dayyyyyyyMy Company", click landed
+  on a different element). Also: click-2 "0Attendees" (count in the name), commit = the Questions
+  tab with text_count_increases, key = attendee name not email, 7 form-load fills in the panel.

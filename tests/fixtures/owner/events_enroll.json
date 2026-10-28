@@ -1,0 +1,238 @@
+{
+  "source": "owner Events enrollment task, run a22a17be on local Odoo 18 Events, 2026-10-28 00:06",
+  "what_happened": "Try one row parked at click-1: \"Step 'Click demo dayyyyyyyMy Company' didn't finish: the click landed on a different element\".",
+  "problems": [
+    "click-1 targets role=main with the card text glued ('demo dayyyyyyyMy Company')",
+    "click-2 targets the smart button by its count text '0Attendees'; after one attendee it reads '1Attendees'",
+    "the commit is a click on the Questions tab (role=list) with text_count_increases; no Save was clicked, Odoo saved by itself",
+    "the record key is the attendee name, not the email",
+    "teaching recorded 7 form-load fills from the event form (name, dates, organizer, responsible, venue, limit registrations 'on'); they did not reach the recipe here but did show in the panel"
+  ],
+  "sheet": {
+    "columns": [
+      "Name",
+      "Email",
+      "Phone",
+      "Event"
+    ],
+    "rows": [
+      [
+        "Ava Patel",
+        "ava.patel@pilot-events.test",
+        "555-0101",
+        "demo dayyyyyyy"
+      ],
+      [
+        "Liam Chen",
+        "liam.chen@pilot-events.test",
+        "555-0102",
+        "demo dayyyyyyy"
+      ],
+      [
+        "Sofia Reyes",
+        "sofia.reyes@pilot-events.test",
+        "555-0103",
+        "demo dayyyyyyy"
+      ]
+    ]
+  },
+  "recipe": {
+    "meta": {
+      "name": "events test",
+      "record_key": "{{row.attendee_name | lower}}",
+      "when_to_use": "events test",
+      "input_schema": {
+        "fields": {
+          "email": {
+            "type": "string",
+            "example": "ava.patel@pilot-events.test"
+          },
+          "phone": {
+            "type": "string",
+            "example": "555-0101"
+          },
+          "attendee_name": {
+            "type": "string",
+            "example": "Ava Patel"
+          }
+        }
+      },
+      "allowed_origins": [
+        "http://localhost:8069"
+      ],
+      "approval_policy": {
+        "commit": "first_record"
+      },
+      "idempotency_key": "{{row.attendee_name | lower}}"
+    },
+    "steps": [
+      {
+        "id": "navigate-1",
+        "url": "http://localhost:8069/odoo/events",
+        "name": "Open /odoo/",
+        "action": "navigate"
+      },
+      {
+        "id": "click-1",
+        "name": "Click demo dayyyyyyyMy Company",
+        "action": "click",
+        "targets": [
+          {
+            "by": "role",
+            "name": "demo dayyyyyyyMy Company",
+            "role": "main"
+          },
+          {
+            "by": "css",
+            "selector": "main.col.justify-content-between"
+          },
+          {
+            "by": "text_fuzzy",
+            "value": "demo dayyyyyyyMy Company"
+          }
+        ]
+      },
+      {
+        "id": "click-2",
+        "name": "Click 0Attendees",
+        "action": "click",
+        "targets": [
+          {
+            "by": "role",
+            "name": "0Attendees",
+            "role": "button"
+          },
+          {
+            "by": "css",
+            "selector": "button.btn.oe_stat_button.btn-outline-secondary"
+          },
+          {
+            "by": "text_fuzzy",
+            "value": "0Attendees"
+          }
+        ]
+      },
+      {
+        "id": "click-3",
+        "name": "Click New",
+        "action": "click",
+        "targets": [
+          {
+            "by": "role",
+            "name": "New",
+            "role": "button"
+          },
+          {
+            "by": "css",
+            "selector": "button.btn.o-kanban-button-new"
+          },
+          {
+            "by": "text_fuzzy",
+            "value": "New"
+          }
+        ]
+      },
+      {
+        "id": "fill-1",
+        "name": "Fill Attendee Name",
+        "value": {
+          "kind": "input",
+          "column": "attendee_name"
+        },
+        "action": "fill",
+        "targets": [
+          {
+            "by": "role",
+            "name": "Attendee Name",
+            "role": "textbox"
+          },
+          {
+            "by": "label",
+            "text": "Attendee Name"
+          },
+          {
+            "by": "css",
+            "selector": "#name_0"
+          }
+        ],
+        "clear_first": true
+      },
+      {
+        "id": "fill-2",
+        "name": "Fill Email",
+        "value": {
+          "kind": "input",
+          "column": "email"
+        },
+        "action": "fill",
+        "targets": [
+          {
+            "by": "role",
+            "name": "Email",
+            "role": "textbox"
+          },
+          {
+            "by": "label",
+            "text": "Email"
+          },
+          {
+            "by": "css",
+            "selector": "#email_0"
+          }
+        ],
+        "clear_first": true
+      },
+      {
+        "id": "fill-3",
+        "name": "Fill Phone",
+        "value": {
+          "kind": "input",
+          "column": "phone"
+        },
+        "action": "fill",
+        "targets": [
+          {
+            "by": "role",
+            "name": "Phone",
+            "role": "textbox"
+          },
+          {
+            "by": "label",
+            "text": "Phone"
+          },
+          {
+            "by": "css",
+            "selector": "#phone_0"
+          }
+        ],
+        "clear_first": true
+      },
+      {
+        "id": "click-4",
+        "name": "Click Questions",
+        "action": "click",
+        "commit": true,
+        "targets": [
+          {
+            "by": "role",
+            "name": "Questions",
+            "role": "list"
+          },
+          {
+            "by": "css",
+            "selector": "ul.nav.nav-tabs.flex-row"
+          },
+          {
+            "by": "text_fuzzy",
+            "value": "Questions"
+          }
+        ],
+        "assert_after": {
+          "timeout_ms": 8000,
+          "text_count_increases": "{{row.attendee_name}}"
+        }
+      }
+    ],
+    "format_version": 1
+  }
+}
