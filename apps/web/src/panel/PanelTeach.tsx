@@ -100,6 +100,10 @@ function storeName(value: string | null): void {
 // PL-125: after Stop nothing is the model's to hide; the page's own values are hidden by their
 // flag (`hiddenSeqs`), and this marker says "Stop has happened" without any model answer.
 const STOPPED: CleanOutcome = { ok: true, available: false, steps: [] };
+// PL-127: the shape could not be read (the hub was slow or out of reach). Saving reads it again;
+// the old step list is never the fallback, because it replays every recorded click.
+const SHAPE_UNREAD =
+  "ProcessLens couldn't read what you taught. Check your connection, then press Try again.";
 
 function quoted(value: unknown): string {
   return `“${value === null || value === undefined ? "" : String(value)}”`;
@@ -143,6 +147,7 @@ export function PanelTeach(): JSX.Element {
   const [shape, setShape] = useState<TaskShape | null>(null);
   const [saveAnswer, setSaveAnswer] = useState<"button" | "leave">("leave");
   const [showingRecorded, setShowingRecorded] = useState(false);
+  const [shapeUnread, setShapeUnread] = useState(false);
 
   const recording = status.state === "recording";
   // PL-107 item 12: what the recorder is doing about a code page, if it is on one.
@@ -155,6 +160,9 @@ export function PanelTeach(): JSX.Element {
   // PL-125: a stopped recording that opened an item is a task with a shape. The panel then asks
   // three plain questions about it instead of showing every recorded step for the person to tidy.
   const shapeMode = !recording && status.signIn !== true && shape !== null && shape.opened;
+  // PL-127: while the shape is unread the old step list stays hidden too; Save reads it again.
+  const shapePending = !recording && status.signIn !== true && shape === null && shapeUnread;
+  const askingShape = shapeMode || shapePending;
   const hiddenEvents = events.filter((event) => hiddenSeqs.has(event.seq));
   const values = recordedValues(visibleEvents);
   // PL-107: one choice per recorded click, labelled by the click's own sentence.
@@ -275,6 +283,7 @@ export function PanelTeach(): JSX.Element {
     if (stopped.length === 0) {
       setCleaned(null);
       setShape(null);
+      setShapeUnread(false);
       return;
     }
     setBroughtBack(new Set());
@@ -287,12 +296,14 @@ export function PanelTeach(): JSX.Element {
    * PL-125: read what the recording teaches. No model is asked anything at teaching: the page's
    * own values are hidden by their flag, and the shape picks the few steps the task needs.
    */
-  async function askShape(stopped: RecordedEvent[]): Promise<void> {
+  async function askShape(stopped: RecordedEvent[]): Promise<TaskShape | null> {
     setCleaned(STOPPED);
     const config = apiConfig();
     const read = await readShape(stopped, { baseUrl: config.base, headers: config.headers });
     setShape(read);
+    setShapeUnread(read === null);
     if (read?.save) setSaveAnswer(read.save);
+    return read;
   }
 
   /** PL-107 item 12: the panel's yes to reading a code from Gmail, for this and later tasks. */
@@ -323,6 +334,7 @@ export function PanelTeach(): JSX.Element {
     apply(answer);
     setCleaned(null);
     setShape(null);
+    setShapeUnread(false);
     setBroughtBack(new Set());
     setShowingHidden(false);
     setName("");
@@ -341,11 +353,24 @@ export function PanelTeach(): JSX.Element {
       setProblem(NO_EVENTS);
       return;
     }
-    if (shapeMode && shape?.kind === null) {
-      setProblem(shape.problem ?? NO_EVENTS);
+    // PL-127: a stopped recording is always asked for its shape before it is saved. The owner's
+    // Events task was saved through the old step list while the shape was unread, and that task
+    // replayed a card click and treated New as the save.
+    let taught = shape;
+    if (!recording && status.signIn !== true && taught === null) {
+      setProblem(null);
+      taught = await askShape(events);
+      if (taught === null) {
+        setProblem(SHAPE_UNREAD);
+        return;
+      }
+    }
+    const byShape = !recording && status.signIn !== true && taught !== null && taught.opened;
+    if (byShape && taught?.kind === null) {
+      setProblem(taught.problem ?? NO_EVENTS);
       return;
     }
-    if (!shapeMode && values.length > 0 && keyColumn === "") {
+    if (!byShape && values.length > 0 && keyColumn === "") {
       setProblem("Choose which value is different for every row.");
       return;
     }
@@ -361,8 +386,11 @@ export function PanelTeach(): JSX.Element {
           if (step.keep && step.intent.trim() !== "") intents[step.id] = step.intent;
         }
       }
-      const request = shapeMode
-        ? shapeRecipeRequest(events, { name: trimmed, save: saveAnswer })
+      const request = byShape
+        ? shapeRecipeRequest(events, {
+            name: trimmed,
+            save: shape === null ? (taught?.save ?? "leave") : saveAnswer,
+          })
         : makeRecipeRequest(visibleEvents, {
         name: trimmed,
         recordKeyColumn: keyColumn,
@@ -375,7 +403,7 @@ export function PanelTeach(): JSX.Element {
         saveByItself: selfSave && status.signIn !== true,
         intents,
       });
-      if (!shapeMode && values.length === 0) {
+      if (!byShape && values.length === 0) {
         // No column to key on: every Run once carries a fresh id, so the ledger sees new work.
         request.record_key_column = "";
         request.record_key = "{{row.run_once_id}}";
@@ -552,6 +580,14 @@ export function PanelTeach(): JSX.Element {
           {codeFromEmailWords(codeState.reason)}
         </p>
       ) : null}
+      {shapePending ? (
+        <p className="panel-problem" role="status">
+          {SHAPE_UNREAD}{" "}
+          <button type="button" className="panel-step-fix" onClick={() => void askShape(events)}>
+            Try again
+          </button>
+        </p>
+      ) : null}
       {shapeMode && shape !== null ? (
         <div className="panel-shape" aria-label="What this task does">
           {shape.kind === null ? (
@@ -622,7 +658,7 @@ export function PanelTeach(): JSX.Element {
           </button>
         </div>
       ) : null}
-      {shapeMode && !showingRecorded ? null : lines.length === 0 ? (
+      {askingShape && !showingRecorded ? null : lines.length === 0 ? (
         <p className="panel-note">The steps you take will appear here.</p>
       ) : listLines.length === 0 ? null : (
         <ol className="panel-steps">
@@ -668,7 +704,7 @@ export function PanelTeach(): JSX.Element {
         </ol>
       )}
 
-      {shapeMode || hiddenEvents.length === 0 ? null : (
+      {askingShape || hiddenEvents.length === 0 ? null : (
         <div className="panel-hidden">
           <p className="panel-note">
             Hidden: {hiddenEvents.length} step{hiddenEvents.length === 1 ? "" : "s"} the page
@@ -708,7 +744,7 @@ export function PanelTeach(): JSX.Element {
         </div>
       )}
 
-      {visibleEvents.length === 0 || recording || shapeMode ? null : status.signIn === true ? (
+      {visibleEvents.length === 0 || recording || askingShape ? null : status.signIn === true ? (
         // PL-117: a sign-in saves nothing, so there is no save click to offer or send.
         <div className="panel-commit">
           <p className="panel-note">A sign-in saves nothing.</p>
@@ -795,7 +831,7 @@ export function PanelTeach(): JSX.Element {
             task and is noise here. The key is still worked out and sent on save, unchanged. A
             sign-in that typed no identifiable value still needs the question -- hiding it would
             leave Save disabled with no way out -- so only its note is left out. */}
-        {shapeMode || values.length === 0 || (status.signIn === true && keyColumn !== "") ? null : (
+        {askingShape || values.length === 0 || (status.signIn === true && keyColumn !== "") ? null : (
           <div className="panel-key">
             {keyColumn !== "" && !changingKey ? (
               <p className="panel-note">
@@ -848,7 +884,7 @@ export function PanelTeach(): JSX.Element {
           disabled={
             saving ||
             visibleEvents.length === 0 ||
-            (shapeMode ? shape?.kind === null : values.length > 0 && keyColumn === "")
+            (askingShape ? shape?.kind === null : values.length > 0 && keyColumn === "")
           }
           onClick={() => void save()}
         >
