@@ -202,9 +202,11 @@ const CODE_PAGE_FALLBACK_MS = 3 * 60_000;
  * A run's steps arrive back to back; a pause or the end of a run leaves the session quiet. The
  * quiet spell is short enough that Chrome's "started debugging this browser" bar goes away while a
  * person reads a parked row, and long enough that ordinary step boundaries do not detach and
- * re-attach for every command.
+ * re-attach for every command. A hosted hub's round trip, or a slow page between two steps, can
+ * pass 2 s; each release and re-attach also shows and hides Chrome's bar, which resizes the page
+ * mid-row. 10 s keeps a working run attached.
  */
-export const DEBUGGER_IDLE_RELEASE_MS = 2_000;
+export const DEBUGGER_IDLE_RELEASE_MS = 10_000;
 
 /** Trim trailing slashes so a hub URL composes cleanly. */
 /** What the popup shows when a hosted ProcessLens refuses the team access code (PL-086). */
