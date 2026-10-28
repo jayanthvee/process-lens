@@ -376,6 +376,7 @@ FROM (
     LIMIT 1
   ) last ON true
   WHERE w.archived_at IS NULL
+    AND w.removed_at IS NULL
     AND rv.version = (
       SELECT max(v.version) FROM recipe_versions v WHERE v.workflow_id = rv.workflow_id
     )
@@ -541,13 +542,36 @@ def list_running_runs(
 def list_tasks(
     conn: psycopg.Connection, *, tenant_id: uuid.UUID | None = None, limit: int | None = None
 ) -> list[TaskListRow]:
-    """The latest version of every non-archived workflow, newest first.
+    """The latest version of every live workflow, newest first.
+
+    A workflow removed from the lists (``removed_at``) is left out, exactly like an archived one;
+    its recipe versions and runs are untouched and still readable by id.
 
     ``limit`` of ``None`` is every task (the SQL ``LIMIT NULL`` is no limit).
     """
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(_LIST_TASKS, {"tenant": tenant_id, "limit": limit})
         return [_row(TaskListRow, row) for row in cur.fetchall()]
+
+
+_WORKFLOW_HAS_OPEN_RUN = """
+SELECT 1 FROM runs
+WHERE workflow_id = %(workflow)s
+  AND status IN ('queued', 'running', 'paused')
+LIMIT 1
+"""
+
+
+def workflow_has_open_run(conn: psycopg.Connection, workflow_id: uuid.UUID) -> bool:
+    """Whether the task has a run that is queued, running or paused right now.
+
+    Removing a task is refused while one of its runs is still open: the run would have nowhere
+    to report the outcomes it is still producing. The run's own rows are the authority; this read
+    only answers the question.
+    """
+    with conn.cursor() as cur:
+        cur.execute(_WORKFLOW_HAS_OPEN_RUN, {"workflow": workflow_id})
+        return cur.fetchone() is not None
 
 
 # PL-041: the tasks that stopped working. A saved task never changes, so one recorded before a fix
@@ -566,6 +590,7 @@ WITH finished AS (
   JOIN workflows w ON w.id = ru.workflow_id
   WHERE ru.status NOT IN ('queued', 'running', 'paused')
     AND w.archived_at IS NULL
+    AND w.removed_at IS NULL
     AND (%(tenant)s::uuid IS NULL OR ru.tenant_id = %(tenant)s)
 ),
 per_run AS (
@@ -617,6 +642,7 @@ WITH saved AS (
   FROM workflows w
   JOIN recipe_versions rv ON rv.workflow_id = w.id
   WHERE w.archived_at IS NULL
+    AND w.removed_at IS NULL
     AND rv.version = (
       SELECT max(v.version) FROM recipe_versions v WHERE v.workflow_id = w.id
     )
@@ -814,6 +840,7 @@ __all__ = [
     "week_counts",
     "week_manual_seconds",
     "window_run_seconds",
+    "workflow_has_open_run",
 ]
 
 # --------------------------------------------------------------------------- PL-067

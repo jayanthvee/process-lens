@@ -90,6 +90,84 @@
   }
 }
 
+/* PL-120: Remove sits beside the row's own action, and its question opens on the row. */
+.tasks .task-remove {
+  margin-left: 8px;
+}
+
+.tasks .task-removed {
+  margin: 0;
+  padding: 12px 18px;
+  border-radius: 12px;
+  border: 1px solid var(--hair-2);
+  background: var(--glass-strong);
+  color: var(--ink-2);
+  font-size: 14px;
+}
+
+.tasks .task-undo {
+  border: 0;
+  background: none;
+  padding: 0 2px;
+  color: var(--ink);
+  font: inherit;
+  font-weight: 500;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.tasks .task-undo:hover {
+  color: var(--gold-deep);
+}
+
+.tasks .task-undo-problem {
+  margin: 0;
+  padding: 0 4px;
+  color: var(--help);
+  font-size: 13.5px;
+}
+
+.tasks .task-remove-confirm {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+  border-radius: 10px;
+  border: 1px solid var(--hair-2);
+  background: var(--fog-1);
+}
+
+.tasks .task-remove-confirm p {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 13.5px;
+}
+
+.tasks .task-remove-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.tasks .task-remove-problem {
+  margin: 0;
+  padding: 0 20px 10px;
+  color: var(--help);
+  font-size: 13.5px;
+}
+
+.tasks tr.task-confirm-row td {
+  padding-top: 0;
+  padding-bottom: 12px;
+}
+
+@media (max-width: 780px) {
+  .tasks .task-remove {
+    margin-left: 0;
+  }
+}
+
 /* ---------------------------------------------------------------- */
 /* PL-062: editing a task's steps                                    */
 /* ---------------------------------------------------------------- */

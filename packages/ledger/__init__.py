@@ -98,6 +98,7 @@ from .reads import (
     week_counts,
     week_manual_seconds,
     window_run_seconds,
+    workflow_has_open_run,
 )
 from .records import (
     change_state,
@@ -248,4 +249,5 @@ __all__ = [
     "week_counts",
     "week_manual_seconds",
     "window_run_seconds",
+    "workflow_has_open_run",
 ]

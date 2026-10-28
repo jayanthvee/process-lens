@@ -184,6 +184,52 @@ body,
   padding: 6px 10px;
   font-size: 12.5px;
 }
+
+/* PL-120: Remove asks on the card itself, and Undo sits just above the list. */
+.panel-task-remove {
+  flex: none;
+}
+
+.panel-confirm {
+  flex: 1 1 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px 0 2px;
+  border-top: 1px solid var(--hair);
+}
+
+.panel-confirm .panel-note {
+  flex: 1 1 100%;
+}
+
+.panel-confirm .btn {
+  padding: 6px 10px;
+  font-size: 12.5px;
+}
+
+.panel-removed {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.panel-undo {
+  border: 0;
+  background: none;
+  padding: 0 2px;
+  color: var(--ink);
+  font: inherit;
+  font-weight: 500;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.panel-undo:hover {
+  color: var(--gold-deep);
+}
 .panel-task-signin {
   flex-wrap: wrap;
   align-items: flex-start;
