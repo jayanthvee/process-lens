@@ -107,6 +107,8 @@ class FakeExecutor:
     ``probe_confirmation`` returns ``"unsupported"`` (PL-014 R1): a scripted fake has no page, so it
     can never report a confirmation that is already on screen. Reporting "unsupported" rather than
     "absent" is what keeps the fresh-confirmation gate from changing what any existing test means.
+    A test that scripts ``probe_page`` is modelling a page that does answer: the probe then
+    evaluates the condition against the predicates that page states hold before the step.
     """
 
     def __init__(
@@ -118,6 +120,7 @@ class FakeExecutor:
         lost: Iterable[str] = (),
         condition_statuses: Mapping[str, str] | None = None,
         condition_observed: Mapping[str, dict[str, Any]] | None = None,
+        probe_page: Mapping[str, Mapping[str, bool]] | None = None,
         confirmation: ConfirmationProbe = "unsupported",
     ) -> None:
         self.destination = destination
@@ -126,6 +129,9 @@ class FakeExecutor:
         self.lost = set(lost)
         self.condition_statuses = dict(condition_statuses or {})
         self.condition_observed = dict(condition_observed or {})
+        # PL-118 review B1: a real page answers the freshness probe by evaluating the condition.
+        # When a test scripts the page, the probe answers from here instead of ``confirmation``.
+        self.probe_page = None if probe_page is None else dict(probe_page)
         self.confirmation = confirmation
         self.commands: list[StepCommand] = []
         self.prepared: list[StepCommand] = []
@@ -269,7 +275,30 @@ class FakeExecutor:
         record_key: str | None = None,
     ) -> ConfirmationProbe:
         self.probes.append((step_id, record_key))
+        if self.probe_page is not None:
+            return "present" if self._page_satisfies(condition, step_id, record_key) else "absent"
         return self.confirmation
+
+    def _page_satisfies(
+        self, condition: Mapping[str, Any], step_id: str | None, record_key: str | None
+    ) -> bool:
+        """Whether the scripted page already satisfies the condition, predicate by predicate.
+
+        A real executor evaluates the condition against the page; the scripted page states, for
+        each predicate the condition may carry, whether it holds *before* the step. A predicate
+        the test did not state is false, so a condition can never pass by omission.
+        """
+        if step_id is None:
+            return False
+        page = self.probe_page.get(step_id)
+        if page is None and record_key is not None:
+            page = self.probe_page.get(f"{record_key}:{step_id}")
+        if page is None:
+            return False
+        predicates = [key for key in condition if key != "timeout_ms"]
+        if not predicates:
+            return False
+        return all(page.get(key) is True for key in predicates)
 
 
 class SimulatedCrash(RuntimeError):
@@ -355,6 +384,7 @@ class ScriptedRun:
         crash_at: Iterable[str] = (),
         condition_statuses: Mapping[str, str] | None = None,
         condition_observed: Mapping[str, dict[str, Any]] | None = None,
+        probe_page: Mapping[str, Mapping[str, bool]] | None = None,
         confirmation: ConfirmationProbe = "unsupported",
         events: Iterable[tuple[str, str]] = (),
     ) -> ScriptedRun:
@@ -367,6 +397,7 @@ class ScriptedRun:
                 conditions=conditions,
                 condition_statuses=condition_statuses,
                 condition_observed=condition_observed,
+                probe_page=probe_page,
                 confirmation=confirmation,
             ),
             reconciler=FakeReconciler(destination, ambiguous=ambiguous, errors=errors),

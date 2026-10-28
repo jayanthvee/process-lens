@@ -1,9 +1,12 @@
-"""PL-118 item 1 and 2: an edit is proved by reading the changed value back.
+"""PL-118 items 1 and 2: how an edit is proved when the app saves by itself.
 
-The owner's shape: open a product, change its Sales Price, then go back to the list (the app
-saves by itself). The compiler must give the commit a ``value_equals`` read-back of the changed
-field, and the "saves by itself" mode must leave the form the way the person did and then read
-the value on the item's saved page. A check that is only the page's frame (a tab) is refused.
+The owner's shape: open a product, change its Sales Price, then go back to the list (the app saves
+by itself). That commit re-opens the item, so the changed field is read on a freshly loaded page:
+it carries a ``value_equals`` read-back. Review B1 keeps a **Save-click** edit on PL-075's proof
+instead -- the Save control is gone -- because the field already shows the value the run typed when
+the runner's freshness probe runs, so a read-back there parks every row. A check that is only the
+page's frame (a tab) is refused, and a task with no read-back parks every row rather than being
+called Done.
 """
 
 from __future__ import annotations
@@ -62,7 +65,13 @@ def _owner_shape(*, save_by_itself: bool) -> list[dict[str, Any]]:
         events.append(action_event(5, "click", "click", BREADCRUMB, url=RECORD, step_id="leave-1"))
         events.append({"seq": 6, "kind": "navigate", "url": LIST, "step": None})
     else:
-        events.append(action_event(5, "click", "click", SAVE, url=RECORD, step_id="save-1"))
+        save = action_event(5, "click", "click", SAVE, url=RECORD, step_id="save-1")
+        # PL-075: Odoo puts the Save control away once the record is clean, on its own page.
+        save["observation"] = {
+            "element_absent": {"targets": SAVE},
+            "url_matches": "/products/\\d+",
+        }
+        events.append(save)
     return events
 
 
@@ -72,18 +81,21 @@ def _commit(result: Any) -> dict[str, Any]:
     return commits[0]
 
 
-def test_a_save_click_on_an_edit_is_checked_by_the_value_it_changed() -> None:
-    """Item 1: a find-then-change commit proves the field shows the row's value."""
+def test_a_save_click_edit_keeps_the_disappeared_control_proof() -> None:
+    """Review B1: a Save-click edit is proved by the Save control going away, not a read-back.
+
+    The field already shows the value the run has just typed when the runner's freshness probe
+    runs, so a ``value_equals`` check would answer "present" and park every row. PL-075's
+    ``element_absent`` is false before the click and true after it, so it is the proof.
+    """
     result = compile_recording(
         _owner_shape(save_by_itself=False), _options(commit_step_ids=["save-1"])
     )
 
     check = _commit(result)["assert_after"]
-    assert "value_equals" in check
-    spec = check["value_equals"]
-    assert spec["selector"]["targets"] == PRICE
-    assert spec["value"] == {"kind": "input", "column": "price"}
-    assert spec.get("case_insensitive") is True
+    assert "value_equals" not in check, check
+    assert check["element_absent"] == {"targets": SAVE}
+    assert check["url_matches"] == "/products/\\d+"
     assert validation_errors(result.recipe) == []
 
 

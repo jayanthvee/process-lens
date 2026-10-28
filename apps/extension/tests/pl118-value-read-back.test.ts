@@ -57,6 +57,18 @@ describe("value_equals reads a person's value", () => {
     document.body.innerHTML = "<input id='price' value='910'>";
     expect(run(conditionExpression(valueEquals("799"), ctx))).toBe(false);
   });
+
+  it("does not read a decimal comma as a thousands separator (S1)", () => {
+    // "799,50" is 799.5 in half of Europe, not 79950. A comma is a thousands separator only
+    // before exactly three digits.
+    document.body.innerHTML = "<input id='price' value='799,50'>";
+    expect(run(conditionExpression(valueEquals("79950"), ctx))).toBe(false);
+  });
+
+  it("does not match a row's 15 against a page showing 1,5 (S1)", () => {
+    document.body.innerHTML = "<input id='price' value='1,5'>";
+    expect(run(conditionExpression(valueEquals("15"), ctx))).toBe(false);
+  });
 });
 
 describe("readValueEquals", () => {
