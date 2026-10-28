@@ -1373,13 +1373,7 @@ def _already_matches_placement(
         if not candidate.commit:
             continue
         assertion = candidate.assert_after if isinstance(candidate.assert_after, dict) else {}
-        control = assertion.get("element_absent")
-        if control is None and isinstance(candidate.observation, dict):
-            # PL-118: an edit's proof is now the value read back from the page, but the recorded
-            # observation still says the Save control was gone -- the PL-079 signal that there
-            # was nothing to save. Keep the skip branch when that signal is there.
-            control = candidate.observation.get("element_absent")
-        branch = _already_matches_branch(control)
+        branch = _already_matches_branch(assertion.get("element_absent"))
         if branch is not None:
             return index, branch
     return None, None
@@ -1472,7 +1466,7 @@ def _read_back_assertion(fill: Candidate, options: CompileOptions) -> dict[str, 
     }
 
 
-def _edit_shape(candidates: list[Candidate], *, before: int | None = None) -> dict[str, Any] | None:
+def _edit_shape(candidates: list[Candidate]) -> dict[str, Any] | None:
     """The shape of an edit: the click that opened the item, its fills, and the leave.
 
     ``open`` is the last click that landed on a record's own page (a numeric id or a UUID). The
@@ -1481,8 +1475,11 @@ def _edit_shape(candidates: list[Candidate], *, before: int | None = None) -> di
     breadcrumb, the next item), a navigation, or the app's save shortcut (Control+Enter or
     Meta+Enter) when one was recorded. A create never has this shape -- ``/new`` is not a record
     page -- so today's create rules are untouched.
+
+    This shape is only used by "the app saves by itself": review B1 keeps a Save-click edit on
+    PL-075's proof, because a read-back on that click is already true when the save is sent.
     """
-    limit = len(candidates) if before is None else before
+    limit = len(candidates)
     open_index: int | None = None
     for index in range(limit):
         candidate = candidates[index]
@@ -1592,23 +1589,6 @@ def _self_save_commit(
         "saved page shows the new value"
     )
     return True
-
-
-def _read_back_for_commit(
-    candidates: list[Candidate], commit_index: int, options: CompileOptions
-) -> dict[str, Any] | None:
-    """The read-back for a commit that saves an edit (item 1).
-
-    The changed field is the last parameterized fill on the record's page before the commit. Its
-    selector is the field's own ladder, so the check reads the same control a person typed into.
-    """
-    shape = _edit_shape(candidates, before=commit_index)
-    if shape is None:
-        return None
-    fills = [index for index in shape["fills"] if index < commit_index]
-    if not fills:
-        return None
-    return _read_back_assertion(candidates[fills[-1]], options)
 
 
 def _resolve_commit_assertion(
@@ -1916,15 +1896,12 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
         )
         inferred_read_back = False
         if options.save_by_itself and candidate.assert_after is not None:
-            # The saves-by-itself commit already carries the read-back the plan built.
+            # The saves-by-itself commit is the one place a read-back is proof: it re-opens the
+            # item, so the field is read on a freshly loaded page. On a Save click the field
+            # already shows the value the run typed when the freshness probe runs, so the same
+            # check would answer "present" and park every row (review B1).
             assert_after = candidate.assert_after
             inferred_read_back = True
-        elif not supplied:
-            assert_after = _read_back_for_commit(parameterized, index, options)
-            if assert_after is not None:
-                inferred_read_back = True
-            else:
-                assert_after = _resolve_commit_assertion(candidate, options)
         else:
             assert_after = _resolve_commit_assertion(candidate, options)
         inferred_from_new_page = False

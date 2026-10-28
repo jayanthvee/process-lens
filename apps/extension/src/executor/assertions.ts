@@ -32,10 +32,14 @@ export interface ReadBackValue {
 /** The page-side number a formatted value carries, or null when it is not a number. */
 export const PAGE_NUMBER_SOURCE = `(() => {
   const numberIn = (text) => {
-    const compact = String(text).trim().replace(/[\\s,]/g, "");
-    const match = /^[^0-9+-]*([+-]?[0-9]+(?:\\.[0-9]+)?)[^0-9]*$/.exec(compact);
+    const compact = String(text).trim().replace(/\\s+/g, "");
+    // PL-118 review S1: a comma groups thousands only before exactly three digits
+    // ("1,299.00"). "799,50" and "1,5" use it as a decimal mark, so they are not numbers under
+    // this reading and fall back to the text comparison -- 15 must never match a page showing 1,5.
+    const match =
+      /^[^0-9,+-]*([+-]?(?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\\.[0-9]+)?)[^0-9,]*$/.exec(compact);
     if (!match) return null;
-    const value = Number(match[1]);
+    const value = Number(match[1].replace(/,/g, ""));
     return Number.isFinite(value) ? value : null;
   };
   return numberIn;
