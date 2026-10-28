@@ -121,6 +121,10 @@ export interface CompileRequestBody {
   sign_in_after_path?: string | null;
   /** PL-118 item 2: the app saves by itself when the form is left; no click is the save. */
   save_by_itself?: boolean;
+  /** PL-125: build the task from its shape; only the shape's own recorded events are used. */
+  use_shape?: boolean;
+  /** PL-125: the person's answer to "How is it saved?". */
+  save?: "button" | "leave";
 }
 
 /** What the compile route answered: a recipe, or the problems it found. */
@@ -974,6 +978,74 @@ export async function cleanRecording(
       problems: [failure instanceof Error ? failure.message : "Could not reach ProcessLens."],
     };
   }
+}
+
+/** PL-125: what a stopped recording teaches, in plain facts the panel asks about. */
+export interface TaskShape {
+  kind: "update" | "create" | null;
+  problem: string | null;
+  opened: boolean;
+  item: { text: string; label: string; column: string } | null;
+  changes: { label: string; column: string; value: unknown; was: unknown }[];
+  save: "button" | "leave" | null;
+  save_label: string | null;
+}
+
+const SHAPE_PATH = "/api/v1/recordings/shape";
+
+/**
+ * PL-125: ask what the recording teaches: the item it opened, what it changed, how it saved.
+ *
+ * Pure code on the server, no model. A failure answers `null`, and the panel then shows the
+ * recorded steps as it always has.
+ */
+export async function readShape(
+  events: RecordedEvent[],
+  deps: { fetchImpl?: typeof fetch; baseUrl: string; headers?: Record<string, string> },
+): Promise<TaskShape | null> {
+  const fetchImpl = deps.fetchImpl ?? fetch;
+  const baseUrl = deps.baseUrl.replace(/\/+$/, "");
+  try {
+    const response = await fetchImpl(`${baseUrl}${SHAPE_PATH}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...(deps.headers ?? {}) },
+      body: JSON.stringify({ recording: events }),
+    });
+    if (!response.ok) return null;
+    const body = (await readJson(response)) as Partial<TaskShape> | null;
+    if (body === null || typeof body !== "object") return null;
+    return {
+      kind: body.kind === "update" || body.kind === "create" ? body.kind : null,
+      problem: typeof body.problem === "string" ? body.problem : null,
+      opened: body.opened === true,
+      item: body.item ?? null,
+      changes: Array.isArray(body.changes) ? body.changes : [],
+      save: body.save === "button" || body.save === "leave" ? body.save : null,
+      save_label: typeof body.save_label === "string" ? body.save_label : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** PL-125: the compile body for a task built from its shape. */
+export function shapeRecipeRequest(
+  events: RecordedEvent[],
+  options: { name: string; save: "button" | "leave" },
+): CompileRequestBody {
+  return {
+    recording: events,
+    name: options.name,
+    when_to_use: options.name,
+    sample_row: {},
+    record_key_column: "",
+    allowed_origins: [],
+    commit_step_ids: [],
+    duplicate_check: true,
+    park_fields: [],
+    use_shape: true,
+    save: options.save,
+  };
 }
 
 /** PL-124: the only actions a cleaning answer may hide. A value is never the model's to drop. */

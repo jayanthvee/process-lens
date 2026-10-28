@@ -110,6 +110,9 @@ class CompileOptions:
     # PL-123: the steps `clean_recording` dropped. They are gone before the compiler looks for the
     # leave, so a stray menu click can never be mistaken for it.
     dropped_step_ids: Iterable[str] | None = None
+    # PL-125: the recording's shape is a create, so the key is looked for on the list before New,
+    # whatever way the form is saved.
+    search_before_new: bool = False
 
 
 @dataclass
@@ -2500,7 +2503,7 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
     # saved in place, where a person can already be on the list by hand.
     extra_before = (
         _duplicate_search_bodies(parameterized, options, warnings)
-        if in_place_shape is not None
+        if in_place_shape is not None or options.search_before_new
         else {}
     )
 
