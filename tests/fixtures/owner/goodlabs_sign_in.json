@@ -1,0 +1,105 @@
+{
+  "source": "owner run 67a019d5 on goodlabs.com, 2026-10-28 (email scrubbed)",
+  "timeline_utc": {
+    "steps_begin": "06:07:07.67",
+    "code_page_seen_by_owner": "about 06:07:10",
+    "code_email_arrived": "about 06:07:12 (Gmail list, top message)",
+    "wait_ended": "about 06:08:42 (90 s)",
+    "paused": "06:09:44 code_required / none",
+    "code_typed": "never"
+  },
+  "recipe": {
+    "meta": {
+      "name": "goodlabsveriftask",
+      "record_key": "{{row.email_or_phone_number | lower}}",
+      "when_to_use": "goodlabsveriftask",
+      "input_schema": {
+        "fields": {
+          "email_or_phone_number": {
+            "type": "string",
+            "example": "person@example.com"
+          }
+        }
+      },
+      "allowed_origins": [
+        "https://goodlabs.com"
+      ],
+      "approval_policy": {
+        "commit": "first_record"
+      },
+      "idempotency_key": "{{row.email_or_phone_number | lower}}"
+    },
+    "steps": [
+      {
+        "id": "navigate-1",
+        "url": "https://goodlabs.com/login",
+        "name": "Open /login",
+        "action": "navigate"
+      },
+      {
+        "id": "fill-1",
+        "name": "Fill Email or phone number",
+        "value": {
+          "kind": "input",
+          "column": "email_or_phone_number"
+        },
+        "action": "fill",
+        "targets": [
+          {
+            "by": "role",
+            "name": "Email or phone number",
+            "role": "textbox"
+          },
+          {
+            "by": "testid",
+            "value": "unified-login-identifier-input"
+          },
+          {
+            "by": "css",
+            "selector": "#login-identifier"
+          },
+          {
+            "by": "text_fuzzy",
+            "value": "you@email.com or phone"
+          }
+        ],
+        "clear_first": true
+      },
+      {
+        "id": "click-1",
+        "name": "Click Continue",
+        "action": "click",
+        "targets": [
+          {
+            "by": "role",
+            "name": "Continue",
+            "role": "button"
+          },
+          {
+            "by": "testid",
+            "value": "unified-login-continue-button"
+          },
+          {
+            "by": "css",
+            "selector": "button.inline-flex.items-center.justify-center"
+          },
+          {
+            "by": "text_fuzzy",
+            "value": "ContinueContinuing"
+          }
+        ]
+      },
+      {
+        "id": "sign-in-finished",
+        "name": "Wait until the sign-in finishes",
+        "action": "wait_for",
+        "condition": {
+          "timeout_ms": 90000,
+          "url_matches": "/home/dashboard(?:/.*)?$"
+        },
+        "timeout_ms": 90000
+      }
+    ],
+    "format_version": 1
+  }
+}

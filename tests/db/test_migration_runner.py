@@ -66,6 +66,7 @@ def test_shipped_migrations_apply_and_record_their_hash(
         "0011_run_browser.sql",
         "0012_sign_in_tasks.sql",
         "0013_task_removed.sql",
+        "0014_target_memory.sql",
     ]
     assert _recorded(dsn) == {
         "0001_init.sql": sha256_of(MIGRATIONS / "0001_init.sql"),
@@ -80,6 +81,7 @@ def test_shipped_migrations_apply_and_record_their_hash(
         "0011_run_browser.sql": sha256_of(MIGRATIONS / "0011_run_browser.sql"),
         "0012_sign_in_tasks.sql": sha256_of(MIGRATIONS / "0012_sign_in_tasks.sql"),
         "0013_task_removed.sql": sha256_of(MIGRATIONS / "0013_task_removed.sql"),
+        "0014_target_memory.sql": sha256_of(MIGRATIONS / "0014_target_memory.sql"),
     }
     assert "run_records" in _table_names(dsn)
 

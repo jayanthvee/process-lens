@@ -13,7 +13,15 @@ from typing import Any
 
 from packages.ledger import RecordClaim
 
-from .executor import ConditionResult, ConfirmationProbe, OnDispatched, StepCommand, StepResult
+from .executor import (
+    ConditionResult,
+    ConfirmationProbe,
+    OnDispatched,
+    PageSnapshot,
+    SnapshotUnavailable,
+    StepCommand,
+    StepResult,
+)
 
 REJECTED = "rejected"
 DUPLICATE = "duplicate"
@@ -143,6 +151,10 @@ class FakeExecutor:
         # With nothing scripted the person has not said yes, so the run pauses as it always did.
         self.code_answers: list[dict[str, Any]] = []
         self.code_requests = 0
+        # PL-122: the page snapshot a run-time find asks for. A test scripts it; with nothing
+        # scripted the fake has no page, and the find is unavailable rather than invented.
+        self.snapshot_result: PageSnapshot | None = None
+        self.snapshots: list[StepCommand] = []
 
     def guard(self, action: str) -> list[dict[str, str]]:
         """Record the guard call; a release reports whatever the test scripted as refused."""
@@ -282,6 +294,13 @@ class FakeExecutor:
         if self.probe_page is not None:
             return "present" if self._page_satisfies(condition, step_id, record_key) else "absent"
         return self.confirmation
+
+    def snapshot(self, command: StepCommand) -> PageSnapshot:
+        """PL-122: the scripted page, or an unavailable snapshot when the test has none."""
+        self.snapshots.append(command)
+        if self.snapshot_result is None:
+            raise SnapshotUnavailable("the scripted page has no snapshot")
+        return self.snapshot_result
 
     def _page_satisfies(
         self, condition: Mapping[str, Any], step_id: str | None, record_key: str | None

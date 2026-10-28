@@ -35,6 +35,13 @@ export {
   type RunSummary,
 } from "./executor";
 export {
+  SNAPSHOT_LIMIT,
+  pageSnapshotInPage,
+  snapshotExpression,
+  type PageSnapshotElement,
+  type PageSnapshotResult,
+} from "./page-snapshot";
+export {
   ExecutorError,
   type ExecutedAction,
   type ExecutorRecipe,

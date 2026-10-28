@@ -46,7 +46,7 @@ export type EventKind =
   | "off_origin";
 
 /** The kinds of command the runner sends. */
-export type CommandKind = "prepare" | "dispatch" | "check" | "guard" | "enter_code";
+export type CommandKind = "prepare" | "dispatch" | "check" | "guard" | "enter_code" | "snapshot";
 
 /** What every command from the runner carries. */
 export interface CommandEnvelope {
@@ -126,11 +126,23 @@ export interface EnterCodeCommandMessage extends CommandEnvelope {
   look_ms?: number;
 }
 
+/**
+ * A `snapshot` (PL-122): the interactive and labelled elements of the bound page.
+ *
+ * It is not a step: it sends no input and returns no rung. The elements carry no password field, no
+ * typed value and no hidden input, and the page must be on one of `allowed_origins`.
+ */
+export interface SnapshotCommandMessage extends CommandEnvelope {
+  type: "snapshot";
+  allowed_origins: string[];
+}
+
 export type CommandMessage =
   | StepCommandMessage
   | CheckCommandMessage
   | GuardCommandMessage
-  | EnterCodeCommandMessage;
+  | EnterCodeCommandMessage
+  | SnapshotCommandMessage;
 
 /** Sent the moment a commit's trusted input event has been dispatched. */
 export interface AckMessage {
@@ -223,7 +235,7 @@ export type OutgoingMessage =
   | PingMessage
   | PongMessage;
 
-const COMMAND_TYPES = new Set(["prepare", "dispatch", "check", "guard", "enter_code"]);
+const COMMAND_TYPES = new Set(["prepare", "dispatch", "check", "guard", "enter_code", "snapshot"]);
 const EVENT_KINDS = new Set<EventKind>([
   "detached",
   "tab_closed",

@@ -45,6 +45,7 @@ import {
   resetAbandonGuard,
 } from "../executor/abandon-guard";
 import { resolverExpression } from "../executor/ladder";
+import { snapshotExpression } from "../executor/page-snapshot";
 import { evaluate } from "../executor/page";
 import { ExecutorError, type ExecutorRecipe, type StepReport } from "../executor/types";
 import {
@@ -67,6 +68,7 @@ import {
   type CheckAnswer,
   type SessionDeps,
   type SessionState,
+  type SnapshotAnswer,
   type StoredSession,
   type WebSocketLike,
   type CodeAnswer,
@@ -852,6 +854,53 @@ async function probeCodePage(cdp: CdpTransport): Promise<boolean | undefined> {
  * does not describe is reported as the answer's event, so the session can send it before the
  * condition reply (R6) and the run pauses with the wall's reason. The answer itself is unchanged.
  */
+/**
+ * PL-122: read the bound page's interactive and labelled elements for a run-time find.
+ *
+ * The page function does the redaction and the origin check itself, before it reads anything. A
+ * failure here is a refusal, never an empty snapshot the runner could mistake for "not here".
+ */
+async function readCommandSnapshot(allowedOrigins?: string[]): Promise<SnapshotAnswer> {
+  const tabId = commandBoundTabId;
+  if (tabId === null || tabId < 0) {
+    return { ok: false, reason: "no tab is bound to this session" };
+  }
+  try {
+    const cdp = await ensureDebugger(tabId);
+    const query = { allowedOrigins: allowedOrigins ?? [], limit: 400 };
+    const expression = `(${snapshotExpression()})(${JSON.stringify(query)})`;
+    const answer = (await evaluate(cdp, expression, {})) as
+      | {
+          ok?: boolean;
+          origin?: string;
+          elements?: unknown;
+          truncated?: boolean;
+          reason?: string;
+        }
+      | undefined;
+    if (!answer || typeof answer !== "object" || answer.ok !== true) {
+      return {
+        ok: false,
+        reason: String(answer?.reason ?? "the page did not answer with a snapshot"),
+      };
+    }
+    if (!Array.isArray(answer.elements)) {
+      return { ok: false, reason: "the page snapshot had no elements" };
+    }
+    return {
+      ok: true,
+      origin: String(answer.origin ?? ""),
+      elements: answer.elements as Record<string, unknown>[],
+      truncated: answer.truncated === true,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      reason: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 async function checkCommandCondition(
   condition: unknown,
   timeoutMs: number,
@@ -1046,6 +1095,9 @@ function getCommandSession(): CommandSession {
     },
     runStep: runCommandStep,
     checkCondition: checkCommandCondition,
+    // PL-122: the page snapshot a run-time find asks for. It is read through the same debugger the
+    // steps use, and it sends no input.
+    readSnapshot: readCommandSnapshot,
     // PL-068: type the person's code into the bound tab and press its own continue. The code is
     // used for this one page call and never stored. PL-119: a typed code is remembered by its
     // salted hash, so the run cannot type it again a moment later.

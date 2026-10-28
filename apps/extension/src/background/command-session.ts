@@ -88,6 +88,21 @@ export type CheckAnswer =
     }
   | { ok: false; reason: string };
 
+/**
+ * The answer to one `snapshot` (PL-122).
+ *
+ * `ok: false` means the page could not be read at all: no bound tab, a CDP failure, a page off the
+ * allowed origins. The elements are already redacted by the page function.
+ */
+export type SnapshotAnswer =
+  | {
+      ok: true;
+      origin: string;
+      elements: Record<string, unknown>[];
+      truncated: boolean;
+    }
+  | { ok: false; reason: string };
+
 /** Every side effect, injected. */
 export interface SessionDeps {
   createSocket: (url: string, protocols: string[]) => WebSocketLike;
@@ -127,6 +142,11 @@ export interface SessionDeps {
     timeoutMs: number,
     aborted: () => boolean,
   ) => Promise<CheckAnswer>;
+  /**
+   * PL-122: read the bound page's interactive and labelled elements for a run-time find. The
+   * answer carries no typed value; a page off `allowedOrigins` answers `ok: false`.
+   */
+  readSnapshot?: (allowedOrigins?: string[]) => Promise<SnapshotAnswer>;
   /**
    * Type a person's one-time code into the page and press its own continue (PL-068). The answer
    * says whether the page had a code field; it never carries the code. The code lives only for
@@ -718,7 +738,11 @@ export class CommandSession {
       const record = raw as Record<string, unknown>;
       const type = record["type"];
       const isCommandType =
-        type === "prepare" || type === "dispatch" || type === "check" || type === "enter_code";
+        type === "prepare" ||
+        type === "dispatch" ||
+        type === "check" ||
+        type === "enter_code" ||
+        type === "snapshot";
       if (isCommandType && record["protocol"] !== PROTOCOL) {
         const commandId = typeof record["command_id"] === "string" ? record["command_id"] : "";
         if (commandId) {
@@ -744,7 +768,8 @@ export class CommandSession {
           (type === "prepare" ||
             type === "dispatch" ||
             type === "check" ||
-            type === "enter_code") &&
+            type === "enter_code" ||
+            type === "snapshot") &&
           record["protocol"] === PROTOCOL
         ) {
           const commandId = typeof record["command_id"] === "string" ? record["command_id"] : "";
@@ -773,6 +798,7 @@ export class CommandSession {
       case "check":
       case "guard":
       case "enter_code":
+      case "snapshot":
         void this.onCommand(message);
         return;
       default:
@@ -930,6 +956,32 @@ export class CommandSession {
               { entered: false },
               error instanceof Error ? error.message : String(error),
             );
+          }
+        }
+        return;
+      }
+      if (command.type === "snapshot") {
+        // PL-122: a page snapshot is not a step and sends no input. It is answered with the
+        // elements the page function already redacted; nothing about a typed value reaches this
+        // branch, because the page function never reads one.
+        const answer: SnapshotAnswer = this.deps.readSnapshot
+          ? await this.deps.readSnapshot(command.allowed_origins)
+          : { ok: false, reason: "this extension cannot take a page snapshot" };
+        if (current()) {
+          if (answer.ok) {
+            this.sendResult(
+              command.command_id,
+              "ok",
+              null,
+              {
+                origin: answer.origin,
+                elements: answer.elements,
+                truncated: answer.truncated,
+              },
+              null,
+            );
+          } else {
+            this.sendResult(command.command_id, "refused", null, {}, answer.reason);
           }
         }
         return;
