@@ -100,7 +100,7 @@ def test_a_failed_save_parks_with_the_apps_own_refusal(
     with conn.cursor() as cur:
         cur.execute("SELECT reason FROM run_records WHERE run_id = %s", (run_id,))
         reason = cur.fetchone()[0]
-    assert reason == "Demo Crm didn't save it: Invalid fields: Name"
+    assert reason == "The app didn't save it: Invalid fields: Name"
     assert "couldn't find" not in reason.lower()
 
 

@@ -1319,7 +1319,7 @@ class RunLoop:
         read_back = verdict.observed.get("read_back")
         if read_back is not None:
             failed_observed["read_back"] = read_back
-        refusal = _refusal_save_reason(run, verdict)
+        refusal = _refusal_save_reason(verdict)
         if refusal is not None:
             # PL-123: the app said why it refused ("Invalid fields: Name"). That sentence is more
             # useful than "couldn't find" or a generic check failure, and it names the field a
@@ -2464,17 +2464,20 @@ def _row_template_column(step: Mapping[str, Any]) -> str | None:
     return None
 
 
-def _refusal_save_reason(run: RunClaim, verdict: ConditionResult) -> str | None:
-    """The app's own refusal sentence, when a save's check just failed (PL-123)."""
+def _refusal_save_reason(verdict: ConditionResult) -> str | None:
+    """The app's own refusal sentence, when a save's check just failed (PL-123).
+
+    The subject is "The app", not the destination key: a run knows the site's host
+    (``localhost``), not the product's name, and "Localhost didn't save it" would be worse than
+    plain. The app's own words are the useful part.
+    """
     if verdict.status != "ok":
         return None
     observed = verdict.observed if isinstance(verdict.observed, dict) else {}
     refusal = observed.get("refusal")
     if not isinstance(refusal, str) or not refusal.strip():
         return None
-    where = " ".join(str(run.destination_key or "").replace("-", " ").split())
-    who = where.title() if where else "The app"
-    return f"{who} didn't save it: {refusal.strip()[:160]}"
+    return f"The app didn't save it: {refusal.strip()[:160]}"
 
 
 def _ambiguous_row_reason(
