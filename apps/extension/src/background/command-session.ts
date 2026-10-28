@@ -27,6 +27,7 @@ import type { BlockedRequest } from "../executor/abandon-guard";
 import type { StepReport } from "../executor/types";
 import { ExecutorError } from "../executor/types";
 import { POLICY_BLOCKED_MESSAGE, recheckExpiry } from "../executor/guards";
+import { NOT_DRAWING_MESSAGE } from "../executor/visibility";
 
 /** The socket surface the session needs; a plain object satisfies it. */
 export interface WebSocketLike {
@@ -127,6 +128,11 @@ export interface SessionDeps {
       beforeInput: () => void;
     },
   ) => Promise<StepReport>;
+  /**
+   * PL-123: keep the bound tab painting and report a page that has not drawn for 2 s. A session
+   * with no answer here simply runs the step as before.
+   */
+  ensureDrawing?: () => Promise<{ drawing: boolean; message?: string }>;
   /**
    * Evaluate a `check` command's condition. A poll that completed answers with `ok: true`; a
    * check that could not be evaluated at all \u2014 no bound tab, a CDP failure, a condition the
@@ -1024,6 +1030,22 @@ export class CommandSession {
           }
         }
       } else {
+        // PL-123: a covered work window can sit blank while every file has loaded. Keep the
+        // tab drawing, and refuse the step with the drawing sentence when it still has not
+        // painted for 2 s -- never let the step report "not found" for a page that never drew.
+        if (this.deps.ensureDrawing) {
+          const paint = await this.deps.ensureDrawing();
+          if (!paint.drawing) {
+            this.sendResult(
+              command.command_id,
+              "refused",
+              null,
+              {},
+              paint.message ?? NOT_DRAWING_MESSAGE,
+            );
+            return;
+          }
+        }
         // R4: re-check the expiry immediately before the input event. A slow
         // prepare must never let a command that has since expired type into a
         // page. A `prepare` sends no input, so its receipt check is enough.

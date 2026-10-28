@@ -212,6 +212,35 @@ export async function readValueEquals(
   return { label: readBackLabel(spec), value: raw };
 }
 
+/**
+ * PL-123: the app's own refusal toast, when a check just failed.
+ *
+ * Odoo refuses a save by leaving the form in place and showing a notification ("Invalid fields:
+ * Name"). That sentence is the most useful thing a person can read on the parked row. Only
+ * notification-shaped elements are read; the page's whole text is never sent, and the result is
+ * clipped to a readable length.
+ */
+export async function probeRefusal(cdp: CdpTransport): Promise<string | null> {
+  const raw = await evaluate(
+    cdp,
+    `(() => {
+      const nodes = document.querySelectorAll(
+        '[role="alert"], .o_notification, .alert, .toast, [data-pl-refusal]'
+      );
+      for (const el of nodes) {
+        const style = getComputedStyle(el);
+        if (style.display === 'none' || style.visibility === 'hidden') continue;
+        const text = (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
+        if (text) return text.slice(0, 300);
+      }
+      return null;
+    })()`,
+  );
+  if (typeof raw !== "string") return null;
+  const text = raw.trim();
+  return text === "" ? null : text;
+}
+
 export function conditionExpression(condition: Condition, ctx: ConditionContext): string {
   const record = condition as Record<string, unknown>;
   const keys = PREDICATE_KEYS.filter((key) => key in record);

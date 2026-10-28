@@ -1243,6 +1243,26 @@ class RunLoop:
         read_back = verdict.observed.get("read_back")
         if read_back is not None:
             failed_observed["read_back"] = read_back
+        refusal = _refusal_save_reason(run, verdict)
+        if refusal is not None:
+            # PL-123: the app said why it refused ("Invalid fields: Name"). That sentence is more
+            # useful than "couldn't find" or a generic check failure, and it names the field a
+            # person has to fix.
+            refusal_words = verdict.observed.get("refusal")
+            if isinstance(refusal_words, str):
+                failed_observed["refusal"] = refusal_words
+            self._transition(
+                conn,
+                record,
+                "submitted_unverified",
+                "reconciling",
+                "the app refused the save",
+                step=step,
+                outcome="failed",
+                observed=failed_observed or None,
+            )
+            self._transition(conn, record, "reconciling", "parked", refusal)
+            return "parked"
         if verdict.status == "ok" and "value_equals" in condition:
             # PL-118: a read-back that the page answers "no" is a proven failure to show the
             # change. The destination might still have it, so the row parks for a person to
@@ -2346,6 +2366,19 @@ def _row_template_column(step: Mapping[str, Any]) -> str | None:
             if match:
                 return match.group(1)
     return None
+
+
+def _refusal_save_reason(run: RunClaim, verdict: ConditionResult) -> str | None:
+    """The app's own refusal sentence, when a save's check just failed (PL-123)."""
+    if verdict.status != "ok":
+        return None
+    observed = verdict.observed if isinstance(verdict.observed, dict) else {}
+    refusal = observed.get("refusal")
+    if not isinstance(refusal, str) or not refusal.strip():
+        return None
+    where = " ".join(str(run.destination_key or "").replace("-", " ").split())
+    who = where.title() if where else "The app"
+    return f"{who} didn't save it: {refusal.strip()[:160]}"
 
 
 def _ambiguous_row_reason(

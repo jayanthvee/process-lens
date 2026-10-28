@@ -16,7 +16,89 @@ import type { CdpTransport } from "./cdp";
 export const WINDOW_HIDDEN_MESSAGE =
   "the ProcessLens window is hidden behind other windows, so the page stopped drawing";
 
-/** What Chrome says about the work window at one moment. */
+/** PL-123: the sentence a parked row carries when the work window has stopped painting. */
+export const NOT_DRAWING_MESSAGE =
+  "The ProcessLens window isn't drawing. Bring it to the front and press Try again.";
+
+/**
+ * PL-123: ask Chrome to keep the bound tab painting while its window is covered.
+ *
+ * Three CDP commands are tried, and the answer names the ones that were accepted. Without a
+ * browser this list is all the code can prove; a real covered-window run still has to say which
+ * one made Odoo draw. A command that fails is reported by omission, never thrown: a page that
+ * cannot be focused yet is not the reason a step failed.
+ */
+export async function keepDrawing(cdp: CdpTransport): Promise<string[]> {
+  const methods: { method: string; params: Record<string, unknown> }[] = [
+    { method: "Page.setWebLifecycleState", params: { state: "active" } },
+    { method: "Emulation.setFocusEmulationEnabled", params: { enabled: true } },
+    { method: "Page.bringToFront", params: {} },
+  ];
+  const kept: string[] = [];
+  for (const entry of methods) {
+    try {
+      await cdp.send(entry.method, entry.params);
+      kept.push(entry.method);
+    } catch {
+      // Chrome may refuse one of these on a page that is still loading; the next one may work.
+    }
+  }
+  return kept;
+}
+
+/**
+ * PL-123: count the animation frames a page draws in a short window.
+ *
+ * A page Chrome has stopped painting fires no `requestAnimationFrame` at all. The counter is page
+ * script, so a form that has not drawn yet answers 0; a visible page answers many. A page that
+ * cannot be evaluated answers -1, which is "unknown", not "not drawing".
+ */
+export async function paintingFrames(cdp: CdpTransport, waitMs = 2000): Promise<number> {
+  try {
+    const reply = (await cdp.send("Runtime.evaluate", {
+      expression: `new Promise((resolve) => {
+        let frames = 0;
+        const start = performance.now();
+        const tick = () => {
+          frames += 1;
+          if (performance.now() - start < ${Math.max(0, waitMs)}) {
+            requestAnimationFrame(tick);
+          } else {
+            resolve(frames);
+          }
+        };
+        requestAnimationFrame(tick);
+        setTimeout(() => resolve(frames), ${Math.max(0, waitMs) + 250});
+      })`,
+      awaitPromise: true,
+      returnByValue: true,
+    })) as { result?: { value?: unknown } } | undefined;
+    const value = reply?.result?.value;
+    return typeof value === "number" && Number.isFinite(value) ? value : -1;
+  } catch {
+    return -1;
+  }
+}
+
+/**
+ * PL-123: keep the tab drawing before a step, and report when it has not painted for 2 s.
+ *
+ * A window that is covered or in the background can sit blank while every file has loaded. The
+ * row then parks with a sentence about drawing, never with "not found": the element is there, the
+ * page just has not rendered it.
+ */
+export async function ensureDrawing(
+  cdp: CdpTransport,
+  waitMs = 2000,
+): Promise<{ drawing: boolean; frames: number; kept: string[]; message?: string }> {
+  const kept = await keepDrawing(cdp);
+  const frames = await paintingFrames(cdp, waitMs);
+  if (frames === 0) {
+    return { drawing: false, frames, kept, message: NOT_DRAWING_MESSAGE };
+  }
+  return { drawing: true, frames, kept };
+}
+
 export interface WindowFacts {
   /** `normal`, `minimized`, `maximized`, `fullscreen`, or `unknown` when Chrome declined to say. */
   state: string;
