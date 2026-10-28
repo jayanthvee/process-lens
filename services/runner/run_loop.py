@@ -108,6 +108,16 @@ PAGE_KEEPING_PAUSES = frozenset({"code_required"})
 # PL-102: the ledger's reason when a record was released because the code was read from email.
 CODE_FROM_EMAIL_REASON = "the site's sign-in code was read from email"
 
+# PL-121: a `wait_for` step is checked in slices, so the page is looked at again and again while
+# the wait runs instead of once when it ends. Each failed slice makes the extension probe the page
+# for a wall (its existing `checkCommandCondition` path), which is how a sign-in's code page is
+# noticed within a few seconds. Three seconds keeps the whole wait the step's own `timeout_ms`.
+WAIT_SLICE_SECONDS = 3.0
+# PL-121: a code read from email during a wait needs time for the page to move on. The wait is not
+# lengthened when it already has this much left; a wait with less gets this much rather than the
+# row starting over. Not a setting: the person's step timeout is still the whole wait.
+WAIT_CODE_GRACE_SECONDS = 30.0
+
 # PL-027: the message a person reads on a step event when the abandon guard refused a request.
 BLOCKED_REQUEST_MESSAGE = "blocked an unsaved change from leaving the page"
 
@@ -254,6 +264,10 @@ class RunLoop:
         # as it did before this ticket.
         self.finder = finder
         self._ai_calls_this_record = 0
+        # PL-121: while a `wait_for` step is waiting, the instant its wait ends. A code page that
+        # arrives during the wait is answered here, without releasing the record, and the wait
+        # re-reads this in case the code gave it more time.
+        self._wait_deadline: float | None = None
 
     # -- the run -----------------------------------------------------------
 
@@ -828,8 +842,9 @@ class RunLoop:
 
             # PL-113 S2: a wait step is a real check, not a command. A sign-in recipe ends with
             # one: the page after the code page must be reached, or the row parks saying the
-            # sign-in did not finish. A code page that appears while the wait runs is drained
-            # below, so PL-102 reads the code from the person's email exactly as before.
+            # sign-in did not finish. PL-121: the wait is checked in slices, so a code page that
+            # appears while it runs is seen within seconds; the code is read from the person's
+            # email there and then, and the same wait goes on.
             if action == "wait_for":
                 if box.state == "prechecked":
                     self._transition(conn, record, "prechecked", "filling", "steps begin")
@@ -847,19 +862,11 @@ class RunLoop:
                     return "parked"
 
                 try:
-                    verdict = self._check(
-                        condition,
-                        step_id=step.get("id"),
-                        record_key=record.record_key,
-                        row=row,
-                        variables=variables,
+                    verdict, stopped = self._wait_for_condition(
+                        conn, record, run, epoch, step, condition, row, variables, box
                     )
                 except TemplateError as exc:
                     return self._park_for_template_error(conn, record, box, exc)
-
-                # R6: a check is an executor call, so an event that arrived while it ran beats its
-                # verdict -- a code page is asked for its code here, not after the wait gave up.
-                stopped = self._drain_events(conn, record, run, epoch, box)
                 if stopped is not None:
                     return stopped
 
@@ -905,6 +912,75 @@ class RunLoop:
                 return terminal
 
         return None
+
+    def _wait_for_condition(
+        self,
+        conn: psycopg.Connection,
+        record: RecordClaim,
+        run: RunClaim,
+        epoch: int,
+        step: Mapping[str, Any],
+        condition: Mapping[str, Any],
+        row: Mapping[str, Any],
+        variables: Mapping[str, Any],
+        box: _Box,
+    ) -> tuple[ConditionResult, str | None]:
+        """PL-121: wait for a step's condition in slices, so a code page is noticed at once.
+
+        The whole wait is still the one it was: the deadline is set here from the condition's own
+        timeout, exactly as the single check used to compute it, and no new timeout is introduced.
+        Each slice asks the extension for a poll no longer than :data:`WAIT_SLICE_SECONDS`, and
+        after every busy poll the extension probes the page for a wall (its own
+        `checkCommandCondition`), which is what sends `code_required` for a sign-in page. The event
+        is drained after each slice, so the code is read from the person's email while the wait is
+        still running.
+
+        A slice that is not answered is not a "no", so the wait goes on rather than calling the
+        sign-in finished. A slice that was answered "not yet" is paced out to its own end: the
+        executor usually spends the whole slice polling, and when it answers early the wait must
+        still not run more often than the slice says.
+
+        Returns the last answered verdict (or the last one, when none was answered) and the outcome
+        that stops the run, if an event did.
+        """
+        total_seconds = condition_timeout(condition, self.fallback_timeout_ms) / 1000.0
+        previous = self._wait_deadline
+        self._wait_deadline = self.clock.time() + total_seconds
+        answered: ConditionResult | None = None
+        verdict = ConditionResult(passed=False, status="lost")
+        first = True
+        try:
+            while True:
+                remaining = self._wait_deadline - self.clock.time()
+                if remaining <= 0 and not first:
+                    break
+                first = False
+                slice_seconds = min(WAIT_SLICE_SECONDS, max(remaining, 0.0))
+                slice_start = self.clock.time()
+                verdict = self._check(
+                    condition,
+                    step_id=step.get("id"),
+                    record_key=record.record_key,
+                    row=row,
+                    variables=variables,
+                    timeout_ms=max(1, round(slice_seconds * 1000)),
+                )
+                # R6: a check is an executor call, so an event that arrived while the slice ran
+                # beats its verdict. A code typed here keeps the record `filling` (item 2) and the
+                # wait goes on; anything that stops the run is returned to the caller.
+                stopped = self._drain_events(conn, record, run, epoch, box)
+                if stopped is not None:
+                    return verdict, stopped
+                if verdict.answered:
+                    answered = verdict
+                    if verdict.passed:
+                        return verdict, None
+                spent = self.clock.time() - slice_start
+                if spent < slice_seconds:
+                    self.clock.pause(slice_seconds - spent)
+        finally:
+            self._wait_deadline = previous
+        return (answered or verdict), None
 
     def _commit_step(
         self,
@@ -1673,8 +1749,20 @@ class RunLoop:
         if kind == "code_required" and box.state in WORKING_STATES:
             entered, reason = self._code_from_email()
             if entered:
-                # PL-102: the code came from the person's email and the page moved on. The record
-                # is released (its attempt refunded) and claimed again, and the run carries on.
+                # PL-121: a code page is part of a sign-in's wait. When the code was typed and the
+                # page moved on, the record stays `filling` and the SAME wait goes on -- steps 1-3
+                # are not sent again, and a fresh sign-in from /login would find no email box. A
+                # wait with less than the grace left gets it, so the page has time to move on.
+                if self._wait_deadline is not None:
+                    self._wait_deadline = max(
+                        self._wait_deadline, self.clock.time() + WAIT_CODE_GRACE_SECONDS
+                    )
+                    logger.info(
+                        "run %s: the site's code was read from email during the wait", run.id
+                    )
+                    return None
+                # PL-102: anywhere else the code came from the person's email and the page moved
+                # on. The record is released (its attempt refunded) and claimed again.
                 self._stop_record_for_event(
                     conn, record, run, epoch, box, kind, CODE_FROM_EMAIL_REASON
                 )
@@ -1841,6 +1929,7 @@ class RunLoop:
         record_key: str | None,
         row: Mapping[str, Any] | None = None,
         variables: Mapping[str, Any] | None = None,
+        timeout_ms: int | None = None,
     ) -> ConditionResult:
         """Check a page condition, rendering its templates first (R2).
 
@@ -1850,9 +1939,16 @@ class RunLoop:
         which is the one place a condition reaches the executor.
         """
         rendered = _render_condition(dict(condition), row or {}, variables or {})
+        # PL-121: a wait step's slice is shorter than the condition's own timeout, which stays the
+        # whole wait. Every other check is asked for exactly the timeout it carries.
+        budget = (
+            timeout_ms
+            if timeout_ms is not None
+            else condition_timeout(rendered, self.fallback_timeout_ms)
+        )
         return self.executor.check_condition(
             rendered,
-            timeout_ms=condition_timeout(rendered, self.fallback_timeout_ms),
+            timeout_ms=budget,
             step_id=step_id,
             record_key=record_key,
         )

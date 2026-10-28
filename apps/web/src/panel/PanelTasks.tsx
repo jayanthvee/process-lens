@@ -211,16 +211,11 @@ export function PanelTasks(): JSX.Element {
     const last = task.last_run;
     if (last === null || last === undefined) return null;
     if (last.status !== "paused" || last.pause_reason !== "code_required") return null;
-    const chosen = selectedFor(task);
-    const email = (chosen === ANOTHER_EMAIL ? another[task.workflow_id] ?? "" : chosen).trim();
-    const where = email === "" ? task.sign_in_email ?? "that address" : email;
     switch (last.pause_detail) {
       case "none":
-        return {
-          sentence:
-            `No code arrived at ${where}. Check that this inbox is signed in to Gmail in this ` +
-            "Chrome, then press Try again.",
-        };
+        // PL-121: say what the run page says (PL-119). Gmail's feed lists only unread mail, so a
+        // code the person already opened is invisible to ProcessLens; the inbox is not at fault.
+        return { sentence: codeFromEmailWords("none") };
       case "ambiguous":
         return { sentence: codeFromEmailWords("ambiguous") };
       case "not_allowed":
