@@ -15,7 +15,7 @@ from typing import Any
 import pytest
 from fastapi import HTTPException
 
-from packages.compiler.shape import NO_CHANGE, NO_ITEM, NO_SAVE, read_shape
+from packages.compiler.shape import NO_CHANGE, NO_ITEM, read_shape
 from services.api.compile import CompileRequest, _compile_shape
 
 ODOO = "http://localhost:8069"
@@ -369,9 +369,11 @@ def test_opening_an_item_and_changing_nothing_is_refused() -> None:
     assert refused.value.detail["message"] == NO_CHANGE
 
 
-def test_a_change_that_is_never_saved_or_left_is_refused() -> None:
-    recording = searched_and_clicked_a_line()[:-1]
-    assert read_shape(recording).problem == NO_SAVE
+def test_a_change_that_is_never_saved_or_left_is_saved_by_leaving() -> None:
+    # PL-127: stopping on the item's page is taught as a leave; the run's check proves the save.
+    shape = read_shape(searched_and_clicked_a_line()[:-1])
+    assert shape.problem is None
+    assert (shape.kind, shape.save, shape.save_event) == ("update", "leave", None)
 
 
 def test_a_recording_that_never_opens_an_item_says_so() -> None:

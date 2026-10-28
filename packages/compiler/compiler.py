@@ -113,6 +113,9 @@ class CompileOptions:
     # PL-125: the recording's shape is a create, so the key is looked for on the list before New,
     # whatever way the form is saved.
     search_before_new: bool = False
+    # PL-127: the shape is a create that was never saved or left (Odoo's Save is an unlabeled
+    # cloud icon). The form's own Save is pressed explicitly and the saved page is read back.
+    save_new_form: bool = False
 
 
 @dataclass
@@ -639,6 +642,35 @@ def _in_place_save_shape(candidates: list[Candidate]) -> dict[str, Any] | None:
                 "fills": fills,
             }
     return None
+
+
+def _unsaved_new_form(candidates: list[Candidate]) -> dict[str, Any] | None:
+    """PL-127: a ``/new`` form the person filled and never saved; its Save goes after the last fill.
+
+    Same facts as ``_in_place_save_shape`` (the fills a read-back can read), without the address
+    move that a save would have made.
+    """
+    new_path = next(
+        (
+            path
+            for path in (urlsplit(candidate.url).path.rstrip("/") for candidate in candidates)
+            if path.endswith("/new")
+        ),
+        "",
+    )
+    if not new_path:
+        return None
+    fills = [
+        index
+        for index, candidate in enumerate(candidates)
+        if candidate.action == "fill"
+        and urlsplit(candidate.url).path.rstrip("/") == new_path
+        and isinstance(candidate.value, dict)
+        and candidate.value.get("kind") == "input"
+    ]
+    if not fills:
+        return None
+    return {"last_new": fills[-1], "new_path": new_path, "fills": fills}
 
 
 def _new_form_landing(url: str, timeout_ms: int) -> dict[str, Any] | None:
@@ -2486,6 +2518,10 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
         )
         parameterized, tab_warnings = _drop_tab_clicks(parameterized)
         warnings.extend(tab_warnings)
+        if not self_save_checked and options.save_new_form:
+            self_save_checked = _in_place_save_commit(
+                parameterized, options, warnings, shape=_unsaved_new_form(parameterized)
+            )
         if not self_save_checked:
             self_save_checked = _create_leave_commit(parameterized, options, warnings) or (
                 _self_save_commit(parameterized, options, warnings)

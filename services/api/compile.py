@@ -165,6 +165,7 @@ def _compile_shape(request: CompileRequest) -> CompileResponse:
         duplicate_check=True,
         save_by_itself=shape.save == "leave",
         search_before_new=shape.kind == "create",
+        save_new_form=shape.kind == "create" and shape.save == "leave" and shape.save_event is None,
     )
     try:
         result = compile_recording(events, options)

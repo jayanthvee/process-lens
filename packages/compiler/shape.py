@@ -18,7 +18,7 @@ the item           the click after which the address became one item's page (``.
                    searched for, else the page's own name field found in the clicked text
 the changes        what the person typed on that item's page -- never what the page set by
                    itself -- the last value per field
-the save           a Save click, or leaving the page after the last change
+the save           a Save click, else leaving the page (stopping on the page counts too)
 =================  ===========================================================================
 
 Nothing else in the recording is used, so nothing has to be removed. Everything here is decided
@@ -357,11 +357,14 @@ def read_shape(recording: list[dict[str, Any]]) -> Shape:
                 break
             if _action(event) == "click":
                 leave = event
-        if leave is None:
-            shape.kind, shape.problem = None, NO_SAVE
-            return shape
+        # PL-127: a person who stops on the item's page without pressing Save or leaving still
+        # taught the change. An update's run leaves by the list's address (Odoo saves on leave)
+        # and re-opens the item to read the value back; a create's run presses the form's own
+        # Save and reads the saved page back. Either way a change that didn't save is never
+        # marked done. Refusing here left the owner's Events enrollment with no way to be saved,
+        # and Odoo's Save is an unlabeled cloud icon that is easy to miss.
         shape.save = "leave"
-        shape.save_event = leave if _action(leave) == "click" else None
+        shape.save_event = leave if leave is not None and _action(leave) == "click" else None
 
     if shape.kind == "create":
         emails = [change for change in changes if _EMAIL.match(str(change.value or "").strip())]
@@ -413,7 +416,11 @@ def canonical_recording(shape: Shape) -> list[dict[str, Any]]:
         # follows reads the value back, so a leave that didn't save is still caught. A create has
         # no item page to re-open, so its leave click stays: it is the step the list is checked
         # after.
-        if shape.kind == "create" and shape.save_event is not None:
+        # PL-127: a create that was never saved or left has neither; the compiler presses the
+        # form's own Save after the last fill and reads the saved page back.
+        if shape.kind == "create" and shape.save_event is None:
+            return out
+        if shape.kind == "create":
             add(shape.save_event)
         out.append({"seq": len(out) + 1, "kind": "navigate", "url": shape.list_url, "step": None})
     return out
