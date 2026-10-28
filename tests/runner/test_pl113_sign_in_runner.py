@@ -83,9 +83,10 @@ def test_a_row_that_never_leaves_the_code_page_parks_and_says_so(
 
     assert base.states(run_id) == {"row-0001": "parked"}
     reason = _reason(conn, run_id) or ""
-    assert reason.startswith("Sign-in didn't finish:")
-    # What the page shows: the wait it never met, in the same words as any other failed check.
-    assert "home" in reason
+    # PL-117 item 2: a sign-in wait that times out says the site never got past the code page.
+    assert reason == "The sign-in didn't finish: the site never got past the code page."
+    assert "Dismiss" not in reason
+    assert "URL" not in reason
 
 
 def test_a_code_page_while_waiting_still_reads_the_code_from_email(

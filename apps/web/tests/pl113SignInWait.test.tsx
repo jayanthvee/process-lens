@@ -87,7 +87,8 @@ afterEach(() => {
 describe("saving a sign-in task (PL-113 S2)", () => {
   it("tells the compiler where the sign-in landed", async () => {
     render(<PanelTeach />);
-    await screen.findByText(/click saves your work/i);
+    await screen.findByText("A sign-in saves nothing.");
+    await settle();
 
     fireEvent.click(screen.getByRole("button", { name: "Save as task" }));
     await settle();
@@ -96,6 +97,8 @@ describe("saving a sign-in task (PL-113 S2)", () => {
     expect(compiled?.body).toMatchObject({
       sign_in: true,
       sign_in_after_path: HOME,
+      // PL-117: a sign-in saves nothing, so the panel sends no commit choice for it.
+      commit_step_ids: [],
     });
     // The code page is not a code: only page addresses travel.
     expect(JSON.stringify(compiled?.body)).not.toContain("verify");

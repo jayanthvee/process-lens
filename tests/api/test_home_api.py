@@ -85,12 +85,17 @@ def test_home_answers_the_frozen_shape(
         "state",
         "reason",
         "commit_attempted",
+        # PL-117: the task's site and sign-in flag ride on every needs-help row.
+        "app",
+        "sign_in",
     }
     assert record["state"] == "parked"
     assert record["task_name"] == "Inquiries"
     assert record["row"]
     assert record["commit_attempted"] is False
     assert record["reason"] is None
+    assert record["app"] == "http://localhost:5173"
+    assert record["sign_in"] is False
 
     live = body["running"][0]
     assert set(live) == {"run_id", "task_name", "done", "total", "already_there"}
