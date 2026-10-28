@@ -30,3 +30,9 @@
 - Events run a22a17be: parked at click-1 (role=main, glued "demo dayyyyyyyMy Company", click landed
   on a different element). Also: click-2 "0Attendees" (count in the name), commit = the Questions
   tab with text_count_increases, key = attendee name not email, 7 form-load fills in the panel.
+- T1 read-ahead (no run): Events would park at the save even after click-1 is fixed. The attendee
+  was saved in place (/attendees/new -> /attendees/1), with no leave, so self-save has nothing to
+  use, and today's Questions-tab commit with text_count_increases on the name can't pass. Sales
+  read-ahead: the fills clear first, the re-open card works with the search kept, and the
+  read-back compares numbers. The open risk is Odoo's "Discard changes?" dialog on leave, if the
+  autosave fails.
