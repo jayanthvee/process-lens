@@ -386,3 +386,57 @@ def test_a_panel_saved_recording_has_a_commit_step(client: TestClient) -> None:
 
     assert unchecked.status_code == 200, unchecked.text
     assert not any(step.get("commit") for step in unchecked.json()["recipe"]["steps"])
+
+
+# PL-118: the owner's shape through the route -- open a product, change its price, leave for the
+# list -- compiles with "saves by itself" and a read-back of the changed field.
+
+PRICE_LIST = "https://crm.example.com/products"
+PRICE_RECORD = "https://crm.example.com/products/17"
+SEARCH = [{"by": "role", "role": "searchbox", "name": "Search products"}]
+ROW = [{"by": "role", "role": "cell", "name": "Oak Standing Desk"}]
+SALES_PRICE = [{"by": "role", "role": "spinbutton", "name": "Sales Price"}]
+BREADCRUMB = [{"by": "role", "role": "link", "name": "Products"}]
+
+
+def _price_recording() -> list[dict[str, Any]]:
+    enter = action_event(2, "press", "press", SEARCH, url=PRICE_LIST)
+    enter["step"]["key"] = "Enter"
+    return [
+        action_event(1, "fill", "fill", SEARCH, value="Oak Standing Desk", url=PRICE_LIST),
+        enter,
+        action_event(3, "click", "click", ROW, url=PRICE_LIST, step_id="open-1"),
+        action_event(4, "fill", "fill", SALES_PRICE, value="799", url=PRICE_RECORD),
+        action_event(5, "click", "click", BREADCRUMB, url=PRICE_RECORD, step_id="leave-1"),
+        {"seq": 6, "kind": "navigate", "url": PRICE_LIST, "step": None},
+    ]
+
+
+def test_a_price_edit_compiles_with_a_read_back(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PROCESSLENS_EXTENSION_ID", EXTENSION_ID)
+
+    response = client.post(
+        "/api/v1/recipes/compile",
+        json=request_body(
+            _price_recording(),
+            name="Update a price",
+            sample_row={"product": "Oak Standing Desk", "price": "799"},
+            record_key_column="product",
+            commit_step_ids=[],
+            save_by_itself=True,
+        ),
+        headers={"origin": EXTENSION_ORIGIN},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    commit = next(step for step in body["recipe"]["steps"] if step.get("commit"))
+    assert commit["assert_after"]["value_equals"]["value"] == {
+        "kind": "input",
+        "column": "price",
+    }
+    assert commit["assert_after"]["value_equals"]["selector"]["targets"] == SALES_PRICE
+    assert recipe_problems(body["recipe"]) == []
+    assert body["search_kind"] == "update"

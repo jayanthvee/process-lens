@@ -195,7 +195,7 @@ describe("the make-recipe form", () => {
       "application/json",
     );
     expect(JSON.parse(String(save.init?.body))).toEqual({
-      name: "Recorded on crm.example.test",
+      name: "crm.example.test task",
       recipe,
     });
 
@@ -205,7 +205,7 @@ describe("the make-recipe form", () => {
     expect(storage.writes[0]!["processlens:executor-row"]).toEqual({ email: "ravi@example.test" });
 
     const result = control("make-result");
-    expect(result.textContent).toContain("Recorded on crm.example.test is ready");
+    expect(result.textContent).toContain("crm.example.test task is ready");
     // PL-033: no link in the popup — the Open in ProcessLens step gets the address and calls
     // chrome.tabs.create with it, because a plain `<a href>` does nothing in a popup.
     expect(result.querySelector("a")).toBeNull();

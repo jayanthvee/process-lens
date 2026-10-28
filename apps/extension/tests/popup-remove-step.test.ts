@@ -84,7 +84,8 @@ describe("RecorderSession.remove", () => {
     expect(removed).toMatchObject({ seq: first.seq, kind: "click" });
     // The observation that belonged to that click went with it; the rest is untouched.
     expect(session.events.map((event) => event.seq)).toEqual([3, 4, 5]);
-    expect(session.count).toBe(3);
+    // PL-118 item 5: the count is the lines the person sees; the remaining observation is not one.
+    expect(session.count).toBe(2);
   });
 
   it("drops nothing else when the step has no observation of its own", () => {
@@ -95,7 +96,7 @@ describe("RecorderSession.remove", () => {
 
     // The fill is not a click, so the next event is the save click and stays.
     expect(session.events.map((event) => event.seq)).toEqual([1, 2, 4, 5]);
-    expect(session.count).toBe(4);
+    expect(session.count).toBe(2);
   });
 
   it("removes the last step and its observation, and leaves the earlier evidence", () => {
@@ -127,7 +128,7 @@ describe("RecorderSession.remove", () => {
     expect(session.remove(99)).toBeNull();
 
     expect(session.events.map((event) => event.seq)).toEqual(before);
-    expect(session.count).toBe(5);
+    expect(session.count).toBe(3);
   });
 
   it("drops the evidence a removed step was still owed across a navigation", () => {
@@ -217,7 +218,7 @@ describe("the × on a recorded step", () => {
       "Clicked Save",
     ]);
     expect(document.querySelectorAll("#steps .steps__item")).toHaveLength(2);
-    expect(session.count).toBe(4);
-    expect(stepCountWords(session.count)).toBe("4 steps recorded");
+    expect(session.count).toBe(2);
+    expect(stepCountWords(session.count)).toBe("2 steps recorded");
   });
 });

@@ -56,7 +56,17 @@ const SIGN_IN: RecordedEvent[] = [
 ];
 
 function statusFor(events: RecordedEvent[], state: "idle" | "recording" = "idle"): RecorderStatus {
-  return { state, count: events.length, startedAt: null, wsUrl: "", wsConnected: false, warning: null };
+  return {
+    state,
+    count: events.length,
+    startedAt: null,
+    wsUrl: "",
+    wsConnected: false,
+    warning: null,
+    // The fixture is a sign-in (PL-107/PL-112): it saves nothing, so PL-118's self-save choice is
+    // not offered and the last click keeps its old default.
+    signIn: true,
+  };
 }
 
 const originalChrome = extensionChrome();
@@ -104,23 +114,27 @@ describe("starting over", () => {
     render(<PanelTeach />);
     await screen.findByText(/click saves your work/i);
 
+    // PL-118 item 5: Start over asks on this screen before it throws the steps away.
     fireEvent.click(screen.getByRole("button", { name: "Start over" }));
+    expect(screen.getByText("Throw away these 3 steps?")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Yes" }));
     await settle();
 
     expect(sent.some((message) => message.type === "record:clear")).toBe(true);
     expect(screen.queryByText(/click saves your work/i)).toBeNull();
   });
 
-  it("Start teaching begins with an empty list, never adding to the last one", async () => {
+  it("Continue teaching adds to the stopped recording, without clearing it", async () => {
     render(<PanelTeach />);
     await screen.findByText(/click saves your work/i);
 
-    fireEvent.click(screen.getByRole("button", { name: "Start teaching" }));
+    fireEvent.click(screen.getByRole("button", { name: "Continue teaching" }));
     await settle();
 
     const kinds = sent.map((message) => message.type);
-    expect(kinds).toContain("record:clear");
-    expect(kinds.indexOf("record:clear")).toBeLessThan(kinds.indexOf("record:start"));
+    expect(kinds).toContain("record:start");
+    // PL-118 item 5: Start teaching/Continue teaching no longer clears silently.
+    expect(kinds).not.toContain("record:clear");
   });
 });
 
