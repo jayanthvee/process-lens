@@ -86,8 +86,9 @@ afterEach(() => {
 async function saveScreen(events: RecordedEvent[], signIn: boolean): Promise<void> {
   installChrome(events, signIn);
   render(<PanelTeach />);
-  // The click choice is on screen once the recording has been read back.
-  await screen.findByText(/click saves your work/i);
+  // The save decision is on screen once the recording has been read back. A sign-in says it saves
+  // nothing (PL-117); any other task says which click saves.
+  await screen.findByText(signIn ? "A sign-in saves nothing." : /click saves your work/i);
   await settle();
 }
 

@@ -119,16 +119,16 @@ class FakeExecutor:
         conditions: Mapping[str, bool] | None = None,
         lost: Iterable[str] = (),
         condition_statuses: Mapping[str, str] | None = None,
-        condition_observed: Mapping[str, dict[str, Any]] | None = None,
+        condition_observations: Mapping[str, Mapping[str, Any]] | None = None,
         probe_page: Mapping[str, Mapping[str, bool]] | None = None,
         confirmation: ConfirmationProbe = "unsupported",
     ) -> None:
         self.destination = destination
         self.plan = dict(plan or {})
         self.conditions = dict(conditions or {})
+        self.condition_observations = dict(condition_observations or {})
         self.lost = set(lost)
         self.condition_statuses = dict(condition_statuses or {})
-        self.condition_observed = dict(condition_observed or {})
         # PL-118 review B1: a real page answers the freshness probe by evaluating the condition.
         # When a test scripts the page, the probe answers from here instead of ``confirmation``.
         self.probe_page = None if probe_page is None else dict(probe_page)
@@ -244,18 +244,22 @@ class FakeExecutor:
             return ConditionResult(passed=False, status=status)  # type: ignore[arg-type]
         return ConditionResult(
             passed=self._condition(step_id, record_key),
-            observed=self._observed(step_id, record_key),
+            observed=self._observation(step_id, record_key),
         )
 
-    def _observed(self, step_id: str | None, record_key: str | None) -> dict[str, Any]:
-        """What the page showed with this condition, scripted per step (PL-118)."""
+    def _observation(self, step_id: str | None, record_key: str | None) -> dict[str, Any]:
+        """What the page showed with this condition, scripted per step.
+
+        PL-117 uses it for a failed check's own words (a code prompt still on the page); PL-118
+        uses it for a ``value_equals`` read-back. Both are the page's answer, not the row's.
+        """
         if step_id is None:
             return {}
         if record_key is not None:
             key = f"{record_key}:{step_id}"
-            if key in self.condition_observed:
-                return dict(self.condition_observed[key])
-        return dict(self.condition_observed.get(step_id, {}))
+            if key in self.condition_observations:
+                return dict(self.condition_observations[key])
+        return dict(self.condition_observations.get(step_id, {}))
 
     def _status(self, step_id: str | None, record_key: str | None) -> str:
         """The scripted answer status (R1 tests use ``lost`` and ``refused``)."""
@@ -383,7 +387,7 @@ class ScriptedRun:
         errors: Iterable[str] = (),
         crash_at: Iterable[str] = (),
         condition_statuses: Mapping[str, str] | None = None,
-        condition_observed: Mapping[str, dict[str, Any]] | None = None,
+        condition_observations: Mapping[str, Mapping[str, Any]] | None = None,
         probe_page: Mapping[str, Mapping[str, bool]] | None = None,
         confirmation: ConfirmationProbe = "unsupported",
         events: Iterable[tuple[str, str]] = (),
@@ -396,7 +400,7 @@ class ScriptedRun:
                 plan=plan,
                 conditions=conditions,
                 condition_statuses=condition_statuses,
-                condition_observed=condition_observed,
+                condition_observations=condition_observations,
                 probe_page=probe_page,
                 confirmation=confirmation,
             ),

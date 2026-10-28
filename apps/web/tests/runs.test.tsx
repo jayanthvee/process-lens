@@ -8,7 +8,7 @@ import { act, fireEvent, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { RecordRow, RunDetail as RunPayload, RunSummary } from "../src/types";
-import { DESTINATION_CHECK_LABEL } from "../src/pages/needsHelpActions";
+import { destinationCheckLabel } from "../src/pages/needsHelpActions";
 import { engineWordsIn } from "../src/lib/words";
 import { POLL_INTERVAL_MS } from "../src/lib/useJson";
 import { callsTo, createFetchStub, renderApp, settle, type FetchStub } from "./helpers";
@@ -543,7 +543,7 @@ describe("a row that needs a person, on the run page", () => {
     expect(box).not.toBeNull();
     expect(box?.checked).toBe(false);
     expect(view.container.querySelector(".destination-check-label")?.textContent).toBe(
-      DESTINATION_CHECK_LABEL,
+      destinationCheckLabel(),
     );
     expect(
       view.container.querySelector(".destination-check-why")?.textContent?.trim(),

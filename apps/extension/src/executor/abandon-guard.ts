@@ -98,7 +98,10 @@ export function blockedRequests(): BlockedRequest[] {
   return [...blocked];
 }
 
-/** Forget everything. Only tests need this: the state belongs to the one bound tab. */
+/**
+ * Forget everything: a test, or a quiet-spell detach that dropped the guard's CDP listeners
+ * (PL-117). Clearing `armed` is what lets the next command really arm it again.
+ */
 export function resetAbandonGuard(): void {
   armed = false;
   blocked = [];

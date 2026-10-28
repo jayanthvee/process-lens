@@ -1768,6 +1768,14 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
     events, submit_warnings = collapse_submits(events)
     warnings.extend(submit_warnings)
 
+    # PL-117 item 1: a sign-in saves nothing in the destination, so it is compiled exactly as
+    # PL-112's "Nothing gets saved": no step is a commit and no step carries an inferred landing
+    # check. `sign-in-finished` is the only proof that the sign-in finished. The teaching screen
+    # still sends the click a person would have picked; it is ignored here, so an older panel and
+    # a newer compiler cannot disagree about what a sign-in writes.
+    if options.sign_in:
+        options = replace(options, commit_step_ids=[], commit_assertions={})
+
     candidates, candidate_warnings = to_candidates(events, options)
     warnings.extend(candidate_warnings)
     _refuse_what_cannot_replay(events, candidates)

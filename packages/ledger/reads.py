@@ -27,6 +27,7 @@ from .models import (
     RunListRow,
     RunningRunRow,
     RunSummaryRow,
+    RunTaskRow,
     SpreadsheetRow,
     TaskListRow,
     TransitionRow,
@@ -293,6 +294,8 @@ _LIST_NEEDS_HELP = """
 SELECT rr.id AS record_id, rr.run_id,
        coalesce(rv.recipe -> 'meta' ->> 'name', w.name) AS task_name,
        rr.record_key AS "row", rr.state::text AS state, rr.reason, rr.commit_attempted,
+       coalesce(rv.recipe -> 'meta' -> 'allowed_origins' ->> 0, w.allowed_origins[1]) AS app,
+       w.sign_in,
        coalesce(entered.at, rr.created_at) AS entered_at
 FROM run_records rr
 JOIN runs ru ON ru.id = rr.run_id
@@ -503,6 +506,27 @@ def list_needs_help(
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(_LIST_NEEDS_HELP, {"tenant": tenant_id})
         return [_row(NeedsHelpRow, row) for row in cur.fetchall()]
+
+
+# PL-117: the words one run page needs about the task behind it. The site is the recipe's first
+# allowed origin (the workflow's configured origin for a version that predates the field), exactly
+# as the Tasks list reads it, so a page can name the same site a card does.
+_RUN_TASK = """
+SELECT coalesce(rv.recipe -> 'meta' -> 'allowed_origins' ->> 0, w.allowed_origins[1]) AS app,
+       w.sign_in
+FROM runs ru
+JOIN recipe_versions rv ON rv.id = ru.recipe_version_id
+JOIN workflows w ON w.id = ru.workflow_id
+WHERE ru.id = %(run)s
+"""
+
+
+def run_task_words(conn: psycopg.Connection, run_id: uuid.UUID) -> RunTaskRow | None:
+    """PL-117: the site and sign-in flag for one run, or None when the run has no task."""
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(_RUN_TASK, {"run": run_id})
+        row = cur.fetchone()
+    return _row(RunTaskRow, row) if row is not None else None
 
 
 def list_running_runs(
@@ -763,6 +787,7 @@ __all__ = [
     "FALLBACK_MANUAL_SECONDS_PER_ROW",
     "RunClaim",
     "RunListRow",
+    "RunTaskRow",
     "RunTimeRow",
     "SpreadsheetRow",
     "TaskListRow",
@@ -785,6 +810,7 @@ __all__ = [
     "run_blocking",
     "run_of_record",
     "run_summary",
+    "run_task_words",
     "week_counts",
     "week_manual_seconds",
     "window_run_seconds",

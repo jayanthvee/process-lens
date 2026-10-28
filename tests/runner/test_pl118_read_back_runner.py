@@ -90,7 +90,7 @@ def test_a_read_back_that_holds_is_verified_with_a_committed_key(
     base, run_id = _edit_run(seed)
     scripted = ScriptedRun.build(
         conditions={"save": True},
-        condition_observed={
+        condition_observations={
             "save": {"read_back": [{"label": "Sales price", "value": "$ 799.00", "matched": True}]}
         },
     )
@@ -113,7 +113,7 @@ def test_a_read_back_that_still_shows_the_old_value_parks_with_the_plain_sentenc
     scripted = ScriptedRun.build(
         plan={"save": "no_commit"},
         conditions={"save": False},
-        condition_observed={
+        condition_observations={
             "save": {"read_back": [{"label": "Sales price", "value": "910", "matched": False}]}
         },
     )

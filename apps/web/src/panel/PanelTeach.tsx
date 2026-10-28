@@ -271,8 +271,10 @@ export function PanelTeach(): JSX.Element {
         // PL-107: the person chooses which click saves; "" is "Nothing gets saved", which
         // compiles a read-only recipe (no commit step). PL-118: the sentinel is the app's own
         // save when the form is left, and the compiler builds its leave/re-open commit.
-        commitStepId: selfSave || commitStepId === "" ? null : commitStepId,
-        saveByItself: selfSave,
+        // PL-117: a sign-in saves nothing, so it never sends a commit choice at all.
+        commitStepId:
+          status.signIn === true || selfSave || commitStepId === "" ? null : commitStepId,
+        saveByItself: selfSave && status.signIn !== true,
       });
       if (values.length === 0) {
         // No column to key on: every Run once carries a fresh id, so the ledger sees new work.
@@ -294,7 +296,9 @@ export function PanelTeach(): JSX.Element {
       });
       if (!compiled.ok) {
         setProblem(
-          compileRefusalSentence(compiled.problems, events, { nothingSaved: commitStepId === "" }),
+          compileRefusalSentence(compiled.problems, events, {
+            nothingSaved: status.signIn === true || commitStepId === "",
+          }),
         );
         setNote(null);
         return;
@@ -495,7 +499,12 @@ export function PanelTeach(): JSX.Element {
         </ol>
       )}
 
-      {clickChoices.length === 0 && !selfSaveOffered ? null : (
+      {events.length === 0 ? null : status.signIn === true ? (
+        // PL-117: a sign-in saves nothing, so there is no save click to offer or send.
+        <div className="panel-commit">
+          <p className="panel-note">A sign-in saves nothing.</p>
+        </div>
+      ) : clickChoices.length === 0 && !selfSaveOffered ? null : (
         <div className="panel-commit">
           {!changingCommit ? (
             <p className="panel-note">

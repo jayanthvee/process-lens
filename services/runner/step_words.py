@@ -19,7 +19,7 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
-from .check_words import MAX_SENTENCE, describe_check
+from .check_words import MAX_SENTENCE, describe_check, landing_words
 from .templates import TemplateError, render
 
 # PL-097: the extension's phrases, matched case-insensitively. They are not an enum -- the
@@ -110,17 +110,34 @@ def describe_wait_failure(
     step: Mapping[str, Any],
     row: Mapping[str, Any],
     variables: Mapping[str, Any],
+    *,
+    code_page: bool | None = None,
 ) -> str:
-    """Plain words for a wait step that never saw what it waited for (PL-113 S2).
+    """Plain words for a wait step that never saw what it waited for (PL-113 S2, PL-117 item 2).
 
     A sign-in's wait is the row's proof that the person is signed in, so its failure says exactly
-    that: ``Sign-in didn't finish:`` and then what the page never showed, in the same words a
-    commit's failed check uses. Any other wait names its own step.
+    that. When the page the wait was checked on still has the code prompt, the sentence names the
+    code page; otherwise it names the page the sign-in never reached. The landing comes from the
+    wait's own pattern (``/home(?:/.*)?$`` -> ``the home page``), never from the regex itself.
+
+    Any other wait names its own step. A ``url_matches`` check says the page did not move on;
+    PL-117 item 4 keeps the pattern, its slashes and the word URL off the screen.
     """
     condition = step.get("condition")
-    detail = describe_check(condition if isinstance(condition, Mapping) else {}, row, variables)
+    mapping = condition if isinstance(condition, Mapping) else {}
     if _is_sign_in_step(step):
-        return _fit(f"Sign-in didn't finish: {detail}")
+        pattern = mapping.get("url_matches")
+        if not isinstance(pattern, str):
+            detail = describe_check(mapping, row, variables, step_name=_step_name(step))
+            return _fit(f"The sign-in didn't finish: {detail}")
+        if code_page is False:
+            landing = landing_words(pattern)
+            if landing is not None:
+                return _fit(f"The sign-in didn't finish: the site never reached {landing}.")
+        return _fit("The sign-in didn't finish: the site never got past the code page.")
+    detail = describe_check(mapping, row, variables, step_name=_step_name(step))
+    if detail.startswith("The page didn't move on"):
+        return _fit(f"{detail}.")
     return _fit(f"Step “{_step_name(step)}” didn't finish: {detail}")
 
 

@@ -72,6 +72,10 @@ class NeedsHelpEntry(BaseModel):
     state: str
     reason: str | None
     commit_attempted: bool
+    # PL-117: the task's site, for the destination tick's words, and whether the task is a sign-in
+    # (a sign-in row has no destination tick and no Dismiss at all).
+    app: str | None = None
+    sign_in: bool = False
 
 
 class RunningEntry(BaseModel):
@@ -165,6 +169,8 @@ def _needs_help(rows: list[NeedsHelpRow]) -> list[NeedsHelpEntry]:
             state=row.state,
             reason=row.reason,
             commit_attempted=row.commit_attempted,
+            app=row.app,
+            sign_in=row.sign_in,
         )
         for row in rows
     ]

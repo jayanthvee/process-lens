@@ -41,6 +41,8 @@ import {
 import {
   armAbandonGuard as armGuard,
   disarmAbandonGuard as disarmGuard,
+  guardArmed,
+  resetAbandonGuard,
 } from "../executor/abandon-guard";
 import { resolverExpression } from "../executor/ladder";
 import { evaluate } from "../executor/page";
@@ -584,6 +586,13 @@ function commandStorage(): SessionDeps["storage"] {
  */
 let commandCdpToken: CdpTransport | null = null;
 let commandCdpTabId: number | null = null;
+/**
+ * PL-117 item 5: the detach a quiet spell started, while Chrome is still processing it. A command
+ * that arrives in that window waits for it before attaching, so the two never cross.
+ */
+let debuggerRelease: Promise<void> | null = null;
+/** PL-117: whether the quiet-spell detach dropped a guard that the next command must re-arm. */
+let commandGuardWasArmed = false;
 /** The bound tab's frame contexts, re-learnt on every fresh attach (PL-018b). */
 let commandFrames = new FrameContexts();
 /** The browser-detach listener for the bound tab, or null when no session holds the debugger. */
@@ -621,6 +630,9 @@ function watchCommandDebugger(tabId: number): void {
 }
 
 async function ensureDebugger(tabId: number): Promise<CdpTransport> {
+  // PL-117: an idle release may still be in flight; attaching now and detaching after it would
+  // tear the new command's debugger down mid-step.
+  if (debuggerRelease !== null) await debuggerRelease;
   if (commandCdpToken && commandCdpTabId === tabId) {
     watchCommandDebugger(tabId);
     return commandCdpToken;
@@ -657,12 +669,24 @@ async function ensureDebugger(tabId: number): Promise<CdpTransport> {
 /** Drop the debugger. The next command attaches again. */
 async function releaseDebugger(): Promise<void> {
   // Remove the listener BEFORE detaching: our own detach fires it, and a session going idle must
-  // not be told the browser detached it.
+  // not be told the browser detached it (PL-117: the same rule covers the quiet-spell release).
   stopCommandDetachWatch();
   const tabId = commandCdpTabId;
   commandCdpTabId = null;
   commandCdpToken = null;
-  if (tabId !== null) await detachDebugger(tabId);
+  // PL-117: a detach drops the abandon guard's CDP listeners. Remember it was armed so the next
+  // command can put it back, and clear the module's flag so arming really installs it again.
+  commandGuardWasArmed = tabId !== null && guardArmed();
+  if (commandGuardWasArmed) resetAbandonGuard();
+  if (tabId === null) return;
+  let tracked: Promise<void>;
+  tracked = detachDebugger(tabId)
+    .catch(() => undefined)
+    .finally(() => {
+      if (debuggerRelease === tracked) debuggerRelease = null;
+    });
+  debuggerRelease = tracked;
+  await tracked;
 }
 
 /**
@@ -795,6 +819,23 @@ async function probeWallForCheck(
 }
 
 /**
+ * PL-117 item 2: is the page still asking for a one-time code?
+ *
+ * The same probe the code-entry path already uses, read on its own so a failed sign-in wait can tell
+ * "stuck on the code page" from "stuck somewhere else". A probe that throws answers `undefined`:
+ * the runner then keeps its own sentence rather than guessing.
+ */
+async function probeCodePage(cdp: CdpTransport): Promise<boolean | undefined> {
+  try {
+    const probe = `(${codePromptInPage.toString()})({}).found === true`;
+    const found = await evaluate(cdp, probe, {});
+    return found === true;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Evaluate one `check` command's condition against the bound tab.
  *
  * B1: a check that could not be evaluated is a *refusal*, not a "no". Returning `false` for a
@@ -871,10 +912,18 @@ async function checkCommandCondition(
     if (outcome.ok) return { ok: true, passed: true, ...extra };
     // C3: the condition was evaluated and did not hold. A wall under the answer explains it, so ask
     // the page before reporting the "no". The reply still carries `passed: false` either way.
+    // PL-117: the same look records whether a one-time-code prompt is still there, so a sign-in
+    // wait that timed out can say it never got past the code page.
     const wall = await probeWallForCheck(cdp);
-    return wall
-      ? { ok: true, passed: false, event: wall.event, eventDetail: wall.detail, ...extra }
-      : { ok: true, passed: false, ...extra };
+    const wall = await probeWallForCheck(cdp);
+    const codePage = await probeCodePage(cdp);
+    return {
+      ok: true,
+      passed: false,
+      ...(wall ? { event: wall.event, eventDetail: wall.detail } : {}),
+      ...(codePage === undefined ? {} : { codePage }),
+      ...extra,
+    };
   } catch (error) {
     // The attach failed, the evaluate threw, or the condition is one the executor does not
     // understand: none of those is a page that said "no".
@@ -1035,6 +1084,25 @@ function getCommandSession(): CommandSession {
     // PL-026: the one call the extension makes for the version check. The session decides when
     // (every time it reaches `ready`); this decides where and as whom.
     reportVersion: () => void reportExtensionVersion(),
+    // PL-117 item 5: a run's steps arrive back to back; a pause or the end of a run leaves the
+    // session quiet. The quiet spell lets the debugger go, and the next command (Resume, Try again,
+    // Go ahead) holds it again before its step runs.
+    setTimeout: (fn: () => void, ms: number) => {
+      const id = setTimeout(fn, ms);
+      return () => clearTimeout(id);
+    },
+    wakeDebugger: async () => {
+      const tabId = commandBoundTabId;
+      if (tabId === null || tabId < 0) return;
+      const cdp = await ensureDebugger(tabId);
+      // PL-117: the quiet spell detached the debugger, which also removes the abandon guard's CDP
+      // listeners. Put it back before the next step, so a resumed run keeps its protection.
+      if (commandGuardWasArmed) {
+        commandGuardWasArmed = false;
+        await armGuard(cdp);
+      }
+    },
+    releaseDebugger: () => releaseDebugger(),
     onState: (state: SessionState) => {
       commandSessionState = state;
       broadcastCommandSession();
