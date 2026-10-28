@@ -48,9 +48,7 @@ def _options(**overrides: Any) -> CompileOptions:
 
 def _search_events(search_value: str) -> list[dict[str, Any]]:
     fill = action_event(1, "fill", "fill", SEARCH, value=search_value, url=LIST, step_id="fill-1")
-    suggestion = action_event(
-        2, "click", "click", SUGGESTION, url=LIST, step_id="click-1"
-    )
+    suggestion = action_event(2, "click", "click", SUGGESTION, url=LIST, step_id="click-1")
     fill["step"]["name"] = "Fill Search..."
     suggestion["step"]["name"] = "Click Search Product for: Oak Standing Desk"
     return [fill, suggestion, *_open_and_change()]
@@ -98,7 +96,11 @@ def test_clicking_the_card_without_a_search_finds_it_by_the_rows_value() -> None
     result = compile_recording(recording, _options())
     steps = result.recipe["steps"]
     card = next(
-        step for step in steps if step["action"] == "click" and step["targets"] == [
+        step
+        for step in steps
+        if step["action"] == "click"
+        and step["targets"]
+        == [
             {"by": "role", "role": "generic", "name": "{{row.product}}"},
             {"by": "css", "selector": "main > div > span"},
         ]
@@ -117,8 +119,7 @@ def test_a_lower_case_search_with_a_trailing_space_still_names_the_card() -> Non
     card = next(
         step
         for step in steps
-        if step["action"] == "click"
-        and step["targets"][0].get("name") == "{{row.product}}"
+        if step["action"] == "click" and step["targets"][0].get("name") == "{{row.product}}"
     )
     assert card["targets"][0] == {"by": "role", "role": "generic", "name": "{{row.product}}"}
     assert card["intent"] == "open the product found by {{row.product}}"

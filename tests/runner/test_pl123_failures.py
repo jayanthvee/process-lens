@@ -75,9 +75,7 @@ class StubModel:
 class BackPage(FakeExecutor):
     """A wide window: the back arrow's CSS fails, and the breadcrumb is the found element."""
 
-    def perform(
-        self, command: StepCommand, on_dispatched: Any = None
-    ) -> StepResult:
+    def perform(self, command: StepCommand, on_dispatched: Any = None) -> StepResult:
         if any(rung.get("by") == "snap" for rung in command.step.get("targets", [])):
             return StepResult(status="ok", rung=0)
         return super().perform(command, on_dispatched)
@@ -117,9 +115,7 @@ def test_the_back_control_is_found_by_its_intent_when_the_css_misses(
         cur.execute(
             "UPDATE tenants SET data_policy = %s WHERE id = %s",
             (
-                psycopg.types.json.Jsonb(
-                    {"pii_providers": ["deepseek"], "synthetic_only": True}
-                ),
+                psycopg.types.json.Jsonb({"pii_providers": ["deepseek"], "synthetic_only": True}),
                 base.tenant_id,
             ),
         )
@@ -146,7 +142,7 @@ def test_the_back_control_is_found_by_its_intent_when_the_css_misses(
         executor=page,
         reconciler=destination.reconciler,
         clock=destination.clock,
-        finder=TargetFinder(conn, AiService(conn, client=stub)),
+        finder=TargetFinder(conn, AiService(conn, client=stub, model="deepseek-flash")),
     )
 
     assert worker.run_once() is True

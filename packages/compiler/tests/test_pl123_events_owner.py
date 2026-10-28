@@ -15,11 +15,7 @@ from typing import Any
 from packages.compiler import CompileOptions, compile_recording
 
 FIXTURE = (
-    Path(__file__).resolve().parents[3]
-    / "tests"
-    / "fixtures"
-    / "owner"
-    / "events_enroll.json"
+    Path(__file__).resolve().parents[3] / "tests" / "fixtures" / "owner" / "events_enroll.json"
 )
 LIST = "http://localhost:8069/odoo/events"
 EVENT = "http://localhost:8069/odoo/events/1"
@@ -173,9 +169,10 @@ def test_the_events_fixture_compiles_to_the_owners_six_steps() -> None:
     assert steps[0]["action"] == "navigate"
     assert steps[0]["url"] == LIST
     event_click = next(
-        step for step in steps if step["action"] == "click" and step.get("targets") == [
-            {"by": "text_fuzzy", "value": "{{row.event}}"}
-        ]
+        step
+        for step in steps
+        if step["action"] == "click"
+        and step.get("targets") == [{"by": "text_fuzzy", "value": "{{row.event}}"}]
     )
     assert event_click["intent"] == "open the event found by {{row.event}}"
     attendees_click = next(
@@ -249,11 +246,11 @@ def test_a_create_looks_for_the_email_before_new() -> None:
     ), before
     assert any(
         step["action"] == "branch"
-        and step["when"]["element_present"]["targets"] == [
-            {"by": "text_fuzzy", "value": "{{row.email}}"}
-        ]
+        and step["when"]["element_present"]["targets"]
+        == [{"by": "text_fuzzy", "value": "{{row.email}}"}]
         for step in before
     ), before
+
 
 BREADCRUMB = [{"by": "role", "role": "link", "name": "Attendees"}]
 

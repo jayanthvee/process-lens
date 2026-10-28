@@ -115,6 +115,7 @@ def compile_recipe(request: CompileRequest) -> CompileResponse:
         recipe=result.recipe, warnings=result.warnings, search_kind=result.search_kind
     )
 
+
 class CleanRecordingBody(BaseModel):
     """The panel's Stop body: the recording it just captured."""
 
@@ -202,7 +203,6 @@ def clean_recording(body: CleanRecordingBody) -> CleanRecordingResponse:
     return CleanRecordingResponse(
         available=True,
         steps=[
-            CleanedStep(id=step.id, keep=step.keep, intent=step.intent)
-            for step in result.steps
+            CleanedStep(id=step.id, keep=step.keep, intent=step.intent) for step in result.steps
         ],
     )

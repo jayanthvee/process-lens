@@ -628,9 +628,7 @@ def _in_place_save_shape(candidates: list[Candidate]) -> dict[str, Any] | None:
     return None
 
 
-def _new_form_landing(
-    url: str, timeout_ms: int
-) -> dict[str, Any] | None:
+def _new_form_landing(url: str, timeout_ms: int) -> dict[str, Any] | None:
     """The saved page a ``/new`` form must land on, with every id left open.
 
     PL-059's pattern generalises the form's own last segment. A new attendee sits under an event
@@ -685,8 +683,7 @@ def _create_leave_commit(
         if candidate.action != "click":
             continue
         if _is_back_click(candidate) or (
-            candidate.after_url
-            and urlsplit(candidate.after_url).path.rstrip("/") != new_path
+            candidate.after_url and urlsplit(candidate.after_url).path.rstrip("/") != new_path
         ):
             leave_index = index
     if leave_index is None:
@@ -735,9 +732,7 @@ def _in_place_save_commit(
         candidates[fills[-1]],
     )
     read_back = _read_back_assertion(read_fill, options)
-    landing = _new_form_landing(
-        candidates[shape["last_new"]].url, options.assertion_timeout_ms
-    )
+    landing = _new_form_landing(candidates[shape["last_new"]].url, options.assertion_timeout_ms)
     if read_back is None or landing is None:
         warnings.append(
             "the app saved this new form in place, but the saved page cannot be read back; "
@@ -781,17 +776,14 @@ def _duplicate_search_bodies(
     a hit ends the row as already there (skipped), never as a second attendee.
     """
     if not options.duplicate_check or not any(
-        _email_column(candidate, options)
-        for candidate in candidates
-        if candidate.action == "fill"
+        _email_column(candidate, options) for candidate in candidates if candidate.action == "fill"
     ):
         return {}
     # A recording that already searches the destination does not need a second search.
     if any(
         candidate.action == "fill"
         and any(
-            str(rung.get("role", "")).lower() == "searchbox"
-            for rung in candidate.targets or []
+            str(rung.get("role", "")).lower() == "searchbox" for rung in candidate.targets or []
         )
         for candidate in candidates
     ):
@@ -836,9 +828,7 @@ def _duplicate_search_bodies(
             "name": "Skip a row whose email is already registered",
             "when": {
                 "element_present": {
-                    "targets": [
-                        {"by": "text_fuzzy", "value": f"{{{{row.{column}}}}}"}
-                    ],
+                    "targets": [{"by": "text_fuzzy", "value": f"{{{{row.{column}}}}}"}],
                     "intent": "the attendee with this email address",
                 }
             },
@@ -2344,9 +2334,7 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
     else:
         parameterized, tab_warnings = _drop_tab_clicks(parameterized)
         warnings.extend(tab_warnings)
-        if in_place_shape is not None and not any(
-            candidate.commit for candidate in parameterized
-        ):
+        if in_place_shape is not None and not any(candidate.commit for candidate in parameterized):
             self_save_checked = _in_place_save_commit(
                 parameterized, options, warnings, shape=in_place_shape
             )

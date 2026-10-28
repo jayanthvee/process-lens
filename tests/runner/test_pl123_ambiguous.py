@@ -65,15 +65,22 @@ def test_the_same_rule_holds_when_the_ambiguous_click_is_the_commit(
     make_worker: Callable[..., Worker],
     conn: psycopg.Connection,
 ) -> None:
-    base = seed(recipe(STEPS[:2] + [
-        {
-            "id": "save",
-            "action": "click",
-            "commit": True,
-            "assert_after": {"text_visible": "Saved", "timeout_ms": 8000},
-            "targets": [{"by": "role", "role": "generic", "name": "{{row.product}}"}],
-        }
-    ], record_key="{{row.product}}", idempotency_key="{{row.product}}"))
+    base = seed(
+        recipe(
+            STEPS[:2]
+            + [
+                {
+                    "id": "save",
+                    "action": "click",
+                    "commit": True,
+                    "assert_after": {"text_visible": "Saved", "timeout_ms": 8000},
+                    "targets": [{"by": "role", "role": "generic", "name": "{{row.product}}"}],
+                }
+            ],
+            record_key="{{row.product}}",
+            idempotency_key="{{row.product}}",
+        )
+    )
     base.add_input_record(key="Standing Desk", product="Standing Desk", email="a@x.com")
     run_id = base.create_run()
     scripted = ScriptedRun.build(plan={"open-product": "ok", "save": "ambiguous"})

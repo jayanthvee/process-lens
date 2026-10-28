@@ -128,6 +128,6 @@ def test_a_dropped_step_never_becomes_a_step_or_the_leave() -> None:
     names = [step.get("name") or "" for step in result.recipe["steps"]]
     assert not any("All Apps" in name for name in names), names
     assert any(step.get("commit") for step in result.recipe["steps"]), result.recipe["steps"]
-    assert not any(
-        step.get("id") == "end-record-unchecked" for step in result.recipe["steps"]
-    ), result.recipe["steps"]
+    assert not any(step.get("id") == "end-record-unchecked" for step in result.recipe["steps"]), (
+        result.recipe["steps"]
+    )
