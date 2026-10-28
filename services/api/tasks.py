@@ -21,7 +21,7 @@ import psycopg
 from fastapi import APIRouter, Body, HTTPException
 from pydantic import BaseModel, Field
 
-from packages.ledger import BatchRow, insert_batch
+from packages.ledger import BatchRow, insert_batch, workflow_has_open_run
 from services.runner.creation import CreationError, create_run
 
 from .admin import require_runs_allowed
@@ -42,6 +42,14 @@ RETURNING id
 _UPDATE_WORKFLOW_SIGN_IN = """
 UPDATE workflows SET sign_in = %s, sign_in_column = %s WHERE id = %s
 """
+
+_SELECT_TASK_REMOVAL = "SELECT removed_at FROM workflows WHERE id = %s"
+
+_SET_TASK_REMOVED = """
+UPDATE workflows SET removed_at = now() WHERE id = %s AND removed_at IS NULL
+"""
+
+_CLEAR_TASK_REMOVED = "UPDATE workflows SET removed_at = NULL WHERE id = %s"
 
 
 class CreateTaskRequest(BaseModel):
@@ -65,6 +73,13 @@ class CreateTaskResponse(BaseModel):
     recipe_version_id: uuid.UUID
 
 
+class TaskRemovalResponse(BaseModel):
+    """A task's place in the list after Remove or Undo: hidden, or listed again."""
+
+    workflow_id: uuid.UUID
+    removed: bool
+
+
 class RunOnceRequest(BaseModel):
     """The Chrome that should drive this one-row run, and optionally the row itself.
 
@@ -84,6 +99,7 @@ class RunOnceResponse(BaseModel):
 
 
 NEEDS_A_SPREADSHEET = "This task needs a spreadsheet."
+STOP_THE_RUN_FIRST = "Stop its run first."
 # PL-112, T1 review: a run-once row's record key is a fresh id, so it can never repeat and the
 # committed-keys guard has nothing to compare. Only a task that saves nothing (a sign-in) may be
 # run that way, and then only with the one address its own column holds.
@@ -176,6 +192,47 @@ def create_task(payload: Annotated[CreateTaskRequest, Body()]) -> CreateTaskResp
     if stored is None:  # pragma: no cover - the workflow was created in this same transaction
         raise HTTPException(status_code=404, detail=f"workflow {workflow_id} does not exist")
     return CreateTaskResponse(workflow_id=workflow_id, recipe_version_id=stored["id"])
+
+
+@router.post("/tasks/{workflow_id}/remove", response_model=TaskRemovalResponse)
+def remove_task(workflow_id: uuid.UUID) -> TaskRemovalResponse:
+    """Remove a task from every list, without deleting what it made.
+
+    The task's row is marked with ``removed_at``; its recipe versions, runs, records,
+    ``committed_keys`` and step events stay exactly as they were, so a past run still shows under
+    its name. Removing an already removed task is a no-op, not an error. A task with a run that is
+    queued, running or paused is refused: that run still has outcomes to record, and it needs its
+    task. Restoring clears the mark (PL-120).
+    """
+    with connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(_SELECT_TASK_REMOVAL, (workflow_id,))
+            row = cur.fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"task {workflow_id} does not exist")
+        if row[0] is None:
+            if workflow_has_open_run(conn, workflow_id):
+                raise HTTPException(status_code=409, detail=STOP_THE_RUN_FIRST)
+            with conn.cursor() as cur:
+                cur.execute(_SET_TASK_REMOVED, (workflow_id,))
+        conn.commit()
+    return TaskRemovalResponse(workflow_id=workflow_id, removed=True)
+
+
+@router.post("/tasks/{workflow_id}/restore", response_model=TaskRemovalResponse)
+def restore_task(workflow_id: uuid.UUID) -> TaskRemovalResponse:
+    """Put a removed task back in the lists; restoring one that is listed is a no-op."""
+    with connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(_SELECT_TASK_REMOVAL, (workflow_id,))
+            row = cur.fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"task {workflow_id} does not exist")
+        if row[0] is not None:
+            with conn.cursor() as cur:
+                cur.execute(_CLEAR_TASK_REMOVED, (workflow_id,))
+        conn.commit()
+    return TaskRemovalResponse(workflow_id=workflow_id, removed=False)
 
 
 def sign_in_row(task: dict[str, Any], values: dict[str, Any] | None) -> dict[str, str]:
@@ -276,6 +333,8 @@ __all__ = [
     "ONE_EMAIL_ONLY",
     "RunOnceRequest",
     "RunOnceResponse",
+    "STOP_THE_RUN_FIRST",
+    "TaskRemovalResponse",
     "VALUES_NOT_FOR_THIS_TASK",
     "destination_key_of",
     "router",

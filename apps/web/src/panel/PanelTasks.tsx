@@ -31,6 +31,14 @@ import {
   signInEmails,
 } from "./signInEmails";
 
+/** PL-120: how long the Undo line stays after a card leaves the list. */
+const UNDO_MS = 10_000;
+
+/** PL-120: the question a task asks before it leaves the list. */
+function removeQuestion(name: string): string {
+  return `Remove "${name}" from the list? Its past runs stay.`;
+}
+
 export function PanelTasks(): JSX.Element {
   const navigate = useNavigate();
   const tasks = useJson<TaskRow[]>("/api/v1/tasks");
@@ -42,6 +50,13 @@ export function PanelTasks(): JSX.Element {
   const [selected, setSelected] = useState<Record<string, string>>({});
   const [another, setAnother] = useState<Record<string, string>>({});
   const [rowProblems, setRowProblems] = useState<Record<string, string>>({});
+  // PL-120: a removed task is hidden at once, and its Undo stays on screen for a moment.
+  const [confirming, setConfirming] = useState<string | null>(null);
+  const [hidden, setHidden] = useState<string[]>([]);
+  const [lastRemoved, setLastRemoved] = useState<{ workflow_id: string; name: string } | null>(
+    null,
+  );
+  const [undoProblem, setUndoProblem] = useState<string | null>(null);
 
   useEffect(() => {
     const storage = extensionChrome()?.storage?.local;
@@ -77,6 +92,46 @@ export function PanelTasks(): JSX.Element {
       else next[task.workflow_id] = message;
       return next;
     });
+  }
+
+  useEffect(() => {
+    if (lastRemoved === null) return;
+    const timer = window.setTimeout(() => setLastRemoved(null), UNDO_MS);
+    return () => window.clearTimeout(timer);
+  }, [lastRemoved]);
+
+  function askRemove(task: TaskRow): void {
+    setConfirming(task.workflow_id);
+    setRowProblem(task, null);
+  }
+
+  async function removeTask(task: TaskRow): Promise<void> {
+    setConfirming(null);
+    try {
+      await apiPost(`/api/v1/tasks/${task.workflow_id}/remove`);
+      setHidden((current) =>
+        current.includes(task.workflow_id) ? current : [...current, task.workflow_id],
+      );
+      setLastRemoved({ workflow_id: task.workflow_id, name: task.name });
+      setUndoProblem(null);
+      setRowProblem(task, null);
+    } catch (failure) {
+      // The API's sentence stays on the task's own card (a 409 says "Stop its run first.").
+      setRowProblem(task, errorText(failure));
+    }
+  }
+
+  async function undo(): Promise<void> {
+    if (lastRemoved === null) return;
+    const target = lastRemoved;
+    try {
+      await apiPost(`/api/v1/tasks/${target.workflow_id}/restore`);
+      setHidden((current) => current.filter((id) => id !== target.workflow_id));
+      setLastRemoved(null);
+      setUndoProblem(null);
+    } catch (failure) {
+      setUndoProblem(errorText(failure));
+    }
   }
 
   async function runOnce(task: TaskRow): Promise<void> {
@@ -179,6 +234,8 @@ export function PanelTasks(): JSX.Element {
     return <p className="panel-note">{tasks.error ?? "Loading your tasks…"}</p>;
   }
 
+  const visible = rows.filter((task) => !hidden.includes(task.workflow_id));
+
   if (rows.length === 0) {
     return (
       <div className="panel-empty">
@@ -198,8 +255,21 @@ export function PanelTasks(): JSX.Element {
           {problem}
         </p>
       )}
+      {lastRemoved === null ? null : (
+        <p className="panel-note panel-removed" role="status">
+          Removed "{lastRemoved.name}".{" "}
+          <button type="button" className="panel-undo" onClick={() => void undo()}>
+            Undo
+          </button>
+        </p>
+      )}
+      {undoProblem === null ? null : (
+        <p className="panel-problem" role="status">
+          {undoProblem}
+        </p>
+      )}
       <ul className="panel-list">
-        {rows.map((task) => {
+        {visible.map((task) => {
           const inputs = task.inputs ?? [];
           const message = codeProblem(task);
           // PL-115 item 2: a placeholder name reads as "Untitled task · <site>". Renaming is not
@@ -210,6 +280,7 @@ export function PanelTasks(): JSX.Element {
           const title = taskTitleWords(task.name, task.app);
           const classes = ["panel-task"];
           if (task.sign_in === true) classes.push("panel-task-signin");
+          const question = removeQuestion(task.name);
           return (
             <li className={classes.join(" ")} key={task.workflow_id}>
               <div className="panel-task-text">
@@ -264,11 +335,6 @@ export function PanelTasks(): JSX.Element {
                   >
                     Run
                   </button>
-                  {rowProblems[task.workflow_id] === undefined ? null : (
-                    <p className="panel-problem" role="status">
-                      {rowProblems[task.workflow_id]}
-                    </p>
-                  )}
                   {message?.sentence === undefined ? null : (
                     <p className="panel-problem" role="status">
                       {message.sentence}
@@ -301,6 +367,37 @@ export function PanelTasks(): JSX.Element {
                 <Link className="btn quiet" to={`/tasks/${task.workflow_id}/run`}>
                   Run with a spreadsheet
                 </Link>
+              )}
+              <button
+                type="button"
+                className="btn quiet panel-task-remove"
+                onClick={() => askRemove(task)}
+              >
+                Remove
+              </button>
+              {confirming === task.workflow_id ? (
+                <div className="panel-confirm" role="alertdialog" aria-label={question}>
+                  <p className="panel-note">{question}</p>
+                  <button
+                    type="button"
+                    className="btn primary"
+                    onClick={() => void removeTask(task)}
+                  >
+                    Remove
+                  </button>
+                  <button
+                    type="button"
+                    className="btn quiet"
+                    onClick={() => setConfirming(null)}
+                  >
+                    Keep it
+                  </button>
+                </div>
+              ) : null}
+              {rowProblems[task.workflow_id] === undefined ? null : (
+                <p className="panel-problem" role="status">
+                  {rowProblems[task.workflow_id]}
+                </p>
               )}
             </li>
           );
