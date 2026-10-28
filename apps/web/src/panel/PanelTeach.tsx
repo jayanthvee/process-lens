@@ -11,12 +11,17 @@ import { useEffect, useState } from "react";
 
 import { apiConfig } from "../lib/api";
 import {
+  SAVE_BY_ITSELF,
+  SAVE_BY_ITSELF_CHOICE,
   compileRecording,
+  defaultCommitChoice,
   defaultCommitStepId,
   defaultRecordKeyColumn,
+  hasSaveClick,
   makeRecipeRequest,
   recordedValues,
   saveTask,
+  updateDetected,
 } from "../../../extension/src/popup/make-recipe";
 import {
   FIX_LABEL,
@@ -56,12 +61,14 @@ interface RecorderMessage {
 const NO_EVENTS =
   "Nothing has been recorded yet. Stop teaching first, then save it as a task.";
 
+// PL-118 item 5: the name box starts as "<site> task" (or empty), never as a previous
+// recording's name. "Recorded on <host>" was the old wording the ticket calls out.
 function defaultName(events: RecordedEvent[]): string {
   try {
     const host = new URL(events[0]?.url ?? "").hostname;
-    return host.length > 0 ? `Recorded on ${host}` : "Recorded task";
+    return host.length > 0 ? `${host} task` : "";
   } catch {
-    return "Recorded task";
+    return "";
   }
 }
 
@@ -77,12 +84,19 @@ export function PanelTeach(): JSX.Element {
   const [status, setStatus] = useState<RecorderStatus>({ ...EMPTY_STATUS });
   const [events, setEvents] = useState<RecordedEvent[]>([]);
   const [name, setName] = useState("");
+  // PL-118 item 5: a name the person typed survives a refresh; a suggested name follows the
+  // site until they touch it. Start over clears it, so a previous recording's name never returns.
+  const [nameEdited, setNameEdited] = useState(false);
+  // PL-118 item 5: Start over asks first, on this screen, before it throws steps away.
+  const [confirmingOver, setConfirmingOver] = useState(false);
   const [keyColumn, setKeyColumn] = useState("");
   const [saving, setSaving] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
-  // PL-107: which recorded click saves the work; "" is "Nothing gets saved".
+  // PL-107: which recorded click saves the work; "" is "Nothing gets saved"; the PL-118 sentinel
+  // means the app saves by itself when the form is left.
   const [commitStepId, setCommitStepId] = useState("");
+  const [commitEdited, setCommitEdited] = useState(false);
   // PL-109 item 5/6: the decision is shown, and "Change" opens the question only when asked.
   const [changingKey, setChangingKey] = useState(false);
   const [changingCommit, setChangingCommit] = useState(false);
@@ -116,8 +130,9 @@ export function PanelTeach(): JSX.Element {
     if (next.status !== undefined) setStatus(next.status);
     if (Array.isArray(next.events)) {
       setEvents(next.events);
+      setConfirmingOver(false);
       setName((current) =>
-        current.trim() === "" ? defaultName(next.events) : current,
+        nameEdited && current.trim() !== "" ? current : defaultName(next.events),
       );
     }
   }
@@ -162,21 +177,28 @@ export function PanelTeach(): JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [events]);
 
-  // The save choice follows the recording: the last click until the person picks another.
+  // The save choice follows the recording: the app's own save when it has no Save click, else the
+  // last click, until the person picks another.
   useEffect(() => {
-    const fallback = defaultCommitStepId(events) ?? "";
     setCommitStepId((current) =>
-      clickChoices.some((choice) => choice.id === current) ? current : fallback,
+      commitEdited
+        ? current
+        : status.signIn === true
+          ? defaultCommitStepId(events) ?? ""
+          : defaultCommitChoice(events),
     );
-    // Only re-derive on a new recording; a deliberate "Nothing gets saved" is kept until then.
+    // Only re-derive on a new recording or a sign-in decision; a deliberate answer is kept.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [events]);
+  }, [events, status.signIn]);
 
+  /**
+   * Start (or continue) teaching. PL-118 item 5: this never clears. A stopped recording is kept
+   * and Continue teaching adds to it; throwing it away is Start over's explicit, confirmed job.
+   */
   async function start(): Promise<void> {
     setProblem(null);
     setNote(null);
-    // PL-107: a new teaching starts empty, never adding to the last recording.
-    apply(await send({ type: "record:clear" }));
+    setConfirmingOver(false);
     const chrome = extensionChrome();
     const tabs = await chrome?.tabs?.query({ active: true, currentWindow: true });
     const tabId = tabs?.[0]?.id;
@@ -202,15 +224,24 @@ export function PanelTeach(): JSX.Element {
     apply(answer);
   }
 
+  /** PL-118 item 5: Start over asks on this screen before the steps are thrown away. */
+  function askStartOver(): void {
+    setProblem(null);
+    setNote(null);
+    setConfirmingOver(true);
+  }
+
   /**
    * PL-103: a step that cannot be repeated offers Start over, which is the popup's Clear: the
    * recording is emptied so the person teaches it again from the start, on the list this time.
+   * Only the confirmed yes reaches here.
    */
   async function startOver(): Promise<void> {
-    setProblem(null);
-    setNote(null);
+    setConfirmingOver(false);
     const answer = await send({ type: "record:clear" });
     apply(answer);
+    setName("");
+    setNameEdited(false);
   }
 
   async function save(): Promise<void> {
@@ -233,12 +264,15 @@ export function PanelTeach(): JSX.Element {
     setProblem(null);
     setNote("Turning your recording into a task…");
     try {
+      const selfSave = commitStepId === SAVE_BY_ITSELF;
       const request = makeRecipeRequest(events, {
         name: trimmed,
         recordKeyColumn: keyColumn,
         // PL-107: the person chooses which click saves; "" is "Nothing gets saved", which
-        // compiles a read-only recipe (no commit step). The last click stays the default.
-        commitStepId: commitStepId === "" ? null : commitStepId,
+        // compiles a read-only recipe (no commit step). PL-118: the sentinel is the app's own
+        // save when the form is left, and the compiler builds its leave/re-open commit.
+        commitStepId: selfSave || commitStepId === "" ? null : commitStepId,
+        saveByItself: selfSave,
       });
       if (values.length === 0) {
         // No column to key on: every Run once carries a fresh id, so the ledger sees new work.
@@ -291,6 +325,7 @@ export function PanelTeach(): JSX.Element {
       }
       setNote(`${trimmed} is ready. It is in Tasks.`);
       setName(trimmed);
+      setNameEdited(true);
     } catch (failure) {
       setProblem(failure instanceof Error ? failure.message : "Could not reach ProcessLens.");
       setNote(null);
@@ -300,6 +335,15 @@ export function PanelTeach(): JSX.Element {
   }
 
   const lines = stepLines(events);
+  // PL-118 item 2: the app's own save is offered whenever the recording has no Save click. A
+  // sign-in saves nothing (PL-113 S2), so it is never offered there.
+  const selfSaveOffered =
+    events.length > 0 && status.signIn !== true && !hasSaveClick(events);
+  // PL-118 item 4: an edit's key line names the key column and the exact change.
+  const isUpdate = updateDetected(events, keyColumn);
+  // PL-118 item 5: the count is the lines the person sees; a code typed for them is named, not
+  // counted as a step.
+  const hiddenCodeSteps = status.code?.state === "typed" ? 1 : 0;
   // PL-109 item 5/6: the labels the decisions name.
   const keyLabel = values.find((value) => value.column === keyColumn)?.label ?? keyColumn;
   const commitLabel =
@@ -334,21 +378,48 @@ export function PanelTeach(): JSX.Element {
         Do the job once in your browser. ProcessLens watches, then you save it as a task.
       </p>
       <div className="panel-actions">
-        <button type="button" className="btn primary" disabled={recording} onClick={() => void start()}>
-          Start teaching
+        <button
+          type="button"
+          className="btn primary"
+          disabled={recording}
+          onClick={() => void start()}
+        >
+          {!recording && lines.length > 0 ? "Continue teaching" : "Start teaching"}
         </button>
         <button type="button" className="btn quiet" disabled={!recording} onClick={() => void stop()}>
           Stop
         </button>
         {lines.length > 0 && !recording ? (
-          <button type="button" className="btn quiet" onClick={() => void startOver()}>
+          <button type="button" className="btn quiet" onClick={askStartOver}>
             Start over
           </button>
         ) : null}
       </div>
+      {confirmingOver ? (
+        <div className="panel-confirm" role="alertdialog" aria-label="Throw away these steps?">
+          <p className="panel-note">Throw away these {lines.length} steps?</p>
+          <button
+            type="button"
+            className="btn primary"
+            onClick={() => void startOver()}
+          >
+            Yes
+          </button>
+          <button
+            type="button"
+            className="btn quiet"
+            onClick={() => setConfirmingOver(false)}
+          >
+            Keep them
+          </button>
+        </div>
+      ) : null}
       <p className="panel-count">
-        {status.count} step{status.count === 1 ? "" : "s"} recorded
+        {lines.length} step{lines.length === 1 ? "" : "s"} recorded
       </p>
+      {hiddenCodeSteps > 0 ? (
+        <p className="panel-note">+{hiddenCodeSteps} hidden code step</p>
+      ) : null}
       {status.warning === null ? null : (
         <p className="panel-problem" role="status">
           {status.warning}
@@ -424,12 +495,14 @@ export function PanelTeach(): JSX.Element {
         </ol>
       )}
 
-      {clickChoices.length === 0 ? null : (
+      {clickChoices.length === 0 && !selfSaveOffered ? null : (
         <div className="panel-commit">
           {!changingCommit ? (
             <p className="panel-note">
               {commitStepId === "" ? (
                 <>Nothing gets saved.</>
+              ) : commitStepId === SAVE_BY_ITSELF ? (
+                <>{SAVE_BY_ITSELF_CHOICE}.</>
               ) : (
                 <>
                   The <b>{commitLabel}</b> click saves your work.
@@ -446,9 +519,9 @@ export function PanelTeach(): JSX.Element {
             </p>
           ) : (
             <>
-              {clickChoices.length === 0 ? (
-                // PL-113 item 2: no click in the recording changes data. Say so plainly instead
-                // of letting a tab or a link stand in for the save.
+              {selfSaveOffered ? (
+                // PL-113 item 2 / PL-118 item 2: no click in the recording changes data. Say so
+                // plainly and offer the app's own save instead of letting a tab stand in.
                 <p className="panel-note">
                   We didn't see a Save click. Some apps save by themselves. Click Save while
                   teaching, or choose how your work is saved.
@@ -463,6 +536,7 @@ export function PanelTeach(): JSX.Element {
                 value={commitStepId}
                 onChange={(event) => {
                   setCommitStepId(event.target.value);
+                  setCommitEdited(true);
                   // PL-112: an old refusal was about the old answer; it is no longer true.
                   setProblem(null);
                 }}
@@ -472,6 +546,9 @@ export function PanelTeach(): JSX.Element {
                     {choice.label}
                   </option>
                 ))}
+                {selfSaveOffered ? (
+                  <option value={SAVE_BY_ITSELF}>{SAVE_BY_ITSELF_CHOICE}</option>
+                ) : null}
                 <option value="">Nothing gets saved</option>
               </select>
             </>
@@ -491,7 +568,10 @@ export function PanelTeach(): JSX.Element {
           placeholder="New lead"
           autoComplete="off"
           spellCheck={false}
-          onChange={(event) => setName(event.target.value)}
+          onChange={(event) => {
+            setName(event.target.value);
+            setNameEdited(true);
+          }}
         />
         {/* PL-116: a sign-in runs with one email; the duplicate-key line describes a spreadsheet
             task and is noise here. The key is still worked out and sent on save, unchanged. A
@@ -501,7 +581,16 @@ export function PanelTeach(): JSX.Element {
           <div className="panel-key">
             {keyColumn !== "" && !changingKey ? (
               <p className="panel-note">
-                We'll use <b>{keyLabel}</b> so nothing gets added twice.{" "}
+                {isUpdate ? (
+                  <>
+                    We'll skip a row if this <b>{keyLabel.toLowerCase()}</b> already got this
+                    exact change.{" "}
+                  </>
+                ) : (
+                  <>
+                    We'll use <b>{keyLabel}</b> so nothing gets added twice.{" "}
+                  </>
+                )}
                 <button
                   type="button"
                   className="panel-change"

@@ -190,7 +190,9 @@ function render(status: RecorderStatus): void {
   statusWarning = status.warning ?? null;
   stateEl.textContent = recordingWords(recording ? "recording" : "idle");
   stateEl.dataset["state"] = status.state;
-  countEl.textContent = stepCountWords(status.count);
+  countEl.textContent = `${stepCountWords(status.count)}${
+    status.code?.state === "typed" ? " · +1 hidden code step" : ""
+  }`;
   streamEl.textContent = streamWords(status.wsUrl, status.wsConnected);
   startButton.disabled = recording;
   stopButton.disabled = !recording;

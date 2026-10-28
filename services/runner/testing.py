@@ -117,6 +117,7 @@ class FakeExecutor:
         conditions: Mapping[str, bool] | None = None,
         lost: Iterable[str] = (),
         condition_statuses: Mapping[str, str] | None = None,
+        condition_observed: Mapping[str, dict[str, Any]] | None = None,
         confirmation: ConfirmationProbe = "unsupported",
     ) -> None:
         self.destination = destination
@@ -124,6 +125,7 @@ class FakeExecutor:
         self.conditions = dict(conditions or {})
         self.lost = set(lost)
         self.condition_statuses = dict(condition_statuses or {})
+        self.condition_observed = dict(condition_observed or {})
         self.confirmation = confirmation
         self.commands: list[StepCommand] = []
         self.prepared: list[StepCommand] = []
@@ -234,7 +236,20 @@ class FakeExecutor:
         status = self._status(step_id, record_key)
         if status != "ok":
             return ConditionResult(passed=False, status=status)  # type: ignore[arg-type]
-        return ConditionResult(passed=self._condition(step_id, record_key))
+        return ConditionResult(
+            passed=self._condition(step_id, record_key),
+            observed=self._observed(step_id, record_key),
+        )
+
+    def _observed(self, step_id: str | None, record_key: str | None) -> dict[str, Any]:
+        """What the page showed with this condition, scripted per step (PL-118)."""
+        if step_id is None:
+            return {}
+        if record_key is not None:
+            key = f"{record_key}:{step_id}"
+            if key in self.condition_observed:
+                return dict(self.condition_observed[key])
+        return dict(self.condition_observed.get(step_id, {}))
 
     def _status(self, step_id: str | None, record_key: str | None) -> str:
         """The scripted answer status (R1 tests use ``lost`` and ``refused``)."""
@@ -339,6 +354,7 @@ class ScriptedRun:
         errors: Iterable[str] = (),
         crash_at: Iterable[str] = (),
         condition_statuses: Mapping[str, str] | None = None,
+        condition_observed: Mapping[str, dict[str, Any]] | None = None,
         confirmation: ConfirmationProbe = "unsupported",
         events: Iterable[tuple[str, str]] = (),
     ) -> ScriptedRun:
@@ -350,6 +366,7 @@ class ScriptedRun:
                 plan=plan,
                 conditions=conditions,
                 condition_statuses=condition_statuses,
+                condition_observed=condition_observed,
                 confirmation=confirmation,
             ),
             reconciler=FakeReconciler(destination, ambiguous=ambiguous, errors=errors),

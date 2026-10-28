@@ -30,7 +30,7 @@ import {
 import { RunControl } from "../executor/control";
 import { runRecipe, validateRecipe } from "../executor/executor";
 import { FrameContexts } from "../executor/frames";
-import { waitForCondition } from "../executor/assertions";
+import { readValueEquals, waitForCondition } from "../executor/assertions";
 import {
   POLICY_BLOCKED_MESSAGE,
   checkChallengeOrLogin,
@@ -844,13 +844,37 @@ async function checkCommandCondition(
     if (outcome.unanswered === true) {
       return { ok: false, reason: outcome.reason ?? "the condition could not be evaluated" };
     }
-    if (outcome.ok) return { ok: true, passed: true };
+    // PL-118: a read-back is useful whether it passed or not: the try card says what the page
+    // actually kept. The value is the page's own, never the row's file value.
+    let observed: Record<string, unknown> = {};
+    const conditionRecord = condition as Record<string, unknown> | null;
+    const readsAValue =
+      conditionRecord !== null &&
+      typeof conditionRecord === "object" &&
+      "value_equals" in conditionRecord;
+    if (readsAValue) {
+      try {
+        const read = await readValueEquals(
+          cdp,
+          condition as Condition,
+          { resolverSource: resolverExpression() },
+        );
+        if (read !== null) {
+          observed = { read_back: [{ ...read, matched: outcome.ok }] };
+        }
+      } catch {
+        // A page that will not give the value back simply has no read-back to show; the answer
+        // itself is unchanged.
+      }
+    }
+    const extra = Object.keys(observed).length === 0 ? {} : { observed };
+    if (outcome.ok) return { ok: true, passed: true, ...extra };
     // C3: the condition was evaluated and did not hold. A wall under the answer explains it, so ask
     // the page before reporting the "no". The reply still carries `passed: false` either way.
     const wall = await probeWallForCheck(cdp);
     return wall
-      ? { ok: true, passed: false, event: wall.event, eventDetail: wall.detail }
-      : { ok: true, passed: false };
+      ? { ok: true, passed: false, event: wall.event, eventDetail: wall.detail, ...extra }
+      : { ok: true, passed: false, ...extra };
   } catch (error) {
     // The attach failed, the evaluate threw, or the condition is one the executor does not
     // understand: none of those is a page that said "no".

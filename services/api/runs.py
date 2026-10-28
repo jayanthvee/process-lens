@@ -147,6 +147,14 @@ class RunDetail(BaseModel):
     waiting_behind: WaitingBehind | None = None
 
 
+class ReadBackEntry(BaseModel):
+    """One changed field, as the page itself showed it after a try (PL-118)."""
+
+    label: str
+    value: str
+    matched: bool
+
+
 class RecordDetail(BaseModel):
     id: uuid.UUID
     run_id: uuid.UUID
@@ -161,6 +169,9 @@ class RecordDetail(BaseModel):
     destination_ref: str | None
     # PL-113 S3: the step's own raw error, for support, under the row. Never a value from the row.
     last_step_error: str | None = None
+    # PL-118 item 3: each changed field read back from the page after the try. This is the page's
+    # own value, never the row's file value, so a try never shows the file as if it were the result.
+    read_back: list[ReadBackEntry] = Field(default_factory=list)
 
 
 class TransitionDetail(BaseModel):
@@ -366,6 +377,7 @@ def list_records_endpoint(run_id: uuid.UUID) -> list[RecordDetail]:
         _fetch_run(conn, run_id)
         records = reads.list_run_records(conn, run_id)
         errors = reads.latest_step_errors(conn, [record.id for record in records])
+        read_backs = reads.latest_read_backs(conn, [record.id for record in records])
     return [
         RecordDetail(
             id=record.id,
@@ -380,6 +392,7 @@ def list_records_endpoint(run_id: uuid.UUID) -> list[RecordDetail]:
             commit_attempted=record.commit_attempted,
             destination_ref=record.destination_ref,
             last_step_error=errors.get(record.id),
+            read_back=read_backs.get(record.id, []),
         )
         for record in records
     ]

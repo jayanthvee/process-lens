@@ -58,6 +58,13 @@ CHROME_ROLES = frozenset(
 # PL-113 S2: how long a sign-in wait gives the code email to arrive.
 SIGN_IN_WAIT_MS = 90_000
 
+# PL-118 item 1: the sentence a row is left with when the compiler cannot build a read-back. It
+# is the same sentence the runner parks a failed read-back with.
+READ_BACK_UNKNOWN_REASON = "ProcessLens couldn't confirm the change was saved."
+# PL-118 item 2: the keys an app's own save shortcut sends. A press of one of these after the
+# change is a leave: it is kept as the step that saves, and the read-back runs afterwards.
+SAVE_SHORTCUT_KEYS = frozenset({"Control+Enter", "Meta+Enter"})
+
 
 @dataclass
 class CompileOptions:
@@ -93,6 +100,9 @@ class CompileOptions:
     # Done before the code page had even loaded.
     sign_in: bool = False
     sign_in_after_path: str | None = None
+    # PL-118: the person chose "The app saves by itself when I leave the page". The commit leaves
+    # the form as they did and then re-opens the item, where the changed value is read back.
+    save_by_itself: bool = False
 
 
 @dataclass
@@ -1363,7 +1373,13 @@ def _already_matches_placement(
         if not candidate.commit:
             continue
         assertion = candidate.assert_after if isinstance(candidate.assert_after, dict) else {}
-        branch = _already_matches_branch(assertion.get("element_absent"))
+        control = assertion.get("element_absent")
+        if control is None and isinstance(candidate.observation, dict):
+            # PL-118: an edit's proof is now the value read back from the page, but the recorded
+            # observation still says the Save control was gone -- the PL-079 signal that there
+            # was nothing to save. Keep the skip branch when that signal is there.
+            control = candidate.observation.get("element_absent")
+        branch = _already_matches_branch(control)
         if branch is not None:
             return index, branch
     return None, None
@@ -1391,6 +1407,208 @@ def _update_columns(candidates: list[Candidate], search_run: int) -> list[str]:
         if isinstance(column, str) and column and column not in columns:
             columns.append(column)
     return columns
+
+
+def _is_record_page(url: str) -> bool:
+    """Whether a page's last path segment names one record (a number or a UUID)."""
+    path = urlsplit(url).path.rstrip("/")
+    if not path:
+        return False
+    tail = path.rsplit("/", 1)[-1]
+    return tail.isdigit() or _UUID.fullmatch(tail) is not None
+
+
+def _field_label(fill: Candidate) -> str | None:
+    """The changed field's own name, from the first rung that carries one."""
+    for rung in fill.targets or []:
+        if not isinstance(rung, dict):
+            continue
+        if rung.get("by") == "role" and isinstance(rung.get("name"), str):
+            name = rung["name"].strip()
+            if name:
+                return name
+        if rung.get("by") == "label" and isinstance(rung.get("text"), str):
+            text = rung["text"].strip()
+            if text:
+                return text
+        if rung.get("by") in ("testid", "text_fuzzy") and isinstance(rung.get("value"), str):
+            value = rung["value"].strip()
+            if value:
+                return value
+    return None
+
+
+def _read_back_assertion(fill: Candidate, options: CompileOptions) -> dict[str, Any] | None:
+    """A ``value_equals`` check that the changed field shows the row's value.
+
+    The selector is the field's own target ladder, so it reads the same control the demonstration
+    typed into. The value is the row's column, never the taught literal: a batch's second row has
+    a different price. A literal the sample row does not carry cannot be read back for every row,
+    so no assertion is built for it.
+    """
+    value = fill.value
+    if not isinstance(value, dict):
+        return None
+    if value.get("kind") != "input" or not isinstance(value.get("column"), str):
+        return None
+    if not value["column"] or not fill.targets:
+        return None
+    selector: dict[str, Any] = {"targets": [dict(rung) for rung in fill.targets]}
+    if fill.frame:
+        selector["frame"] = [dict(step) for step in fill.frame]
+    label = _field_label(fill)
+    if label is not None:
+        selector["description"] = label
+    return {
+        "value_equals": {
+            "selector": selector,
+            "value": dict(value),
+            # PL-118: a person reads "Sales Price" and a page may write "sales price"; the read-back
+            # compares text trimmed and without case. Numbers are compared as numbers by the
+            # executor, so "799" and "$ 799.00" are the same value.
+            "case_insensitive": True,
+        },
+        "timeout_ms": options.assertion_timeout_ms,
+    }
+
+
+def _edit_shape(candidates: list[Candidate], *, before: int | None = None) -> dict[str, Any] | None:
+    """The shape of an edit: the click that opened the item, its fills, and the leave.
+
+    ``open`` is the last click that landed on a record's own page (a numeric id or a UUID). The
+    changed fields are the parameterized fills after that click and on the same path. ``leave`` is
+    the first thing that took the person off the item's page: a click that moved the page (a
+    breadcrumb, the next item), a navigation, or the app's save shortcut (Control+Enter or
+    Meta+Enter) when one was recorded. A create never has this shape -- ``/new`` is not a record
+    page -- so today's create rules are untouched.
+    """
+    limit = len(candidates) if before is None else before
+    open_index: int | None = None
+    for index in range(limit):
+        candidate = candidates[index]
+        if candidate.action == "click" and _opens_a_record(candidate):
+            open_index = index
+    if open_index is None:
+        return None
+    record_url = candidates[open_index].after_url or ""
+    record_path = urlsplit(record_url).path.rstrip("/")
+    if not record_path:
+        return None
+    fills: list[int] = []
+    leave: int | None = None
+    for index in range(open_index + 1, limit):
+        candidate = candidates[index]
+        path = urlsplit(candidate.url).path.rstrip("/")
+        if path == record_path:
+            if (
+                candidate.action == "fill"
+                and isinstance(candidate.value, dict)
+                and candidate.value.get("kind") == "input"
+            ):
+                fills.append(index)
+            continue
+        if candidate.action == "navigate":
+            leave = index
+            break
+        if candidate.action == "press" and str(candidate.key or "") in SAVE_SHORTCUT_KEYS:
+            # "If none was recorded, use the app's save shortcut only if one was recorded."
+            leave = index
+            break
+        if (
+            candidate.action == "click"
+            and candidate.after_url
+            and candidate.after_url != candidate.url
+        ):
+            leave = index
+            break
+    return {"open": open_index, "record_path": record_path, "fills": fills, "leave": leave}
+
+
+def _self_save_commit(
+    candidates: list[Candidate], options: CompileOptions, warnings: list[str]
+) -> bool:
+    """Add (or mark) the commit for "the app saves by itself when I leave the page".
+
+    The person's own leave is kept as a step. The commit then re-opens the item with the click
+    that opened it during teaching, and its ``value_equals`` check reads the changed field on the
+    item's saved page. That is a click commit under the existing rules: write-ahead, reconcile,
+    verify_commit. A recording that never left the form proves nothing about a save, so the
+    compile says so and appends an ``end_record`` that parks every row -- it can never be Done.
+    """
+    shape = _edit_shape(candidates)
+    if shape is None or not shape["fills"]:
+        warnings.append(
+            "this recording changes no field on an existing item, so the app's own save cannot be "
+            "read back; every row will be left for you"
+        )
+        return False
+    last_fill = shape["fills"][-1]
+    assertion = _read_back_assertion(candidates[last_fill], options)
+    if assertion is None:
+        warnings.append(
+            "the value this recording changes is not one of the row's columns, so its saved "
+            "value cannot be read back; every row will be left for you"
+        )
+        return False
+    leave = shape["leave"]
+    if leave is None:
+        # Nothing left the form, so nothing shows what the app saved. Committing the fill itself
+        # would check the value the run just typed -- true whatever the app did. The compile says
+        # so instead, and every row is left for a person.
+        warnings.append(
+            "the recording ends on the form without leaving it, so nothing shows what the app "
+            "saved; every row will be left for you"
+        )
+        return False
+    # The item must be opened again to read the saved page. Reuse the recorded click that opened
+    # it: its ladder is the one the demonstration proved on this site. If the person already
+    # re-opened it after leaving, mark that click instead of adding a duplicate.
+    opener = candidates[shape["open"]]
+    signature = target_signature(opener.targets)
+    commit_index: int | None = None
+    for index in range(leave + 1, len(candidates)):
+        candidate = candidates[index]
+        if candidate.action == "click" and target_signature(candidate.targets) == signature:
+            commit_index = index
+            break
+    if commit_index is not None:
+        candidates[commit_index].commit = True
+        candidates[commit_index].assert_after = assertion
+    else:
+        candidates.append(
+            Candidate(
+                action="click",
+                targets=[dict(rung) for rung in opener.targets],
+                name=opener.name,
+                url=opener.url,
+                after_url=opener.after_url,
+                commit=True,
+                assert_after=assertion,
+                frame=opener.frame,
+            )
+        )
+    warnings.append(
+        "the app saves by itself when the page is left; the row is done only when the item's "
+        "saved page shows the new value"
+    )
+    return True
+
+
+def _read_back_for_commit(
+    candidates: list[Candidate], commit_index: int, options: CompileOptions
+) -> dict[str, Any] | None:
+    """The read-back for a commit that saves an edit (item 1).
+
+    The changed field is the last parameterized fill on the record's page before the commit. Its
+    selector is the field's own ladder, so the check reads the same control a person typed into.
+    """
+    shape = _edit_shape(candidates, before=commit_index)
+    if shape is None:
+        return None
+    fills = [index for index in shape["fills"] if index < commit_index]
+    if not fills:
+        return None
+    return _read_back_assertion(candidates[fills[-1]], options)
 
 
 def _resolve_commit_assertion(
@@ -1598,19 +1816,37 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
 
     parameterized = _expand_create_option(parameterized)
 
+    # PL-118 item 2: "The app saves by itself when I leave the page" has no recorded Save click,
+    # so its commit is added (or the click that re-opens the item is marked) before the compiler
+    # looks for the search. A task that cannot be checked says so and parks every row.
+    self_save_checked = True
+    if options.save_by_itself:
+        for candidate in parameterized:
+            candidate.commit = False
+        self_save_checked = _self_save_commit(parameterized, options, warnings)
+
     # PL-017: a search for a record's value is a fill followed by the step that runs it. A search
     # button submits its own form, so the recorder collapses it into a commit; it changes nothing in
     # the destination, so it is demoted before any assertion is required of it, and the branch that
     # reads its result goes straight after it.
-    search = detect_duplicate_search(candidates, options)
+    #
+    # The search detector reads the *unparameterized* candidates (the search fill is a literal
+    # there), so a self-save recording needs a commit in that list too: the recording does save,
+    # even though the person chose no click. The last step stands in for the commit the compiler
+    # just added; it is a copy, so the real candidates are untouched.
+    search_source = candidates
+    if options.save_by_itself and candidates:
+        search_source = [replace(candidate) for candidate in candidates]
+        search_source[-1].commit = True
+    search = detect_duplicate_search(search_source, options)
     # PL-077: which searched shape this is, decided from the recording rather than from whether the
     # person ticked the rule -- the form has to word its checkbox even when it is unticked.
     shape_search = search or detect_duplicate_search(
-        candidates, replace(options, duplicate_check=True)
+        search_source, replace(options, duplicate_check=True)
     )
     search_kind = (
         "update"
-        if shape_search is not None and detect_find_then_update(candidates, shape_search[0])
+        if shape_search is not None and detect_find_then_update(search_source, shape_search[0])
         else "create"
         if shape_search is not None
         else None
@@ -1678,7 +1914,19 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
             )
             is not None
         )
-        assert_after = _resolve_commit_assertion(candidate, options)
+        inferred_read_back = False
+        if options.save_by_itself and candidate.assert_after is not None:
+            # The saves-by-itself commit already carries the read-back the plan built.
+            assert_after = candidate.assert_after
+            inferred_read_back = True
+        elif not supplied:
+            assert_after = _read_back_for_commit(parameterized, index, options)
+            if assert_after is not None:
+                inferred_read_back = True
+            else:
+                assert_after = _resolve_commit_assertion(candidate, options)
+        else:
+            assert_after = _resolve_commit_assertion(candidate, options)
         inferred_from_new_page = False
         if assert_after is None and not candidate.after_url and candidate.action == "click":
             # PL-059: the save was sent from a "new" page and the person saw no navigation, so
@@ -1716,6 +1964,8 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
                 "the recording observed no confirmation and no navigation, and none was "
                 "supplied for it"
             )
+        elif inferred_read_back:
+            warnings.append("this save is checked by reading the changed value back from the page")
         elif supplied:
             warnings.append(
                 f"assertion for {candidate.recorded_id or candidate.seq} "
@@ -1804,6 +2054,18 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
                     "timeout_ms": SIGN_IN_WAIT_MS,
                 }
             )
+
+    # PL-118 item 1: no read-back means no row can ever be Done. The compiled task still shows
+    # the steps for review, but its last step parks every record with the ticket's sentence.
+    if options.save_by_itself and not self_save_checked:
+        recipe["steps"].append(
+            {
+                "id": "end-record-unchecked",
+                "action": "end_record",
+                "outcome": "parked",
+                "reason": READ_BACK_UNKNOWN_REASON,
+            }
+        )
 
     _fit_step_names(recipe.get("steps"))
     try:

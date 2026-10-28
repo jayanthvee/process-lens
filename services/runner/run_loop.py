@@ -153,6 +153,9 @@ UNANSWERED_CONDITION_REASON = "the browser could not answer a condition check"
 # PL-014 requirement 4: a confirmation already on the page proves nothing about this save.
 ALREADY_ON_PAGE_REASON = "the confirmation was already on the page before saving"
 UNKNOWN_CONFIRMATION_REASON = "could not tell whether the confirmation was already on the page"
+# PL-118: a commit checked by the value it changed could not see that value on the page. The
+# destination may still have taken the change, so a person checks it; the row is never Done.
+READ_BACK_FAILED_REASON = "ProcessLens couldn't confirm the change was saved."
 
 # The freshness probe asks "is it there now", so it polls once at the schema's own minimum.
 CONFIRMATION_PROBE_TIMEOUT_MS = 100
@@ -1136,6 +1139,12 @@ class RunLoop:
             return stopped
 
         if verdict.passed:
+            observed = dict(result.observed)
+            # PL-118: the page's own read-back travels with the step event, so the try card can
+            # show what the page kept. It is the page's value, never the row's file value.
+            read_back = verdict.observed.get("read_back")
+            if read_back is not None:
+                observed["read_back"] = read_back
             with conn.transaction():
                 verified = verify_commit(
                     conn,
@@ -1149,7 +1158,7 @@ class RunLoop:
                     record=record,
                     step_id=step["id"],
                     outcome="ok",
-                    observed=result.observed,
+                    observed=observed,
                     locator_rung=result.rung,
                 )
             if not verified.key_inserted:
@@ -1165,6 +1174,27 @@ class RunLoop:
                 return "duplicate"
             return "verified"
 
+        failed_observed: dict[str, Any] = {}
+        read_back = verdict.observed.get("read_back")
+        if read_back is not None:
+            failed_observed["read_back"] = read_back
+        if verdict.status == "ok" and "value_equals" in condition:
+            # PL-118: a read-back that the page answers "no" is a proven failure to show the
+            # change. The destination might still have it, so the row parks for a person to
+            # check -- it is never verified from a weaker check. Reconciling would search for a
+            # row that may not exist and could re-queue a change this page already refused.
+            self._transition(
+                conn,
+                record,
+                "submitted_unverified",
+                "reconciling",
+                "the page didn't show it saved",
+                step=step,
+                outcome="failed",
+                observed=failed_observed or None,
+            )
+            self._transition(conn, record, "reconciling", "parked", READ_BACK_FAILED_REASON)
+            return "parked"
         self._transition(
             conn,
             record,
@@ -1173,6 +1203,7 @@ class RunLoop:
             "the page didn't show it saved",
             step=step,
             outcome="failed",
+            observed=failed_observed or None,
         )
         return self._reconcile(
             conn,

@@ -77,6 +77,8 @@ export type CheckAnswer =
       event?: EventKind;
       /** The guard's readable reason, sent as the event's detail. */
       eventDetail?: string;
+      /** PL-118: what a `value_equals` check read from the page, for the try card. */
+      observed?: Record<string, unknown>;
     }
   | { ok: false; reason: string };
 
@@ -857,7 +859,8 @@ export class CommandSession {
               type: "condition",
               command_id: command.command_id,
               passed: answer.passed,
-              observed: {},
+              // PL-118: a read-back carries the page's own value, never the row's file value.
+              observed: answer.observed ?? {},
             });
           } else {
             // B1: a check that could not be evaluated is a REFUSAL, never a real "no". Reporting

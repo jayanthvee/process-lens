@@ -135,6 +135,44 @@ def latest_step_errors(
         return {row[0]: row[1] for row in cur.fetchall() if row[1]}
 
 
+def latest_read_backs(
+    conn: psycopg.Connection, record_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, list[dict[str, Any]]]:
+    """The latest page read-back each record has, for the try card (PL-118).
+
+    A read-back is the page's own value, kept on the commit step's ``observed`` payload. It is
+    exposed only through the run records the panel already reads; it is never logged and no row
+    value is written by this module. The latest step event wins, so a retried row shows its last
+    answer rather than an earlier one.
+    """
+    if not record_ids:
+        return {}
+    query = (
+        "SELECT DISTINCT ON (run_record_id) run_record_id, observed->'read_back' "
+        "FROM step_events WHERE run_record_id = ANY(%(records)s) "
+        "AND jsonb_typeof(observed->'read_back') = 'array' "
+        "ORDER BY run_record_id, id DESC"
+    )
+    found: dict[uuid.UUID, list[dict[str, Any]]] = {}
+    with conn.cursor() as cur:
+        cur.execute(query, {"records": record_ids})
+        for record_id, payload in cur.fetchall():
+            if not isinstance(payload, list):
+                continue
+            entries: list[dict[str, Any]] = []
+            for item in payload:
+                if not isinstance(item, dict):
+                    continue
+                label = item.get("label")
+                value = item.get("value")
+                matched = item.get("matched")
+                if isinstance(label, str) and isinstance(value, str) and isinstance(matched, bool):
+                    entries.append({"label": label, "value": value, "matched": matched})
+            if entries:
+                found[record_id] = entries
+    return found
+
+
 def list_transitions(
     conn: psycopg.Connection, run_id: uuid.UUID, *, after_id: int = 0
 ) -> list[TransitionRow]:
