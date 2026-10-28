@@ -193,7 +193,7 @@ describe("a sign-in task's row", () => {
     expect(JSON.stringify(storage)).toContain("picked@example.com");
   });
 
-  it("says no code arrived at the picked address", async () => {
+  it("says PL-119's sentence when no new code email arrived", async () => {
     stub.restore();
     stub = createFetchStub({
       "/api/v1/tasks": {
@@ -214,9 +214,10 @@ describe("a sign-in task's row", () => {
     renderTasks();
     await settle();
 
+    // PL-121: the row says exactly what the run page says, instead of blaming the inbox.
     expect(
       screen.getByText(
-        "No code arrived at a@example.com. Check that this inbox is signed in to Gmail in this Chrome, then press Try again.",
+        "No new code email arrived. If you already opened it in Gmail, ProcessLens can't see it — type the code here.",
       ),
     ).toBeTruthy();
   });

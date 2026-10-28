@@ -18,11 +18,11 @@ from decimal import Decimal
 from typing import Protocol
 
 DEFAULT_BASE_URL = "https://api.deepseek.com"
-DEFAULT_MODEL = "deepseek-flash"
-DEFAULT_ESCALATION_MODEL = "deepseek-v4-pro"
 
 # USD per 1,000,000 tokens, at DeepSeek's peak rates: (cache-miss input, output). Off-peak is half.
 # The ledger stores the cost this computes; the report states it is an estimate, not a bill.
+# The model names are the owner's to choose (``DEEPSEEK_MODEL``); this table is only the price list
+# for the two DeepSeek ids the trial's docs name, and an unknown id costs zero rather than guessing.
 PRICING_PER_MILLION: dict[str, tuple[Decimal, Decimal]] = {
     "deepseek-flash": (Decimal("0.30"), Decimal("1.20")),
     "deepseek-v4-pro": (Decimal("1.32"), Decimal("3.96")),
