@@ -59,8 +59,10 @@ Done.
 - `find_target` runs only on a miss, so a task that works costs nothing extra on later runs.
 - There is a cap per row (default: 6 calls). When it's reached, the row parks with "ProcessLens
   couldn't find '<intent>' on this page."
-- Model: `claude-haiku-5-5` first, escalating once to `claude-sonnet-5-5` when the answer fails a
-  gate. The trial measures the real cost per row, which goes in the report.
+- Model: DeepSeek's Flash model (owner's credits), set by `DEEPSEEK_MODEL`. One retry on
+  `DEEPSEEK_ESCALATION_MODEL` when the answer fails a gate, if that is set. The key is
+  `DEEPSEEK_API_KEY` in Render's `processlens-shared` group, so the API (teaching) and the runner
+  (runs) both have it. The trial measures the real cost per row, which goes in the report.
 
 ## How we know it works
 
