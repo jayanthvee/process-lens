@@ -7,7 +7,7 @@ schema is `ai_calls` in [0001_init.sql](../../db/migrations/0001_init.sql).
 ## The single entry point
 
 `services/ai` is the only code that imports a model SDK or holds a provider key ([ARCHITECTURE.md](ARCHITECTURE.md)).
-Its public module exposes exactly the six functions below. There is no generic prompt or completion function. Each
+Its public module exposes exactly the call types below. There is no generic prompt or completion function. Each
 call goes through the same pipeline, in this order:
 
 1. Validate the input against the call type's input schema.
@@ -20,7 +20,7 @@ call goes through the same pipeline, in this order:
 
 A caller cannot reach a model by any other path, and cannot receive output that skipped steps 4 and 5.
 
-## The six call types
+## The call types
 
 `task` is the value written to `ai_calls.task`. P-001 asks to restrict that column to these six values.
 
@@ -32,11 +32,13 @@ A caller cannot reach a model by any other path, and cannot receive output that 
 | `classify_ticket` | documents or api | Input preparation: each ticket | A category from the allowed list, confidence, reason | The category is in the allowed list; below threshold goes to review; the recipe's rules table maps category to team |
 | `map_value` | api | Input review: a value is not among the dropdown options | One option from the list, or `none` | The user confirms once; saved in `value_mappings` |
 | `propose_repair` | runner | Run: the locator ladder is exhausted | One target bundle for one step | Role matches the old fingerprint; not a destructive control; the user approves; the result is a new recipe version |
+| `clean_recording` | api (compiler) | Build: recording stops | Per recorded step: keep or drop, and a one-sentence intent | Code confirms only drops and names changed (no added step, no changed value); the person confirms the list (D-026) |
+| `find_target` | runner | Run: the ladder and `target_memory` don't give exactly one element | One element id from the page snapshot, or `not_here` | The id exists and is unique, its role fits the action, it is on an allowed origin, it isn't destructive unless the step allows it; `not_here` parks the record; never decides `verified` or `skipped` (D-026) |
 
 The table puts extraction and classification in input preparation, before the ledger row exists, so a record between
 claim and commit makes no model call. The design also lists `extract` and `classify` as runner steps. P-001 asks the
-owner to choose one. Until then, nothing calls a model between `claimed` and `verified` except `propose_repair`, which
-parks the record.
+owner to choose one. Between `claimed` and `verified`, a model is called only by `propose_repair`, which parks the record, and by
+`find_target` (D-026), which can only point at an element or park the record.
 
 ## Router and escalation cascade
 

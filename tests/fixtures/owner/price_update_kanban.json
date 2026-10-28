@@ -1,0 +1,250 @@
+{
+  "source": "owner price task, run 27a0adc9 on local Odoo 18, 2026-10-28 23:56 (Odoo product list in kanban view)",
+  "what_happened": "all 3 rows parked in 6 s: No search called ... was found (branch-1 looks for a table cell; the list showed cards). Self-save compiled end-record-unchecked: the back-button leave was not recognised after stray clicks (All Apps, tab strip, Close menu).",
+  "sheet": {
+    "columns": [
+      "Product",
+      "New Price"
+    ],
+    "rows": [
+      [
+        "Oak Standing Desk",
+        "799"
+      ],
+      [
+        "Mesh Task Chair",
+        "349"
+      ],
+      [
+        "Drafting Stool",
+        "199"
+      ]
+    ]
+  },
+  "recipe": {
+    "meta": {
+      "name": "pricetestoct27",
+      "record_key": "{{row.search | lower}}",
+      "when_to_use": "pricetestoct27",
+      "input_schema": {
+        "fields": {
+          "search": {
+            "type": "string",
+            "example": "Oak Standing Desk"
+          },
+          "sales_price": {
+            "type": "string",
+            "example": "400"
+          }
+        }
+      },
+      "allowed_origins": [
+        "http://localhost:8069"
+      ],
+      "approval_policy": {
+        "commit": "first_record"
+      },
+      "idempotency_key": "{{row.search | lower}}:{{row.sales_price}}"
+    },
+    "steps": [
+      {
+        "id": "navigate-1",
+        "url": "http://localhost:8069/odoo/products",
+        "name": "Open /odoo/",
+        "action": "navigate"
+      },
+      {
+        "id": "fill-1",
+        "name": "Fill Search...",
+        "value": {
+          "kind": "input",
+          "column": "search"
+        },
+        "action": "fill",
+        "targets": [
+          {
+            "by": "role",
+            "name": "Search...",
+            "role": "searchbox"
+          },
+          {
+            "by": "css",
+            "selector": "input.o_searchview_input.o_input.d-print-none"
+          },
+          {
+            "by": "text_fuzzy",
+            "value": "Search..."
+          }
+        ],
+        "clear_first": true
+      },
+      {
+        "id": "click-1",
+        "name": "Click Search Product for: Oak Standing Desk",
+        "action": "click",
+        "targets": [
+          {
+            "by": "role",
+            "name": "Search Product for: {{row.search}}",
+            "role": "listitem"
+          },
+          {
+            "by": "css",
+            "selector": "li.o_menu_item.dropdown-item.focus"
+          },
+          {
+            "by": "text_fuzzy",
+            "value": "Search Product for: {{row.search}}"
+          }
+        ]
+      },
+      {
+        "id": "branch-1",
+        "name": "Park a record when the search finds nothing",
+        "then": [
+          {
+            "id": "end-record-1",
+            "action": "end_record",
+            "reason": "No search called ‘{{row.search}}’ was found.",
+            "outcome": "parked"
+          }
+        ],
+        "when": {
+          "element_absent": {
+            "targets": [
+              {
+                "by": "role",
+                "name": "{{row.search | lower}}",
+                "role": "cell"
+              }
+            ]
+          }
+        },
+        "action": "branch"
+      },
+      {
+        "id": "click-2",
+        "name": "Click Oak Standing Desk",
+        "action": "click",
+        "targets": [
+          {
+            "by": "role",
+            "name": "{{row.search}}",
+            "role": "generic"
+          },
+          {
+            "by": "css",
+            "selector": "main > div:nth-of-type(1) > div > span"
+          },
+          {
+            "by": "text_fuzzy",
+            "value": "{{row.search}}"
+          }
+        ]
+      },
+      {
+        "id": "fill-2",
+        "name": "Fill Sales Price",
+        "value": {
+          "kind": "input",
+          "column": "sales_price"
+        },
+        "action": "fill",
+        "targets": [
+          {
+            "by": "role",
+            "name": "Sales Price",
+            "role": "textbox"
+          },
+          {
+            "by": "label",
+            "text": "Sales Price"
+          },
+          {
+            "by": "css",
+            "selector": "#list_price_0"
+          }
+        ],
+        "clear_first": true
+      },
+      {
+        "id": "click-3",
+        "name": "Click All Apps",
+        "action": "click",
+        "targets": [
+          {
+            "by": "role",
+            "name": "All Apps",
+            "role": "link"
+          },
+          {
+            "by": "css",
+            "selector": "a.btn"
+          },
+          {
+            "by": "text_fuzzy",
+            "value": "All Apps"
+          }
+        ]
+      },
+      {
+        "id": "click-4",
+        "name": "Click General InformationSalesInventory",
+        "action": "click",
+        "targets": [
+          {
+            "by": "role",
+            "name": "General InformationSalesInventory",
+            "role": "list"
+          },
+          {
+            "by": "css",
+            "selector": "ul.nav.nav-tabs.flex-row"
+          },
+          {
+            "by": "text_fuzzy",
+            "value": "General InformationSalesInventory"
+          }
+        ]
+      },
+      {
+        "id": "click-5",
+        "name": "Click Close menu",
+        "action": "click",
+        "targets": [
+          {
+            "by": "role",
+            "name": "Close menu",
+            "role": "button"
+          },
+          {
+            "by": "css",
+            "selector": "button.o_sidebar_close.oi.oi-close"
+          },
+          {
+            "by": "text_fuzzy",
+            "value": "Close menu"
+          }
+        ]
+      },
+      {
+        "id": "click-6",
+        "name": "Click button",
+        "action": "click",
+        "targets": [
+          {
+            "by": "css",
+            "selector": "button.o_back_button.btn.btn-link"
+          }
+        ]
+      },
+      {
+        "id": "end-record-unchecked",
+        "action": "end_record",
+        "reason": "ProcessLens couldn't confirm the change was saved.",
+        "outcome": "parked"
+      }
+    ],
+    "format_version": 1
+  }
+}
