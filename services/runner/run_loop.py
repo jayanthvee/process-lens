@@ -56,6 +56,7 @@ from packages.ledger import (
     RunClaim,
     StaleLease,
     StateConflict,
+    VerifyResult,
     begin_commit,
     change_state,
     claim_record,
@@ -247,6 +248,9 @@ class RunLoop:
         self._epoch = 0
         self._canary: uuid.UUID | None = None
         self._allowed_origins: tuple[str, ...] = ()
+        # PL-128: the run's recipe changes items that already exist (its key carries the values it
+        # writes). Such a change can be undone on the site, so the site decides, not the ledger.
+        self._updates_items = False
         self._deferred_events: list[tuple[str, str]] = []
         # PL-027: whether the record being processed actually drove the browser. A record parked by
         # a precheck rule never opened a page, so there is no half-filled form to guard.
@@ -280,6 +284,7 @@ class RunLoop:
         rules = _rules(meta)
         origins = meta.get("allowed_origins")
         self._allowed_origins = tuple(str(o) for o in origins) if isinstance(origins, list) else ()
+        self._updates_items = _updates_items(meta)
 
         # R6: never start a run whose lease could lapse mid-step: the heartbeat must outlive
         # three times the longest step in the recipe plus the dispatch budget.
@@ -291,7 +296,12 @@ class RunLoop:
             conn, run.id
         )
 
-        skip_already_committed(conn, run.id, run.destination_key)
+        # PL-128: an update is not skipped from the ledger. Its key says the price was set once, but
+        # the site can be changed back afterwards (the owner's own teaching set Oak Standing Desk to
+        # 100 after an earlier run set 7999), and skipping then leaves the wrong price in place.
+        # Setting a price the item already has is harmless, and the run reads it back.
+        if not self._updates_items:
+            skip_already_committed(conn, run.id, run.destination_key)
 
         # The ticket: after a takeover, reconcile EVERY commit-window record before claiming any
         # pending one. On a fresh run this is a no-op; after a crash or a resume it clears the
@@ -1124,6 +1134,7 @@ class RunLoop:
 
         # PL-014 item 4 (fresh confirmation), R1: only a definite "it is not there" may save.
         confirmation = step.get("assert_after")
+        probe: str | None = None
         if confirmation:
             probe = self._probe_confirmation(
                 confirmation,
@@ -1220,6 +1231,15 @@ class RunLoop:
                 )
                 return "failed"
         elif result.status == "not_dispatched":
+            # PL-128: the save could not be pressed, but the page may have saved it by itself in the
+            # meantime: Odoo saves a new form when its tab is hidden, and the owner's Events run
+            # found the Save button gone and the attendee already saved. The check answered "not
+            # there" just before this step, so the check passing now is this row's own save
+            # (PL-107 item 11: false before, true now) and never a confirmation left on screen.
+            if probe == "absent":
+                saved = self._saved_by_itself(conn, record, run, epoch, step, row, variables, box)
+                if saved is not None:
+                    return saved
             # L3: this worker knows no input event was sent.
             self._transition(
                 conn,
@@ -1302,7 +1322,7 @@ class RunLoop:
                     observed=observed,
                     locator_rung=_legal_rung(result.rung),
                 )
-            if not verified.key_inserted:
+            if self._duplicate(verified):
                 with conn.transaction():
                     set_run_status(
                         conn,
@@ -1440,6 +1460,85 @@ class RunLoop:
         )
         box.state = "reconciling"
         return self._reconcile(conn, record, run, epoch, step)
+
+    def _saved_by_itself(
+        self,
+        conn: psycopg.Connection,
+        record: RecordClaim,
+        run: RunClaim,
+        epoch: int,
+        step: Mapping[str, Any],
+        row: Mapping[str, Any],
+        variables: Mapping[str, Any],
+        box: _Box,
+    ) -> str | None:
+        """PL-128: a save that could not be pressed because the page had already saved the row.
+
+        Only called when the confirmation was definitely absent before this step, so the check
+        passing now is this row's save. The row ends through the commit window -- ``reconciling``
+        with the step's own check as the destination check, then ``verify_commit`` -- so its
+        ``committed_keys`` row is written exactly as for a pressed save. ``None`` when the check
+        does not pass: nothing proves the save, and the caller fails the row as before.
+        """
+        verdict = self._check(
+            step["assert_after"],
+            step_id=step.get("id"),
+            record_key=record.record_key,
+            row=row,
+            variables=variables,
+        )
+        stopped = self._drain_events(conn, record, run, epoch, box)
+        if stopped is not None:
+            return stopped
+        if not (verdict.passed and verdict.status == "ok"):
+            return None
+        self._transition(
+            conn,
+            record,
+            "submitting",
+            "reconciling",
+            "the page saved it by itself; checking the saved page",
+            step=step,
+            outcome="failed",
+        )
+        box.state = "reconciling"
+        observed: dict[str, Any] = {"saved_by_itself": True}
+        read_back = verdict.observed.get("read_back")
+        if read_back is not None:
+            observed["read_back"] = read_back
+        with conn.transaction():
+            verified = verify_commit(
+                conn,
+                record.id,
+                worker=self.worker_id,
+                epoch=epoch,
+                destination_ref=None,
+                reason="saved by the page and checked",
+            )
+            record_step_event(
+                conn, record=record, step_id=step["id"], outcome="ok", observed=observed
+            )
+        if self._duplicate(verified):
+            with conn.transaction():
+                set_run_status(
+                    conn,
+                    run.id,
+                    "paused",
+                    pause_reason="duplicate_detected",
+                    worker=self.worker_id,
+                    epoch=epoch,
+                )
+            return "duplicate"
+        return "verified"
+
+    def _duplicate(self, verified: VerifyResult) -> bool:
+        """L5: a key another record already committed is an incident -- for a create.
+
+        PL-128: an update's key can be committed again on purpose. The run was not skipped up front
+        (the site decides), so setting the same value again and reading it back is the expected
+        outcome, not a second copy of anything.
+        """
+        return not verified.key_inserted and not self._updates_items
 
     def _simple_step(
         self,
@@ -1688,7 +1787,7 @@ class RunLoop:
                         outcome="ok",
                         observed={"destination_ref": diff.destination_ref},
                     )
-            if not verified.key_inserted:
+            if self._duplicate(verified):
                 with conn.transaction():
                     set_run_status(
                         conn,
@@ -2448,6 +2547,17 @@ class RunLoop:
 
 
 # -- helpers the loop uses ------------------------------------------------
+
+
+def _updates_items(meta: Mapping[str, Any]) -> bool:
+    """PL-128: whether a recipe changes items that already exist.
+
+    The schema's rule: a create's idempotency key is its record key, and an update's adds the
+    values it writes (``{{row.product | lower}}:{{row.price}}``).
+    """
+    record_key = str(meta.get("record_key") or "").strip()
+    idempotency_key = str(meta.get("idempotency_key") or "").strip()
+    return bool(record_key) and bool(idempotency_key) and idempotency_key != record_key
 
 
 def _is_busy_failure(error: str | None) -> bool:
