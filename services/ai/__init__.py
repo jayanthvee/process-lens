@@ -7,8 +7,6 @@ function: a caller cannot reach a model except through :class:`AiService`.
 from __future__ import annotations
 
 from .client import (
-    DEFAULT_ESCALATION_MODEL,
-    DEFAULT_MODEL,
     DeepSeekClient,
     ModelCallError,
     ModelClient,
@@ -31,8 +29,6 @@ __all__ = [
     "CleanRecordingRequest",
     "CleanRecordingResult",
     "CleanStep",
-    "DEFAULT_ESCALATION_MODEL",
-    "DEFAULT_MODEL",
     "DeepSeekClient",
     "FindTargetRequest",
     "FindTargetResult",

@@ -30,7 +30,6 @@ import psycopg.types.json
 from psycopg.rows import dict_row
 
 from .client import (
-    DEFAULT_MODEL,
     DeepSeekClient,
     ModelCallError,
     ModelClient,
@@ -274,12 +273,15 @@ class AiService:
         conn: psycopg.Connection,
         *,
         client: ModelClient | None = None,
-        model: str = DEFAULT_MODEL,
+        model: str | None = None,
         escalation_model: str | None = None,
     ) -> None:
         self.conn = conn
         self.client = client
-        self.model = model or DEFAULT_MODEL
+        # The owner names the model (``DEEPSEEK_MODEL``). There is no default: a key without a
+        # model is as unavailable as no key at all, so a run never spends the owner's credit on a
+        # model they did not choose.
+        self.model = (model or "").strip() or None
         self.escalation_model = escalation_model
 
     @classmethod
@@ -288,12 +290,12 @@ class AiService:
         conn: psycopg.Connection,
         environ: Mapping[str, str] | None = None,
     ) -> AiService:
-        """Build the service from ``DEEPSEEK_*``. With no key, ``find_target`` is unavailable."""
+        """Build the service from ``DEEPSEEK_*``. With no key or no model, it is unavailable."""
         env = os.environ if environ is None else environ
         key = str(env.get("DEEPSEEK_API_KEY") or "").strip()
-        model = str(env.get("DEEPSEEK_MODEL") or "").strip() or DEFAULT_MODEL
+        model = str(env.get("DEEPSEEK_MODEL") or "").strip() or None
         escalation = str(env.get("DEEPSEEK_ESCALATION_MODEL") or "").strip() or None
-        client = DeepSeekClient(api_key=key) if key else None
+        client = DeepSeekClient(api_key=key) if key and model else None
         return cls(
             conn,
             client=client,
@@ -303,7 +305,7 @@ class AiService:
 
     @property
     def available(self) -> bool:
-        return self.client is not None
+        return self.client is not None and self.model is not None
 
     @property
     def provider(self) -> str:
@@ -422,16 +424,17 @@ class AiService:
         gate: Callable[[dict[str, Any]], str | None],
         personal: bool,
     ) -> _Outcome:
-        if self.client is None:
-            return _Outcome("unavailable", reason="no model client is configured")
+        if self.client is None or self.model is None:
+            return _Outcome("unavailable", reason="no model is configured")
         if not self._provider_allowed(tenant_id, personal=personal):
             return _Outcome(
                 "unavailable",
                 reason="the tenant's data policy does not allow this provider for this payload",
             )
 
-        models = [self.model]
-        if self.escalation_model and self.escalation_model != self.model:
+        primary = self.model
+        models = [primary]
+        if self.escalation_model and self.escalation_model != primary:
             models.append(self.escalation_model)
 
         user = json.dumps(redacted, ensure_ascii=False, sort_keys=True)

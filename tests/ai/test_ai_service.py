@@ -220,6 +220,44 @@ def test_no_key_is_unavailable_and_never_crashes(
     assert _call_rows(conn, tenant_id) == []
 
 
+def test_a_key_without_a_model_is_unavailable_and_makes_no_call(
+    conn: psycopg.Connection, tenant_id: uuid.UUID
+) -> None:
+    """The owner names the model. A key on its own does not pick one for them."""
+    service = AiService.from_env(conn, {"DEEPSEEK_API_KEY": "test-key"})
+
+    assert service.available is False
+    assert service.client is None
+
+    result = service.find_target(a_request(tenant_id))
+
+    assert result.status == "unavailable"
+    assert _call_rows(conn, tenant_id) == []
+
+
+def test_from_env_uses_the_model_names_it_is_given_and_no_others(
+    conn: psycopg.Connection,
+) -> None:
+    service = AiService.from_env(
+        conn, {"DEEPSEEK_API_KEY": "test-key", "DEEPSEEK_MODEL": "a-model"}
+    )
+
+    assert service.available is True
+    assert service.model == "a-model"
+    assert service.escalation_model is None
+
+    with_escalation = AiService.from_env(
+        conn,
+        {
+            "DEEPSEEK_API_KEY": "test-key",
+            "DEEPSEEK_MODEL": "a-model",
+            "DEEPSEEK_ESCALATION_MODEL": "a-stronger-model",
+        },
+    )
+
+    assert with_escalation.escalation_model == "a-stronger-model"
+
+
 def test_a_tenant_policy_that_does_not_allow_the_provider_is_unavailable(
     conn: psycopg.Connection,
 ) -> None:
