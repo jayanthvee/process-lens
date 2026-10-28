@@ -16,6 +16,8 @@ import {
   refusalWords,
   rowOutcome,
   runStatusWords,
+  signInTask,
+  withoutDismissAdvice,
 } from "../lib/words";
 import { EMPTY_COLUMN, fieldReading, matchedExample, taughtLine } from "../lib/fields";
 import { runsBlocked, useWorkspaceState } from "../lib/workspace";
@@ -388,13 +390,16 @@ export function TaskRun(): JSX.Element {
         : runStatusWords(run.data.status, session.data?.attached, run.data.counts);
 
   // The row's own gate for Try again / Skip it: the same one RunDetail uses, so a row that may
-  // already be saved still needs the destination check first.
+  // already be saved still needs the destination check first. A sign-in saves nothing, so its row
+  // offers Try again only (PL-117 item 2).
+  const signIn = signInTask(task?.name, task?.sign_in);
   const gate = actionGate({
     state: previewRow?.state ?? "",
     commitAttempted: previewRow?.commit_attempted === true,
     confirmed: rowConfirmed,
     operatorId: operator.data?.operator_id ?? null,
     operatorUnavailable: operator.error !== null,
+    signIn,
   });
 
   async function rowAct(action: "requeue" | "dismiss"): Promise<void> {
@@ -406,6 +411,7 @@ export function TaskRun(): JSX.Element {
         commitAttempted: previewRow.commit_attempted === true,
         confirmed: rowConfirmed,
         operatorId: operator.data?.operator_id ?? null,
+        signIn,
         reason: actionReason(action, previewRow.reason),
       });
       records.reload();
@@ -682,10 +688,16 @@ export function TaskRun(): JSX.Element {
                 </>
               ) : runDone && rowNeedsHelp && previewRow !== null ? (
                 <div className="run-row-help">
-                  <p className="run-note">{plainReason(previewRow.reason, previewRow.state)}</p>
+                  <p className="run-note">
+                    {plainReason(
+                      signIn ? withoutDismissAdvice(previewRow.reason) : previewRow.reason,
+                      previewRow.state,
+                    )}
+                  </p>
                   {gate.needsConfirmation ? (
                     <DestinationCheck
                       id="preview-row-check"
+                      app={task?.app}
                       checked={rowConfirmed}
                       onChange={setRowConfirmed}
                     />
@@ -698,14 +710,16 @@ export function TaskRun(): JSX.Element {
                   >
                     {recordActionLabel("requeue")}
                   </button>
-                  <button
-                    type="button"
-                    className="btn quiet"
-                    disabled={rowBusy || gate.disabled}
-                    onClick={() => void rowAct("dismiss")}
-                  >
-                    Skip it
-                  </button>
+                  {gate.dismiss ? (
+                    <button
+                      type="button"
+                      className="btn quiet"
+                      disabled={rowBusy || gate.disabled}
+                      onClick={() => void rowAct("dismiss")}
+                    >
+                      Skip it
+                    </button>
+                  ) : null}
                   {rowError === null ? null : (
                     <p className="refusal" role="status">
                       {rowError}

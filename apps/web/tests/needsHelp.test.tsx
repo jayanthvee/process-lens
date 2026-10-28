@@ -12,10 +12,10 @@ import { fireEvent } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import {
-  DESTINATION_CHECK_LABEL,
   actionBody,
   actionGate,
   actionReason,
+  destinationCheckLabel,
   recordActionLabel,
   recordActionPath,
   recordActions,
@@ -201,7 +201,7 @@ describe("the destination check gates a commit-attempted row on the page", () =>
     const box = checkbox(view.container);
     expect(box.checked).toBe(false);
     expect(view.container.querySelector(".destination-check-label")?.textContent).toBe(
-      DESTINATION_CHECK_LABEL,
+      destinationCheckLabel(),
     );
     // The reason for the box is next to it, in one sentence.
     expect(

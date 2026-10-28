@@ -209,6 +209,18 @@ class NeedsHelpRow:
     state: str
     reason: str | None
     commit_attempted: bool
+    # PL-117: the task's site (its first allowed origin) and whether it is a sign-in. The page's
+    # destination tick names the site, and a sign-in row has no tick and no Dismiss at all.
+    app: str | None = None
+    sign_in: bool = False
+
+
+@dataclass(frozen=True)
+class RunTaskRow:
+    """PL-117: the task words one run page needs -- its site and whether it is a sign-in."""
+
+    app: str | None
+    sign_in: bool
 
 
 @dataclass(frozen=True)

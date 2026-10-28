@@ -24,12 +24,14 @@ import {
   pauseReasonWords,
   plainReason,
   refusalWords,
+  signInTask,
   siteCapReached,
   siteCapWords,
   rowOutcome,
   runActions,
   runStatusWords,
   timeComparisonWords,
+  withoutDismissAdvice,
 } from "../lib/words";
 import type { ExecutorSession, OperatorInfo, RecordRow, RunDetail as RunDetailPayload } from "../types";
 import {
@@ -85,9 +87,11 @@ function stamp(iso: string | null | undefined): string | null {
  * filled in with a sentence that is not true about it. A row that needs a person always says
  * something, so the fallback belongs there and only there.
  */
-function reasonWords(row: RecordRow, needsHelp: boolean): string | null {
+function reasonWords(row: RecordRow, needsHelp: boolean, signIn: boolean): string | null {
   const written = (row.reason ?? "").trim();
-  if (written !== "") return plainReason(row.reason, row.state);
+  if (written !== "") {
+    return plainReason(signIn ? withoutDismissAdvice(row.reason) : row.reason, row.state);
+  }
   return needsHelp ? plainReason(null, row.state) : null;
 }
 
@@ -114,6 +118,9 @@ export function RunDetail({ panel = false }: { panel?: boolean } = {}): JSX.Elem
 
   const detail = run.data;
   const rows = records.data ?? [];
+  // PL-117: a sign-in saves nothing, so its rows offer Try again only. The API carries the task's
+  // flag; this page has no task name to fall back on.
+  const signIn = signInTask(null, detail?.sign_in === true);
   const open = isOpenStatus(detail?.status ?? null);
   const time = {
     manualSecondsPerRow: detail?.manual_seconds_per_row ?? null,
@@ -169,6 +176,7 @@ export function RunDetail({ panel = false }: { panel?: boolean } = {}): JSX.Elem
       confirmed: confirmed[row.id] === true,
       operatorId,
       operatorUnavailable: operatorProblem !== null,
+      signIn,
     });
   }
 
@@ -190,6 +198,7 @@ export function RunDetail({ panel = false }: { panel?: boolean } = {}): JSX.Elem
         commitAttempted: row.commit_attempted === true,
         confirmed: confirmed[row.id] === true,
         operatorId,
+        signIn,
         // A not-found skip keeps its reason; every other action sends none (PL-106 item 7).
         reason: actionReason(action, row.reason),
       });
@@ -223,6 +232,7 @@ export function RunDetail({ panel = false }: { panel?: boolean } = {}): JSX.Elem
           commitAttempted: row.commit_attempted === true,
           confirmed: confirmed[row.id] === true,
           operatorId,
+          signIn,
         });
       }
     } catch (failure) {
@@ -604,7 +614,7 @@ export function RunDetail({ panel = false }: { panel?: boolean } = {}): JSX.Elem
             <tbody>
               {rows.map((row) => {
                 const outcome = rowOutcome(row.state, row.reason);
-                const reason = reasonWords(row, outcome.tone === "help");
+                const reason = reasonWords(row, outcome.tone === "help", signIn);
                 const gate = gateFor(row);
                 const ticked = confirmed[row.id] === true;
                 const boxId = `checked-odoo-${row.id}`;
@@ -631,14 +641,16 @@ export function RunDetail({ panel = false }: { panel?: boolean } = {}): JSX.Elem
                             >
                               {recordActionLabel("requeue")}
                             </button>
-                            <button
-                              type="button"
-                              className="btn quiet record-dismiss"
-                              disabled={gate.disabled || rowBusy !== null || batchBusy}
-                              onClick={() => void rowAct(row, "dismiss")}
-                            >
-                              {recordActionLabel("dismiss", row.reason)}
-                            </button>
+                            {gate.dismiss ? (
+                              <button
+                                type="button"
+                                className="btn quiet record-dismiss"
+                                disabled={gate.disabled || rowBusy !== null || batchBusy}
+                                onClick={() => void rowAct(row, "dismiss")}
+                              >
+                                {recordActionLabel("dismiss", row.reason)}
+                              </button>
+                            ) : null}
                           </span>
                         )}
                         {rowErrors[row.id] === undefined ? null : (
@@ -655,6 +667,7 @@ export function RunDetail({ panel = false }: { panel?: boolean } = {}): JSX.Elem
                         <td colSpan={4}>
                           <DestinationCheck
                             id={boxId}
+                            app={detail.app}
                             checked={ticked}
                             onChange={(checked) => ticket(row.id, checked)}
                           />

@@ -11,17 +11,27 @@
  */
 
 import { apiPost } from "../lib/api";
-import { isNotFoundReason } from "../lib/words";
+import { isNotFoundReason, siteWords } from "../lib/words";
 import type { RecordActionBody } from "../types";
 
-/** The exact words the confirmation carries. The ticket fixes them. */
-export const DESTINATION_CHECK_LABEL = "I checked Odoo and it isn't there";
-
 /**
- * Why the box is there, in one sentence, next to it.
+ * PL-117 item 3: the tick names the task's own site, as PL-115's cards do.
+ *
+ * "I checked Odoo and it isn't there" was hard-coded; a task on another site cannot be checked in
+ * Odoo. `siteWords` keeps the same spelling the cards use (`goodlabs.com`, `Odoo`, `Twenty`), and
+ * a payload without a site says only "the site" rather than inventing one.
  */
-export const DESTINATION_CHECK_WHY =
-  "We may already have saved this row before it went wrong, so look it up in Odoo and tick the box only if it is not there.";
+export function destinationCheckLabel(app?: string | null): string {
+  const site = siteWords(app);
+  return site === null ? "I checked the site and it isn't there" : `I checked ${site} and it isn't there`;
+}
+
+/** Why the box is there, in one sentence, next to it. */
+export function destinationCheckWhy(app?: string | null): string {
+  const site = siteWords(app);
+  const where = site === null ? "on the site" : `in ${site}`;
+  return `We may already have saved this row before it went wrong, so look it up ${where} and tick the box only if it is not there.`;
+}
 
 /**
  * The wording of the operator problem lives in `lib/words.ts`, because the run page's decision
@@ -53,9 +63,11 @@ export interface RecordActions {
 }
 
 /** Try again and Dismiss appear for the rows this page lists: the ones that need a person. */
-export function recordActions(state: string): RecordActions {
+export function recordActions(state: string, signIn = false): RecordActions {
   const actionable = state === "parked" || state === "failed";
-  return { requeue: actionable, dismiss: actionable };
+  // A sign-in saves nothing, so there is no destination row to dismiss. Try again is its one
+  // action (PL-117 item 2).
+  return { requeue: actionable, dismiss: actionable && !signIn };
 }
 
 export interface ActionGateInput {
@@ -65,11 +77,15 @@ export interface ActionGateInput {
   operatorId: string | null;
   /** True when `GET /api/v1/operator` refused: the page has nobody to record, so nothing may act. */
   operatorUnavailable?: boolean;
+  /** PL-117: a sign-in never asks for the destination check. */
+  signIn?: boolean;
 }
 
 export interface ActionGate {
   /** Whether this row offers an action at all. */
   shown: boolean;
+  /** Whether Dismiss is one of its actions. A sign-in row offers Try again only. */
+  dismiss: boolean;
   /** A commit-attempted row needs the destination check ticked first. */
   needsConfirmation: boolean;
   /** Only the checked-destination path has to send the operator id. */
@@ -81,18 +97,28 @@ export interface ActionGate {
  * The one place the page can get past the ledger's duplicate protection, so it is never one click.
  * A commit-attempted row keeps both buttons disabled until the confirmation is ticked, clearing the
  * tick disables them again, and a page with no operator identity disables every action on it.
+ *
+ * A sign-in is the exception: it saves nothing, so an older recipe's commit attempt is not a save
+ * that needs checking. It offers Try again, with no tick and no Dismiss (PL-117 item 2).
  */
 export function actionGate(input: ActionGateInput): ActionGate {
-  const actions = recordActions(input.state);
+  const actions = recordActions(input.state, input.signIn === true);
   if (actions.requeue === false) {
-    return { shown: false, needsConfirmation: false, needsOperator: false, disabled: true };
+    return {
+      shown: false,
+      dismiss: false,
+      needsConfirmation: false,
+      needsOperator: false,
+      disabled: true,
+    };
   }
-  const needsConfirmation = input.commitAttempted === true;
+  const needsConfirmation = input.commitAttempted === true && input.signIn !== true;
   const needsOperator = needsConfirmation;
   const confirmationMissing = needsConfirmation && input.confirmed !== true;
   const operatorMissing = input.operatorId === null || input.operatorId === "";
   return {
     shown: true,
+    dismiss: actions.dismiss,
     needsConfirmation,
     needsOperator,
     disabled:
@@ -105,17 +131,20 @@ export interface ActionBodyInput {
   confirmed: boolean;
   operatorId: string | null;
   reason?: string | null;
+  /** PL-117: a sign-in saves nothing, so it never sends a destination check. */
+  signIn?: boolean;
 }
 
 /**
  * The exact body the record endpoints get. `destination_checked_by` is sent only after the check
  * has been confirmed, and the id is never invented; a row that never reached a commit sends `{}`.
+ * A sign-in row sends `{}` even when an old recipe marked it commit-attempted.
  */
 export function actionBody(input: ActionBodyInput): RecordActionBody {
   const body: RecordActionBody = {};
   const reason = input.reason === undefined || input.reason === null ? "" : input.reason.trim();
   if (reason !== "") body.reason = reason;
-  if (input.commitAttempted === true) {
+  if (input.commitAttempted === true && input.signIn !== true) {
     if (input.confirmed !== true) {
       throw new Error("A commit-attempted row needs the destination check confirmed first.");
     }

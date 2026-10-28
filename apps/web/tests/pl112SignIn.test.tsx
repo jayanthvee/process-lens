@@ -144,7 +144,8 @@ afterEach(() => {
 describe("teaching a sign-in", () => {
   it("marks the saved task and remembers the taught email in this Chrome", async () => {
     render(<PanelTeach />);
-    await screen.findByText(/click saves your work/i);
+    await screen.findByText("A sign-in saves nothing.");
+    await settle();
 
     fireEvent.click(screen.getByRole("button", { name: "Save as task" }));
     await settle();

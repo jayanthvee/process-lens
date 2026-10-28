@@ -41,10 +41,21 @@ def test_text_count_increases_names_the_text_and_the_wait() -> None:
     )
 
 
-def test_url_matches_names_the_pattern_and_the_wait() -> None:
+def test_url_matches_names_the_step_and_never_the_pattern() -> None:
+    sentence = describe_check(
+        {"url_matches": "/leads/", "timeout_ms": 8000}, {}, {}, step_name="Click Save"
+    )
+
+    assert sentence == "The page didn't move on after “Click Save” within 8 seconds"
+    # No regex, no slashes and never the word URL reach the reason a person reads.
+    assert "URL" not in sentence
+    assert "/" not in sentence
+
+
+def test_url_matches_without_a_step_still_says_only_what_happened() -> None:
     assert (
         describe_check({"url_matches": "/leads/", "timeout_ms": 8000}, {}, {})
-        == 'the page never went to a URL matching "/leads/" within 8 seconds'
+        == "The page didn't move on within 8 seconds"
     )
 
 
@@ -135,6 +146,35 @@ def test_a_failed_check_parks_with_what_the_runner_looked_for(
         'the page never showed "Lead created" within 8 seconds; '
         f"check {DESTINATION_KEY}: if the row is there, Dismiss it, otherwise Try again"
     )
+
+
+def test_a_commit_checked_by_a_url_parks_with_plain_words(
+    seed: Callable[..., Seed],
+    make_worker: Callable[..., Worker],
+    conn: psycopg.Connection,
+) -> None:
+    steps = [dict(step) for step in DEFAULT_STEPS]
+    steps[2] = {
+        **steps[2],
+        "name": "Click Save",
+        "assert_after": {"url_matches": "/leads/", "timeout_ms": 8000},
+    }
+    base = seed(recipe(steps))
+    base.add_input_record(email="a@x.com")
+    run_id = base.create_run()
+
+    scripted = ScriptedRun.build(ambiguous=["row-0001"])
+    scripted.executor.conditions["save"] = False
+    worker = make_worker(scripted)
+    assert worker.run_once() is True
+
+    record = get_record(conn, base.record_ids(run_id)[0])
+    assert record is not None
+    assert record.state == "parked"
+    assert record.reason is not None
+    assert record.reason.startswith("The page didn't move on after “Click Save” within 8 seconds;")
+    assert "URL" not in record.reason
+    assert "/leads/" not in record.reason
 
 
 def test_a_templated_failed_check_parks_with_the_rendered_value(
