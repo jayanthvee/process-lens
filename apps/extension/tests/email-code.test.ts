@@ -86,8 +86,8 @@ describe("choosing the code", () => {
     expect(findCode([old], { since: T0, site })).toEqual({ status: "none" });
   });
 
-  it("allows a minute of clock difference between Gmail and this computer", () => {
-    const early = mail({ receivedAt: T0 - 30_000 });
+  it("allows ten seconds of clock difference between Gmail and this computer", () => {
+    const early = mail({ receivedAt: T0 - 9_000 });
 
     expect(findCode([early], { since: T0, site })).toEqual({ status: "found", code: "482913" });
   });

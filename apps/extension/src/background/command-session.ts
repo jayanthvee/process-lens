@@ -193,8 +193,12 @@ export interface CodeAnswer {
 
 /** PL-102: how long to look for an emailed code when the command does not say. */
 const DEFAULT_LOOK_MS = 60_000;
-/** PL-102: with no code page seen by this session (a restart), look this far back. */
-const CODE_PAGE_FALLBACK_MS = 3 * 60_000;
+/**
+ * PL-102, PL-119: with no code page seen by this session (a restart), look back only from the
+ * command's arrival. A code the person saw while teaching, or one typed on an earlier attempt,
+ * arrived before this command and must not count as the code this page just sent.
+ */
+const CODE_PAGE_FALLBACK_MS = 10_000;
 
 /**
  * PL-117 item 5: how long the session sits with no command before letting the debugger go.
@@ -688,7 +692,7 @@ export class CommandSession {
 
   private sendEvent(kind: EventKind, detail: string): void {
     // PL-102: an emailed code is looked for from the moment its page appeared, not before.
-    if (kind === "code_required") this.codePageAt = Date.now();
+    if (kind === "code_required") this.codePageAt = this.deps.now();
     this.send({ protocol: PROTOCOL, type: "event", kind, detail });
   }
 
@@ -891,7 +895,7 @@ export class CommandSession {
           if (command.from_email === true) {
             answer = this.deps.codeFromEmail
               ? await this.deps.codeFromEmail({
-                  since: this.codePageAt ?? Date.now() - CODE_PAGE_FALLBACK_MS,
+                  since: this.codePageAt ?? this.deps.now() - CODE_PAGE_FALLBACK_MS,
                   remember: command.remember === true,
                   lookMs: typeof command.look_ms === "number" ? command.look_ms : DEFAULT_LOOK_MS,
                   stop: () => this.stopped || withdrawn(),

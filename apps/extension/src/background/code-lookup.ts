@@ -6,7 +6,7 @@
  * messages live for one look, and only the chosen code leaves this module.
  */
 
-import { findCode, parseGmailFeed, type MailMessage } from "../shared/email-code";
+import { codeInMessage, findCode, parseGmailFeed, type MailMessage } from "../shared/email-code";
 
 export type LookupAnswer =
   | { status: "found"; code: string }
@@ -17,6 +17,11 @@ export interface LookupDeps {
   read: () => Promise<MailMessage[] | null>;
   now: () => number;
   sleep: (ms: number) => Promise<void>;
+  /**
+   * PL-119: whether ProcessLens already typed this code. A message whose code matches is skipped,
+   * so the only code left is a new one. Never the code itself: a salted digest is compared.
+   */
+  isUsed?: (code: string) => boolean | Promise<boolean>;
 }
 
 export interface LookupOptions {
@@ -49,12 +54,27 @@ export async function lookForCode(deps: LookupDeps, options: LookupOptions): Pro
     if (options.stop()) return { status: "stopped" };
     const messages = await deps.read();
     if (messages === null) return { status: "no_gmail" };
-    const answer = findCode(messages, { since: options.since, site: options.site });
+    const usable = deps.isUsed ? await withoutUsed(messages, deps.isUsed) : messages;
+    const answer = findCode(usable, { since: options.since, site: options.site });
     if (answer.status === "found") return answer;
     last = answer.status;
     if (deps.now() + every > deadline) return { status: last };
     await deps.sleep(every);
   }
+}
+
+/** PL-119: drop every message whose code ProcessLens already typed. */
+async function withoutUsed(
+  messages: MailMessage[],
+  isUsed: (code: string) => boolean | Promise<boolean>,
+): Promise<MailMessage[]> {
+  const kept: MailMessage[] = [];
+  for (const message of messages) {
+    const code = codeInMessage(message);
+    if (code !== null && (await isUsed(code))) continue;
+    kept.push(message);
+  }
+  return kept;
 }
 
 type Fetch = (url: string, init: RequestInit) => Promise<{ ok: boolean; text: () => Promise<string> }>;
