@@ -12,6 +12,7 @@ places carry them:
 
 from __future__ import annotations
 
+import re
 from dataclasses import replace
 from typing import Any
 
@@ -58,7 +59,7 @@ def match_column(
     text = value.strip()
     if not text:
         return None
-    matches = [column for column, cell in _cells(sample_row) if cell == text]
+    matches = [column for column, cell in _cells(sample_row) if cell.casefold() == text.casefold()]
     if len(matches) > 1 and prefer:
         owned = [
             column
@@ -145,13 +146,31 @@ def bind_check_column(taught: bool, sample_row: dict[str, Any]) -> tuple[Any, li
 
 
 def parameterize_text(text: str, sample_row: dict[str, Any]) -> tuple[str, str | None]:
-    """Replace recorded literals embedded in a rung's text with templates."""
+    """Replace recorded literals embedded in a rung's text with templates.
+
+    PL-123: the comparison is trimmed and case-insensitive. A person may type "oak standing desk "
+    into a search box and the page shows "Oak Standing Desk" on the result; the result is still the
+    row's value and becomes ``{{row.product}}``. A name the page glued together -- Odoo's kanban
+    card reads "demo dayyyyyyyMy Company" -- keeps only the row value, never the glued text.
+    """
     result = text
     replaced: set[str] = set()
     for column, cell in _cells(sample_row):
-        if len(cell) < MIN_MATCH_LENGTH or cell not in result:
+        if len(cell) < MIN_MATCH_LENGTH:
             continue
-        result = result.replace(cell, f"{{{{row.{column}}}}}")
+        match = re.search(re.escape(cell), result, re.IGNORECASE)
+        if match is None:
+            continue
+        start, end = match.span()
+        template = f"{{{{row.{column}}}}}"
+        glued_before = start > 0 and not result[start - 1].isspace()
+        glued_after = end < len(result) and not result[end].isspace()
+        if (start == 0 and glued_after) or (end == len(result) and glued_before):
+            # The literal is one run of a name the page glued together. The row's value is the
+            # part that identifies the element; the rest is the page's own layout text.
+            result = template
+        else:
+            result = result[:start] + template + result[end:]
         replaced.add(column)
     if not replaced:
         return text, None

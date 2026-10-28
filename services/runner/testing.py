@@ -188,6 +188,11 @@ class FakeExecutor:
             return StepResult(status="locator_failed", error=NOT_CLICKABLE_ERROR)
         if self._behavior(command) == "locator_failure":
             return StepResult(status="locator_failed", error="the target could not be resolved")
+        if self._behavior(command) == "ambiguous":
+            return StepResult(
+                status="locator_failed",
+                error="the click target could not be resolved: more than one match",
+            )
         return StepResult(status="ok", rung=1)
 
     def dispatch(
@@ -235,6 +240,11 @@ class FakeExecutor:
             return StepResult(status="locator_failed", error=NOT_CLICKABLE_ERROR)
         if behavior in ("failure", "locator_failure"):
             return StepResult(status="locator_failed", error="the target could not be resolved")
+        if behavior == "ambiguous":
+            return StepResult(
+                status="locator_failed",
+                error="the click target could not be resolved: more than one match",
+            )
         if behavior == "refused":
             return StepResult(status="refused", error="a guard refused the command")
         if behavior == "rejected":

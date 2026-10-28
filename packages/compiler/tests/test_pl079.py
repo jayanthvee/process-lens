@@ -239,7 +239,8 @@ def test_an_update_whose_commit_proves_nothing_else_gets_no_such_branch() -> Non
     assert len(branches) == 1
     assert branches[0]["when"] == {
         "element_absent": {
-            "targets": [{"by": "role", "role": "cell", "name": "{{row.sku | lower}}"}]
+            "targets": [{"by": "text_fuzzy", "value": "{{row.sku}}"}],
+            "intent": "the search result for {{row.sku}}",
         }
     }
     assert ALREADY_REASON not in json.dumps(recipe, sort_keys=True)

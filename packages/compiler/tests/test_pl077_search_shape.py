@@ -113,7 +113,8 @@ def test_a_find_then_update_parks_a_row_whose_search_finds_nothing() -> None:
     # restored by T1's review of PL-113). The sentence says which value was not found.
     assert branch["when"] == {
         "element_absent": {
-            "targets": [{"by": "role", "role": "cell", "name": "{{row.sku | lower}}"}]
+            "targets": [{"by": "text_fuzzy", "value": "{{row.sku}}"}],
+            "intent": "the search result for {{row.sku}}",
         }
     }
     assert branch["then"] == [

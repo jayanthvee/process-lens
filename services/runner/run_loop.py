@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import logging
 import random
+import re
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -937,6 +938,21 @@ class RunLoop:
             and _is_missing_target(prepared.error)
             and step.get("targets")
         ):
+            # PL-123: a row-named item several elements share is not a model question. Choosing
+            # one would re-open the wrong record and read its value back as if it were this row's.
+            ambiguous = _ambiguous_row_reason(step, row, variables, prepared.error)
+            if ambiguous is not None:
+                self._transition(
+                    conn,
+                    record,
+                    "filling",
+                    "parked",
+                    ambiguous,
+                    step=step,
+                    outcome="failed",
+                    error=prepared.error,
+                )
+                return "parked"
             prepared, command, find_terminal = self._prepare_with_finding(
                 conn,
                 record,
@@ -1352,6 +1368,23 @@ class RunLoop:
         stopped = self._drain_events(conn, record, run, epoch, box)
         if stopped is not None:
             return stopped
+
+        # PL-123: a name several items share never picks one, even though PL-122 could point at a
+        # unique snapshot token. Two products with the same name are two records.
+        ambiguous = _ambiguous_row_reason(step, row, variables, result.error)
+        if ambiguous is not None:
+            self._transition(
+                conn,
+                record,
+                box.state,
+                "parked",
+                ambiguous,
+                step=step,
+                outcome="failed",
+                error=result.error,
+            )
+            box.state = "parked"
+            return "parked"
 
         # PL-122: the recorded ladder found nothing, or more than one. Try the remembered element,
         # then one model answer, and send the step once more with the snapshot token first.
@@ -2298,6 +2331,46 @@ class RunLoop:
 def _is_busy_failure(error: str | None) -> bool:
     """Whether the extension said the control was busy rather than absent or covered (PL-113 S3)."""
     return bool(error) and "target is busy" in str(error).lower()
+
+
+def _row_template_column(step: Mapping[str, Any]) -> str | None:
+    """The row column a step's target ladder names, when it names one."""
+    for rung in step.get("targets") or []:
+        if not isinstance(rung, Mapping):
+            continue
+        for key in ("name", "text", "value"):
+            text = rung.get(key)
+            if not isinstance(text, str):
+                continue
+            match = re.search(r"\{\{\s*row\.([a-z0-9_]+)", text)
+            if match:
+                return match.group(1)
+    return None
+
+
+def _ambiguous_row_reason(
+    step: Mapping[str, Any],
+    row: Mapping[str, Any],
+    variables: Mapping[str, Any],
+    error: str | None,
+) -> str | None:
+    """PL-123, T1's third walk item: a name several items share never picks one.
+
+    A ladder that matches more than one element is usually a question for `find_target`. For a
+    step that opens the item named by the row's own value, it is not a question: two products
+    called "Standing Desk" are two different records, and choosing one would change the wrong
+    product. The row parks with the plain sentence instead.
+    """
+    if not error or "more than one match" not in error.lower():
+        return None
+    column = _row_template_column(step)
+    if column is None:
+        return None
+    intent = _safe_text(step.get("intent") or "", row, variables)
+    match = re.search(r"(?:open|find|click) the ([a-z][a-z ]*?) (?:found|called|named)", intent)
+    noun = match.group(1).strip() if match else column.replace("_", " ")
+    value = row.get(column, "")
+    return f"More than one {noun} matches '{value}'."
 
 
 def _is_missing_target(error: str | None) -> bool:

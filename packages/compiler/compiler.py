@@ -496,6 +496,18 @@ def _default_intent(candidate: Candidate) -> str:
         return f"set the {label}" if label else "set the checkbox"
     if candidate.action == "press":
         return f"press {candidate.key or 'a key'}"
+    if candidate.action == "click" and _opens_a_record(candidate):
+        # PL-123: a click that opens the item the row names says what it is for, in the words the
+        # run-time find needs: "open the product found by {{row.product}}".
+        for rung in candidate.targets or []:
+            for key in ("name", "text", "value"):
+                text = rung.get(key)
+                if not isinstance(text, str):
+                    continue
+                match = re.search(r"\{\{\s*row\.([a-z0-9_]+)", text)
+                if match:
+                    noun = match.group(1).replace("_", " ")
+                    return f"open the {noun} found by {{{{row.{match.group(1)}}}}}"
     name = candidate.name or _default_name(candidate.action, candidate.targets)
     return name[:1].lower() + name[1:] if name else candidate.action
 
@@ -1374,14 +1386,17 @@ def _not_found_branch(column: str, value_template: str) -> dict[str, Any]:
     a commit-attempted skip into a park (B2).
     """
     label = " ".join(str(column).replace("_", " ").split()).lower()
+    row_value = f"{{{{row.{column}}}}}"
     return {
         "action": "branch",
         "name": "Park a record when the search finds nothing",
         "when": {
             "element_absent": {
-                "targets": [
-                    {"by": "role", "role": "cell", "name": value_template},
-                ]
+                # PL-123: the result is not a table cell. Odoo shows the same search as a kanban
+                # card or as a table row, so the ladder names the row's own value and the intent
+                # tells a run what it is looking for; PL-122 finds the card or the row.
+                "targets": [{"by": "text_fuzzy", "value": row_value}],
+                "intent": f"the search result for {row_value}",
             }
         },
         "then": [
