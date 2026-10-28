@@ -241,8 +241,10 @@ describe("teaching keeps the recording", () => {
   it("names the task after the site, never after a previous recording", async () => {
     render(<PanelTeach />);
 
-    const name = (await screen.findByLabelText("What should this task be called?")) as HTMLInputElement;
-    expect(name.value).toBe("crm.example.com task");
+    // The name is filled in when the worker answers with the recording, so wait for the value
+    // itself: the box exists on the first render, before the answer arrives.
+    const name = (await screen.findByDisplayValue("crm.example.com task")) as HTMLInputElement;
+    expect(name.getAttribute("id")).toBe("panel-task-name");
     expect(name.value).not.toContain("Recorded on");
   });
 });

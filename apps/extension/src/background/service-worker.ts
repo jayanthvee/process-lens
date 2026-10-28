@@ -915,7 +915,6 @@ async function checkCommandCondition(
     // PL-117: the same look records whether a one-time-code prompt is still there, so a sign-in
     // wait that timed out can say it never got past the code page.
     const wall = await probeWallForCheck(cdp);
-    const wall = await probeWallForCheck(cdp);
     const codePage = await probeCodePage(cdp);
     return {
       ok: true,
