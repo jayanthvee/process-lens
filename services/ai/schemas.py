@@ -81,6 +81,7 @@ CLEAN_INPUT_SCHEMA: dict[str, Any] = {
                     "name": {"type": "string", "maxLength": 500},
                     "intent": {"type": "string", "maxLength": 500},
                     "targets": {"type": "array", "maxItems": 10},
+                    "by": {"enum": ["page", "person"]},
                 },
             },
         },
@@ -140,6 +141,10 @@ For every recorded step, decide whether it belongs in the reusable task, and wri
 sentence of intent: what the person was doing, in the words a colleague would use. A step the page
 did by itself (a field that fills on load, a menu that opens by itself, a stray menu click) is
 dropped.
+
+Each step says who made it: "by": "page" is a value the page set by itself, and is dropped;
+"by": "person" is something the person did. A value the person typed is always kept, even when the
+same field also has a "page" step.
 
 Answer with JSON only:
   {"steps": [{"id": "<recorded id>", "keep": true, "intent": "<one sentence>"}]}

@@ -122,6 +122,9 @@ class ColumnMapping(BaseModel):
     # PL-109 item 1: the value the person typed while teaching, so every screen that names a field
     # can show it ("Contact — you typed “ben baller”"). Never a default for a row.
     example: str | None = None
+    # PL-124: whether a step, key or rule of the task reads this column. One that nothing reads is
+    # still matched (a row check may name it), but Try one row doesn't list it as "About to add".
+    used: bool = True
 
 
 class NeedALook(BaseModel):
@@ -632,6 +635,39 @@ def _fields(document: dict[str, Any]) -> dict[str, Any]:
     return fields if isinstance(fields, dict) else {}
 
 
+_ROW_REFERENCE = re.compile(r"row\.([A-Za-z0-9_]+)")
+
+
+def _used_columns(document: dict[str, Any]) -> set[str] | None:
+    """The task columns the recipe's steps, keys or rules actually read (PL-124).
+
+    A column the recording offered but no step uses is not something a run adds, so the Try one
+    row card must not list it as "About to add". ``None`` means nothing references a column at
+    all, and every field counts as used, as before.
+    """
+    meta = dict(_meta(document))
+    schema = dict(_schema(document))
+    schema.pop("fields", None)
+    meta["input_schema"] = schema
+    read = {"meta": meta, "steps": document.get("steps")}
+    used = set(_ROW_REFERENCE.findall(json.dumps(read, ensure_ascii=False)))
+    # A step's value names its column as ``{"kind": "input", "column": ...}``, not as a template.
+    pending: list[Any] = [read]
+    while pending:
+        node = pending.pop()
+        if isinstance(node, dict):
+            if node.get("kind") == "input" and isinstance(node.get("column"), str):
+                used.add(node["column"])
+            # An input rule names its column bare: {"missing": "email"}, {"field": "status"}.
+            for key in ("missing", "field"):
+                if isinstance(node.get(key), str):
+                    used.add(node[key])
+            pending.extend(node.values())
+        elif isinstance(node, list):
+            pending.extend(node)
+    return used or None
+
+
 def _mapping_for(
     document: dict[str, Any],
     columns: list[str],
@@ -643,6 +679,7 @@ def _mapping_for(
     entries: list[ColumnMapping] = []
     # PL-109 item 3: which column each field claimed, with the taught value it claimed it with.
     claimed: dict[str, str] = {}
+    used = _used_columns(document)
     for recipe_column, spec in _fields(document).items():
         sample_value = (sample_row or {}).get(recipe_column)
         example = spec.get("example") if isinstance(spec, dict) else None
@@ -667,6 +704,7 @@ def _mapping_for(
                 required=required,
                 alternatives=alternatives,
                 example=taught or None,
+                used=used is None or recipe_column in used,
             )
         )
     return entries

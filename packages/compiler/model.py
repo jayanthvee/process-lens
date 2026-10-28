@@ -83,6 +83,9 @@ class Candidate:
     # PL-123: this step acts on a search result, so the page's own search box and the chips it
     # shows for the query are never it.
     exclude_search_box: bool = False
+    # PL-124: the compiler re-aimed this click at the row's own value, so its derived sentence
+    # replaces the one teaching wrote for the literal element the person happened to click.
+    row_aimed: bool = False
     notes: list[str] = field(default_factory=list)
 
 

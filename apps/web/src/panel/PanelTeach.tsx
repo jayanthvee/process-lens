@@ -19,6 +19,7 @@ import {
   defaultCommitStepId,
   defaultRecordKeyColumn,
   hasSaveClick,
+  hiddenSeqs as hiddenStepSeqs,
   makeRecipeRequest,
   recordedValues,
   saveTask,
@@ -112,19 +113,9 @@ export function PanelTeach(): JSX.Element {
   // PL-107 item 12: what the recorder is doing about a code page, if it is on one.
   const codeState = status.code ?? null;
   // PL-123: after Stop, teaching may have decided some recorded steps were the page's own doing.
-  // They are hidden, not deleted: Show lists them and Bring back returns any of them.
-  const hiddenStepIds = new Set(
-    cleaned?.ok === true && cleaned.available
-      ? cleaned.steps.filter((step) => !step.keep).map((step) => step.id)
-      : [],
-  );
-  const hiddenSeqs = new Set<number>();
-  for (const event of events) {
-    const stepId = event?.step?.id;
-    if (stepId && hiddenStepIds.has(stepId) && !broughtBack.has(event.seq)) {
-      hiddenSeqs.add(event.seq);
-    }
-  }
+  // They are hidden, not deleted: Show lists them and Bring back returns any of them. PL-124: the
+  // page's own values are hidden by their flag, and a value the person typed is never hidden.
+  const hiddenSeqs = hiddenStepSeqs(events, cleaned, broughtBack);
   const visibleEvents = events.filter((event) => !hiddenSeqs.has(event.seq));
   const hiddenEvents = events.filter((event) => hiddenSeqs.has(event.seq));
   const values = recordedValues(visibleEvents);
