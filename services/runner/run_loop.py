@@ -845,12 +845,19 @@ class RunLoop:
                     return stopped
 
                 if not verdict.passed:
+                    observed = verdict.observed if isinstance(verdict.observed, dict) else {}
+                    code_page = observed.get("code_page")
                     self._transition(
                         conn,
                         record,
                         box.state,
                         "parked",
-                        describe_wait_failure(step, row, variables),
+                        describe_wait_failure(
+                            step,
+                            row,
+                            variables,
+                            code_page=code_page if isinstance(code_page, bool) else None,
+                        ),
                         step=step,
                         outcome="failed",
                     )
@@ -1180,7 +1187,12 @@ class RunLoop:
             run,
             epoch,
             step,
-            check_sentence=describe_check(condition, row, variables),
+            check_sentence=describe_check(
+                condition,
+                row,
+                variables,
+                step_name=str(step.get("name") or step.get("id") or ""),
+            ),
         )
 
     def _check_before_step(

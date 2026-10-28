@@ -118,10 +118,12 @@ class FakeExecutor:
         lost: Iterable[str] = (),
         condition_statuses: Mapping[str, str] | None = None,
         confirmation: ConfirmationProbe = "unsupported",
+        condition_observations: Mapping[str, Mapping[str, Any]] | None = None,
     ) -> None:
         self.destination = destination
         self.plan = dict(plan or {})
         self.conditions = dict(conditions or {})
+        self.condition_observations = dict(condition_observations or {})
         self.lost = set(lost)
         self.condition_statuses = dict(condition_statuses or {})
         self.confirmation = confirmation
@@ -234,7 +236,20 @@ class FakeExecutor:
         status = self._status(step_id, record_key)
         if status != "ok":
             return ConditionResult(passed=False, status=status)  # type: ignore[arg-type]
-        return ConditionResult(passed=self._condition(step_id, record_key))
+        return ConditionResult(
+            passed=self._condition(step_id, record_key),
+            observed=self._observation(step_id, record_key),
+        )
+
+    def _observation(self, step_id: str | None, record_key: str | None) -> dict[str, Any]:
+        """PL-117: what the scripted page said about a failed check."""
+        if step_id is None:
+            return {}
+        if record_key is not None:
+            key = f"{record_key}:{step_id}"
+            if key in self.condition_observations:
+                return dict(self.condition_observations[key])
+        return dict(self.condition_observations.get(step_id, {}))
 
     def _status(self, step_id: str | None, record_key: str | None) -> str:
         """The scripted answer status (R1 tests use ``lost`` and ``refused``)."""
@@ -340,6 +355,7 @@ class ScriptedRun:
         crash_at: Iterable[str] = (),
         condition_statuses: Mapping[str, str] | None = None,
         confirmation: ConfirmationProbe = "unsupported",
+        condition_observations: Mapping[str, Mapping[str, Any]] | None = None,
         events: Iterable[tuple[str, str]] = (),
     ) -> ScriptedRun:
         destination = FakeDestination(destination_plan)
@@ -351,6 +367,7 @@ class ScriptedRun:
                 conditions=conditions,
                 condition_statuses=condition_statuses,
                 confirmation=confirmation,
+                condition_observations=condition_observations,
             ),
             reconciler=FakeReconciler(destination, ambiguous=ambiguous, errors=errors),
             clock=FrozenClock(),

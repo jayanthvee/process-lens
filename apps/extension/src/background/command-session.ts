@@ -77,6 +77,12 @@ export type CheckAnswer =
       event?: EventKind;
       /** The guard's readable reason, sent as the event's detail. */
       eventDetail?: string;
+      /**
+       * PL-117 item 2: whether the page still shows a one-time-code prompt. The runner uses it to
+       * say the sign-in never got past the code page, or to name the page it never reached.
+       * `undefined` means the page was not probed.
+       */
+      codePage?: boolean;
     }
   | { ok: false; reason: string };
 
@@ -151,6 +157,22 @@ export interface SessionDeps {
    */
   restoreBoundTab: (tabId: number) => Promise<boolean>;
   /**
+   * PL-117 item 5: one-shot timer seam for the quiet spell. Returns a cancel. A session without it
+   * (older harnesses) never lets the debugger go on its own.
+   */
+  setTimeout?: (fn: () => void, ms: number) => () => void;
+  /**
+   * PL-117 item 5: hold the debugger again before a command runs. The real implementation is the
+   * same `ensureDebugger` every step already uses; this makes "Resume attaches before the next
+   * step" one observable call.
+   */
+  wakeDebugger?: () => void | Promise<void>;
+  /**
+   * PL-117 item 5: no command has run for the quiet spell (a pause, or the run ended), so let the
+   * debugger go. This is not a person's Cancel: the caller removes its detach watcher first.
+   */
+  releaseDebugger?: () => void | Promise<void>;
+  /**
    * PL-026: tell the API which version this extension is running, every time the session reaches
    * `ready`. The implementation reads the manifest itself, so the session carries no version of its
    * own; a report that fails changes nothing about the session, which is why this returns nothing.
@@ -173,6 +195,16 @@ export interface CodeAnswer {
 const DEFAULT_LOOK_MS = 60_000;
 /** PL-102: with no code page seen by this session (a restart), look this far back. */
 const CODE_PAGE_FALLBACK_MS = 3 * 60_000;
+
+/**
+ * PL-117 item 5: how long the session sits with no command before letting the debugger go.
+ *
+ * A run's steps arrive back to back; a pause or the end of a run leaves the session quiet. The
+ * quiet spell is short enough that Chrome's "started debugging this browser" bar goes away while a
+ * person reads a parked row, and long enough that ordinary step boundaries do not detach and
+ * re-attach for every command.
+ */
+export const DEBUGGER_IDLE_RELEASE_MS = 2_000;
 
 /** Trim trailing slashes so a hub URL composes cleanly. */
 /** What the popup shows when a hosted ProcessLens refuses the team access code (PL-086). */
@@ -245,6 +277,11 @@ export class CommandSession {
   private announceTabClosed = false;
   /** The last peer_gone / hub_error the runner may want to act on. */
   private notice: string | null = null;
+  /** PL-117: the pending quiet-spell timer, and whether a command has attached the debugger. */
+  private cancelIdle: (() => void) | null = null;
+  private debuggerHeld = false;
+  /** A release still running; a command that arrives now waits for it before re-attaching. */
+  private releasing: Promise<void> | null = null;
 
   constructor(private readonly deps: SessionDeps) {}
 
@@ -261,6 +298,12 @@ export class CommandSession {
   private setState(state: SessionState): void {
     const previous = this.state;
     this.state = state;
+    if (state === "executing") this.cancelIdleRelease();
+    if (state === "ready" && previous !== "ready") this.scheduleIdleRelease();
+    if (state === "idle" || state === "disconnected") {
+      this.cancelIdleRelease();
+      this.debuggerHeld = false;
+    }
     this.deps.onState(state);
     // PL-026: "each time the command session reaches ready" -- so on the transition into it, not on
     // every call. A reconnect, a restore and a finished command all arrive here, and all three are
@@ -461,6 +504,10 @@ export class CommandSession {
    * still type or click.
    */
   notifyDebuggerDetached(reason: string): void {
+    // PL-117: the browser took the debugger; there is nothing left for the quiet spell to release.
+    this.cancelIdleRelease();
+    this.debuggerHeld = false;
+    this.releasing = null;
     if (this.inFlight === null) return;
     this.sendEvent("detached", `the debugger detached from the bound tab (${reason})`);
     this.currentAbort?.abort();
@@ -576,6 +623,37 @@ export class CommandSession {
   private stopKeepalive(): void {
     this.cancelKeepalive?.();
     this.cancelKeepalive = null;
+  }
+
+  /** PL-117: a command is starting, so a quiet spell is over. */
+  private cancelIdleRelease(): void {
+    this.cancelIdle?.();
+    this.cancelIdle = null;
+  }
+
+  /**
+   * PL-117 item 5: after the last command, wait a quiet spell and let the debugger go.
+   *
+   * Only a command that actually held the debugger arms it, and only while no command is in flight
+   * and the session is ready. One timer per quiet spell: a pause or the end of a run releases once,
+   * and the next command cancels the timer (or waits out a release already under way) before it
+   * attaches again.
+   */
+  private scheduleIdleRelease(): void {
+    if (!this.debuggerHeld || this.cancelIdle !== null) return;
+    const arm = this.deps.setTimeout;
+    const release = this.deps.releaseDebugger;
+    if (!arm || !release) return;
+    this.cancelIdle = arm(() => {
+      this.cancelIdle = null;
+      if (!this.debuggerHeld || this.inFlight !== null || this.state !== "ready") return;
+      this.debuggerHeld = false;
+      try {
+        this.releasing = Promise.resolve(release()).catch(() => undefined);
+      } catch {
+        this.releasing = null;
+      }
+    }, DEBUGGER_IDLE_RELEASE_MS);
   }
 
   private send(message: OutgoingMessage): void {
@@ -776,6 +854,18 @@ export class CommandSession {
     // never reached the gate (`not_dispatched`) and from an outcome after input (`lost`).
     let gateRefusal: string | null = null;
     try {
+      // PL-117 item 5: the quiet spell is over. A release that is still running finishes first,
+      // then the debugger is held again before this command's step runs. A command that arrives
+      // after a pause therefore re-attaches exactly as the first one did.
+      this.cancelIdleRelease();
+      const releasing = this.releasing;
+      if (releasing !== null) {
+        await releasing;
+        if (this.releasing === releasing) this.releasing = null;
+      }
+      if (!current()) return;
+      await this.deps.wakeDebugger?.();
+      this.debuggerHeld = true;
       if (command.type === "guard") {
         // The guard is not a step: it has no target, sends no input, and its answer is what it
         // refused. Arming is what a record that leaves the tab without committing needs; disarming
@@ -857,7 +947,10 @@ export class CommandSession {
               type: "condition",
               command_id: command.command_id,
               passed: answer.passed,
-              observed: {},
+              observed:
+                answer.passed || answer.codePage === undefined
+                  ? {}
+                  : { code_page: answer.codePage },
             });
           } else {
             // B1: a check that could not be evaluated is a REFUSAL, never a real "no". Reporting
@@ -959,6 +1052,8 @@ export class CommandSession {
         if (this.state === "executing") {
           this.setState(this.socket ? "ready" : "disconnected");
         }
+        // A check, guard or code command never entered `executing`; its quiet spell starts here.
+        if (this.state === "ready") this.scheduleIdleRelease();
       }
     }
   }

@@ -12,6 +12,7 @@ the wait, which is the actionable part, is never cut off.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from typing import Any
 
@@ -32,6 +33,8 @@ def describe_check(
     condition: Mapping[str, Any],
     row: Mapping[str, Any],
     variables: Mapping[str, Any],
+    *,
+    step_name: str | None = None,
 ) -> str:
     """Turn an ``assert_after`` into one plain sentence, with its templates rendered.
 
@@ -39,6 +42,9 @@ def describe_check(
     ``text_count_increases``, ``url_matches``, ``element_present``, ``element_absent``,
     ``value_equals``). A condition that names none of them, or is not an object at all, says only
     :data:`UNKNOWN_CHECK` -- never anything a person could mistake for a real finding.
+
+    ``url_matches`` names the step whose page did not move on, never the pattern: a regex with
+    slashes in it is engine detail, and PL-117 item 4 keeps it off every screen.
     """
     if not isinstance(condition, Mapping):
         return UNKNOWN_CHECK
@@ -56,8 +62,10 @@ def describe_check(
         text = _text(condition["text_count_increases"], row, variables)
         return _with_value("", text, f" did not appear one more time{within}")
     if "url_matches" in condition:
-        pattern = _text(condition["url_matches"], row, variables)
-        return _with_value("the page never went to a URL matching ", pattern, within)
+        name = (step_name or "").strip()
+        if name:
+            return _fit(f"The page didn't move on after “{name}”{within}")
+        return _fit(f"The page didn't move on{within}")
     if "element_present" in condition:
         name = _element_name(condition["element_present"], row, variables)
         if name:
@@ -91,6 +99,32 @@ def parking_reason(check_sentence: str, destination: str | None = None) -> str:
     where = (destination or "").strip() or "the destination"
     tail = "if the row is there, Dismiss it, otherwise Try again"
     return f"{check_sentence}; check {where}: {tail}"
+
+
+def landing_words(pattern: str) -> str | None:
+    """The page a ``url_matches`` check was waiting for, in words a person reads (PL-117).
+
+    The compiler writes the landing as a path pattern: ``/home(?:/.*)?$``. Its anchors and its
+    regex groups are engine detail, so only the page's own name survives: ``the home page``. A
+    pattern with no readable segment names nothing, and the caller keeps its own sentence.
+    """
+    text = str(pattern or "").strip()
+    if not text:
+        return None
+    # Drop the regex tail that allows anything below the landing, and the anchors around it.
+    text = re.sub(r"\(\?:/\.\*\)\?", "", text)
+    text = text.strip("^$")
+    # A digit run is a record id, not a page name: the segment before it names the page.
+    segments = [segment for segment in text.split("/") if segment]
+    while segments and re.search(r"\\[dDwW]|\[", segments[-1]):
+        segments.pop()
+    if not segments:
+        return "the site's home page"
+    name = re.sub(r"\\(.)", r"\1", segments[-1])
+    name = re.sub(r"[\[\](){}?*+^|]", "", name).replace("-", " ").replace("_", " ").strip()
+    if not name or name.isdigit():
+        return None
+    return f"the {name} page"
 
 
 def _seconds(condition: Mapping[str, Any]) -> str:
@@ -199,4 +233,4 @@ def _with_value(prefix: str, value: str, suffix: str) -> str:
     return f'{prefix}"{_clip(value, room)}"{suffix}'
 
 
-__all__ = ["MAX_SENTENCE", "UNKNOWN_CHECK", "describe_check", "parking_reason"]
+__all__ = ["MAX_SENTENCE", "UNKNOWN_CHECK", "describe_check", "landing_words", "parking_reason"]

@@ -238,7 +238,9 @@ export function PanelTeach(): JSX.Element {
         recordKeyColumn: keyColumn,
         // PL-107: the person chooses which click saves; "" is "Nothing gets saved", which
         // compiles a read-only recipe (no commit step). The last click stays the default.
-        commitStepId: commitStepId === "" ? null : commitStepId,
+        // PL-117: a sign-in saves nothing, so it never sends a commit choice at all.
+        commitStepId:
+          status.signIn === true || commitStepId === "" ? null : commitStepId,
       });
       if (values.length === 0) {
         // No column to key on: every Run once carries a fresh id, so the ledger sees new work.
@@ -260,7 +262,9 @@ export function PanelTeach(): JSX.Element {
       });
       if (!compiled.ok) {
         setProblem(
-          compileRefusalSentence(compiled.problems, events, { nothingSaved: commitStepId === "" }),
+          compileRefusalSentence(compiled.problems, events, {
+            nothingSaved: status.signIn === true || commitStepId === "",
+          }),
         );
         setNote(null);
         return;
@@ -424,7 +428,11 @@ export function PanelTeach(): JSX.Element {
         </ol>
       )}
 
-      {clickChoices.length === 0 ? null : (
+      {clickChoices.length === 0 ? null : status.signIn === true ? (
+        <div className="panel-commit">
+          <p className="panel-note">A sign-in saves nothing.</p>
+        </div>
+      ) : (
         <div className="panel-commit">
           {!changingCommit ? (
             <p className="panel-note">

@@ -3,7 +3,7 @@ import { type CSSProperties, useState } from "react";
 import { DestinationCheck } from "../components/DestinationCheck";
 import { errorText } from "../lib/api";
 import { useJson } from "../lib/useJson";
-import { plainReason, refusalWords, rowOutcome } from "../lib/words";
+import { plainReason, refusalWords, rowOutcome, signInTask, withoutDismissAdvice } from "../lib/words";
 import type { NeedsHelpRow, OperatorInfo } from "../types";
 import {
   actionGate,
@@ -52,12 +52,14 @@ export function NeedsHelp(): JSX.Element {
   }
 
   async function act(row: NeedsHelpRow, action: RecordAction): Promise<void> {
+    const signIn = signInTask(row.task_name, row.sign_in);
     const gate = actionGate({
       state: row.state,
       commitAttempted: row.commit_attempted === true,
       confirmed: confirmed[row.record_id] === true,
       operatorId,
       operatorUnavailable: operatorProblem !== null,
+      signIn,
     });
     if (gate.disabled || gate.shown === false || busy !== null) return;
     setBusy(row.record_id);
@@ -71,6 +73,7 @@ export function NeedsHelp(): JSX.Element {
         commitAttempted: row.commit_attempted === true,
         confirmed: confirmed[row.record_id] === true,
         operatorId,
+        signIn,
         // A not-found skip keeps its reason; every other action sends none (PL-106 item 7).
         reason: actionReason(action, row.reason),
       });
@@ -111,12 +114,17 @@ export function NeedsHelp(): JSX.Element {
               // there, so the label and the reason agree.
               const outcome = rowOutcome(row.state, row.reason);
               const ticked = confirmed[row.record_id] === true;
+              // PL-117: a sign-in saves nothing. Its row offers Try again only, and an older
+              // stored reason's "Dismiss it" tail is not shown.
+              const signIn = signInTask(row.task_name, row.sign_in);
+              const reason = signIn ? withoutDismissAdvice(row.reason) : row.reason;
               const gate = actionGate({
                 state: row.state,
                 commitAttempted: row.commit_attempted === true,
                 confirmed: ticked,
                 operatorId,
                 operatorUnavailable: operatorProblem !== null,
+                signIn,
               });
               const refusal = errors[row.record_id];
               const boxId = `checked-odoo-${row.record_id}`;
@@ -126,7 +134,7 @@ export function NeedsHelp(): JSX.Element {
                     {/* The row's key is the person's or thing's name for it: data, rendered as
                         text. The reason is the one sentence that says why it needs a person. */}
                     <b>{row.row}</b>
-                    <p>{plainReason(row.reason, row.state)}</p>
+                    <p>{plainReason(reason, row.state)}</p>
                     <small>{row.task_name}</small>
                   </div>
                   <div className="row-actions">
@@ -141,14 +149,16 @@ export function NeedsHelp(): JSX.Element {
                         >
                           {recordActionLabel("requeue")}
                         </button>
-                        <button
-                          type="button"
-                          className="btn quiet record-dismiss"
-                          disabled={gate.disabled || busy !== null}
-                          onClick={() => void act(row, "dismiss")}
-                        >
-                          {recordActionLabel("dismiss", row.reason)}
-                        </button>
+                        {gate.dismiss ? (
+                          <button
+                            type="button"
+                            className="btn quiet record-dismiss"
+                            disabled={gate.disabled || busy !== null}
+                            onClick={() => void act(row, "dismiss")}
+                          >
+                            {recordActionLabel("dismiss", row.reason)}
+                          </button>
+                        ) : null}
                       </span>
                     )}
                     {refusal === undefined ? null : (
@@ -163,6 +173,7 @@ export function NeedsHelp(): JSX.Element {
                   {gate.needsConfirmation ? (
                     <DestinationCheck
                       id={boxId}
+                      app={row.app}
                       checked={ticked}
                       onChange={(checked) => ticket(row.record_id, checked)}
                     />

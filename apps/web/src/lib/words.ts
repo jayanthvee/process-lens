@@ -178,15 +178,40 @@ export function plainReason(reason: string | null, state?: string): string {
   if (key === "") {
     return state === "skipped" ? "It was already there." : "Something went wrong.";
   }
+  // PL-117 item 4: rows already stored with the runner's old URL wording are shown plainly too.
+  // The wait is the actionable part; the pattern never reaches a screen.
+  const oldUrl = /the page never went to a URL matching .*? within ([\d.]+) seconds/i.exec(key);
+  if (oldUrl !== null) return `The page didn't move on within ${oldUrl[1]} seconds.`;
   const known = REASONS[key.toLowerCase()];
   if (known !== undefined) return known;
   // A not-found reason is the row's whole explanation and names a host, so it is shown exactly as
   // written: the code-to-words fallback would turn the hyphen in "my-crm.example.com" into a
   // space. Every other reason keeps the fallback (PL-106 item 7).
   if (isNotFoundReason(key) && key.endsWith(".")) return key;
+  // PL-117: a reason the runner already wrote as a sentence is shown as written. The code-to-words
+  // fallback turns every hyphen into a space, which would turn "sign-in" into "sign in".
+  if (/\s/.test(key) && /^[A-Z]/.test(key) && key.endsWith(".")) return key;
   // A code we have never seen must still not reach the screen as an identifier.
   const readable = sentence(key);
   return /\.$/.test(readable) ? readable : `${readable}.`;
+}
+
+const DISMISS_ADVICE =
+  /\s*;\s*check .*?:\s*if the row is there, Dismiss it, otherwise Try again\.?$/i;
+
+/**
+ * PL-117 item 2: remove the commit-check tail from a sign-in row's reason.
+ *
+ * The old runner appended "check <site>: if the row is there, Dismiss it, otherwise Try again" to
+ * any failed save's check. A sign-in saves nothing, so a sign-in row has nothing to look up and
+ * nothing to dismiss; only an older stored reason can still carry the tail.
+ */
+export function withoutDismissAdvice(reason: string | null): string | null {
+  if (reason === null) return null;
+  const trimmed = reason.replace(DISMISS_ADVICE, "").trim();
+  if (trimmed === "") return null;
+  // The tail was a sentence's continuation, so the sentence keeps its full stop once it is gone.
+  return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
 }
 
 /*
@@ -632,6 +657,17 @@ export function taskKind(name: string | null | undefined): TaskKind {
   const first = (text.split(/\s+/)[0] ?? "").toLowerCase().replace(/[^a-z]/g, "");
   if (ADD_FIRST_WORDS.includes(first)) return "add";
   return "change";
+}
+
+/**
+ * PL-117: whether this row's task is a sign-in.
+ *
+ * The saved flag is authoritative. Older rows (and older payloads without it) still read as a
+ * sign-in from the name PL-115 already uses for one, so a task taught before this ticket is not
+ * shown a destination tick it can never satisfy.
+ */
+export function signInTask(name: string | null | undefined, signIn?: boolean): boolean {
+  return signIn === true || taskKind(name) === "signin";
 }
 
 /** The word for a row that was already in the site, or `null` when a sign-in has no such rows. */

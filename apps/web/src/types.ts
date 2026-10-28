@@ -34,6 +34,10 @@ export interface RunDetail {
    * app is running or paused (PL-041).
    */
   waiting_behind?: WaitingBehind | null;
+  /** PL-117: the task's first site, so a row's destination tick can name it. */
+  app?: string | null;
+  /** PL-117: a sign-in task's rows offer Try again only: no destination tick and no Dismiss. */
+  sign_in?: boolean;
 }
 
 /** The run ahead of a queued one on the same app, named in plain words. */
@@ -112,6 +116,10 @@ export interface NeedsHelpRow {
   state: string;
   reason: string | null;
   commit_attempted: boolean;
+  /** PL-117: the task's first site, so the destination tick can name it. */
+  app?: string | null;
+  /** PL-117: a sign-in row offers Try again only. */
+  sign_in?: boolean;
 }
 
 /** One running run on `GET /api/v1/home`. */

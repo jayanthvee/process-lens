@@ -145,6 +145,10 @@ class RunDetail(BaseModel):
     site_cap: dict[str, Any] | None = None
     # Set only while this run is queued and another run on the same app is running or paused.
     waiting_behind: WaitingBehind | None = None
+    # PL-117: the task's site, for a row's destination-tick words, and whether the task is a
+    # sign-in (whose rows offer Try again only).
+    app: str | None = None
+    sign_in: bool = False
 
 
 class RecordDetail(BaseModel):
@@ -293,6 +297,7 @@ def get_run_endpoint(run_id: uuid.UUID) -> RunDetail:
         run_time = reads.run_time(conn, run_id)
         approval = open_approval_for_run(conn, run_id)
         blocking = reads.run_blocking(conn, run_id)
+        task_words = reads.run_task_words(conn, run_id)
         # PL-067: the cap a `site_daily_cap` pause stands at, for the run page's sentence.
         site_cap = (
             reads.run_site_cap(conn, run_id) if run.pause_reason == "site_daily_cap" else None
@@ -356,6 +361,8 @@ def get_run_endpoint(run_id: uuid.UUID) -> RunDetail:
             if blocking
             else None
         ),
+        app=task_words.app if task_words is not None else None,
+        sign_in=task_words.sign_in if task_words is not None else False,
     )
 
 
