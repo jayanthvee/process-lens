@@ -54,7 +54,9 @@ import {
   type VisibilityDeps,
   type VisibilityReport,
 } from "../executor/visibility";
-import { lookForCode, readGmailFeeds } from "./code-lookup";
+import { readGmailFeeds } from "./code-lookup";
+import { typeEmailedCode } from "./code-entry";
+import { typedCodes } from "./used-codes";
 import { dispatchCommandStep, prepareCommandStep } from "./command-step";
 import { canRemoveStep, RecorderSession, shouldRecordNavigation } from "./recorder-session";
 import { codeForTeaching, enteredCodeState } from "./teach-code";
@@ -1020,8 +1022,13 @@ function getCommandSession(): CommandSession {
     runStep: runCommandStep,
     checkCondition: checkCommandCondition,
     // PL-068: type the person's code into the bound tab and press its own continue. The code is
-    // used for this one page call and never stored.
-    enterCode: (code: string) => typeCodeInBoundTab(code),
+    // used for this one page call and never stored. PL-119: a typed code is remembered by its
+    // salted hash, so the run cannot type it again a moment later.
+    enterCode: async (code: string) => {
+      const answer = await typeCodeInBoundTab(code);
+      if (answer.entered) await typedCodes.remember(code);
+      return answer;
+    },
     // PL-102: the same, with the code read from the person's own Gmail in this Chrome -- only once
     // they have said yes, on the run page, to reading sign-in codes.
     codeFromEmail: async ({ since, remember, lookMs, stop }) => {
@@ -1033,16 +1040,16 @@ function getCommandSession(): CommandSession {
         remember || (local ? (await local.get([CODES_FROM_EMAIL_KEY]))[CODES_FROM_EMAIL_KEY] : false);
       if (allowed !== true) return { entered: false, reason: "not_allowed" };
       const site = (await chrome.tabs.get(tabId).catch(() => undefined))?.url ?? "";
-      const answer = await lookForCode(
+      return typeEmailedCode(
         {
           read: () => readGmailFeeds((url, init) => fetch(url, init)),
           now: () => Date.now(),
           sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+          enter: typeCodeInBoundTab,
+          used: typedCodes,
         },
         { since, site, lookMs, stop },
       );
-      if (answer.status !== "found") return { entered: false, reason: answer.status };
-      return typeCodeInBoundTab(answer.code);
     },
     // PL-027: the abandon guard runs on the bound tab's debugger, the same one every command uses.
     armAbandonGuard: async () => {
@@ -1352,6 +1359,7 @@ async function handle(message: ToWorker, sender?: chrome.runtime.MessageSender):
             status = { ...status, code: state };
             broadcast();
           },
+          used: typedCodes,
         },
         { since: message.since, site: message.site },
       );

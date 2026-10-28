@@ -24,8 +24,14 @@ export type CodeAnswer =
 const CODE_WORDS =
   /\b(verification|verify|one[- ]time|passcode|otp|security code|login code|sign[- ]in code|log[- ]in code|confirmation code|code)\b/i;
 
-/** Gmail's clock and this computer's may differ; a code sent this much before the page counts. */
-export const CLOCK_SLACK_MS = 60_000;
+/**
+ * Gmail's clock and this computer's may differ; a code sent this much before the page counts.
+ *
+ * PL-119: ten seconds, not a minute. The owner's run read Gmail before the new email arrived and
+ * found the code emailed during teaching, 28 s before the code page, still "fresh". A code that
+ * arrived before the page the person is looking at is not the code the site just sent.
+ */
+export const CLOCK_SLACK_MS = 10_000;
 
 /**
  * A run of 4-8 digits standing alone, or Google's `G-123456`. A run joined to more digits by `-`,
@@ -54,7 +60,7 @@ function candidates(text: string): string[] {
 }
 
 /** The code in one message, or null. The subject is read first: many senders put it there. */
-function codeIn(message: MailMessage): string | null {
+export function codeInMessage(message: MailMessage): string | null {
   for (const text of [message.subject, message.snippet]) {
     if (!CODE_WORDS.test(text) && !CODE_WORDS.test(message.subject)) continue;
     const found = candidates(text);
@@ -97,7 +103,7 @@ export function findCode(
 ): CodeAnswer {
   const fresh = messages
     .filter((message) => message.receivedAt >= options.since - CLOCK_SLACK_MS)
-    .map((message) => ({ message, code: codeIn(message) }))
+    .map((message) => ({ message, code: codeInMessage(message) }))
     .filter((entry): entry is { message: MailMessage; code: string } => entry.code !== null)
     .sort((a, b) => b.message.receivedAt - a.message.receivedAt);
   if (fresh.length === 0) return { status: "none" };

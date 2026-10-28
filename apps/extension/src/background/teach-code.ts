@@ -4,6 +4,7 @@
 // little while, one code is chosen, and nothing about it is kept. The only difference is where
 // the code goes -- back to the page that is being taught, which types it exactly as a run does.
 import { lookForCode } from "./code-lookup";
+import type { CodeMemory } from "./used-codes";
 import type { MailMessage } from "../shared/email-code";
 import type { TeachCodeAnswer, TeachCodeState } from "../shared/messages";
 
@@ -21,6 +22,8 @@ export interface TeachCodeLookupDeps {
   stop: () => boolean;
   /** Put one plain state in front of the person, for the panel to show. Never the code. */
   say: (state: TeachCodeState) => void;
+  /** PL-119: codes already typed, so a run does not type this one again. */
+  used?: CodeMemory;
 }
 
 export interface TeachCodeAsk {
@@ -48,10 +51,16 @@ export async function codeForTeaching(
     return { status: "not_allowed" };
   }
   deps.say({ state: "looking" });
+  const used = deps.used;
   let answer: Awaited<ReturnType<typeof lookForCode>>;
   try {
     answer = await lookForCode(
-      { read: deps.read, now: deps.now, sleep: deps.sleep },
+      {
+        read: deps.read,
+        now: deps.now,
+        sleep: deps.sleep,
+        ...(used ? { isUsed: (code: string) => used.isUsed(code) } : {}),
+      },
       {
         since: ask.since,
         site: ask.site,
@@ -65,6 +74,9 @@ export async function codeForTeaching(
     return { status: "could_not_read" };
   }
   if (answer.status === "found") {
+    // PL-119: the code handed to the page is about to be typed; remember it so no later look --
+    // this teaching session's retry or the run -- types it a second time. Only a salted hash stays.
+    await deps.used?.remember(answer.code);
     // The lookup is done; the page's own report changes this if it could not type the code.
     deps.say({ state: "typed" });
     return answer;

@@ -544,7 +544,9 @@ export const CODE_STILL_ASKED =
 export function codeFromEmailWords(reason: string): string {
   switch (reason) {
     case "none":
-      return "No code email has arrived yet. Try again in a moment, or type the code here.";
+      // PL-119: Gmail's feed lists only unread mail, so a code the person already opened is
+      // invisible here. Say that, instead of claiming no email arrived.
+      return "No new code email arrived. If you already opened it in Gmail, ProcessLens can't see it — type the code here.";
     case "ambiguous":
       return "Two codes arrived and ProcessLens can't tell which one is this site's. Type the right one here.";
     case "no_gmail":
