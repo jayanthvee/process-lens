@@ -512,7 +512,8 @@ def test_an_unknown_rung_is_rejected(validator: Draft202012Validator) -> None:
 @pytest.mark.parametrize(
     ("strategy", "missing"),
     [
-        ({"by": "role", "role": "button"}, "name"),
+        # PL-123: a role rung's name is optional -- a page's one search box is found by its role,
+        # and the step's intent is what a run asks when that box is gone. Only the role is required.
         ({"by": "role", "name": "Save"}, "role"),
         ({"by": "css"}, "selector"),
         ({"by": "testid"}, "value"),
@@ -528,6 +529,15 @@ def test_a_rung_requires_its_own_fields(
         f"'{missing}' is a required property" in message
         for message in messages(validator, document)
     )
+
+
+def test_a_role_rung_may_name_the_element_by_its_role_alone(
+    validator: Draft202012Validator,
+) -> None:
+    """PL-123: a page's one search box is found by ``role=searchbox``; no site's placeholder."""
+    document = recipe()
+    document["steps"] = [step("fill", targets=[{"by": "role", "role": "searchbox"}])]
+    assert messages(validator, document) == []
 
 
 def test_a_ladder_cannot_repeat_a_rung(validator: Draft202012Validator) -> None:

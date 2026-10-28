@@ -52,6 +52,8 @@ export const SAVING_NOTE = "Turning your recording into a task…";
  * a successful compile is followed by this POST on the same ProcessLens address.
  */
 const SAVE_TASK_PATH = "/api/v1/tasks";
+/** PL-123: where the panel asks teaching to drop the page's own steps and name the rest. */
+const CLEAN_PATH = "/api/v1/recordings/clean";
 /** The saved line's button text: the task's page opens in a real tab (PL-033 requirement 2). */
 export const SAVED_OPEN = "Open in ProcessLens";
 /** The prefix a failed save shows. The frozen contract needs "Could not"; this says more. */
@@ -111,6 +113,8 @@ export interface CompileRequestBody {
   duplicate_check: boolean;
   /** PL-017: columns whose emptiness parks the record before any step runs. */
   park_fields: string[];
+  /** PL-123: teaching's one-sentence intent per recorded step id. */
+  intents?: Record<string, string>;
   /** PL-113 S2: this recording signed in; the recipe then waits for the page after the code. */
   sign_in?: boolean;
   /** PL-113 S2: the page the site reached after the code page, as teaching saw it. */
@@ -749,6 +753,8 @@ export function makeRecipeRequest(
     duplicateCheck?: boolean;
     parkFields?: string[];
     saveByItself?: boolean;
+    /** PL-123: teaching's per-step intents, keyed by recorded step id. */
+    intents?: Record<string, string>;
   },
 ): CompileRequestBody {
   // PL-118: a saves-by-itself task has no click to name. Its capture is not trimmed to a save
@@ -789,6 +795,9 @@ export function makeRecipeRequest(
     // on the compiler's built-in defaults.
     duplicate_check: choice.duplicateCheck ?? true,
     park_fields: choice.parkFields ?? [],
+    ...(choice.intents && Object.keys(choice.intents).length > 0
+      ? { intents: choice.intents }
+      : {}),
   };
 }
 
@@ -894,6 +903,79 @@ export async function compileRecording(
  * on the dashboard. An HTTP error becomes a `{ok: false}` outcome; only a network failure is
  * allowed to throw, exactly like the compile.
  */
+/** One recorded step after teaching cleaned it: kept or dropped, with its sentence. */
+export interface CleanedStep {
+  id: string;
+  keep: boolean;
+  intent: string;
+}
+
+export type CleanOutcome =
+  | { ok: true; available: boolean; steps: CleanedStep[]; reason?: string }
+  | { ok: false; problems: string[] };
+
+/**
+ * PL-123 item 1: ask teaching which recorded steps belong and what each is for.
+ *
+ * The call reads the recording and stores nothing but its audit row. With no model the route
+ * answers every step kept, so the panel's list is today's list. A network or refusal problem is
+ * reported as ``ok: false``; the panel then keeps the recording unchanged rather than hiding a
+ * step on a guess.
+ */
+export async function cleanRecording(
+  events: RecordedEvent[],
+  deps: {
+    fetchImpl?: typeof fetch;
+    baseUrl: string;
+    accessCode?: string;
+    headers?: Record<string, string>;
+  },
+): Promise<CleanOutcome> {
+  const fetchImpl = deps.fetchImpl ?? fetch;
+  const baseUrl = deps.baseUrl.replace(/\/+$/, "");
+  try {
+    const response = await fetchImpl(`${baseUrl}${CLEAN_PATH}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...accessHeaders(deps.accessCode),
+        ...(deps.headers ?? {}),
+      },
+      body: JSON.stringify({ recording: events }),
+    });
+    const body = await readJson(response);
+    if (!response.ok) return { ok: false, problems: problemsFrom(response.status, body) };
+    const payload = (body ?? {}) as {
+      available?: unknown;
+      steps?: unknown;
+      reason?: unknown;
+    };
+    const steps = Array.isArray(payload.steps)
+      ? payload.steps
+          .filter((step): step is Record<string, unknown> =>
+            typeof step === "object" && step !== null,
+          )
+          .map((step) => ({
+            id: String(step.id ?? ""),
+            keep: step.keep === true,
+            intent: typeof step.intent === "string" ? step.intent : "",
+          }))
+          .filter((step) => step.id !== "")
+      : [];
+    return {
+      ok: true,
+      available: payload.available === true,
+      steps,
+      ...(typeof payload.reason === "string" ? { reason: payload.reason } : {}),
+    };
+  } catch (failure) {
+    return {
+      ok: false,
+      problems: [failure instanceof Error ? failure.message : "Could not reach ProcessLens."],
+    };
+  }
+}
+
 export async function saveTask(
   request: SaveTaskBody,
   deps: {

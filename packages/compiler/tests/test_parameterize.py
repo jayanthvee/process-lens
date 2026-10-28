@@ -31,10 +31,17 @@ def test_matching_ignores_surrounding_whitespace() -> None:
     assert value == {"kind": "input", "column": "interest"}
 
 
-def test_matching_is_case_sensitive() -> None:
+def test_matching_trims_spaces_and_ignores_case() -> None:
+    """PL-123: a person's lower-case search still names the row's value."""
     value, note = parameterize_value({"kind": "constant", "value": "RAVI@EXAMPLE.COM"}, SAMPLE_ROW)
-    assert value == {"kind": "constant", "value": "RAVI@EXAMPLE.COM"}
-    assert note is None
+    assert value == {"kind": "input", "column": "email"}
+    assert note is not None
+
+    padded, padded_note = parameterize_value(
+        {"kind": "constant", "value": "  ravi@example.com  "}, SAMPLE_ROW
+    )
+    assert padded == {"kind": "input", "column": "email"}
+    assert padded_note is not None
 
 
 def test_a_non_constant_value_is_left_alone() -> None:

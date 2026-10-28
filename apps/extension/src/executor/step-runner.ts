@@ -331,6 +331,8 @@ async function resolveStep(
     targets: ladder,
     within: step.within ?? null,
     token,
+    // PL-123: a result step must never resolve to the query's own chip inside the search box.
+    ...(step.exclude_search_box === true ? { excludeSearchBox: true } : {}),
   };
   const expression = resolverCallExpression(deps.resolverSource ?? resolverExpression(), query);
   const result = (await evaluate(

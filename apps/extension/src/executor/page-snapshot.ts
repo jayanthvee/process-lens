@@ -45,6 +45,12 @@ export interface PageSnapshotQuery {
   allowedOrigins?: string[];
   /** Defaults to {@link SNAPSHOT_LIMIT}. */
   limit?: number;
+  /**
+   * PL-123: this step acts on a search result. The page's search box and everything inside it --
+   * the facet chips that show the query back -- are left out of the snapshot entirely, so a model
+   * asked for a result can never be offered the chip that carries the same words.
+   */
+  excludeSearchBox?: boolean;
 }
 
 export function pageSnapshotInPage(query: PageSnapshotQuery): PageSnapshotResult {
@@ -300,6 +306,34 @@ export function pageSnapshotInPage(query: PageSnapshotQuery): PageSnapshotResult
     return type === "password" || type === "hidden" || type === "file";
   };
 
+  /**
+   * PL-123: whether this element is the search box, or a chip inside it.
+   *
+   * A search shows the typed text twice -- once inside the box as a facet chip, once on the
+   * result. For a step that means a result, the box and its chips are not candidates at all.
+   * Only ancestors are judged, so a result container that happens to hold a search box is kept.
+   */
+  const insideSearchBox = (el: Element): boolean => {
+    for (let node: Element | null = el; node; node = node.parentElement) {
+      const tag = node.tagName.toUpperCase();
+      if (tag === "INPUT" && (node.getAttribute("type") ?? "text").toLowerCase() === "search") {
+        return true;
+      }
+      if (tag === "FORM" && (node.getAttribute("role") ?? "").toLowerCase() === "search") {
+        return true;
+      }
+      const role = (node.getAttribute("role") ?? "").toLowerCase();
+      if (role === "search" || role === "searchbox") return true;
+      const classes = (node.getAttribute("class") ?? "").toLowerCase();
+      if (/(^|[\s_-])o_searchview|search[-_]?(bar|box|field|view|input|chips?)([\s_-]|$)/.test(classes)) {
+        return true;
+      }
+      if (/(^|[\s_-])o_facet([\s_-]|$)/.test(classes)) return true;
+    }
+    return false;
+  };
+  const excludeSearch = query.excludeSearchBox === true;
+
   const isInteractive = (el: Element): boolean => {
     const tag = el.tagName.toUpperCase();
     if (tag === "A" && el.hasAttribute("href")) return true;
@@ -349,6 +383,7 @@ export function pageSnapshotInPage(query: PageSnapshotQuery): PageSnapshotResult
       continue;
     }
     if (isSecret(el)) continue;
+    if (excludeSearch && insideSearchBox(el)) continue;
     const name = nameOf(el);
     const role = roleOf(el);
     const text = textOf(el);

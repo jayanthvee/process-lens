@@ -13,6 +13,7 @@ import { apiConfig } from "../lib/api";
 import {
   SAVE_BY_ITSELF,
   SAVE_BY_ITSELF_CHOICE,
+  cleanRecording,
   compileRecording,
   defaultCommitChoice,
   defaultCommitStepId,
@@ -22,6 +23,7 @@ import {
   recordedValues,
   saveTask,
   updateDetected,
+  type CleanOutcome,
 } from "../../../extension/src/popup/make-recipe";
 import {
   FIX_LABEL,
@@ -100,14 +102,35 @@ export function PanelTeach(): JSX.Element {
   // PL-109 item 5/6: the decision is shown, and "Change" opens the question only when asked.
   const [changingKey, setChangingKey] = useState(false);
   const [changingCommit, setChangingCommit] = useState(false);
+  // PL-123: what teaching said about the stopped recording, and which hidden steps the person
+  // brought back. Nothing is hidden until Stop has asked.
+  const [cleaned, setCleaned] = useState<CleanOutcome | null>(null);
+  const [broughtBack, setBroughtBack] = useState<Set<number>>(new Set());
+  const [showingHidden, setShowingHidden] = useState(false);
 
   const recording = status.state === "recording";
   // PL-107 item 12: what the recorder is doing about a code page, if it is on one.
   const codeState = status.code ?? null;
-  const values = recordedValues(events);
+  // PL-123: after Stop, teaching may have decided some recorded steps were the page's own doing.
+  // They are hidden, not deleted: Show lists them and Bring back returns any of them.
+  const hiddenStepIds = new Set(
+    cleaned?.ok === true && cleaned.available
+      ? cleaned.steps.filter((step) => !step.keep).map((step) => step.id)
+      : [],
+  );
+  const hiddenSeqs = new Set<number>();
+  for (const event of events) {
+    const stepId = event?.step?.id;
+    if (stepId && hiddenStepIds.has(stepId) && !broughtBack.has(event.seq)) {
+      hiddenSeqs.add(event.seq);
+    }
+  }
+  const visibleEvents = events.filter((event) => !hiddenSeqs.has(event.seq));
+  const hiddenEvents = events.filter((event) => hiddenSeqs.has(event.seq));
+  const values = recordedValues(visibleEvents);
   // PL-107: one choice per recorded click, labelled by the click's own sentence.
   const clickChoices: { id: string; label: string }[] = [];
-  for (const event of events) {
+  for (const event of visibleEvents) {
     const step = event?.step ?? null;
     if (step === null || step.action !== "click" || !step.id) continue;
     clickChoices.push({ id: step.id, label: stepSentence(step, event.kind) });
@@ -171,11 +194,11 @@ export function PanelTeach(): JSX.Element {
     if (!values.some((value) => value.column === keyColumn)) {
       // PL-109 item 5: decide the key when a value can identify a row; otherwise ask, never pick
       // the first field just because it is first.
-      setKeyColumn(defaultRecordKeyColumn(events) ?? "");
+      setKeyColumn(defaultRecordKeyColumn(visibleEvents) ?? "");
     }
-    // `values` is derived from `events`, and the key is the only thing this effect owns.
+    // `values` is derived from the visible events, and the key is the only thing this effect owns.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [events]);
+  }, [events, cleaned, broughtBack]);
 
   // The save choice follows the recording: the app's own save when it has no Save click, else the
   // last click, until the person picks another.
@@ -184,12 +207,13 @@ export function PanelTeach(): JSX.Element {
       commitEdited
         ? current
         : status.signIn === true
-          ? defaultCommitStepId(events) ?? ""
-          : defaultCommitChoice(events),
+          ? defaultCommitStepId(visibleEvents) ?? ""
+          : defaultCommitChoice(visibleEvents),
     );
-    // Only re-derive on a new recording or a sign-in decision; a deliberate answer is kept.
+    // Only re-derive on a new recording, a cleaning decision, or a sign-in decision; a deliberate
+    // answer is kept.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [events, status.signIn]);
+  }, [events, cleaned, broughtBack, status.signIn]);
 
   /**
    * Start (or continue) teaching. PL-118 item 5: this never clears. A stopped recording is kept
@@ -212,6 +236,21 @@ export function PanelTeach(): JSX.Element {
   async function stop(): Promise<void> {
     const answer = await send({ type: "record:stop" });
     apply(answer);
+    const stopped = answer?.events ?? events;
+    if (stopped.length === 0) {
+      setCleaned(null);
+      return;
+    }
+    // PL-123 item 1: Stop is where teaching drops the steps the page did by itself and names the
+    // rest. A route with no model answers every step kept, so the list is unchanged.
+    const config = apiConfig();
+    const result = await cleanRecording(stopped, {
+      baseUrl: config.base,
+      headers: config.headers,
+    });
+    setCleaned(result);
+    setBroughtBack(new Set());
+    setShowingHidden(false);
   }
 
   /** PL-107 item 12: the panel's yes to reading a code from Gmail, for this and later tasks. */
@@ -240,6 +279,9 @@ export function PanelTeach(): JSX.Element {
     setConfirmingOver(false);
     const answer = await send({ type: "record:clear" });
     apply(answer);
+    setCleaned(null);
+    setBroughtBack(new Set());
+    setShowingHidden(false);
     setName("");
     setNameEdited(false);
   }
@@ -251,7 +293,7 @@ export function PanelTeach(): JSX.Element {
       setProblem("Give the task a name first.");
       return;
     }
-    if (events.length === 0) {
+    if (visibleEvents.length === 0) {
       setProblem(NO_EVENTS);
       return;
     }
@@ -265,7 +307,13 @@ export function PanelTeach(): JSX.Element {
     setNote("Turning your recording into a task…");
     try {
       const selfSave = commitStepId === SAVE_BY_ITSELF;
-      const request = makeRecipeRequest(events, {
+      const intents: Record<string, string> = {};
+      if (cleaned?.ok === true) {
+        for (const step of cleaned.steps) {
+          if (step.keep && step.intent.trim() !== "") intents[step.id] = step.intent;
+        }
+      }
+      const request = makeRecipeRequest(visibleEvents, {
         name: trimmed,
         recordKeyColumn: keyColumn,
         // PL-107: the person chooses which click saves; "" is "Nothing gets saved", which
@@ -275,6 +323,7 @@ export function PanelTeach(): JSX.Element {
         commitStepId:
           status.signIn === true || selfSave || commitStepId === "" ? null : commitStepId,
         saveByItself: selfSave && status.signIn !== true,
+        intents,
       });
       if (values.length === 0) {
         // No column to key on: every Run once carries a fresh id, so the ledger sees new work.
@@ -296,7 +345,7 @@ export function PanelTeach(): JSX.Element {
       });
       if (!compiled.ok) {
         setProblem(
-          compileRefusalSentence(compiled.problems, events, {
+          compileRefusalSentence(compiled.problems, visibleEvents, {
             nothingSaved: status.signIn === true || commitStepId === "",
           }),
         );
@@ -338,13 +387,13 @@ export function PanelTeach(): JSX.Element {
     }
   }
 
-  const lines = stepLines(events);
+  const lines = stepLines(visibleEvents);
   // PL-118 item 2: the app's own save is offered whenever the recording has no Save click. A
   // sign-in saves nothing (PL-113 S2), so it is never offered there.
   const selfSaveOffered =
-    events.length > 0 && status.signIn !== true && !hasSaveClick(events);
+    visibleEvents.length > 0 && status.signIn !== true && !hasSaveClick(visibleEvents);
   // PL-118 item 4: an edit's key line names the key column and the exact change.
-  const isUpdate = updateDetected(events, keyColumn);
+  const isUpdate = updateDetected(visibleEvents, keyColumn);
   // PL-118 item 5: the count is the lines the person sees; a code typed for them is named, not
   // counted as a step.
   const hiddenCodeSteps = status.code?.state === "typed" ? 1 : 0;
@@ -355,17 +404,17 @@ export function PanelTeach(): JSX.Element {
   // PL-103: a step that cannot be repeated says so on its own row, with its fix. Like the popup,
   // the check runs once the recording is stopped: while it is still being built there is nothing
   // to judge yet.
-  const problems = recording ? new Map<number, StepProblem>() : stepProblems(events);
+  const problems = recording ? new Map<number, StepProblem>() : stepProblems(visibleEvents);
   // PL-107: a plain click's own words are already the "Which click saves your work?" choices, so
   // the step list shows the other steps and any step that needs a fix (a click's included). That
   // keeps one line per step on screen instead of the same sentence twice.
   const clickSeqs = new Set(
-    events.filter((event) => event.step?.action === "click").map((event) => event.seq),
+    visibleEvents.filter((event) => event.step?.action === "click").map((event) => event.seq),
   );
   const listLines = lines.filter((line) => !clickSeqs.has(line.seq) || problems.has(line.seq));
   // PL-109 item 1: the value the person typed, shown where the step names the field.
   const typedBySeq = new Map<number, string>();
-  for (const event of events) {
+  for (const event of visibleEvents) {
     const step = event?.step ?? null;
     if (step === null || (step.action !== "fill" && step.action !== "select")) continue;
     const source = step.value;
@@ -499,7 +548,47 @@ export function PanelTeach(): JSX.Element {
         </ol>
       )}
 
-      {events.length === 0 ? null : status.signIn === true ? (
+      {hiddenEvents.length === 0 ? null : (
+        <div className="panel-hidden">
+          <p className="panel-note">
+            Hidden: {hiddenEvents.length} step{hiddenEvents.length === 1 ? "" : "s"} the page
+            did by itself.{" "}
+            <button
+              type="button"
+              className="panel-change"
+              aria-label={showingHidden ? "Hide the steps the page did by itself" : "Show the steps the page did by itself"}
+              onClick={() => setShowingHidden((current) => !current)}
+            >
+              {showingHidden ? "Hide" : "Show"}
+            </button>
+          </p>
+          {!showingHidden ? null : (
+            <ol className="panel-steps">
+              {hiddenEvents.map((event) => {
+                const sentence = stepLines([event])[0]?.sentence ?? "This step";
+                return (
+                  <li key={event.seq} className="panel-step is-hidden">
+                    <div className="panel-step-line">
+                      <span>{sentence}</span>
+                      <button
+                        type="button"
+                        className="panel-step-fix"
+                        onClick={() =>
+                          setBroughtBack((current) => new Set(current).add(event.seq))
+                        }
+                      >
+                        Bring back
+                      </button>
+                    </div>
+                  </li>
+                );
+              })}
+            </ol>
+          )}
+        </div>
+      )}
+
+      {visibleEvents.length === 0 || recording ? null : status.signIn === true ? (
         // PL-117: a sign-in saves nothing, so there is no save click to offer or send.
         <div className="panel-commit">
           <p className="panel-note">A sign-in saves nothing.</p>
@@ -574,7 +663,6 @@ export function PanelTeach(): JSX.Element {
           className="panel-input"
           type="text"
           value={name}
-          placeholder="New lead"
           autoComplete="off"
           spellCheck={false}
           onChange={(event) => {
@@ -636,7 +724,7 @@ export function PanelTeach(): JSX.Element {
         <button
           type="button"
           className="btn primary"
-          disabled={saving || events.length === 0 || (values.length > 0 && keyColumn === "")}
+          disabled={saving || visibleEvents.length === 0 || (values.length > 0 && keyColumn === "")}
           onClick={() => void save()}
         >
           Save as task

@@ -384,7 +384,10 @@ class BrowserExecutor:
             wire_id = self._send_command(
                 "snapshot",
                 command,
-                extra={"allowed_origins": list(command.allowed_origins)},
+                extra={
+                    "allowed_origins": list(command.allowed_origins),
+                    "exclude_search_box": command.step.get("exclude_search_box") is True,
+                },
                 ttl=SNAPSHOT_TIMEOUT_SECONDS,
             )
         except ExecutorUnavailable as exc:

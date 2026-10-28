@@ -175,7 +175,9 @@ def test_a_real_search_still_gets_the_duplicate_branch(
     assert branch is not None
     assert branch["when"] == {
         "element_present": {
-            "targets": [{"by": "role", "role": "cell", "name": "{{row.customer | lower}}"}]
+            "targets": [{"by": "text_fuzzy", "value": "{{row.customer}}"}],
+            "intent": "a result with this customer",
+            "exclude_search_box": True,
         }
     }
 

@@ -30,7 +30,7 @@ import {
 import { RunControl } from "../executor/control";
 import { runRecipe, validateRecipe } from "../executor/executor";
 import { FrameContexts } from "../executor/frames";
-import { readValueEquals, waitForCondition } from "../executor/assertions";
+import { probeRefusal, readValueEquals, waitForCondition } from "../executor/assertions";
 import {
   POLICY_BLOCKED_MESSAGE,
   checkChallengeOrLogin,
@@ -49,6 +49,7 @@ import { snapshotExpression } from "../executor/page-snapshot";
 import { evaluate } from "../executor/page";
 import { ExecutorError, type ExecutorRecipe, type StepReport } from "../executor/types";
 import {
+  ensureDrawing as ensurePageDrawing,
   ensureVisible,
   pageIsHidden,
   windowHiddenMessage,
@@ -967,12 +968,22 @@ async function checkCommandCondition(
     // wait that timed out can say it never got past the code page.
     const wall = await probeWallForCheck(cdp);
     const codePage = await probeCodePage(cdp);
+    // PL-123: the app's own refusal words, when it showed a notification instead of saving.
+    let refusal: string | null = null;
+    try {
+      refusal = await probeRefusal(cdp);
+    } catch {
+      // A page that will not show its notification has no refusal to report.
+      refusal = null;
+    }
+    const mergedObserved =
+      refusal === null ? observed : { ...observed, refusal };
     return {
       ok: true,
       passed: false,
       ...(wall ? { event: wall.event, eventDetail: wall.detail } : {}),
       ...(codePage === undefined ? {} : { codePage }),
-      ...extra,
+      ...(Object.keys(mergedObserved).length === 0 ? {} : { observed: mergedObserved }),
     };
   } catch (error) {
     // The attach failed, the evaluate threw, or the condition is one the executor does not
@@ -1094,6 +1105,19 @@ function getCommandSession(): CommandSession {
       return true;
     },
     runStep: runCommandStep,
+    // PL-123: keep the work tab drawing while its window is covered, and answer the drawing
+    // sentence when it still has not painted. A tab that cannot be attached is left to runStep,
+    // whose own error is the honest one.
+    ensureDrawing: async () => {
+      const tabId = commandBoundTabId;
+      if (tabId === null || tabId < 0) return { drawing: true };
+      try {
+        const result = await ensurePageDrawing(await ensureDebugger(tabId));
+        return { drawing: result.drawing, ...(result.message ? { message: result.message } : {}) };
+      } catch {
+        return { drawing: true };
+      }
+    },
     checkCondition: checkCommandCondition,
     // PL-122: the page snapshot a run-time find asks for. It is read through the same debugger the
     // steps use, and it sends no input.

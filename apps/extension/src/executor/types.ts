@@ -32,6 +32,11 @@ export interface ExecutorStep {
   autocomplete?: boolean;
   /** Only a step that says so may click a control whose name looks destructive. */
   allow_destructive_control?: boolean;
+  /**
+   * PL-123: this step acts on a search result, so the page's search box and the facet chips inside
+   * it are never the element it means.
+   */
+  exclude_search_box?: boolean;
   url?: string;
   condition?: Condition;
 }

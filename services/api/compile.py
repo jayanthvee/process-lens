@@ -28,6 +28,10 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from packages.compiler import CompileError, CompileOptions, compile_recording
+from services.ai import AiService, CleanRecordingRequest
+
+from .db import connection
+from .operator import require_operator_user
 
 router = APIRouter(prefix="/api/v1", tags=["recipes"])
 
@@ -58,6 +62,8 @@ class CompileRequest(BaseModel):
     # PL-118: the person chose "The app saves by itself when I leave the page". The compiler
     # builds the leave/re-open commit and its value read-back; no click is sent as the save.
     save_by_itself: bool = False
+    # PL-123: teaching's one-sentence intent per recorded step id, from the panel's Stop call.
+    intents: dict[str, str] = {}
 
 
 class CompileResponse(BaseModel):
@@ -93,6 +99,7 @@ def compile_recipe(request: CompileRequest) -> CompileResponse:
         sign_in=request.sign_in,
         sign_in_after_path=request.sign_in_after_path,
         save_by_itself=request.save_by_itself,
+        intents=request.intents,
     )
     try:
         result = compile_recording(request.recording, options)
@@ -106,4 +113,96 @@ def compile_recipe(request: CompileRequest) -> CompileResponse:
         ) from exc
     return CompileResponse(
         recipe=result.recipe, warnings=result.warnings, search_kind=result.search_kind
+    )
+
+
+class CleanRecordingBody(BaseModel):
+    """The panel's Stop body: the recording it just captured."""
+
+    recording: list[dict[str, Any]]
+
+
+class CleanedStep(BaseModel):
+    """One recorded step, kept or hidden, and the sentence it is for."""
+
+    id: str
+    keep: bool
+    intent: str
+
+
+class CleanRecordingResponse(BaseModel):
+    """The kept steps and their intents, or today's list when no model is configured.
+
+    ``available`` is false when teaching ran without a model: the panel then shows the recording
+    unchanged, exactly as it did before PL-123.
+    """
+
+    available: bool
+    steps: list[CleanedStep]
+    reason: str | None = None
+
+
+def _recorded_steps(recording: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The steps a recording carries, in the shape ``clean_recording`` validates."""
+    steps: list[dict[str, Any]] = []
+    for raw in recording:
+        if not isinstance(raw, dict):
+            continue
+        step = raw.get("step")
+        if not isinstance(step, dict):
+            continue
+        step_id = step.get("id")
+        action = step.get("action")
+        if not isinstance(step_id, str) or not isinstance(action, str):
+            continue
+        if action not in ("fill", "select", "click", "check", "press"):
+            continue
+        prepared: dict[str, Any] = {"id": step_id, "action": action}
+        if isinstance(step.get("name"), str):
+            prepared["name"] = step["name"]
+        if isinstance(step.get("targets"), list):
+            prepared["targets"] = step["targets"]
+        if step.get("value") is not None:
+            prepared["value"] = step["value"]
+        steps.append(prepared)
+    return steps
+
+
+@router.post("/recordings/clean", response_model=CleanRecordingResponse)
+def clean_recording(body: CleanRecordingBody) -> CleanRecordingResponse:
+    """Ask teaching to drop the page's own steps and name the rest (PL-123 item 1).
+
+    With no model, or an answer the gate refuses, the recording is returned unchanged: the panel
+    shows today's list and the person can still save it. A dropped step is only ever a drop; the
+    code gate in ``services/ai`` refuses an answer that adds a step or changes a value.
+    """
+    steps = _recorded_steps(body.recording)
+    if not steps:
+        return CleanRecordingResponse(available=False, steps=[])
+    with connection() as conn:
+        user = require_operator_user(conn)
+        service = AiService.from_env(conn)
+        if not service.available:
+            return CleanRecordingResponse(
+                available=False,
+                steps=[CleanedStep(id=step["id"], keep=True, intent="") for step in steps],
+                reason="no model is configured, so the recording is shown unchanged",
+            )
+        result = service.clean_recording(
+            CleanRecordingRequest(tenant_id=user.tenant_id, steps=tuple(steps))
+        )
+        # The `ai_calls` row is the audit trail; the request's connection must commit it before
+        # it closes, or a refused answer would vanish from the log.
+        conn.commit()
+    if result.status != "ok":
+        return CleanRecordingResponse(
+            available=False,
+            steps=[CleanedStep(id=step["id"], keep=True, intent="") for step in steps],
+            reason=result.reason or "the model did not answer",
+        )
+    return CleanRecordingResponse(
+        available=True,
+        steps=[
+            CleanedStep(id=step.id, keep=step.keep, intent=step.intent) for step in result.steps
+        ],
     )

@@ -36,6 +36,12 @@ export interface ResolveQuery {
   within?: string | null;
   /** The token to stamp on the found element. */
   token: string;
+  /**
+   * PL-123: this step acts on a search result, so the page's search box and everything inside it
+   * is never the element it means. A search shows the searched text twice -- once as a chip in
+   * the box, once on the result -- and without this the box reads as a second match.
+   */
+  excludeSearchBox?: boolean;
 }
 
 export interface RungAttempt {
@@ -1030,10 +1036,48 @@ export function resolveTargetInPage(query: ResolveQuery): ResolveResult {
     return true;
   };
 
-  const isUsable = (el: Element): boolean => isVisible(el) && !isDisabled(el);
+  // PL-123: a result step never resolves to the search box or a chip inside it.
+  const excludeSearch = query.excludeSearchBox === true;
+  const isUsable = (el: Element): boolean =>
+    isVisible(el) && !isDisabled(el) && !(excludeSearch && insideSearchBox(el));
 
   const inScope = (el: Element, scope: Element | null): boolean =>
     scope === null || scope.contains(el);
+
+  /**
+   * PL-123: whether this element is the search box, or something inside it.
+   *
+   * A search view shows the searched text twice -- once as a chip inside the input's own
+   * container, once on the result. The chip is never a result: it is the query the page drew
+   * back onto itself. "Inside" means any ancestor whose role is a searchbox, a form whose role is
+   * search, an element carrying part of the query as its own chip, or a wrapper class naming the
+   * search view. Only ancestors are judged, so a result *container* is never excluded merely
+   * because it holds a search box somewhere.
+   */
+  const insideSearchBox = (el: Element): boolean => {
+    for (let node: Element | null = el; node; node = node.parentElement) {
+      const tag = node.tagName.toUpperCase();
+      if (tag === "INPUT" && (node.getAttribute("type") ?? "text").toLowerCase() === "search") {
+        return true;
+      }
+      if (tag === "FORM" && (node.getAttribute("role") ?? "").toLowerCase() === "search") {
+        return true;
+      }
+      const role = (node.getAttribute("role") ?? "").toLowerCase();
+      if (role === "search" || role === "searchbox") return true;
+      const classes = (node.getAttribute("class") ?? "").toLowerCase();
+      if (/(^|[\s_-])o_searchview|search[-_]?(bar|box|field|view|input|chips?)([\s_-]|$)/.test(classes)) {
+        return true;
+      }
+      // A facet chip is the query's own part: a remove/dismiss control beside the typed text.
+      if (role === "listitem" && node.querySelector('[aria-label*="remove" i], [title*="remove" i], .o_facet_values, .o_searchview_facet')) {
+        return true;
+      }
+      const own = (node.getAttribute("class") ?? "").toLowerCase();
+      if (/(^|[\s_-])o_facet([\s_-]|$)/.test(own)) return true;
+    }
+    return false;
+  };
 
   const elements = (scope: Element | null): Element[] => deepElements(scope ?? doc);
 

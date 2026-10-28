@@ -37,9 +37,10 @@ from __future__ import annotations
 
 import logging
 import random
+import re
 import uuid
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import psycopg
@@ -1013,6 +1014,21 @@ class RunLoop:
             and _is_missing_target(prepared.error)
             and step.get("targets")
         ):
+            # PL-123: a row-named item several elements share is not a model question. Choosing
+            # one would re-open the wrong record and read its value back as if it were this row's.
+            ambiguous = _ambiguous_row_reason(step, row, variables, prepared.error)
+            if ambiguous is not None:
+                self._transition(
+                    conn,
+                    record,
+                    "filling",
+                    "parked",
+                    ambiguous,
+                    step=step,
+                    outcome="failed",
+                    error=prepared.error,
+                )
+                return "parked"
             prepared, command, find_terminal = self._prepare_with_finding(
                 conn,
                 record,
@@ -1303,6 +1319,26 @@ class RunLoop:
         read_back = verdict.observed.get("read_back")
         if read_back is not None:
             failed_observed["read_back"] = read_back
+        refusal = _refusal_save_reason(verdict)
+        if refusal is not None:
+            # PL-123: the app said why it refused ("Invalid fields: Name"). That sentence is more
+            # useful than "couldn't find" or a generic check failure, and it names the field a
+            # person has to fix.
+            refusal_words = verdict.observed.get("refusal")
+            if isinstance(refusal_words, str):
+                failed_observed["refusal"] = refusal_words
+            self._transition(
+                conn,
+                record,
+                "submitted_unverified",
+                "reconciling",
+                "the app refused the save",
+                step=step,
+                outcome="failed",
+                observed=failed_observed or None,
+            )
+            self._transition(conn, record, "reconciling", "parked", refusal)
+            return "parked"
         if verdict.status == "ok" and "value_equals" in condition:
             # PL-118: a read-back that the page answers "no" is a proven failure to show the
             # change. The destination might still have it, so the row parks for a person to
@@ -1428,6 +1464,23 @@ class RunLoop:
         stopped = self._drain_events(conn, record, run, epoch, box)
         if stopped is not None:
             return stopped
+
+        # PL-123: a name several items share never picks one, even though PL-122 could point at a
+        # unique snapshot token. Two products with the same name are two records.
+        ambiguous = _ambiguous_row_reason(step, row, variables, result.error)
+        if ambiguous is not None:
+            self._transition(
+                conn,
+                record,
+                box.state,
+                "parked",
+                ambiguous,
+                step=step,
+                outcome="failed",
+                error=result.error,
+            )
+            box.state = "parked"
+            return "parked"
 
         # PL-122: the recorded ladder found nothing, or more than one. Try the remembered element,
         # then one model answer, and send the step once more with the snapshot token first.
@@ -2263,6 +2316,10 @@ class RunLoop:
             return _condition_with_element(verdict, kind), None
 
         command = self._command(record, run, epoch, step, row, variables, commit=False)
+        if _condition_excludes_search_box(step):
+            # PL-123: the condition asks about a search result, so the snapshot a model reads must
+            # not offer it the chip that carries the same words inside the search box.
+            command = replace(command, step={**command.step, "exclude_search_box": True})
         token, ladder, found_origin, terminal = self._ask_for_token(
             command,
             record,
@@ -2309,6 +2366,8 @@ class RunLoop:
             "option_match",
             "autocomplete",
             "key",
+            # PL-123: a result step never resolves the search box or a chip inside it.
+            "exclude_search_box",
         ):
             if key in step:
                 rendered[key] = step[key]
@@ -2396,6 +2455,62 @@ def _is_busy_failure(error: str | None) -> bool:
     return bool(error) and "target is busy" in str(error).lower()
 
 
+def _row_template_column(step: Mapping[str, Any]) -> str | None:
+    """The row column a step's target ladder names, when it names one."""
+    for rung in step.get("targets") or []:
+        if not isinstance(rung, Mapping):
+            continue
+        for key in ("name", "text", "value"):
+            text = rung.get(key)
+            if not isinstance(text, str):
+                continue
+            match = re.search(r"\{\{\s*row\.([a-z0-9_]+)", text)
+            if match:
+                return match.group(1)
+    return None
+
+
+def _refusal_save_reason(verdict: ConditionResult) -> str | None:
+    """The app's own refusal sentence, when a save's check just failed (PL-123).
+
+    The subject is "The app", not the destination key: a run knows the site's host
+    (``localhost``), not the product's name, and "Localhost didn't save it" would be worse than
+    plain. The app's own words are the useful part.
+    """
+    if verdict.status != "ok":
+        return None
+    observed = verdict.observed if isinstance(verdict.observed, dict) else {}
+    refusal = observed.get("refusal")
+    if not isinstance(refusal, str) or not refusal.strip():
+        return None
+    return f"The app didn't save it: {refusal.strip()[:160]}"
+
+
+def _ambiguous_row_reason(
+    step: Mapping[str, Any],
+    row: Mapping[str, Any],
+    variables: Mapping[str, Any],
+    error: str | None,
+) -> str | None:
+    """PL-123, T1's third walk item: a name several items share never picks one.
+
+    A ladder that matches more than one element is usually a question for `find_target`. For a
+    step that opens the item named by the row's own value, it is not a question: two products
+    called "Standing Desk" are two different records, and choosing one would change the wrong
+    product. The row parks with the plain sentence instead.
+    """
+    if not error or "more than one match" not in error.lower():
+        return None
+    column = _row_template_column(step)
+    if column is None:
+        return None
+    intent = _safe_text(step.get("intent") or "", row, variables)
+    match = re.search(r"(?:open|find|click) the ([a-z][a-z ]*?) (?:found|called|named)", intent)
+    noun = match.group(1).strip() if match else column.replace("_", " ")
+    value = row.get(column, "")
+    return f"More than one {noun} matches '{value}'."
+
+
 def _is_missing_target(error: str | None) -> bool:
     """Whether a locator failure means no element or more than one, not a busy or covered one.
 
@@ -2436,6 +2551,18 @@ def _ends_record_for_a_person(steps: Any) -> bool:
         if _ends_record_for_a_person(step.get("then")) or _ends_record_for_a_person(
             step.get("else")
         ):
+            return True
+    return False
+
+
+def _condition_excludes_search_box(step: Mapping[str, Any]) -> bool:
+    """Whether this branch's condition asks about a search result (PL-123)."""
+    when = step.get("when")
+    if not isinstance(when, dict):
+        return False
+    for kind in ("element_present", "element_absent"):
+        selector = when.get(kind)
+        if isinstance(selector, dict) and selector.get("exclude_search_box") is True:
             return True
     return False
 

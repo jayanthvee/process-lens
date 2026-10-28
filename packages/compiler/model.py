@@ -61,6 +61,9 @@ class Candidate:
     targets: list[dict[str, Any]]
     value: Any = None
     name: str | None = None
+    # PL-123: one plain sentence saying what the step is for (D-026). Supplied by teaching, or
+    # derived from the step's own words when no model cleaned the recording.
+    intent: str | None = None
     key: str | None = None
     url: str = ""
     after_url: str | None = None
@@ -77,6 +80,9 @@ class Candidate:
     page_set: bool = False
     # PL-114: the state a recorded check left the field in; `value` is what a run sets.
     checked: bool | None = None
+    # PL-123: this step acts on a search result, so the page's own search box and the chips it
+    # shows for the query are never it.
+    exclude_search_box: bool = False
     notes: list[str] = field(default_factory=list)
 
 

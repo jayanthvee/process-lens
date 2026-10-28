@@ -76,6 +76,11 @@
       "maxLength": 500,
       "description": "D-026: one plain sentence saying what the step is for, in the words a colleague would use. A model may write it at teaching; the person confirms it. A run uses it when the remembered element is gone."
     },
+    "exclude_search_box": {
+      "type": "boolean",
+      "default": false,
+      "description": "PL-123: this step or condition acts on a search result, so the page's search box and everything inside it (the query's own facet chips) are never the element it means. A search shows the searched text twice -- once in the box, once on the result -- and the box would otherwise read as a second match."
+    },
     "step_description": { "type": "string", "maxLength": 1000 },
     "commit_flag": {
       "type": "boolean",
@@ -378,9 +383,10 @@
       "oneOf": [
         {
           "title": "Accessible role and name (rung 1)",
+          "description": "An element by its role, and its accessible name. PL-123: the name may be left out when the role alone is the element -- a page's one search box -- and the step's intent is what a run asks when that box is gone.",
           "type": "object",
           "additionalProperties": false,
-          "required": ["by", "role", "name"],
+          "required": ["by", "role"],
           "properties": {
             "by": { "const": "role" },
             "role": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
@@ -499,6 +505,8 @@
           "description": "Container scope for the whole bundle, for example 'dialog:New lead'. A rung may override it."
         },
         "frame": { "$ref": "#/$defs/frame" },
+        "intent": { "$ref": "#/$defs/step_intent" },
+        "exclude_search_box": { "$ref": "#/$defs/exclude_search_box" },
         "description": { "type": "string", "maxLength": 500 }
       }
     },
@@ -616,6 +624,7 @@
         "description": { "$ref": "#/$defs/step_description" },
         "labels": { "$ref": "#/$defs/labels" },
         "intent": { "$ref": "#/$defs/step_intent" },
+        "exclude_search_box": { "$ref": "#/$defs/exclude_search_box" },
         "commit": { "$ref": "#/$defs/commit_flag" },
         "assert_after": { "$ref": "#/$defs/assert_after" },
         "timeout_ms": { "$ref": "#/$defs/timeout_ms" },
@@ -645,6 +654,7 @@
         "description": { "$ref": "#/$defs/step_description" },
         "labels": { "$ref": "#/$defs/labels" },
         "intent": { "$ref": "#/$defs/step_intent" },
+        "exclude_search_box": { "$ref": "#/$defs/exclude_search_box" },
         "commit": { "$ref": "#/$defs/commit_flag" },
         "assert_after": { "$ref": "#/$defs/assert_after" },
         "timeout_ms": { "$ref": "#/$defs/timeout_ms" },
@@ -674,6 +684,7 @@
         "description": { "$ref": "#/$defs/step_description" },
         "labels": { "$ref": "#/$defs/labels" },
         "intent": { "$ref": "#/$defs/step_intent" },
+        "exclude_search_box": { "$ref": "#/$defs/exclude_search_box" },
         "timeout_ms": { "$ref": "#/$defs/timeout_ms" },
         "on_failure": { "$ref": "#/$defs/on_failure" },
         "action": { "const": "check" },
@@ -703,6 +714,7 @@
         "description": { "$ref": "#/$defs/step_description" },
         "labels": { "$ref": "#/$defs/labels" },
         "intent": { "$ref": "#/$defs/step_intent" },
+        "exclude_search_box": { "$ref": "#/$defs/exclude_search_box" },
         "commit": { "$ref": "#/$defs/commit_flag" },
         "assert_after": { "$ref": "#/$defs/assert_after" },
         "timeout_ms": { "$ref": "#/$defs/timeout_ms" },
@@ -731,6 +743,7 @@
         "description": { "$ref": "#/$defs/step_description" },
         "labels": { "$ref": "#/$defs/labels" },
         "intent": { "$ref": "#/$defs/step_intent" },
+        "exclude_search_box": { "$ref": "#/$defs/exclude_search_box" },
         "timeout_ms": { "$ref": "#/$defs/timeout_ms" },
         "on_failure": { "$ref": "#/$defs/on_failure" },
         "action": { "const": "press" },
@@ -756,6 +769,7 @@
         "description": { "$ref": "#/$defs/step_description" },
         "labels": { "$ref": "#/$defs/labels" },
         "intent": { "$ref": "#/$defs/step_intent" },
+        "exclude_search_box": { "$ref": "#/$defs/exclude_search_box" },
         "commit": { "$ref": "#/$defs/commit_flag" },
         "assert_after": { "$ref": "#/$defs/assert_after" },
         "timeout_ms": { "$ref": "#/$defs/timeout_ms" },
@@ -780,6 +794,7 @@
         "description": { "$ref": "#/$defs/step_description" },
         "labels": { "$ref": "#/$defs/labels" },
         "intent": { "$ref": "#/$defs/step_intent" },
+        "exclude_search_box": { "$ref": "#/$defs/exclude_search_box" },
         "timeout_ms": { "$ref": "#/$defs/timeout_ms" },
         "on_failure": { "$ref": "#/$defs/on_failure" },
         "action": { "const": "read_value" },
@@ -802,6 +817,7 @@
         "description": { "$ref": "#/$defs/step_description" },
         "labels": { "$ref": "#/$defs/labels" },
         "intent": { "$ref": "#/$defs/step_intent" },
+        "exclude_search_box": { "$ref": "#/$defs/exclude_search_box" },
         "timeout_ms": { "$ref": "#/$defs/timeout_ms" },
         "on_failure": { "$ref": "#/$defs/on_failure" },
         "action": { "const": "wait_for" },
@@ -828,6 +844,7 @@
         "description": { "$ref": "#/$defs/step_description" },
         "labels": { "$ref": "#/$defs/labels" },
         "intent": { "$ref": "#/$defs/step_intent" },
+        "exclude_search_box": { "$ref": "#/$defs/exclude_search_box" },
         "timeout_ms": { "$ref": "#/$defs/timeout_ms" },
         "on_failure": { "$ref": "#/$defs/on_failure" },
         "action": { "const": "assert" },
@@ -847,6 +864,7 @@
         "description": { "$ref": "#/$defs/step_description" },
         "labels": { "$ref": "#/$defs/labels" },
         "intent": { "$ref": "#/$defs/step_intent" },
+        "exclude_search_box": { "$ref": "#/$defs/exclude_search_box" },
         "timeout_ms": { "$ref": "#/$defs/timeout_ms" },
         "on_failure": { "$ref": "#/$defs/on_failure" },
         "action": { "const": "download" },
@@ -897,6 +915,7 @@
         "description": { "$ref": "#/$defs/step_description" },
         "labels": { "$ref": "#/$defs/labels" },
         "intent": { "$ref": "#/$defs/step_intent" },
+        "exclude_search_box": { "$ref": "#/$defs/exclude_search_box" },
         "timeout_ms": { "$ref": "#/$defs/timeout_ms" },
         "on_failure": { "$ref": "#/$defs/on_failure" },
         "action": { "const": "for_each" },
