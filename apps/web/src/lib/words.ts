@@ -96,6 +96,23 @@ export function rowOutcome(state: string, reason?: string | null): Outcome {
 export const WAITING_FOR_CHROME = `Waiting for Chrome. ${CONNECT_CHROME}`;
 
 /**
+ * PL-118 item 3: one changed field, as the page showed it after a try.
+ *
+ * The value is always the page's own reading, never the spreadsheet's value. "now" means the page
+ * kept the change; "still" names what it kept instead, and says plainly it was not saved.
+ */
+export function readBackWords(entry: {
+  label: string;
+  value: string;
+  matched: boolean;
+}): string {
+  const label = entry.label.trim() || "The field";
+  return entry.matched
+    ? `${label}: now ${entry.value}`
+    : `${label}: still ${entry.value}, not saved`;
+}
+
+/**
  * A run's status in plain words.
  *
  * A finished run is only a clean finish when no row is left for a person: `counts` lets a

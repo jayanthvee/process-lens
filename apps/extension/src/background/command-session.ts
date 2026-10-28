@@ -83,6 +83,8 @@ export type CheckAnswer =
        * `undefined` means the page was not probed.
        */
       codePage?: boolean;
+      /** PL-118: what a `value_equals` check read from the page, for the try card. */
+      observed?: Record<string, unknown>;
     }
   | { ok: false; reason: string };
 
@@ -953,10 +955,14 @@ export class CommandSession {
               type: "condition",
               command_id: command.command_id,
               passed: answer.passed,
-              observed:
-                answer.passed || answer.codePage === undefined
+              // PL-117: a failed check says whether a code page is still showing. PL-118: a
+              // read-back carries the page's own value, never the row's file value.
+              observed: {
+                ...(answer.passed || answer.codePage === undefined
                   ? {}
-                  : { code_page: answer.codePage },
+                  : { code_page: answer.codePage }),
+                ...(answer.observed ?? {}),
+              },
             });
           } else {
             // B1: a check that could not be evaluated is a REFUSAL, never a real "no". Reporting

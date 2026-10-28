@@ -48,6 +48,13 @@ export interface WaitingBehind {
 }
 
 /** One row of `GET /api/v1/runs/{id}/records`: a row of the spreadsheet, and where it got to. */
+/** PL-118: one changed field, as the page showed it after a try. */
+export interface ReadBackEntry {
+  label: string;
+  value: string;
+  matched: boolean;
+}
+
 export interface RecordRow {
   id: string;
   record_key: string;
@@ -57,6 +64,8 @@ export interface RecordRow {
   max_attempts: number;
   commit_attempted: boolean;
   destination_ref: string | null;
+  /** PL-118: the page's own read-back, empty when the try has none to show. */
+  read_back?: ReadBackEntry[];
 }
 
 /** One row of `GET /api/v1/runs/{id}/transitions`. */

@@ -13,6 +13,7 @@ import {
   isOpenStatus,
   pauseReasonWords,
   plainReason,
+  readBackWords,
   refusalWords,
   rowOutcome,
   runStatusWords,
@@ -649,6 +650,17 @@ export function TaskRun(): JSX.Element {
                 ))}
               </dl>
             </div>
+          )}
+          {/* PL-118 item 3: what the page kept, read back after the try. The value is the page's
+              own, never the spreadsheet's, so a try never shows the file as if it were the result. */}
+          {(previewRow?.read_back ?? []).length === 0 ? null : (
+            <dl className="run-read-back">
+              {(previewRow?.read_back ?? []).map((entry) => (
+                <div className="run-read-back-row" key={entry.label}>
+                  <dd>{readBackWords(entry)}</dd>
+                </div>
+              ))}
+            </dl>
           )}
           {run.data === null || run.data.open_approval === null ? (
             <div className="actions">

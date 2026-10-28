@@ -91,6 +91,36 @@ export function canRemoveStep(state: RecordingState): boolean {
   return state === "idle" || state === "recording";
 }
 
+/** The first rung of a step's ladder, for spotting a click and its own submit. */
+function firstTargetKey(step: RecordedEvent["step"]): string {
+  return JSON.stringify(step?.targets?.[0] ?? null);
+}
+
+/**
+ * How many lines the live step list shows (PL-118 item 5).
+ *
+ * An observation is evidence, not a step; a submit folded into the click before it is the same
+ * line. The popup's "N steps recorded" and the panel's list both read this, so the number and the
+ * lines cannot disagree.
+ */
+export function countedSteps(events: readonly RecordedEvent[]): number {
+  let count = 0;
+  let previous: RecordedEvent | null = null;
+  for (const event of events) {
+    if (!event.step && event.kind !== "navigate") continue;
+    if (
+      event.kind === "submit" &&
+      previous?.kind === "click" &&
+      firstTargetKey(previous.step) === firstTargetKey(event.step)
+    ) {
+      continue;
+    }
+    count += 1;
+    previous = event;
+  }
+  return count;
+}
+
 export class RecorderSession {
   private readonly now: () => number;
   private readonly maxEvents: number;
@@ -116,7 +146,7 @@ export class RecorderSession {
   }
 
   get count(): number {
-    return this.stored.length;
+    return countedSteps(this.stored);
   }
 
   /**

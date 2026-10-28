@@ -55,6 +55,9 @@ class CompileRequest(BaseModel):
     # sign-in recipe ends by waiting for that page; without one the recipe says so in its warnings.
     sign_in: bool = False
     sign_in_after_path: str | None = None
+    # PL-118: the person chose "The app saves by itself when I leave the page". The compiler
+    # builds the leave/re-open commit and its value read-back; no click is sent as the save.
+    save_by_itself: bool = False
 
 
 class CompileResponse(BaseModel):
@@ -89,6 +92,7 @@ def compile_recipe(request: CompileRequest) -> CompileResponse:
         park_fields=request.park_fields,
         sign_in=request.sign_in,
         sign_in_after_path=request.sign_in_after_path,
+        save_by_itself=request.save_by_itself,
     )
     try:
         result = compile_recording(request.recording, options)

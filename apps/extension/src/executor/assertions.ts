@@ -21,6 +21,30 @@ export interface ConditionContext {
   valueEquals?: string | null;
 }
 
+/** What a `value_equals` check read from the page, for the try card (PL-118). */
+export interface ReadBackValue {
+  /** The field's own name, from the selector's description or its first named rung. */
+  label: string;
+  /** The value the page actually shows, exactly as it reads it. */
+  value: string;
+}
+
+/** The page-side number a formatted value carries, or null when it is not a number. */
+export const PAGE_NUMBER_SOURCE = `(() => {
+  const numberIn = (text) => {
+    const compact = String(text).trim().replace(/\\s+/g, "");
+    // PL-118 review S1: a comma groups thousands only before exactly three digits
+    // ("1,299.00"). "799,50" and "1,5" use it as a decimal mark, so they are not numbers under
+    // this reading and fall back to the text comparison -- 15 must never match a page showing 1,5.
+    const match =
+      /^[^0-9,+-]*([+-]?(?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\\.[0-9]+)?)[^0-9,]*$/.exec(compact);
+    if (!match) return null;
+    const value = Number(match[1].replace(/,/g, ""));
+    return Number.isFinite(value) ? value : null;
+  };
+  return numberIn;
+})()`;
+
 /** A condition's own timeout, or the fallback when it carries none. */
 export function conditionTimeout(
   condition: Condition | undefined,
@@ -122,6 +146,72 @@ const PREDICATE_KEYS = [
  * `url_matches`, `element_present`, `element_absent`, `value_equals`. A condition carrying none of
  * them raises, so one the executor does not understand can never pass silently.
  */
+/** The field's own name for a read-back, from the selector's description or a named rung. */
+function readBackLabel(spec: {
+  selector?: { description?: unknown; targets?: unknown };
+} | undefined): string {
+  const description = spec?.selector?.description;
+  if (typeof description === "string" && description.trim() !== "") return description.trim();
+  const targets = Array.isArray(spec?.selector?.targets) ? spec.selector.targets : [];
+  for (const raw of targets) {
+    const target = raw as Record<string, unknown>;
+    const by = target["by"];
+    if (by === "role" && typeof target["name"] === "string" && target["name"].trim() !== "") {
+      return target["name"].trim();
+    }
+    if (by === "label" && typeof target["text"] === "string" && target["text"].trim() !== "") {
+      return target["text"].trim();
+    }
+    if (
+      (by === "testid" || by === "text_fuzzy") &&
+      typeof target["value"] === "string" &&
+      target["value"].trim() !== ""
+    ) {
+      return target["value"].trim();
+    }
+  }
+  return "The field";
+}
+
+/**
+ * Read the value a `value_equals` condition points at, exactly as the page shows it (PL-118).
+ *
+ * The check itself is a boolean; the try card needs the page's own value so it can say "now 799"
+ * or "still 910, not saved". This reads the same selector the condition uses and returns the
+ * actual text (or input value), never the row's file value. Null when the field is not there.
+ */
+export async function readValueEquals(
+  cdp: CdpTransport,
+  condition: Condition,
+  ctx: ConditionContext,
+  options: { contextId?: number } = {},
+): Promise<ReadBackValue | null> {
+  const record = condition as Record<string, unknown>;
+  const spec = record["value_equals"] as
+    | { selector?: { targets?: unknown; within?: unknown; description?: unknown } }
+    | undefined;
+  if (!spec || typeof spec !== "object" || Array.isArray(spec)) return null;
+  const selector = spec.selector ?? {};
+  const call = resolverCallExpression(ctx.resolverSource, {
+    targets: selector.targets ?? [],
+    within: selector.within ?? null,
+    token: "condition-probe",
+  });
+  const raw = await evaluate(
+    cdp,
+    `(() => {
+      const result = ${call};
+      if (!result || result.ok !== true) return null;
+      const el = document.querySelector('[data-pl-target="condition-probe"]');
+      if (!el) return null;
+      return String(el.value !== undefined ? el.value : el.textContent || "");
+    })()`,
+    options,
+  );
+  if (typeof raw !== "string") return null;
+  return { label: readBackLabel(spec), value: raw };
+}
+
 export function conditionExpression(condition: Condition, ctx: ConditionContext): string {
   const record = condition as Record<string, unknown>;
   const keys = PREDICATE_KEYS.filter((key) => key in record);
@@ -234,12 +324,21 @@ function predicateExpression(
       within: spec?.selector?.within ?? null,
       token: "condition-probe",
     });
+    // PL-118: a read-back compares what a person reads. An app formats a number its own way
+    // ("$ 799.00", "1,299.00"), so two values that are the same number are equal. Text is
+    // trimmed, and compared without case when the recipe asks for it. Anything that is not a
+    // number falls back to the text comparison, so a word never matches a number by accident.
     return `(() => {
+      const numberIn = ${PAGE_NUMBER_SOURCE};
       const result = ${call};
       if (!result || result.ok !== true) return false;
       const el = document.querySelector('[data-pl-target="condition-probe"]');
       if (!el) return false;
       const actual = String(el.value !== undefined ? el.value : el.textContent || "");
+      const wanted = ${normal(expected)};
+      const aNumber = numberIn(actual);
+      const bNumber = numberIn(wanted);
+      if (aNumber !== null && bNumber !== null) return aNumber === bNumber;
       const a = ${insensitive ? "actual.trim().toLowerCase()" : "actual.trim()"};
       const b = ${insensitive ? normal(expected) + ".toLowerCase()" : normal(expected)};
       return a === b;

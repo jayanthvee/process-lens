@@ -250,7 +250,8 @@ class BrowserExecutor:
         if kind == "condition":
             # R1: only a real answer counts. `passed=False` here means the extension polled.
             # PL-117: a failed answer may carry what the page looked like (the code prompt is
-            # still there), so the row's sentence can name the right page.
+            # still there), so the row's sentence can name the right page. PL-118: a read-back
+            # carries the page's own value for the try card. Both are the page's answer.
             observed = message.get("observed")
             return ConditionResult(
                 passed=bool(message.get("passed")),

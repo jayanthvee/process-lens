@@ -75,6 +75,13 @@ export const NO_SEARCH_HINT = DUPLICATES_BLOCKED;
 export const SKIP_IF_THERE = "If this row is already there, skip it";
 export const PARK_WHEN_NOTHING_FOUND = "If the search finds nothing, stop and ask me";
 
+/**
+ * PL-118 item 2: the third way a task can save, when no Save click was recorded. The value is a
+ * sentinel in the commit select; the compile request carries `save_by_itself` instead of a click.
+ */
+export const SAVE_BY_ITSELF = "__self_save__";
+export const SAVE_BY_ITSELF_CHOICE = "The app saves by itself when I leave the page";
+
 /** The checkbox's wording for a compiled shape: no shape, or a create, keeps today's words. */
 export function duplicateLabelFor(searchKind: string | null): string {
   return searchKind === "update" ? PARK_WHEN_NOTHING_FOUND : SKIP_IF_THERE;
@@ -108,6 +115,8 @@ export interface CompileRequestBody {
   sign_in?: boolean;
   /** PL-113 S2: the page the site reached after the code page, as teaching saw it. */
   sign_in_after_path?: string | null;
+  /** PL-118 item 2: the app saves by itself when the form is left; no click is the save. */
+  save_by_itself?: boolean;
 }
 
 /** What the compile route answered: a recipe, or the problems it found. */
@@ -539,6 +548,12 @@ export function parkFieldDefaults(events: RecordedEvent[], recordKeyColumn: stri
  */
 export function defaultRecordKeyColumn(events: RecordedEvent[]): string | null {
   const values = recordedValues(events);
+  // PL-118 item 4: a find-then-update is keyed on what the search looked for -- the product being
+  // changed -- not on the new value typed into its price field, which is often a number and would
+  // otherwise win the id-like rule below.
+  for (const value of values) {
+    if (searchesForValue(events, value.value)) return value.column;
+  }
   for (const value of values) {
     if (/email/i.test(value.column) || /email/i.test(value.label)) return value.column;
   }
@@ -567,6 +582,107 @@ export function defaultCommitStepId(events: RecordedEvent[]): string | null {
     if (step && step.action === "click" && step.id && !movesAround(step)) last = step.id;
   }
   return last;
+}
+
+/** Whether a click's own words read as a save, however the app spells it (PL-118 item 2). */
+const SAVE_WORDS = /\b(save|create|add|submit|confirm|apply|update)\b/i;
+
+/**
+ * Whether the recording holds a click that actually saves its work.
+ *
+ * This is the rule the ticket gives: a button whose own name reads as save/create/add/submit/
+ * confirm/apply/update, or a form submit. A tab, a link or a menu item only moves around the page
+ * and is never a save. `hasSaveClick` decides whether "The app saves by itself when I leave the
+ * page" is offered at all.
+ */
+export function hasSaveClick(events: RecordedEvent[]): boolean {
+  for (const event of events) {
+    const step = event?.step ?? null;
+    if (!step) continue;
+    if (event.kind === "submit") return true;
+    if (step.action !== "click" || movesAround(step)) continue;
+    const words = humanName(step) ?? step.name ?? "";
+    if (SAVE_WORDS.test(words)) return true;
+  }
+  return false;
+}
+
+/** A URL whose last path segment names one record: a number or a UUID. */
+function isRecordPageUrl(url: string): boolean {
+  try {
+    const tail = new URL(url).pathname.replace(/\/+$/, "").split("/").pop() ?? "";
+    return /^\d+$/.test(tail) || /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(tail);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether the recorded page moved after the last field change, or the page said it saved.
+ *
+ * The owner's shape ends "...change Sales Price, then go back to the list". That leave (a click
+ * that moved the page, or a navigation) is the signal that this app saves by itself. A save
+ * indicator the page showed after the change counts too.
+ */
+export function selfSaveIsDefault(events: RecordedEvent[]): boolean {
+  let lastFill = -1;
+  for (const [index, event] of events.entries()) {
+    if (event?.step?.action === "fill") lastFill = index;
+  }
+  if (lastFill < 0) return false;
+  const lastFillEvent = events[lastFill];
+  const observation = lastFillEvent?.observation as { text_visible?: unknown } | undefined;
+  if (typeof observation?.text_visible === "string" && observation.text_visible.trim() !== "") {
+    return true;
+  }
+  for (let index = lastFill + 1; index < events.length; index += 1) {
+    const event = events[index];
+    if (event?.kind === "navigate") return true;
+    const seen = event?.observation as { text_visible?: unknown } | undefined;
+    if (typeof seen?.text_visible === "string" && seen.text_visible.trim() !== "") return true;
+    const step = event?.step ?? null;
+    if (step?.action === "click" && movesAround(step)) return true;
+    const landed = events[index + 1]?.url ?? "";
+    if (step?.action === "click" && landed !== "" && landed !== event?.url) return true;
+  }
+  return false;
+}
+
+/**
+ * Whether the recording changes an existing item rather than adding one (PL-118 item 4).
+ *
+ * A search for the key, then a click that opens a record's own page (a numeric id or a UUID), and
+ * a fill on that page. That is the shape whose key line says "this exact change" instead of
+ * "nothing gets added twice".
+ */
+export function updateDetected(events: RecordedEvent[], recordKeyColumn: string): boolean {
+  if (!searchDetected(events, recordKeyColumn)) return false;
+  for (let index = 0; index < events.length; index += 1) {
+    const step = events[index]?.step ?? null;
+    const landed = events[index + 1]?.url ?? "";
+    if (!step || step.action !== "click" || !isRecordPageUrl(landed)) continue;
+    let path = "";
+    try {
+      path = new URL(landed).pathname.replace(/\/+$/, "");
+    } catch {
+      continue;
+    }
+    for (const later of events.slice(index + 1)) {
+      if (later?.step?.action !== "fill") continue;
+      try {
+        if (new URL(later.url).pathname.replace(/\/+$/, "") === path) return true;
+      } catch {
+        // A URL the recorder could not parse says nothing about the shape.
+      }
+    }
+  }
+  return false;
+}
+
+/** The commit choice a fresh recording should start on. */
+export function defaultCommitChoice(events: RecordedEvent[]): string {
+  if (!hasSaveClick(events) && selfSaveIsDefault(events)) return SAVE_BY_ITSELF;
+  return defaultCommitStepId(events) ?? "";
 }
 
 /**
@@ -632,19 +748,27 @@ export function makeRecipeRequest(
     allowedOrigins?: string[];
     duplicateCheck?: boolean;
     parkFields?: string[];
+    saveByItself?: boolean;
   },
 ): CompileRequestBody {
+  // PL-118: a saves-by-itself task has no click to name. Its capture is not trimmed to a save
+  // click either: the leave is the last thing the person did and the compiler needs it.
+  const selfSave = choice.saveByItself === true;
   // PL-042: the recording sent is the first entry when the recording saves twice; the chosen
   // commit names the save step, falling back to the recording's own default.
-  const entry = firstEntryEvents(events, choice.commitStepId ?? defaultCommitStepId(events));
+  const entry = selfSave
+    ? events
+    : firstEntryEvents(events, choice.commitStepId ?? defaultCommitStepId(events));
   // T1 review: a trimmed recording ends at the FIRST save click, so that click is the commit. The
   // chosen id may name the repeat's save, which is no longer in the recording -- left as is, the
   // first save would compile as a plain click with no write-ahead and no save check.
-  const trimmed = entry.length < events.length;
-  const commitStepId = trimmed
-    ? ([...entry].reverse().find((event) => event?.step?.action === "click")?.step?.id ??
-      choice.commitStepId)
-    : choice.commitStepId;
+  const trimmed = !selfSave && entry.length < events.length;
+  const commitStepId = selfSave
+    ? null
+    : trimmed
+      ? ([...entry].reverse().find((event) => event?.step?.action === "click")?.step?.id ??
+        choice.commitStepId)
+      : choice.commitStepId;
   const sampleRow: Record<string, string> = {};
   for (const value of recordedValues(entry)) sampleRow[value.column] = value.value;
 
@@ -660,6 +784,7 @@ export function makeRecipeRequest(
     // gets the recording's own origins, exactly as before this field existed.
     allowed_origins: choice.allowedOrigins ?? recordedOrigins(entry),
     commit_step_ids: commitStepId ? [commitStepId] : [],
+    ...(selfSave ? { save_by_itself: true } : {}),
     // The route defaults these the same way, so a caller that names neither stays
     // on the compiler's built-in defaults.
     duplicate_check: choice.duplicateCheck ?? true,
@@ -872,9 +997,10 @@ function parkRow(value: RecordedValue, checked: boolean): HTMLLabelElement {
 function defaultName(events: RecordedEvent[]): string {
   try {
     const host = new URL(events[0]?.url ?? "").hostname;
-    return host.length > 0 ? `Recorded on ${host}` : "Recorded task";
+    // PL-118 item 5: the site's name, never a previous recording's "Recorded on ...".
+    return host.length > 0 ? `${host} task` : "";
   } catch {
-    return "Recorded task";
+    return "";
   }
 }
 
@@ -1036,9 +1162,21 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
     const decided = defaultRecordKeyColumn(events);
     if (decided !== null && !changingKey) {
       const label = values.find((value) => value.column === decided)?.label ?? decided;
-      keyDecidedNote.replaceChildren(
-        decidedSentence(KEY_DECIDED_BEFORE, label, KEY_DECIDED_AFTER),
-      );
+      if (updateDetected(events, decided)) {
+        // PL-118 item 4: an edit is keyed by the item and the exact values it writes. The
+        // column's own name is bold, as it is in the add-twice line.
+        const name = document.createElement("b");
+        name.textContent = label.toLowerCase();
+        keyDecidedNote.replaceChildren(
+          document.createTextNode("We'll skip a row if this "),
+          name,
+          document.createTextNode(" already got this exact change."),
+        );
+      } else {
+        keyDecidedNote.replaceChildren(
+          decidedSentence(KEY_DECIDED_BEFORE, label, KEY_DECIDED_AFTER),
+        );
+      }
       keyDecidedEl.hidden = false;
       keyAskEl.hidden = true;
       return;
@@ -1053,7 +1191,8 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
    */
   function renderCommitDecision(): void {
     const choices = commitChoices(events);
-    if (choices.length === 0) {
+    const selfSaveOffered = events.length > 0 && !hasSaveClick(events);
+    if (choices.length === 0 && !selfSaveOffered) {
       commitDecidedNote.textContent = NOTHING_SAVED_LINE;
       commitChangeEl.hidden = true;
       commitDecidedEl.hidden = false;
@@ -1061,12 +1200,18 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
       return;
     }
     commitChangeEl.hidden = false;
-    const decided = defaultCommitStepId(events);
-    if (decided !== null && !changingCommit) {
-      const label = choices.find((choice) => choice.id === decided)?.label ?? "Save";
-      commitDecidedNote.replaceChildren(
-        decidedSentence(COMMIT_DECIDED_BEFORE, label, COMMIT_DECIDED_AFTER),
-      );
+    const decided = defaultCommitChoice(events);
+    if (!changingCommit) {
+      if (decided === "") {
+        commitDecidedNote.textContent = NOTHING_SAVED_LINE;
+      } else if (decided === SAVE_BY_ITSELF) {
+        commitDecidedNote.textContent = `${SAVE_BY_ITSELF_CHOICE}.`;
+      } else {
+        const label = choices.find((choice) => choice.id === decided)?.label ?? "Save";
+        commitDecidedNote.replaceChildren(
+          decidedSentence(COMMIT_DECIDED_BEFORE, label, COMMIT_DECIDED_AFTER),
+        );
+      }
       commitDecidedEl.hidden = false;
       commitAskEl.hidden = true;
       return;
@@ -1163,13 +1308,16 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
     keyEl.disabled = values.length === 0;
 
     const choices = commitChoices(events);
+    const selfSaveOffered = events.length > 0 && !hasSaveClick(events);
     commitEl.replaceChildren(
       ...choices.map((choice) => option(choice.id, choice.label)),
+      // PL-118 item 2: the app's own save is offered when no click saves the work.
+      ...(selfSaveOffered ? [option(SAVE_BY_ITSELF, SAVE_BY_ITSELF_CHOICE)] : []),
       // PL-109 item 6: "Nothing gets saved" stays a choice, not only a default.
       option("", NOTHING_SAVED_CHOICE),
     );
-    commitEl.value = defaultCommitStepId(events) ?? "";
-    commitEl.disabled = choices.length === 0;
+    commitEl.value = defaultCommitChoice(events);
+    commitEl.disabled = choices.length === 0 && !selfSaveOffered;
 
     // PL-109 items 5 and 6: the decisions are shown, not asked, when they can be made.
     renderKeyDecision();
@@ -1226,10 +1374,12 @@ export function createMakeRecipeForm(deps: MakeRecipeFormDeps): MakeRecipeForm {
       return;
     }
 
+    const selfSave = commitEl.value === SAVE_BY_ITSELF;
     const request = makeRecipeRequest(events, {
       name,
       recordKeyColumn: keyEl.value,
-      commitStepId: commitEl.value.length > 0 ? commitEl.value : null,
+      commitStepId: selfSave || commitEl.value.length === 0 ? null : commitEl.value,
+      saveByItself: selfSave,
       // Unticking an origin the recording visited pins the shorter list, and the
       // route answers 422 naming that origin.
       allowedOrigins: checkedOrigins(),
