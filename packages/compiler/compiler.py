@@ -1543,6 +1543,20 @@ def _read_back_assertion(fill: Candidate, options: CompileOptions) -> dict[str, 
     }
 
 
+def _click_touches_a_changed_field(
+    click: Candidate, fill_indexes: list[int], candidates: list[Candidate]
+) -> bool:
+    """Whether a click after the change is still part of editing a field, not a stray one.
+
+    Opening a dropdown or accepting a suggestion belongs to the fill; a click on All Apps or a
+    tab strip does not. This is what tells a leave from the stray clicks the owner made while
+    looking for the way back, when teaching has not cleaned them away.
+    """
+    if _is_option_click(click):
+        return True
+    return any(_shares_a_target(click, candidates[index]) for index in fill_indexes)
+
+
 def _edit_shape(candidates: list[Candidate]) -> dict[str, Any] | None:
     """The shape of an edit: the click that opened the item, its fills, and the leave.
 
@@ -1570,6 +1584,7 @@ def _edit_shape(candidates: list[Candidate]) -> dict[str, Any] | None:
         return None
     fills: list[int] = []
     leave: int | None = None
+    stray_after_change = False
     for index in range(open_index + 1, limit):
         candidate = candidates[index]
         path = urlsplit(candidate.url).path.rstrip("/")
@@ -1587,6 +1602,20 @@ def _edit_shape(candidates: list[Candidate]) -> dict[str, Any] | None:
             # form cannot stand in for the real one.
             if candidate.action == "click" and _is_back_click(candidate):
                 leave = index
+            elif (
+                candidate.action == "click"
+                and candidate.after_url
+                and candidate.after_url != candidate.url
+            ):
+                # The click's own landing page moved: the person left the item.
+                leave = index
+            elif candidate.action == "click" and not _click_touches_a_changed_field(
+                candidate, fills, candidates
+            ):
+                # A click after the change that teaching did not drop could be the save itself.
+                # Without cleaning, the compiler cannot tell the leave from the stray clicks the
+                # owner made on the way back; it says so rather than guessing.
+                stray_after_change = True
             continue
         if candidate.action == "navigate":
             leave = index
@@ -1602,7 +1631,15 @@ def _edit_shape(candidates: list[Candidate]) -> dict[str, Any] | None:
         ):
             leave = index
             continue
-    return {"open": open_index, "record_path": record_path, "fills": fills, "leave": leave}
+    if stray_after_change:
+        leave = None
+    return {
+        "open": open_index,
+        "record_path": record_path,
+        "fills": fills,
+        "leave": leave,
+        "stray_after_change": stray_after_change,
+    }
 
 
 def _self_save_commit(
@@ -1636,10 +1673,16 @@ def _self_save_commit(
         # Nothing left the form, so nothing shows what the app saved. Committing the fill itself
         # would check the value the run just typed -- true whatever the app did. The compile says
         # so instead, and every row is left for a person.
-        warnings.append(
-            "the recording ends on the form without leaving it, so nothing shows what the app "
-            "saved; every row will be left for you"
-        )
+        if shape.get("stray_after_change"):
+            warnings.append(
+                "the recording has clicks after the change that teaching did not drop, so the "
+                "leave could not be recognised; every row will be left for you"
+            )
+        else:
+            warnings.append(
+                "the recording ends on the form without leaving it, so nothing shows what the app "
+                "saved; every row will be left for you"
+            )
         return False
     # The item must be opened again to read the saved page. Reuse the recorded click that opened
     # it: its ladder is the one the demonstration proved on this site. If the person already
@@ -1655,12 +1698,16 @@ def _self_save_commit(
     if commit_index is not None:
         candidates[commit_index].commit = True
         candidates[commit_index].assert_after = assertion
+        candidates[commit_index].intent = candidates[commit_index].intent or (
+            "open the item the search found to read the saved value back"
+        )
     else:
         candidates.append(
             Candidate(
                 action="click",
                 targets=[dict(rung) for rung in opener.targets],
                 name=opener.name,
+                intent="open the item again to read the saved value back",
                 url=opener.url,
                 after_url=opener.after_url,
                 commit=True,
