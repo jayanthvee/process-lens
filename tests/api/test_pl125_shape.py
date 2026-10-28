@@ -313,6 +313,8 @@ def test_attempt_one_compiles_to_search_open_change_and_checked_leave() -> None:
     # A search that finds nothing parks the row instead of changing whatever is open.
     branches = [step for step in _steps(recipe) if step["action"] == "branch"]
     assert len(branches) == 1 and "{{row.product" in json.dumps(branches[0]["when"])
+    # The leave is the list's address, never the recorded back arrow, which a wide window lacks.
+    assert "o_back_button" not in text
     # The save is checked: some step carries a read-back of the price.
     assert "assert_after" in text
 
@@ -346,6 +348,9 @@ def test_the_events_enrollment_compiles_to_new_fill_and_save_on_the_attendee_lis
     assert len(branches) == 1
     assert "{{row.email}}" in json.dumps(branches[0]["when"])
     assert json.dumps(branches[0]["then"]).count("skipped") == 1
+    # The new attendee is saved by the person's own leave, and that step is checked.
+    commits = [step for step in _steps(recipe) if step.get("commit")]
+    assert len(commits) == 1 and "assert_after" in commits[0]
 
 
 # ------------------------------------------------------------------ refusals
