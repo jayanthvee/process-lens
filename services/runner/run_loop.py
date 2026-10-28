@@ -2319,9 +2319,7 @@ class RunLoop:
         if _condition_excludes_search_box(step):
             # PL-123: the condition asks about a search result, so the snapshot a model reads must
             # not offer it the chip that carries the same words inside the search box.
-            command = replace(
-                command, step={**command.step, "exclude_search_box": True}
-            )
+            command = replace(command, step={**command.step, "exclude_search_box": True})
         token, ladder, found_origin, terminal = self._ask_for_token(
             command,
             record,
