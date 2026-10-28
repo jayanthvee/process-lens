@@ -499,6 +499,7 @@
           "description": "Container scope for the whole bundle, for example 'dialog:New lead'. A rung may override it."
         },
         "frame": { "$ref": "#/$defs/frame" },
+        "intent": { "$ref": "#/$defs/step_intent" },
         "description": { "type": "string", "maxLength": 500 }
       }
     },

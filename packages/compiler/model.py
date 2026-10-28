@@ -61,6 +61,9 @@ class Candidate:
     targets: list[dict[str, Any]]
     value: Any = None
     name: str | None = None
+    # PL-123: one plain sentence saying what the step is for (D-026). Supplied by teaching, or
+    # derived from the step's own words when no model cleaned the recording.
+    intent: str | None = None
     key: str | None = None
     url: str = ""
     after_url: str | None = None

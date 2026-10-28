@@ -103,6 +103,12 @@ class CompileOptions:
     # PL-118: the person chose "The app saves by itself when I leave the page". The commit leaves
     # the form as they did and then re-opens the item, where the changed value is read back.
     save_by_itself: bool = False
+    # PL-123: teaching's per-recorded-step intent, keyed by the recorded step id. A step without
+    # one gets a plain sentence derived from its own words, so every step carries an intent.
+    intents: dict[str, str] | None = None
+    # PL-123: the steps `clean_recording` dropped. They are gone before the compiler looks for the
+    # leave, so a stray menu click can never be mistaken for it.
+    dropped_step_ids: Iterable[str] | None = None
 
 
 @dataclass
@@ -216,6 +222,7 @@ def to_candidates(
     """
     chosen_commits = options.commit_step_ids is not None
     commit_ids = set(options.commit_step_ids or ())
+    dropped_ids = set(options.dropped_step_ids or ())
     candidates: list[Candidate] = []
     warnings: list[str] = []
     previous_fills: list[tuple[list[dict[str, Any]], Any, str]] = []
@@ -278,6 +285,14 @@ def to_candidates(
             continue
 
         recorded_id = step.get("id") if isinstance(step.get("id"), str) else None
+        if recorded_id is not None and recorded_id in dropped_ids:
+            # PL-123: teaching already decided this step is the page's own doing or a stray click.
+            # It is not a step of the task, and it must never stand in for the leave.
+            warnings.append(
+                f"dropped the {action} at event {event.seq}: teaching said it was not "
+                "part of the task"
+            )
+            continue
         # PL-112: a step that absorbed another event (a click and its submit) is named by either
         # id, so the person's choice is honoured whichever row they picked.
         named_ids = {recorded_id, *event.also_ids} - {None}
@@ -296,6 +311,7 @@ def to_candidates(
                 targets=targets,
                 value=value,
                 name=step.get("name") if isinstance(step.get("name"), str) else None,
+                intent=step.get("intent") if isinstance(step.get("intent"), str) else None,
                 key=step.get("key") if isinstance(step.get("key"), str) else None,
                 url=event.url,
                 after_url=_next_actionable_url(events, index),
@@ -440,16 +456,72 @@ def _default_name(action: str, targets: list[dict[str, Any]]) -> str:
     return f"{action.capitalize()} element"
 
 
-def _render_candidate(candidate: Candidate) -> dict[str, Any]:
+def _is_back_click(candidate: Candidate) -> bool:
+    """Whether this click names a control that goes back (PL-123, T1's second walk item 4).
+
+    The owner taught the narrow window's arrow button, and the wide window draws a breadcrumb link
+    instead. The words on the control are the durable part: a name or label saying "back", a CSS
+    hook carrying ``back`` in its class, or an intent that says the same. A recipe that is recorded
+    narrow therefore still knows this step is the leave when the work window is wide.
+    """
+    if candidate.action != "click":
+        return False
+    if candidate.intent and re.search(r"\bback\b", candidate.intent, re.IGNORECASE):
+        return True
+    for rung in candidate.targets or []:
+        for key in ("name", "text", "value", "selector", "within"):
+            text = rung.get(key)
+            if not isinstance(text, str):
+                continue
+            # A CSS hook spells it ``o_back_button``; a person reads it as the word "back".
+            pattern = r"back" if key in ("selector", "within") else r"\bback\b"
+            if re.search(pattern, text, re.IGNORECASE):
+                return True
+    return False
+
+
+def _default_intent(candidate: Candidate) -> str:
+    """A plain sentence for a step no model named, from the step's own recorded words."""
+    if candidate.action == "navigate":
+        page = path_pattern(candidate.url) or candidate.url
+        return f"open {page}"
+    if _is_back_click(candidate):
+        return "go back to the previous page"
+    label = _field_label(candidate) if candidate.action in ("fill", "select", "check") else None
+    if candidate.action == "fill":
+        return f"type the {label}" if label else "type the value"
+    if candidate.action == "select":
+        return f"choose the {label}" if label else "choose the option"
+    if candidate.action == "check":
+        return f"set the {label}" if label else "set the checkbox"
+    if candidate.action == "press":
+        return f"press {candidate.key or 'a key'}"
+    name = candidate.name or _default_name(candidate.action, candidate.targets)
+    return name[:1].lower() + name[1:] if name else candidate.action
+
+
+def _intent_for(candidate: Candidate, options: CompileOptions) -> str:
+    """The one sentence this step carries: the person's, the recording's, or a derived one."""
+    supplied = (options.intents or {}).get(candidate.recorded_id or "")
+    if isinstance(supplied, str) and supplied.strip():
+        return supplied.strip()[:500]
+    if candidate.intent and candidate.intent.strip():
+        return candidate.intent.strip()[:500]
+    return _default_intent(candidate)[:500]
+
+
+def _render_candidate(candidate: Candidate, options: CompileOptions) -> dict[str, Any]:
     if candidate.action == "navigate":
         # The schema's step_navigate allows nothing but id, action, name and url.
         return {
             "action": "navigate",
             "name": candidate.name or f"Open {path_pattern(candidate.url) or candidate.url}",
+            "intent": _intent_for(candidate, options),
             "url": candidate.url,
         }
     step: dict[str, Any] = {"action": candidate.action}
     step["name"] = candidate.name or _default_name(candidate.action, candidate.targets)
+    step["intent"] = _intent_for(candidate, options)
     step["targets"] = candidate.targets
     if candidate.frame:
         step["frame"] = candidate.frame
@@ -708,7 +780,7 @@ def _drop_container_clicks(
         # cannot decide this.)
         has_semantic = any(rung.get("by") in ("role", "testid", "label") for rung in targets)
         moved = isinstance((candidate.observation or {}).get("url_matches"), str)
-        if not has_semantic and not moved:
+        if not has_semantic and not moved and not _is_back_click(candidate):
             warnings.append(
                 f"dropped container click at event {candidate.seq}: "
                 "it has no role, label or test id"
@@ -1053,14 +1125,19 @@ def _render_steps(
         start = options.start_url or (candidates[0].url if candidates else "")
         if start:
             bodies.append(
-                {"action": "navigate", "name": f"Open {path_pattern(start) or start}", "url": start}
+                {
+                    "action": "navigate",
+                    "name": f"Open {path_pattern(start) or start}",
+                    "intent": f"open {path_pattern(start) or start}",
+                    "url": start,
+                }
             )
 
     for index, candidate in enumerate(candidates):
         # PL-079: the "nothing to save" check goes immediately before the commit click.
         if already_branch is not None and index == already_branch_before:
             bodies.append(already_branch)
-        bodies.append(_render_candidate(candidate))
+        bodies.append(_render_candidate(candidate, options))
         # PL-017: the duplicate check goes straight after the click that ran the search.
         if duplicate_branch is not None and index == duplicate_branch_after:
             bodies.append(duplicate_branch)
@@ -1503,21 +1580,28 @@ def _edit_shape(candidates: list[Candidate]) -> dict[str, Any] | None:
                 and candidate.value.get("kind") == "input"
             ):
                 fills.append(index)
+            # PL-123: a click that names a control going back is a leave even when the recorder
+            # saw no landing page for it. The owner taught the narrow window's arrow button; the
+            # wide work window draws a breadcrumb link instead, and no URL follows the last click
+            # of a recording. Keep scanning: the LAST leave wins, so a stray click earlier in the
+            # form cannot stand in for the real one.
+            if candidate.action == "click" and _is_back_click(candidate):
+                leave = index
             continue
         if candidate.action == "navigate":
             leave = index
-            break
+            continue
         if candidate.action == "press" and str(candidate.key or "") in SAVE_SHORTCUT_KEYS:
             # "If none was recorded, use the app's save shortcut only if one was recorded."
             leave = index
-            break
+            continue
         if (
             candidate.action == "click"
             and candidate.after_url
             and candidate.after_url != candidate.url
         ):
             leave = index
-            break
+            continue
     return {"open": open_index, "record_path": record_path, "fills": fills, "leave": leave}
 
 
@@ -2035,6 +2119,7 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
                     "id": "sign-in-finished",
                     "action": "wait_for",
                     "name": "Wait until the sign-in finishes",
+                    "intent": "wait until the sign-in finishes",
                     "condition": {"url_matches": landing, "timeout_ms": SIGN_IN_WAIT_MS},
                     "timeout_ms": SIGN_IN_WAIT_MS,
                 }
@@ -2047,6 +2132,7 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
             {
                 "id": "end-record-unchecked",
                 "action": "end_record",
+                "intent": "stop this row because the save could not be checked",
                 "outcome": "parked",
                 "reason": READ_BACK_UNKNOWN_REASON,
             }
