@@ -396,8 +396,18 @@ async function ensureRecorderIn(tabId: number): Promise<void> {
 }
 
 chrome.tabs?.onActivated?.addListener(({ tabId }) => {
-  if (status.state === "recording") void ensureRecorderIn(tabId);
+  if (status.state === "recording" && !isWorkTab(tabId)) void ensureRecorderIn(tabId);
 });
+
+/**
+ * PL-125: whether this tab is the one ProcessLens itself runs tasks in. Teaching never records
+ * it: a run that types and clicks there while a person teaches is ProcessLens's own input, and
+ * it once landed a Goodlabs sign-in inside the owner's Odoo price task.
+ */
+function isWorkTab(tabId: number | undefined): boolean {
+  if (tabId === undefined) return false;
+  return tabId === commandBoundTabId || tabId === commandCdpTabId;
+}
 
 /**
  * Start a recording on the active tab, or refuse with a warning the popup shows in place of
@@ -1403,7 +1413,7 @@ async function handle(message: ToWorker, sender?: chrome.runtime.MessageSender):
       }
       break;
     case "record:event":
-      if (status.state === "recording") {
+      if (status.state === "recording" && !isWorkTab(sendingTabId)) {
         if (sendingTabId !== undefined) recordedTabId = sendingTabId;
         // PL-113 S2: the first page reached after the code page is where the sign-in landed.
         status = noteSignInPage(status, sender?.tab?.url);

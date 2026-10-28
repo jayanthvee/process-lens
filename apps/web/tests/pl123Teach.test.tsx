@@ -141,6 +141,8 @@ describe("the panel's cleaning", () => {
   });
 
   it("hides the steps the page did by itself, and can bring one back", async () => {
+    // PL-125: no model is asked at Stop. The page's own value is hidden by its flag; the stray
+    // click is the person's and stays (a task with a shape never shows it; see pl125Shape).
     installChrome(EVENTS, "recording");
     render(<PanelTeach />);
     await settle();
@@ -148,7 +150,8 @@ describe("the panel's cleaning", () => {
     fireEvent.click(screen.getByRole("button", { name: "Stop" }));
     await settle();
 
-    expect(screen.getByText(/Hidden: 2 steps the page did by itself/)).toBeTruthy();
+    expect(stub.calls).not.toContain("/api/v1/recordings/clean");
+    expect(screen.getByText(/Hidden: 1 step the page did by itself/)).toBeTruthy();
     expect(screen.queryByText(/Typed the cost/i)).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: /Show the steps the page did by itself/ }));
@@ -156,11 +159,11 @@ describe("the panel's cleaning", () => {
     fireEvent.click(within(hidden).getByRole("button", { name: "Bring back" }));
     await settle();
 
-    expect(screen.getByText(/Hidden: 1 step the page did by itself/)).toBeTruthy();
+    expect(screen.queryByText(/Hidden:/)).toBeNull();
     expect(screen.getByText(/Typed the cost/i)).toBeTruthy();
   });
 
-  it("saves only the kept steps and sends their intents", async () => {
+  it("saves without the page's own value and sends no model intents", async () => {
     installChrome(EVENTS, "recording");
     render(<PanelTeach />);
     await settle();
@@ -175,9 +178,7 @@ describe("the panel's cleaning", () => {
       recording?: { seq: number }[];
       intents?: Record<string, string>;
     };
-    expect(body.recording?.map((event) => event.seq)).toEqual([1]);
-    expect(body.intents).toEqual({
-      "fill-1": "set Sales Price to the row's New Price",
-    });
+    expect(body.recording?.map((event) => event.seq)).toEqual([1, 3]);
+    expect(body.intents ?? {}).toEqual({});
   });
 });

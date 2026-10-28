@@ -28,6 +28,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from packages.compiler import CompileError, CompileOptions, compile_recording
+from packages.compiler.shape import Shape, canonical_recording, read_shape, sample_row
 from services.ai import AiService, CleanRecordingRequest
 
 from .db import connection
@@ -64,6 +65,12 @@ class CompileRequest(BaseModel):
     save_by_itself: bool = False
     # PL-123: teaching's one-sentence intent per recorded step id, from the panel's Stop call.
     intents: dict[str, str] = {}
+    # PL-125: build the task from its shape (update or create) rather than replaying the whole
+    # recording. Only the shape's own events are compiled; everything else is ignored. ``save``
+    # is the person's answer to "How does it get saved?" ("button" or "leave"), when they changed
+    # the one the recording suggested.
+    use_shape: bool = False
+    save: str | None = None
 
 
 class CompileResponse(BaseModel):
@@ -86,6 +93,8 @@ def compile_recipe(request: CompileRequest) -> CompileResponse:
     the schema is refused with every problem listed, and the builder is told what
     to re-record or supply.
     """
+    if request.use_shape:
+        return _compile_shape(request)
     options = CompileOptions(
         name=request.name,
         when_to_use=request.when_to_use,
@@ -114,6 +123,75 @@ def compile_recipe(request: CompileRequest) -> CompileResponse:
     return CompileResponse(
         recipe=result.recipe, warnings=result.warnings, search_kind=result.search_kind
     )
+
+
+def _refuse(message: str) -> HTTPException:
+    return HTTPException(status_code=422, detail={"message": message, "problems": [message]})
+
+
+def _compile_shape(request: CompileRequest) -> CompileResponse:
+    """PL-125: compile only the shape's events, with the key and save the shape decided."""
+    shape = read_shape(request.recording)
+    if shape.kind is None:
+        raise _refuse(shape.problem or "This recording can't be saved yet.")
+    if request.save in ("button", "leave") and request.save != shape.save:
+        if request.save == "button":
+            raise _refuse(
+                "ProcessLens didn't see a Save click in what you taught. Choose “It saves "
+                "when I leave the page”, or teach it again and press Save."
+            )
+        shape.save = "leave"
+    events = canonical_recording(shape)
+    row = sample_row(shape)
+    save_ids: list[str] = []
+    if shape.save == "button" and shape.save_event is not None:
+        step_id = (shape.save_event.get("step") or {}).get("id")
+        if isinstance(step_id, str):
+            save_ids = [step_id]
+    idempotency_key: str | None = None
+    if shape.kind == "update":
+        # The key is the item and the values written, so a later change to the same item is new
+        # work and the same change is done once.
+        values = ":".join(f"{{{{row.{change.column}}}}}" for change in shape.changes)
+        idempotency_key = f"{{{{row.{shape.item_column} | lower}}}}:{values}"
+    options = CompileOptions(
+        name=request.name,
+        when_to_use=request.when_to_use,
+        sample_row=row,
+        record_key_column=shape.item_column,
+        idempotency_key=idempotency_key,
+        allowed_origins=request.allowed_origins or [shape.origin],
+        commit_step_ids=save_ids if shape.save == "button" else None,
+        duplicate_check=True,
+        save_by_itself=shape.save == "leave",
+        search_before_new=shape.kind == "create",
+    )
+    try:
+        result = compile_recording(events, options)
+    except CompileError as exc:
+        message = str(exc).split("\n", 1)[0]
+        raise HTTPException(
+            status_code=422,
+            detail={"message": message, "problems": list(exc.problems) or [message]},
+        ) from exc
+    return CompileResponse(recipe=result.recipe, warnings=result.warnings, search_kind=shape.kind)
+
+
+class ShapeBody(BaseModel):
+    """The panel's Stop body for PL-125: the recording it just captured."""
+
+    recording: list[dict[str, Any]]
+
+
+@router.post("/recordings/shape")
+def recording_shape(body: ShapeBody) -> dict[str, Any]:
+    """What the recording teaches, in plain facts: the item, the changes and the save.
+
+    The panel asks its three questions from this. Pure code over the recording: no model, no
+    database, nothing stored.
+    """
+    shape: Shape = read_shape(body.recording)
+    return shape.summary()
 
 
 class CleanRecordingBody(BaseModel):
