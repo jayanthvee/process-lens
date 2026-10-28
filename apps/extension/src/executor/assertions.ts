@@ -314,10 +314,15 @@ function predicateExpression(
     )}).test(location.href); } catch { return false; } })()`;
   }
   if (key === "element_present" || key === "element_absent") {
-    const selector = selectorOf(record as Condition, key);
+    const selector = selectorOf(record as Condition, key) as Record<string, unknown> | undefined;
     const negate = key === "element_absent" ? "!" : "";
+    // PL-123: a condition that asks about a search result never resolves the search box or the
+    // chip inside it. The selector says so, so the same rule holds for a branch, a wait and a
+    // commit's own check.
+    const excludesBox = selector?.exclude_search_box === true;
     const call = resolverCallExpression(ctx.resolverSource, {
-      ...(selector as Record<string, unknown>),
+      ...(selector ?? {}),
+      ...(excludesBox ? { excludeSearchBox: true } : {}),
       token: "condition-probe",
     });
     return `(() => { const result = ${call}; return ${negate}(result && result.ok === true); })()`;

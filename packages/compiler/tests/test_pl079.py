@@ -241,6 +241,7 @@ def test_an_update_whose_commit_proves_nothing_else_gets_no_such_branch() -> Non
         "element_absent": {
             "targets": [{"by": "text_fuzzy", "value": "{{row.sku}}"}],
             "intent": "the search result for {{row.sku}}",
+            "exclude_search_box": True,
         }
     }
     assert ALREADY_REASON not in json.dumps(recipe, sort_keys=True)

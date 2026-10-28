@@ -135,6 +135,8 @@ export interface EnterCodeCommandMessage extends CommandEnvelope {
 export interface SnapshotCommandMessage extends CommandEnvelope {
   type: "snapshot";
   allowed_origins: string[];
+  /** PL-123: the step means a search result, so the search box and its chips are left out. */
+  exclude_search_box?: boolean;
 }
 
 export type CommandMessage =

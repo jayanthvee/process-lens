@@ -462,23 +462,28 @@ def _is_back_click(candidate: Candidate) -> bool:
 
     The owner taught the narrow window's arrow button, and the wide window draws a breadcrumb link
     instead. The words on the control are the durable part: a name or label saying "back", a CSS
-    hook carrying ``back`` in its class, or an intent that says the same. A recipe that is recorded
-    narrow therefore still knows this step is the leave when the work window is wide.
+    hook carrying ``back`` as one of its own parts, or an intent that says the same. A recipe that
+    is recorded narrow therefore still knows this step is the leave when the work window is wide.
+
+    The word is matched whole: ``o_back_button`` and ``Back`` match; ``backorder-row`` and
+    ``background`` do not.
     """
     if candidate.action != "click":
         return False
-    if candidate.intent and re.search(r"\bback\b", candidate.intent, re.IGNORECASE):
+    if candidate.intent and _BACK_WORD.search(candidate.intent):
         return True
     for rung in candidate.targets or []:
         for key in ("name", "text", "value", "selector", "within"):
             text = rung.get(key)
-            if not isinstance(text, str):
-                continue
-            # A CSS hook spells it ``o_back_button``; a person reads it as the word "back".
-            pattern = r"back" if key in ("selector", "within") else r"\bback\b"
-            if re.search(pattern, text, re.IGNORECASE):
+            if isinstance(text, str) and _BACK_WORD.search(text):
                 return True
     return False
+
+
+# PL-123: the word "back", whole. A CSS hook spells it ``o_back_button`` (its own part between
+# underscores) and a label spells it ``Back``; neither ``backorder`` nor ``background`` is a way
+# back, and a control named for one must never be mistaken for the leave.
+_BACK_WORD = re.compile(r"(?<![a-z0-9])back(?![a-z0-9])", re.IGNORECASE)
 
 
 def _default_intent(candidate: Candidate) -> str:
@@ -526,14 +531,16 @@ def _intent_for(candidate: Candidate, options: CompileOptions) -> str:
 def _strip_changeable_counts(candidates: list[Candidate]) -> list[str]:
     """Drop a leading count from a control's name, for labels that grow with the data.
 
-    Odoo's smart button reads "0Attendees" while teaching and "1Attendees" after the first
-    attendee. The count is the data, not the control's name. The rest of the name stays, so the
-    same rung finds the button after the count changes.
+    A smart button reads "0Attendees" while teaching and "1Attendees" after the first record is
+    added. The count is the data, not the control's name. The rest of the name stays, so the same
+    rung finds the button after the count changes, and the step's intent is the cleaned label --
+    never a noun this compiler chose about someone's site.
     """
     warnings: list[str] = []
     for candidate in candidates:
         if candidate.action != "click":
             continue
+        counted = False
         for rung in candidate.targets or []:
             for key in ("name", "text", "value"):
                 text = rung.get(key)
@@ -544,16 +551,17 @@ def _strip_changeable_counts(candidates: list[Candidate]) -> list[str]:
                     continue
                 cleaned = match.group(1).strip()
                 rung[key] = cleaned
+                counted = True
                 if candidate.name and candidate.name.lower().startswith("click "):
                     candidate.name = f"Click {cleaned}"[:120]
                 warnings.append(
                     f"dropped the changing count from {text!r}: the control is {cleaned!r}"
                 )
-        # A count-bearing button says what opening it is for; the intent survives a changed count.
-        first = (candidate.targets or [{}])[0]
-        name = str(first.get("name") or "").strip()
-        if name.lower() == "attendees" and not candidate.intent:
-            candidate.intent = "open the attendees of the event"
+        # The count was only the label's prefix: the word the person reads is what opening the
+        # control is for, so the step's sentence is that word and it survives the count changing.
+        label = str((candidate.targets or [{}])[0].get("name") or "").strip()
+        if counted and label and not candidate.intent:
+            candidate.intent = f"open the {label.lower()}"
     return warnings
 
 
@@ -748,8 +756,8 @@ def _in_place_save_commit(
     save = Candidate(
         action="click",
         targets=[
+            {"by": "role", "role": "button", "name": "Save"},
             {"by": "role", "role": "button", "name": "Save manually"},
-            {"by": "text_fuzzy", "value": "Save"},
         ],
         name="Save the record",
         intent="save the record",
@@ -766,17 +774,48 @@ def _in_place_save_commit(
     return True
 
 
+def _searchbox_ladder(candidates: list[Candidate]) -> list[dict[str, Any]]:
+    """The search box this recording typed into, or a plain one the intent can stand for.
+
+    A search box's own rungs come from the recording when it had one, so the duplicate search
+    types where the person typed. When the recording has none, the rung is the role alone: a
+    searchbox named by no label is not guessed at, and the step's intent is what a run asks when
+    the remembered element is gone. No site's placeholder is ever written here.
+    """
+    for candidate in candidates:
+        if candidate.action != "fill":
+            continue
+        rungs = [
+            dict(rung)
+            for rung in candidate.targets or []
+            if str(rung.get("role", "")).lower() == "searchbox"
+        ]
+        if rungs:
+            return rungs
+    return [{"by": "role", "role": "searchbox"}]
+
+
 def _duplicate_search_bodies(
     candidates: list[Candidate], options: CompileOptions, warnings: list[str]
 ) -> dict[str, list[dict[str, Any]]]:
-    """Recipe bodies that look for the row's email before the New click.
+    """Recipe bodies that look for the row's key before the New click.
 
-    A person may already have registered the same address by hand; the ledger's never-add-twice
-    key only knows rows ProcessLens finished. The search makes the destination itself answer, and
-    a hit ends the row as already there (skipped), never as a second attendee.
+    A person may already have recorded the same row by hand; the ledger's never-add-twice key only
+    knows rows ProcessLens finished. The search makes the destination itself answer, and a hit
+    ends the row as already there (skipped), never as a second copy.
+
+    Every word here comes from the key column, not from any site's own vocabulary: the search is
+    "search for the row's <column>", its condition looks for "a result with this <column>", and
+    its box is the one the recording used (or the role alone, with the intent).
     """
-    if not options.duplicate_check or not any(
-        _email_column(candidate, options) for candidate in candidates if candidate.action == "fill"
+    column = options.record_key_column or "email"
+    if not options.duplicate_check:
+        return {}
+    if not any(
+        candidate.action == "fill"
+        and isinstance(candidate.value, dict)
+        and candidate.value.get("column") == column
+        for candidate in candidates
     ):
         return {}
     # A recording that already searches the destination does not need a second search.
@@ -802,34 +841,37 @@ def _duplicate_search_bodies(
     )
     if new_click is None or not new_click.recorded_id:
         return {}
-    column = options.record_key_column or "email"
-    search_targets = [
-        {"by": "role", "role": "searchbox", "name": "Search..."},
-        {"by": "text_fuzzy", "value": "Search..."},
-    ]
+    label = " ".join(column.replace("_", " ").split())
+    search_targets = _searchbox_ladder(candidates)
     bodies: list[dict[str, Any]] = [
         {
             "action": "fill",
-            "name": "Search the attendees for this email",
-            "intent": "search the attendees for the row's email",
+            "name": f"Search for the row's {label}",
+            "intent": f"search for the row's {label}",
             "targets": [dict(rung) for rung in search_targets],
             "value": {"kind": "input", "column": column},
             "clear_first": True,
         },
         {
             "action": "press",
-            "name": "Run the attendee search",
-            "intent": "run the attendee search",
+            "name": f"Run the search for the row's {label}",
+            "intent": f"run the search for the row's {label}",
             "targets": [dict(rung) for rung in search_targets],
             "key": "Enter",
         },
         {
             "action": "branch",
-            "name": "Skip a row whose email is already registered",
+            "name": f"Skip a row whose {label} is already there",
             "when": {
                 "element_present": {
-                    "targets": [{"by": "text_fuzzy", "value": f"{{{{row.{column}}}}}"}],
-                    "intent": "the attendee with this email address",
+                    "targets": [
+                        {
+                            "by": "text_fuzzy",
+                            "value": f"{{{{row.{column}}}}}",
+                        }
+                    ],
+                    "intent": f"a result with this {label}",
+                    "exclude_search_box": True,
                 }
             },
             "then": [
@@ -837,16 +879,41 @@ def _duplicate_search_bodies(
                     "id": "end-record-1",
                     "action": "end_record",
                     "outcome": "skipped",
-                    "reason": "Already there: this email is already registered.",
+                    "reason": f"Already there: this {label} is already on the list.",
                 }
             ],
         },
     ]
     warnings.append(
-        "this create looks for the row's email before adding it, so an attendee already there "
-        "is not added twice"
+        f"this create looks for the row's {label} before adding it, so a row already there is "
+        "not added twice"
     )
     return {new_click.recorded_id: bodies}
+
+
+def _mark_result_clicks(candidates: list[Candidate]) -> None:
+    """A click that opens the item a row names acts on a search result (PL-123).
+
+    After a search, the row's own value is on the page twice: once as a chip inside the search
+    box and once on the result itself. The click that opens the item therefore ignores anything
+    inside the search box, so it can never click the chip that shows the query.
+    """
+    for candidate in candidates:
+        if candidate.action != "click":
+            continue
+        names_the_row = any(
+            isinstance(rung.get(key), str) and "{{row." in rung[key]
+            for rung in candidate.targets or []
+            for key in ("name", "text", "value")
+        )
+        if not names_the_row:
+            continue
+        rungs_are_searchbox = any(
+            str(rung.get("role", "")).lower() == "searchbox" for rung in candidate.targets or []
+        )
+        if rungs_are_searchbox:
+            continue
+        candidate.exclude_search_box = True
 
 
 def _rewrite_container_row_clicks(candidates: list[Candidate]) -> None:
@@ -895,6 +962,10 @@ def _render_candidate(candidate: Candidate, options: CompileOptions) -> dict[str
         # destination record -- so neither is ever emitted for one.
         step["key"] = candidate.key
         return step
+    if candidate.exclude_search_box:
+        # PL-123: the searched text also shows as a chip inside the search box. The step acts on a
+        # result, so the box and its chips are never the element it means.
+        step["exclude_search_box"] = True
     if candidate.action == "check":
         # PL-114: a check sets a yes/no to the value a run should leave behind, and carries the
         # state the demonstration left when the recording saw it. It is not a fill: no clear_first
@@ -1685,24 +1756,30 @@ def detect_find_then_update(candidates: list[Candidate], run_index: int) -> bool
     )
 
 
-def _duplicate_branch(value_template: str) -> dict[str, Any]:
+def _duplicate_branch(column: str, options: CompileOptions) -> dict[str, Any]:
     """A branch that ends a record ``skipped`` when the search already shows its value.
 
-    The condition is deliberately *not* a page-wide text search. Odoo renders the query it is
-    searching for back onto the page -- the search view draws a facet holding exactly the value
-    that was typed -- so "that text is visible anywhere" is true for a record that does not exist
-    and the branch would skip the whole batch. What the destination's own answer looks like is a
-    cell in its results table holding the value, which is rung 1 of the ladder and therefore the
-    most durable rung a condition can carry.
+    The condition is deliberately *not* a page-wide text search. A search view renders the query
+    it is searching for back onto the page -- inside the search box, as a chip holding exactly the
+    value that was typed -- so "that text is visible anywhere" is true for a record that does not
+    exist and the branch would skip the whole batch. Two things keep it honest: the ladder is the
+    row's own value rather than a table cell (a list may show cards), and the search box and its
+    chips are excluded, so only a real result can satisfy it.
     """
+    label = " ".join(str(column).replace("_", " ").split())
     return {
         "action": "branch",
         "name": "Skip a record if the search finds it",
         "when": {
             "element_present": {
                 "targets": [
-                    {"by": "role", "role": "cell", "name": value_template},
-                ]
+                    {
+                        "by": "text_fuzzy",
+                        "value": f"{{{{row.{column}}}}}",
+                    },
+                ],
+                "intent": f"a result with this {label}",
+                "exclude_search_box": True,
             }
         },
         "then": [
@@ -1749,11 +1826,14 @@ def _not_found_branch(column: str, value_template: str) -> dict[str, Any]:
         "name": "Park a record when the search finds nothing",
         "when": {
             "element_absent": {
-                # PL-123: the result is not a table cell. Odoo shows the same search as a kanban
-                # card or as a table row, so the ladder names the row's own value and the intent
-                # tells a run what it is looking for; PL-122 finds the card or the row.
+                # PL-123: the result is not a table cell. A list may show the same search as a
+                # kanban card or as a table row, so the ladder names the row's own value and the
+                # intent tells a run what it is looking for; PL-122 finds the card or the row.
+                # The page's own search box and the chips it shows for the query are never the
+                # result, so they are excluded.
                 "targets": [{"by": "text_fuzzy", "value": row_value}],
                 "intent": f"the search result for {row_value}",
+                "exclude_search_box": True,
             }
         },
         "then": [
@@ -1956,7 +2036,8 @@ def _edit_shape(candidates: list[Candidate]) -> dict[str, Any] | None:
         return None
     fills: list[int] = []
     leave: int | None = None
-    stray_after_change = False
+    last_click_after_change: int | None = None
+    last_stray_after_change: int | None = None
     for index in range(open_index + 1, limit):
         candidate = candidates[index]
         path = urlsplit(candidate.url).path.rstrip("/")
@@ -1967,11 +2048,12 @@ def _edit_shape(candidates: list[Candidate]) -> dict[str, Any] | None:
                 and candidate.value.get("kind") == "input"
             ):
                 fills.append(index)
+            if candidate.action == "click":
+                last_click_after_change = index
             # PL-123: a click that names a control going back is a leave even when the recorder
             # saw no landing page for it. The owner taught the narrow window's arrow button; the
             # wide work window draws a breadcrumb link instead, and no URL follows the last click
-            # of a recording. Keep scanning: the LAST leave wins, so a stray click earlier in the
-            # form cannot stand in for the real one.
+            # of a recording.
             if candidate.action == "click" and _is_back_click(candidate):
                 leave = index
             elif (
@@ -1985,9 +2067,9 @@ def _edit_shape(candidates: list[Candidate]) -> dict[str, Any] | None:
                 candidate, fills, candidates
             ):
                 # A click after the change that teaching did not drop could be the save itself.
-                # Without cleaning, the compiler cannot tell the leave from the stray clicks the
-                # owner made on the way back; it says so rather than guessing.
-                stray_after_change = True
+                # It is only a problem when nothing after it says the person left: a stray menu
+                # click on the way back is followed by the real back click.
+                last_stray_after_change = index
             continue
         if candidate.action == "navigate":
             leave = index
@@ -2003,14 +2085,24 @@ def _edit_shape(candidates: list[Candidate]) -> dict[str, Any] | None:
         ):
             leave = index
             continue
-    if stray_after_change:
+    # PL-123: the leave is the last thing after the change that takes the person off the item. A
+    # back-named click or one whose address moved is the leave whatever stray clicks came before
+    # it; only a stray click with no leave after it leaves the save unproved.
+    stray_after_leave = (
+        leave is not None
+        and last_stray_after_change is not None
+        and last_stray_after_change > leave
+    )
+    if stray_after_leave:
         leave = None
     return {
         "open": open_index,
         "record_path": record_path,
         "fills": fills,
         "leave": leave,
-        "stray_after_change": stray_after_change,
+        "stray_after_change": leave is None
+        and last_stray_after_change is not None
+        and last_click_after_change == last_stray_after_change,
     }
 
 
@@ -2311,6 +2403,7 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
     # shape, not the task. Strip the count, and aim a container click at the row's own value.
     warnings.extend(_strip_changeable_counts(parameterized))
     _rewrite_container_row_clicks(parameterized)
+    _mark_result_clicks(parameterized)
     in_place_shape = _in_place_save_shape(parameterized)
 
     # PL-118 item 2: "The app saves by itself when I leave the page" has no recorded Save click,
@@ -2407,7 +2500,7 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
                 "you to skip"
             )
         else:
-            search_branch = _duplicate_branch(value_template)
+            search_branch = _duplicate_branch(searched_column, options)
     else:
         searched_column = ""
 

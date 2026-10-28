@@ -181,7 +181,8 @@ def test_the_events_fixture_compiles_to_the_owners_six_steps() -> None:
         if step["action"] == "click"
         and any(rung.get("name") == "Attendees" for rung in step["targets"])
     )
-    assert attendees_click["intent"] == "open the attendees of the event"
+    # PL-123 B2: the sentence is the cleaned label, never a noun the compiler invented.
+    assert attendees_click["intent"] == "open the attendees"
     assert any(
         step["action"] == "click"
         and step["targets"][0] == {"by": "role", "role": "button", "name": "New"}
@@ -244,12 +245,22 @@ def test_a_create_looks_for_the_email_before_new() -> None:
         step["action"] == "fill" and step["value"] == {"kind": "input", "column": "email"}
         for step in before
     ), before
-    assert any(
-        step["action"] == "branch"
-        and step["when"]["element_present"]["targets"]
-        == [{"by": "text_fuzzy", "value": "{{row.email}}"}]
+    branch = next(step for step in before if step["action"] == "branch")
+    # PL-123 B2: every word comes from the key column, never from the site's own vocabulary.
+    assert branch["name"] == "Skip a row whose email is already there"
+    assert branch["when"]["element_present"]["targets"] == [
+        {"by": "text_fuzzy", "value": "{{row.email}}"}
+    ]
+    assert branch["when"]["element_present"]["intent"] == "a result with this email"
+    assert branch["when"]["element_present"]["exclude_search_box"] is True
+    search = next(
+        step
         for step in before
-    ), before
+        if step["action"] == "fill" and "row's" in str(step.get("name") or "")
+    )
+    assert search["intent"] == "search for the row's email"
+    # The box is the role alone (the recording had no search box of its own); no site placeholder.
+    assert search["targets"] == [{"by": "role", "role": "searchbox"}]
 
 
 BREADCRUMB = [{"by": "role", "role": "link", "name": "Attendees"}]

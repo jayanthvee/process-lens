@@ -194,8 +194,49 @@ def test_the_owner_fixture_compiles_to_a_commit_and_a_read_back_after_cleaning()
     assert leave["intent"] == "go back to the product list"
 
 
-def test_without_cleaning_the_compile_names_the_leave_it_could_not_recognise() -> None:
+def test_the_owner_fixture_with_its_strays_and_no_cleaning_still_finds_the_leave() -> None:
+    """PL-123 N3: the last click after the change is the back button, so it is the leave.
+
+    The owner's recording has three stray clicks (All Apps, the tab strip, Close menu) between the
+    price and the back arrow. They came *before* the leave, so they cannot take it away: the last
+    click after the change decides, and it names a control going back.
+    """
     result = compile_recording(owner_recording(), _options())
+    steps = _steps(result)
+    commits = _commits(result)
+
+    assert len(commits) == 1, steps
+    assert not any(step.get("id") == "end-record-unchecked" for step in steps), steps
+    assert "value_equals" in commits[0]["assert_after"], commits[0]
+    assert commits[0]["assert_after"]["value_equals"]["value"] == {
+        "kind": "input",
+        "column": "new_price",
+    }
+    # The leave is the recorded back button, and the commit re-opens the item after it.
+    back_index = next(index for index, step in enumerate(steps) if step.get("targets") == BACK)
+    assert commits[0]["action"] == "click"
+    assert steps.index(commits[0]) > back_index
+
+
+def test_a_recording_whose_last_click_after_the_change_is_a_stray_cannot_be_done() -> None:
+    """A stray click with no leave after it proves nothing, so every row is left for a person."""
+    recording = owner_recording()
+    # Move a stray click after the back button: nothing says the person left the item. The
+    # recorder's own seq is what orders events, so the moved click is renumbered to the end.
+    strays = [
+        event
+        for event in recording
+        if str(((event.get("step") or {}).get("id")) or "").startswith("click-close")
+    ]
+    recording = [
+        event
+        for event in recording
+        if not ((event.get("step") or {}).get("id") or "").startswith("click-close")
+    ]
+    for event in strays:
+        recording.append({**event, "seq": len(recording) + 1})
+
+    result = compile_recording(recording, _options())
 
     assert _commits(result) == [], _steps(result)
     assert any(step.get("id") == "end-record-unchecked" for step in _steps(result)), _steps(result)

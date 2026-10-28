@@ -40,7 +40,7 @@ import random
 import re
 import uuid
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import psycopg
@@ -2316,6 +2316,12 @@ class RunLoop:
             return _condition_with_element(verdict, kind), None
 
         command = self._command(record, run, epoch, step, row, variables, commit=False)
+        if _condition_excludes_search_box(step):
+            # PL-123: the condition asks about a search result, so the snapshot a model reads must
+            # not offer it the chip that carries the same words inside the search box.
+            command = replace(
+                command, step={**command.step, "exclude_search_box": True}
+            )
         token, ladder, found_origin, terminal = self._ask_for_token(
             command,
             record,
@@ -2362,6 +2368,8 @@ class RunLoop:
             "option_match",
             "autocomplete",
             "key",
+            # PL-123: a result step never resolves the search box or a chip inside it.
+            "exclude_search_box",
         ):
             if key in step:
                 rendered[key] = step[key]
@@ -2545,6 +2553,18 @@ def _ends_record_for_a_person(steps: Any) -> bool:
         if _ends_record_for_a_person(step.get("then")) or _ends_record_for_a_person(
             step.get("else")
         ):
+            return True
+    return False
+
+
+def _condition_excludes_search_box(step: Mapping[str, Any]) -> bool:
+    """Whether this branch's condition asks about a search result (PL-123)."""
+    when = step.get("when")
+    if not isinstance(when, dict):
+        return False
+    for kind in ("element_present", "element_absent"):
+        selector = when.get(kind)
+        if isinstance(selector, dict) and selector.get("exclude_search_box") is True:
             return True
     return False
 

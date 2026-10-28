@@ -154,7 +154,9 @@ def test_the_duplicate_branch_reads_a_result_cell_not_the_whole_page() -> None:
     branch = next(step for step in result.recipe["steps"] if step.get("action") == "branch")
     assert branch["when"] == {
         "element_present": {
-            "targets": [{"by": "role", "role": "cell", "name": "{{row.search | lower}}"}],
+            "targets": [{"by": "text_fuzzy", "value": "{{row.search}}"}],
+            "intent": "a result with this search",
+            "exclude_search_box": True,
         }
     }
     assert "text_visible" not in branch["when"]
@@ -169,7 +171,7 @@ def test_the_branch_follows_the_column_the_destination_was_searched_by() -> None
     result = compile_recording(search_recording(), options(record_key_column="e_g_product_pricing"))
     assert result.recipe["meta"]["record_key"] == "{{row.e_g_product_pricing | lower}}"
     branch = next(step for step in result.recipe["steps"] if step.get("action") == "branch")
-    assert branch["when"]["element_present"]["targets"][0]["name"] == "{{row.search | lower}}"
+    assert branch["when"]["element_present"]["targets"][0]["value"] == "{{row.search}}"
 
 
 def test_a_value_the_page_set_itself_is_not_a_step_or_a_column() -> None:
