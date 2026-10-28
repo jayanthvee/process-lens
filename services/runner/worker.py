@@ -22,7 +22,16 @@ from packages.ledger import StaleLease, heartbeat
 
 from .browser_executor import BrowserExecutor, ExecutorUnavailable
 from .clock import Clock, SystemClock
-from .executor import ConditionResult, ConfirmationProbe, Executor, StepCommand, StepResult
+from .executor import (
+    ConditionResult,
+    ConfirmationProbe,
+    Executor,
+    PageSnapshot,
+    SnapshotUnavailable,
+    StepCommand,
+    StepResult,
+)
+from .finding import TargetFinder
 from .reconcile import NoopReconciler, ParkingReconciler, Reconciler
 from .run_loop import DEFAULT_GATE_WAIT_SECONDS, RunLoop
 
@@ -134,6 +143,7 @@ class Worker:
         reconnect: Callable[[], bool] | None = None,
         gate_wait_seconds: float = DEFAULT_GATE_WAIT_SECONDS,
         browser_id: str | None = None,
+        finder: TargetFinder | None = None,
     ) -> None:
         self.dsn = dsn
         self.worker_id = worker_id
@@ -155,6 +165,10 @@ class Worker:
         self.gate_wait_seconds = gate_wait_seconds
         # PL-087: the Chrome this worker drives; it takes that browser's runs and unbound ones.
         self.browser_id = browser_id
+        # PL-122: the remembered element and the model answer. A worker built by a test may hand
+        # one in; otherwise the run loop builds it from the environment with no key, which is
+        # exactly the pre-ticket behaviour.
+        self.finder = finder
 
     def run_once(self) -> bool:
         """Claim or take over one run and process it. Returns False when there is nothing to do."""
@@ -203,6 +217,11 @@ class Worker:
                 # R4: recovery runs after every claim or takeover; on a fresh run it is a no-op.
                 with conn.transaction():
                     recover_run(conn, run.id, self.worker_id, epoch)
+                finder = self.finder
+                if finder is None:
+                    from services.ai import AiService
+
+                    finder = TargetFinder(conn, AiService.from_env(conn))
                 loop = RunLoop(
                     worker_id=self.worker_id,
                     executor=self.executor,
@@ -214,6 +233,7 @@ class Worker:
                     lease_check=beat.check,
                     events=self.events,
                     gate_wait_seconds=self.gate_wait_seconds,
+                    finder=finder,
                 )
                 loop.process_run(conn, run, epoch)
         return True
@@ -268,6 +288,10 @@ class DisconnectedExecutor:
     ) -> ConfirmationProbe:
         # No page to look at, so the fresh-confirmation gate does not run.
         return "unsupported"
+
+    def snapshot(self, command: StepCommand) -> PageSnapshot:
+        # No page to read, so a find cannot be based on one.
+        raise SnapshotUnavailable("no browser executor is connected")
 
 
 def _run_with_polling(

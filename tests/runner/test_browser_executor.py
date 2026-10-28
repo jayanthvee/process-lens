@@ -596,3 +596,59 @@ def test_an_unanswered_email_code_ask_is_not_entered() -> None:
     answer = executor.code_from_email(look_seconds=0)
 
     assert answer["entered"] is False
+
+
+# -- PL-122: the page snapshot a run-time find asks for ------------------------------------------
+
+
+def test_a_snapshot_asks_the_bound_tab_and_reads_its_elements() -> None:
+    """The runner sends `snapshot`, not a step, and parses the elements the page answered."""
+
+    def reply(message: dict[str, Any]) -> list[Any]:
+        return [
+            wire(
+                type="result",
+                command_id=message["command_id"],
+                status="ok",
+                observed={
+                    "origin": "http://127.0.0.1:9",
+                    "elements": [{"token": "e1", "role": "button", "name": "Save"}],
+                    "truncated": False,
+                },
+            )
+        ]
+
+    executor, socket = make_executor(reply)
+
+    snapshot = executor.snapshot(a_command({"id": "click-2", "action": "click"}))
+
+    sent = socket.sent[-1]
+    assert sent["type"] == "snapshot"
+    assert sent["allowed_origins"] == ["http://127.0.0.1:9"]
+    assert "step" not in sent
+    assert snapshot.origin == "http://127.0.0.1:9"
+    assert [element["token"] for element in snapshot.elements] == ["e1"]
+    assert snapshot.truncated is False
+
+
+def test_a_refused_snapshot_is_unavailable_rather_than_an_empty_page() -> None:
+    from services.runner.executor import SnapshotUnavailable
+
+    def reply(message: dict[str, Any]) -> list[Any]:
+        return [
+            wire(
+                type="result",
+                command_id=message["command_id"],
+                status="refused",
+                error="the page moved off the allowed origin",
+            )
+        ]
+
+    executor, _socket = make_executor(reply)
+
+    try:
+        executor.snapshot(a_command({"id": "click-2", "action": "click"}))
+    except SnapshotUnavailable as exc:
+        assert "allowed origin" in str(exc)
+    else:  # pragma: no cover - a refusal must never look like an empty page
+        raise AssertionError("a refused snapshot must raise SnapshotUnavailable")

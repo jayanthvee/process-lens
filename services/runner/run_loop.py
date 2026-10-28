@@ -84,7 +84,8 @@ from .approvals import evaluate_policy
 from .check_words import describe_check, parking_reason
 from .clock import Clock
 from .conditions import condition_timeout
-from .executor import ConditionResult, ConfirmationProbe, Executor, StepCommand
+from .executor import ConditionResult, ConfirmationProbe, Executor, StepCommand, StepResult
+from .finding import MAX_AI_CALLS_PER_RECORD, TargetFinder, find_failed_reason
 from .reconcile import Reconciler, outcome_of
 from .step_words import describe_step_failure, describe_wait_failure
 from .templates import TemplateError, is_template, render
@@ -215,6 +216,7 @@ class RunLoop:
         lease_check: Callable[[], None] | None = None,
         events: Callable[[], list[tuple[str, str]]] | None = None,
         gate_wait_seconds: float = DEFAULT_GATE_WAIT_SECONDS,
+        finder: TargetFinder | None = None,
     ) -> None:
         self.worker_id = worker_id
         self.executor = executor
@@ -247,6 +249,11 @@ class RunLoop:
         self.min_seconds_between_steps = 0.0
         self._last_claim_at: float | None = None
         self._last_step_at: float | None = None
+        # PL-122: the remembered element and the model's answer, for this worker. ``None`` means
+        # no finder was built (tests, or a worker with no AI service); a record then parks exactly
+        # as it did before this ticket.
+        self.finder = finder
+        self._ai_calls_this_record = 0
 
     # -- the run -----------------------------------------------------------
 
@@ -636,6 +643,8 @@ class RunLoop:
         row = self._input_row(conn, record)
         variables = _resolve_variables(recipe, row)
         self._browser_touched = False
+        # PL-122: the model-call ceiling is per record, not per step or per run.
+        self._ai_calls_this_record = 0
 
         for rule in rules:
             if not isinstance(rule, dict):
@@ -754,6 +763,13 @@ class RunLoop:
                 unanswered = self._no_answer(conn, record, run, epoch, box, verdict)
                 if unanswered is not None:
                     return unanswered
+                # PL-122: a branch that would end the row for a person asks its intent when the
+                # recorded target found nothing. A commit's assert_after never reaches here.
+                verdict, find_terminal = self._maybe_find_condition(
+                    conn, record, run, epoch, step, row, variables, box, verdict
+                )
+                if find_terminal is not None:
+                    return find_terminal
                 branch = step.get("then", []) if verdict.passed else step.get("else", [])
                 terminal = self._run_steps(conn, record, run, epoch, branch, row, variables, box)
                 if terminal is not None:
@@ -912,6 +928,32 @@ class RunLoop:
 
         # R2: resolve and hit-test BEFORE the write-ahead; a locator failure is not a commit.
         prepared = self.executor.prepare(command)
+
+        # PL-122: a target that found nothing (or more than one) may be asked about. The prepare is
+        # retried on the remembered or model-found element; no input has been sent either way.
+        find_terminal: str | None = None
+        if (
+            prepared.status == "locator_failed"
+            and _is_missing_target(prepared.error)
+            and step.get("targets")
+        ):
+            prepared, command, find_terminal = self._prepare_with_finding(
+                conn,
+                record,
+                run,
+                epoch,
+                step,
+                row,
+                variables,
+                box,
+                command,
+                prepared,
+                intent=self._intent_of(step, row, variables),
+                action=str(step.get("action") or ""),
+                allow_destructive=bool(step.get("allow_destructive_control")),
+            )
+            if find_terminal is not None:
+                return find_terminal
 
         # R6: an event that arrived while the target was resolved beats the result it produced.
         stopped = self._drain_events(conn, record, run, epoch, box)
@@ -1166,7 +1208,7 @@ class RunLoop:
                     step_id=step["id"],
                     outcome="ok",
                     observed=observed,
-                    locator_rung=result.rung,
+                    locator_rung=_legal_rung(result.rung),
                 )
             if not verified.key_inserted:
                 with conn.transaction():
@@ -1311,6 +1353,31 @@ class RunLoop:
         if stopped is not None:
             return stopped
 
+        # PL-122: the recorded ladder found nothing, or more than one. Try the remembered element,
+        # then one model answer, and send the step once more with the snapshot token first.
+        if (
+            result.status == "locator_failed"
+            and _is_missing_target(result.error)
+            and step.get("targets")
+        ):
+            result, find_terminal = self._retry_simple_step(
+                conn,
+                record,
+                run,
+                epoch,
+                step,
+                row,
+                variables,
+                box,
+                command,
+                result,
+                intent=self._intent_of(step, row, variables),
+                action=str(step.get("action") or ""),
+                allow_destructive=bool(step.get("allow_destructive_control")),
+            )
+            if find_terminal is not None:
+                return find_terminal
+
         if result.status == "ok":
             # S4: every executor step writes a step event, in its own transaction.
             with conn.transaction():
@@ -1320,7 +1387,7 @@ class RunLoop:
                     step_id=step["id"],
                     outcome="ok",
                     observed=result.observed,
-                    locator_rung=result.rung,
+                    locator_rung=_legal_rung(result.rung),
                 )
             # PL-027: a navigate is what releases the abandon guard, and the requests it refused
             # are the proof that a record the runner abandoned did not quietly reach the
@@ -1763,7 +1830,7 @@ class RunLoop:
                     outcome=outcome,
                     observed=observed,
                     error=error,
-                    locator_rung=rung,
+                    locator_rung=_legal_rung(rung),
                 )
 
     def _check(
@@ -1807,6 +1874,318 @@ class RunLoop:
         rendered = _render_condition(dict(condition), row or {}, variables or {})
         return self.executor.probe_confirmation(rendered, step_id=step_id, record_key=record_key)
 
+    # -- PL-122: finding an element when the recorded target is gone --------
+
+    def _intent_of(
+        self, step: Mapping[str, Any], row: Mapping[str, Any], variables: Mapping[str, Any]
+    ) -> str:
+        """The step's own sentence, or its name when teaching did not write one."""
+        raw = step.get("intent") or step.get("name") or step.get("id") or ""
+        return _safe_text(raw, row, variables).strip() or str(step.get("id") or "")
+
+    def _memory_candidates(
+        self,
+        record: RecordClaim,
+        run: RunClaim,
+        step_id: Any,
+        origins: tuple[str, ...],
+    ) -> list[tuple[str, list[dict[str, Any]]]]:
+        """Every remembered ladder this step has on any of the recipe's origins.
+
+        A multi-origin recipe gets one candidate per site. Trying them in order is safe: the
+        extension only resolves an element that is actually on the current page, so a ladder
+        remembered on another site simply fails and the next one is tried.
+        """
+        found: list[tuple[str, list[dict[str, Any]]]] = []
+        seen: set[str] = set()
+        for origin in origins:
+            if not origin or origin in seen:
+                continue
+            seen.add(origin)
+            ladder = self._memory_targets(record, run, step_id, origin)
+            if ladder:
+                found.append((origin, ladder))
+        return found
+
+    def _memory_targets(
+        self, record: RecordClaim, run: RunClaim, step_id: Any, origin: str
+    ) -> list[dict[str, Any]] | None:
+        if self.finder is None:
+            return None
+        return self.finder.memory(
+            tenant_id=record.tenant_id,
+            workflow_id=run.workflow_id,
+            step_id=str(step_id),
+            origin=origin,
+        )
+
+    def _remember(
+        self,
+        record: RecordClaim,
+        run: RunClaim,
+        step_id: Any,
+        origin: str,
+        ladder: list[dict[str, Any]],
+        *,
+        used: bool,
+    ) -> None:
+        if self.finder is None or not ladder:
+            return
+        self.finder.remember(
+            tenant_id=record.tenant_id,
+            workflow_id=run.workflow_id,
+            step_id=str(step_id),
+            origin=origin,
+            ladder=ladder,
+            used=used,
+        )
+
+    def _ask_for_token(
+        self,
+        command: StepCommand,
+        record: RecordClaim,
+        run: RunClaim,
+        step: Mapping[str, Any],
+        *,
+        intent: str,
+        action: str,
+        allow_destructive: bool,
+    ) -> tuple[str | None, list[dict[str, Any]], str, str | None]:
+        """One snapshot and one model answer, or a terminal ``parked`` marker.
+
+        Returns ``(token, ladder, origin, terminal)``. The cap is checked before the call, so the
+        seventh question in one record is never asked. ``terminal`` is ``'not_here'`` or
+        ``'refused'`` when the model could not point at an element, and ``'cap'`` when the record
+        has spent its questions. A step parks on any of them; a condition keeps today's answer on
+        ``'not_here'`` only.
+        """
+        if self.finder is None or not self.finder.available:
+            return None, [], "", None
+        if self._ai_calls_this_record >= MAX_AI_CALLS_PER_RECORD:
+            return None, [], "", "cap"
+        answer = self.finder.ask(
+            self.executor,
+            command,
+            tenant_id=record.tenant_id,
+            workflow_id=run.workflow_id,
+            step_id=str(step.get("id") or ""),
+            intent=intent,
+            action=action,
+            allow_destructive=allow_destructive,
+        )
+        if answer.called:
+            self._ai_calls_this_record += 1
+        if answer.status == "found" and answer.token:
+            return answer.token, answer.ladder, answer.origin, None
+        if answer.status in ("not_here", "refused"):
+            return None, [], answer.origin, answer.status
+        return None, [], answer.origin, None
+
+    def _park_find_failure(
+        self,
+        conn: psycopg.Connection,
+        record: RecordClaim,
+        box: _Box,
+        step: Mapping[str, Any],
+        intent: str,
+    ) -> None:
+        self._transition(
+            conn,
+            record,
+            box.state,
+            "parked",
+            find_failed_reason(intent),
+            step=step,
+            outcome="failed",
+        )
+        box.state = "parked"
+
+    def _retry_simple_step(
+        self,
+        conn: psycopg.Connection,
+        record: RecordClaim,
+        run: RunClaim,
+        epoch: int,
+        step: Mapping[str, Any],
+        row: Mapping[str, Any],
+        variables: Mapping[str, Any],
+        box: _Box,
+        command: StepCommand,
+        result: StepResult,
+        *,
+        intent: str,
+        action: str,
+        allow_destructive: bool,
+    ) -> tuple[StepResult, str | None]:
+        """Remembered element first, then one model answer, then the snap rung."""
+        for origin, memory in self._memory_candidates(
+            record, run, step.get("id"), command.allowed_origins
+        ):
+            retry_command = self._command(
+                record, run, epoch, step, row, variables, commit=False, targets=memory
+            )
+            retried = self.executor.perform(retry_command, None)
+            stopped = self._drain_events(conn, record, run, epoch, box)
+            if stopped is not None:
+                return retried, stopped
+            if retried.status == "ok":
+                self._remember(record, run, step.get("id"), origin, memory, used=True)
+                return retried, None
+            if retried.status != "locator_failed" or not _is_missing_target(retried.error):
+                # A busy, covered, refused or lost element is not a missing element: the model
+                # has nothing to add, and the caller's own words are the honest ones.
+                return retried, None
+
+        token, ladder, found_origin, terminal = self._ask_for_token(
+            command,
+            record,
+            run,
+            step,
+            intent=intent,
+            action=action,
+            allow_destructive=allow_destructive,
+        )
+        if terminal is not None:
+            self._park_find_failure(conn, record, box, step, intent)
+            return result, "parked"
+        if token:
+            targets = [{"by": "snap", "value": token}] + list(step.get("targets") or [])
+            retry_command = self._command(
+                record, run, epoch, step, row, variables, commit=False, targets=targets
+            )
+            retried = self.executor.perform(retry_command, None)
+            stopped = self._drain_events(conn, record, run, epoch, box)
+            if stopped is not None:
+                return retried, stopped
+            if retried.status == "ok":
+                self._remember(record, run, step.get("id"), found_origin, ladder, used=False)
+            return retried, None
+        return result, None
+
+    def _prepare_with_finding(
+        self,
+        conn: psycopg.Connection,
+        record: RecordClaim,
+        run: RunClaim,
+        epoch: int,
+        step: Mapping[str, Any],
+        row: Mapping[str, Any],
+        variables: Mapping[str, Any],
+        box: _Box,
+        command: StepCommand,
+        prepared: StepResult,
+        *,
+        intent: str,
+        action: str,
+        allow_destructive: bool,
+    ) -> tuple[StepResult, StepCommand, str | None]:
+        """A commit's prepare, retried on a remembered or model-found element.
+
+        ``prepared`` is returned unchanged when nothing could be found, so the caller's existing
+        failure path parks with today's sentence. A gate failure or the cap parks here with the
+        ticket's sentence, because the element was asked about and could not be identified.
+        """
+        for origin, memory in self._memory_candidates(
+            record, run, step.get("id"), command.allowed_origins
+        ):
+            retry_command = self._command(
+                record, run, epoch, step, row, variables, commit=True, targets=memory
+            )
+            retried = self.executor.prepare(retry_command)
+            if retried.status == "ok":
+                self._remember(record, run, step.get("id"), origin, memory, used=True)
+                return retried, retry_command, None
+            if retried.status != "locator_failed" or not _is_missing_target(retried.error):
+                return retried, retry_command, None
+
+        token, ladder, found_origin, terminal = self._ask_for_token(
+            command,
+            record,
+            run,
+            step,
+            intent=intent,
+            action=action,
+            allow_destructive=allow_destructive,
+        )
+        if terminal is not None:
+            self._park_find_failure(conn, record, box, step, intent)
+            return prepared, command, "parked"
+        if token:
+            targets = [{"by": "snap", "value": token}] + list(step.get("targets") or [])
+            retry_command = self._command(
+                record, run, epoch, step, row, variables, commit=True, targets=targets
+            )
+            retried = self.executor.prepare(retry_command)
+            if retried.status == "ok":
+                self._remember(record, run, step.get("id"), found_origin, ladder, used=False)
+            return retried, retry_command, None
+        return prepared, command, None
+
+    def _condition_memory_says_present(
+        self,
+        record: RecordClaim,
+        run: RunClaim,
+        step: Mapping[str, Any],
+        row: Mapping[str, Any],
+        variables: Mapping[str, Any],
+        origins: tuple[str, ...],
+    ) -> bool | None:
+        """Re-ask the condition with the remembered element. None means no usable memory."""
+        for origin, memory in self._memory_candidates(record, run, step.get("id"), origins):
+            verdict = self._check(
+                {"element_present": {"targets": memory}},
+                step_id=step.get("id"),
+                record_key=record.record_key,
+                row=row,
+                variables=variables,
+            )
+            if verdict.status == "ok" and verdict.passed:
+                self._remember(record, run, step.get("id"), origin, memory, used=True)
+                return True
+        return None
+
+    def _maybe_find_condition(
+        self,
+        conn: psycopg.Connection,
+        record: RecordClaim,
+        run: RunClaim,
+        epoch: int,
+        step: Mapping[str, Any],
+        row: Mapping[str, Any],
+        variables: Mapping[str, Any],
+        box: _Box,
+        verdict: ConditionResult,
+    ) -> tuple[ConditionResult, str | None]:
+        """Ask the condition's intent when its targets find nothing, for a person-ending branch."""
+        kind = _person_condition_kind(step, verdict)
+        if kind is None:
+            return verdict, None
+        intent = self._intent_of(step, row, variables)
+        if self._condition_memory_says_present(
+            record, run, step, row, variables, self._allowed_origins
+        ):
+            return _condition_with_element(verdict, kind), None
+
+        command = self._command(record, run, epoch, step, row, variables, commit=False)
+        token, ladder, found_origin, terminal = self._ask_for_token(
+            command,
+            record,
+            run,
+            step,
+            intent=intent,
+            action="present",
+            allow_destructive=True,
+        )
+        if terminal is not None:
+            if terminal == "not_here":
+                return verdict, None
+            self._park_find_failure(conn, record, box, step, intent)
+            return verdict, "parked"
+        if token:
+            self._remember(record, run, step.get("id"), found_origin, ladder, used=False)
+            return _condition_with_element(verdict, kind), None
+        return verdict, None
+
     def _command(
         self,
         record: RecordClaim,
@@ -1817,6 +2196,7 @@ class RunLoop:
         variables: Mapping[str, Any],
         *,
         commit: bool,
+        targets: list[dict[str, Any]] | None = None,
     ) -> StepCommand:
         rendered: dict[str, Any] = {"id": step["id"], "action": step["action"]}
         # The step fields that travel verbatim. `autocomplete` and `key` are PL-018's, and both
@@ -1869,7 +2249,8 @@ class RunLoop:
         if "assert_after" in step:
             rendered["assert_after"] = _render_condition(step["assert_after"], row, variables)
         rendered["targets"] = [
-            _render_target(target, row, variables) for target in step.get("targets", [])
+            _render_target(target, row, variables)
+            for target in (step.get("targets", []) if targets is None else targets)
         ]
 
         return StepCommand(
@@ -1917,6 +2298,79 @@ class RunLoop:
 def _is_busy_failure(error: str | None) -> bool:
     """Whether the extension said the control was busy rather than absent or covered (PL-113 S3)."""
     return bool(error) and "target is busy" in str(error).lower()
+
+
+def _is_missing_target(error: str | None) -> bool:
+    """Whether a locator failure means no element or more than one, not a busy or covered one.
+
+    Only the first kind may become a model question: a control that is busy is the page working,
+    and a control something covers is a click problem, not a missing element.
+    """
+    text = (error or "").lower()
+    if not text:
+        return False
+    if "busy" in text or "not clickable" in text or "covered" in text:
+        return False
+    return (
+        "could not be resolved" in text
+        or "no rung" in text
+        or "more than one match" in text
+        or "no visible, enabled match" in text
+    )
+
+
+def _legal_rung(value: Any) -> int | None:
+    """Only the recipe ladder's five rungs fit ``step_events.locator_rung``.
+
+    A ``snap`` rung is not one of the five, so it is logged as no rung rather than as a number the
+    recipe format never defined. The executor's own ``by`` field still says how it was found.
+    """
+    return value if isinstance(value, int) and 1 <= value <= 5 else None
+
+
+def _ends_record_for_a_person(steps: Any) -> bool:
+    """Whether this branch parks or skips the row for a person, rather than ending it as Done."""
+    if not isinstance(steps, list):
+        return False
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        if step.get("action") == "end_record" and step.get("outcome") in ("parked", "skipped"):
+            return True
+        if _ends_record_for_a_person(step.get("then")) or _ends_record_for_a_person(
+            step.get("else")
+        ):
+            return True
+    return False
+
+
+def _person_condition_kind(step: Mapping[str, Any], verdict: ConditionResult) -> str | None:
+    """The condition kind a branch may ask as an intent, or None when it must not.
+
+    Only ``element_present`` / ``element_absent``, and only when the branch that would be taken
+    ends the record for a person. A condition that could mark a row Done, or a commit's
+    ``assert_after``, never reaches this helper.
+    """
+    if verdict.status != "ok":
+        return None
+    when = step.get("when")
+    if not isinstance(when, dict):
+        return None
+    keys = {key for key in when if key != "timeout_ms"}
+    if keys == {"element_absent"}:
+        if verdict.passed and _ends_record_for_a_person(step.get("then")):
+            return "element_absent"
+        return None
+    if keys == {"element_present"}:
+        if not verdict.passed and _ends_record_for_a_person(step.get("else")):
+            return "element_present"
+        return None
+    return None
+
+
+def _condition_with_element(verdict: ConditionResult, kind: str) -> ConditionResult:
+    """The answer the condition would have given if its target ladder had found the element."""
+    return ConditionResult(passed=kind == "element_present", observed=verdict.observed, status="ok")
 
 
 def max_step_timeout_seconds(recipe: Mapping[str, Any]) -> float:

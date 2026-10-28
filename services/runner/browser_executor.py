@@ -38,6 +38,8 @@ from .executor import (
     ConditionResult,
     ConfirmationProbe,
     OnDispatched,
+    PageSnapshot,
+    SnapshotUnavailable,
     StepCommand,
     StepResult,
 )
@@ -63,6 +65,10 @@ GUARD_TIMEOUT_SECONDS = 15.0
 # typing it and seeing the code page go.
 CODE_LOOK_SECONDS = 60.0
 CODE_TYPE_SECONDS = 15.0
+
+# PL-122: a page snapshot is one CDP evaluation. It is not a step and sends no input, so it gets
+# its own short budget rather than a step's timeout.
+SNAPSHOT_TIMEOUT_SECONDS = 15.0
 
 # The statuses the runner understands, and the ones it maps to something narrower.
 _KNOWN_STATUSES = frozenset(
@@ -367,6 +373,41 @@ class BrowserExecutor:
         if result.passed:
             return "present"
         return "absent"
+
+    def snapshot(self, command: StepCommand) -> PageSnapshot:
+        """PL-122: ask the bound tab for its interactive and labelled elements.
+
+        The command's own envelope is used, so the extension can check the lease, the expiry and
+        the allowed origins exactly as it does for a step. Nothing is typed, clicked or scrolled.
+        """
+        try:
+            wire_id = self._send_command(
+                "snapshot",
+                command,
+                extra={"allowed_origins": list(command.allowed_origins)},
+                ttl=SNAPSHOT_TIMEOUT_SECONDS,
+            )
+        except ExecutorUnavailable as exc:
+            raise SnapshotUnavailable(str(exc)) from exc
+        kind, message = self._read_with_grace(
+            self._now() + SNAPSHOT_TIMEOUT_SECONDS, command_id=wire_id
+        )
+        if kind != "result":
+            raise SnapshotUnavailable(f"the extension did not answer a snapshot ({kind})")
+        if str(message.get("status")) != "ok":
+            raise SnapshotUnavailable(
+                str(message.get("error") or "the extension refused the snapshot")
+            )
+        observed = message.get("observed")
+        if not isinstance(observed, dict) or not isinstance(observed.get("elements"), list):
+            raise SnapshotUnavailable("the extension answered a snapshot without elements")
+        return PageSnapshot(
+            origin=str(observed.get("origin") or ""),
+            elements=[
+                dict(element) for element in observed["elements"] if isinstance(element, dict)
+            ],
+            truncated=bool(observed.get("truncated")),
+        )
 
     # -- message construction ---------------------------------------------
 

@@ -43,6 +43,24 @@ ConfirmationProbe = Literal["present", "absent", "unanswered", "unsupported"]
 OnDispatched = Callable[[], None]
 
 
+class SnapshotUnavailable(RuntimeError):
+    """The page snapshot could not be taken, so no model call may be based on it."""
+
+
+@dataclass(frozen=True)
+class PageSnapshot:
+    """The interactive and labelled elements of the page a step acted on.
+
+    ``elements`` is already redacted by the extension: no password field, no typed value and no
+    hidden input. ``origin`` is the page the snapshot was taken on, which is also the memory key's
+    site.
+    """
+
+    origin: str
+    elements: list[dict[str, Any]] = field(default_factory=list)
+    truncated: bool = False
+
+
 @dataclass(frozen=True)
 class StepCommand:
     """One step, with its values already rendered, sent to the executor."""
@@ -136,5 +154,14 @@ class Executor(Protocol):
         trusted) and ``"unanswered"`` parks too — a probe nobody answered must never authorise the
         save, because "absent" is the answer that creates the record. ``"unsupported"`` means this
         executor cannot see page state at all, so the gate does not run.
+        """
+        ...
+
+    def snapshot(self, command: StepCommand) -> PageSnapshot:
+        """Return the page's interactive and labelled elements, with no typed values.
+
+        ``command`` supplies the run, record, lease and allowed origins the wire needs. A page that
+        cannot be read raises :class:`SnapshotUnavailable`; the runner then parks the row exactly as
+        it would without a model, never inventing a target.
         """
         ...

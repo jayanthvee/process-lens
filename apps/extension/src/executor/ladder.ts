@@ -1114,7 +1114,13 @@ export function resolveTargetInPage(query: ResolveQuery): ResolveResult {
   const requested = (query.targets ?? []) as ResolveRung[];
   if (requested.length === 0) return fail("the step has no target ladder");
 
-  const rankOf = (by: unknown): number => LADDER.indexOf(lower(by));
+  const rankOf = (by: unknown): number => {
+    const name = lower(by);
+    // PL-122: a snapshot token is not one of the recipe's five rungs. It is tried first because
+    // the runner only sends it after a model pointed at the element.
+    if (name === "snap") return -2;
+    return LADDER.indexOf(name);
+  };
   // Climb in rung RANK order, not the order the recipe happened to list: a
   // recipe that puts `css` before `role` must still try `role` first. The sort
   // is stable, so two rungs of the same rank keep their recipe order, and a rung
@@ -1130,7 +1136,7 @@ export function resolveTargetInPage(query: ResolveQuery): ResolveResult {
     const rank = rankOf(by);
     // Rungs are reported as the recipe format numbers them, 1..5; 0 marks a rung
     // that is not in the ladder at all.
-    const rungNumber = rank === -1 ? 0 : rank + 1;
+    const rungNumber = rank < 0 ? 0 : rank + 1;
     const scopeDescriptor = norm(target.within) || norm(query.within);
     const containerResult = scopeDescriptor
       ? container(scopeDescriptor)
@@ -1149,7 +1155,18 @@ export function resolveTargetInPage(query: ResolveQuery): ResolveResult {
 
     let candidates: Element[] = [];
 
-    if (by === "role") {
+    if (by === "snap") {
+      // Exactly the element the snapshot tagged. No role or name fallback: a token that is not on
+      // the page is a refusal, never a guess at the element that looks closest.
+      const token = norm(target.value);
+      if (!/^[A-Za-z0-9_-]{1,32}$/.test(token)) {
+        attempts.push({ rung: rungNumber, by, matches: 0, reason: "invalid snapshot token" });
+        continue;
+      }
+      candidates = elements(scope).filter(
+        (el) => el.getAttribute("data-pl-snap") === token,
+      );
+    } else if (by === "role") {
       const role = lower(target.role);
       const name = norm(target.name);
       candidates = elements(scope).filter(
