@@ -10,6 +10,19 @@ const EMAIL = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 const MONEY = /[€$£]|^\s*-?\d{1,3}(,\d{3})*(\.\d+)?\s*$/;
 const PHONE = /^\+?[\d][\d\s().-]{5,}$/;
 
+/** The words two names share, ignoring tiny words and punctuation. */
+function sharesNameWord(left: string, right: string): boolean {
+  const words = (text: string): Set<string> =>
+    new Set(
+      text
+        .toLowerCase()
+        .split(/[^a-z0-9]+/)
+        .filter((word) => word.length > 2),
+    );
+  const first = words(left);
+  return [...words(right)].some((word) => first.has(word));
+}
+
 /** The safe quote marks the rest of the app uses. */
 const OPEN = "\u201c";
 const CLOSE = "\u201d";
@@ -53,6 +66,11 @@ export function fieldReading(
 ): FieldReading {
   if (chosen === null) return { label: EMPTY_COLUMN, tone: "idle" };
   if (chosen !== auto || confidence === "exact") return { label: "Matched", tone: "ok" };
+  // PL-123: the owner's "Sales price" field was matched to "New Price" by the shared word
+  // "price", but the panel still asked its leftover question. A guess that shares a real word
+  // with the field's own name is matched; only a guess by shape or synonym with no shared word
+  // is still a question.
+  if (sharesNameWord(chosen, label)) return { label: "Matched", tone: "ok" };
   return { label: columnQuestion(label, example), tone: "help", question: true };
 }
 
