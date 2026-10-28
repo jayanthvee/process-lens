@@ -520,6 +520,8 @@ def _default_intent(candidate: Candidate) -> str:
 
 def _intent_for(candidate: Candidate, options: CompileOptions) -> str:
     """The one sentence this step carries: the person's, the recording's, or a derived one."""
+    if candidate.row_aimed and candidate.intent:
+        return candidate.intent[:500]
     supplied = (options.intents or {}).get(candidate.recorded_id or "")
     if isinstance(supplied, str) and supplied.strip():
         return supplied.strip()[:500]
@@ -940,6 +942,67 @@ def _rewrite_container_row_clicks(candidates: list[Candidate]) -> None:
         if template is not None:
             candidate.targets = [{"by": "text_fuzzy", "value": template}]
             candidate.name = f"Click {template}"[:120]
+
+
+NO_CHANGE_MESSAGE = (
+    "This task doesn't change anything. Change the value you want each row to set, then Stop again."
+)
+
+
+def _changes_something(candidates: list[Candidate], search_fill_id: str | None) -> bool:
+    """Whether any step after the search sets a value: a fill, a select or a check (PL-124)."""
+    if search_fill_id is None or not any(c.recorded_id == search_fill_id for c in candidates):
+        # The search step was folded away, so where the change starts is unknown: don't refuse.
+        return True
+    seen_search = False
+    for candidate in candidates:
+        if not seen_search:
+            seen_search = candidate.recorded_id == search_fill_id
+            continue
+        if candidate.action in ("fill", "select", "check"):
+            return True
+    return False
+
+
+def _aim_open_click_at_row(
+    candidates: list[Candidate], search_fill_id: str | None, column: str
+) -> None:
+    """The click that opens the searched item is aimed at the row's value (PL-124).
+
+    A person clicks anywhere on a result: the owner clicked the "On hand: 18.00" line of the
+    product card, so the recorded target was that line's literal text, which only one product
+    has. After the search, the item to open is the result showing the row's own value, so the
+    first click that opens a record is re-aimed at ``{{row.<column>}}`` outside the search box,
+    and its sentence says so for the run-time find. A click already naming the row is left as is.
+    """
+    start = next(
+        (
+            index
+            for index, candidate in enumerate(candidates)
+            if search_fill_id is not None and candidate.recorded_id == search_fill_id
+        ),
+        None,
+    )
+    if start is None:
+        return
+    template = f"{{{{row.{column}}}}}"
+    for candidate in candidates[start + 1 :]:
+        if candidate.commit:
+            return
+        if candidate.action != "click" or not _opens_a_record(candidate):
+            continue
+        names_the_row = any(
+            isinstance(rung.get(key), str) and "{{row." in rung[key]
+            for rung in candidate.targets or []
+            for key in ("name", "text", "value")
+        )
+        if not names_the_row:
+            candidate.targets = [{"by": "text_fuzzy", "value": template}]
+            candidate.name = f"Open {template}"[:120]
+            candidate.intent = f"open the result found by {template}"
+            candidate.row_aimed = True
+        candidate.exclude_search_box = True
+        return
 
 
 def _render_candidate(candidate: Candidate, options: CompileOptions) -> dict[str, Any]:
@@ -2503,6 +2566,15 @@ def compile_recording(recording: Any, options: CompileOptions) -> CompileResult:
             search_branch = _duplicate_branch(searched_column, options)
     else:
         searched_column = ""
+
+    if search_kind == "update" and shape_search is not None:
+        update_run, update_column = shape_search
+        _aim_open_click_at_row(parameterized, search_source[update_run].recorded_id, update_column)
+        # PL-124: an update that writes nothing would be keyed by the record alone, so every
+        # record an earlier task touched is skipped as done, and the rest are opened and left.
+        # The owner's typed price had been dropped before the compile; this refuses that shape.
+        if not _changes_something(parameterized, search_source[update_run].recorded_id):
+            raise CompileError(NO_CHANGE_MESSAGE)
 
     # PL-112: a choice that names a step the folds removed would silently compile a task that never
     # saves. The person is told instead, in the same warnings list every other fold reports through.

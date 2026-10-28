@@ -976,6 +976,47 @@ export async function cleanRecording(
   }
 }
 
+/** PL-124: the only actions a cleaning answer may hide. A value is never the model's to drop. */
+const MODEL_HIDEABLE = new Set(["click", "press"]);
+
+/**
+ * PL-124 item 1: which recorded steps the list hides after Stop.
+ *
+ * The rule is the code's, not the model's. A fill or select the page set by itself is hidden by
+ * its flag, whatever the model said. A fill, select or check the person made is never hidden,
+ * whatever the model said: the owner's typed price was dropped because the model saw it next to
+ * the page's own value for the same field and kept the wrong one. The model's `keep: false` is
+ * honoured only for clicks and presses. Before Stop has asked (`cleaned === null`) nothing is
+ * hidden, and a step the person brought back stays.
+ */
+export function hiddenSeqs(
+  events: RecordedEvent[],
+  cleaned: CleanOutcome | null,
+  broughtBack: ReadonlySet<number>,
+): Set<number> {
+  const hidden = new Set<number>();
+  if (cleaned === null) return hidden;
+  const dropped = new Set(
+    cleaned.ok === true && cleaned.available
+      ? cleaned.steps.filter((step) => !step.keep).map((step) => step.id)
+      : [],
+  );
+  for (const event of events) {
+    if (broughtBack.has(event.seq)) continue;
+    const step = event?.step ?? null;
+    if (step === null) continue;
+    const action = step.action ?? event.kind;
+    if (event.page_set === true && (action === "fill" || action === "select")) {
+      hidden.add(event.seq);
+      continue;
+    }
+    if (step.id && dropped.has(String(step.id)) && MODEL_HIDEABLE.has(String(action))) {
+      hidden.add(event.seq);
+    }
+  }
+  return hidden;
+}
+
 export async function saveTask(
   request: SaveTaskBody,
   deps: {

@@ -92,6 +92,7 @@ interface HarnessOptions {
   now?: () => number;
   storageValue?: StoredSession | null;
   browserId?: string;
+  ensureDrawing?: SessionDeps["ensureDrawing"];
 }
 
 function makeHarness(options: HarnessOptions = {}): Harness {
@@ -120,6 +121,7 @@ function makeHarness(options: HarnessOptions = {}): Harness {
     now: options.now ?? (() => clock.value),
     ...(options.enterCode ? { enterCode: options.enterCode } : {}),
     ...(options.codeFromEmail ? { codeFromEmail: options.codeFromEmail } : {}),
+    ...(options.ensureDrawing ? { ensureDrawing: options.ensureDrawing } : {}),
     setInterval: (fn, ms) => {
       const timer: Timer = { fn, ms, cancelled: false };
       timers.push(timer);
@@ -1259,5 +1261,50 @@ describe("two Connects in flight at once (PL-093)", () => {
 
     expect(harness.states.at(-1)).toBe("ready");
     expect(harness.sockets).toHaveLength(1);
+  });
+});
+
+describe("PL-124: a target not found on a page that stopped drawing", () => {
+  const notFound = async (): Promise<StepReport> => {
+    throw new ExecutorError(
+      "the fill target could not be resolved: no rung of the target ladder resolved to exactly " +
+        "one element [page http://localhost:8069/odoo/products; 0 input(s), 498 element(s)]",
+    );
+  };
+
+  it("asks again and refuses with the drawing sentence, never 'not found'", async () => {
+    // The check before the step passes; the window stops drawing during the step.
+    const answers = [{ drawing: true }, { drawing: false, message: "The window isn't drawing." }];
+    let asked = 0;
+    const harness = makeHarness({
+      runStep: notFound,
+      ensureDrawing: async () => answers[asked++] ?? { drawing: false },
+    });
+    const socket = await openSession(harness);
+
+    deliver(socket, command({ command_id: "c-blank", commit: false }));
+    await flush();
+
+    expect(asked).toBe(2);
+    expect(socket.lastResult()).toMatchObject({
+      command_id: "c-blank",
+      status: "refused",
+      error: "The window isn't drawing.",
+    });
+  });
+
+  it("still reports not found when the page is drawing", async () => {
+    const harness = makeHarness({
+      runStep: notFound,
+      ensureDrawing: async () => ({ drawing: true }),
+    });
+    const socket = await openSession(harness);
+
+    deliver(socket, command({ command_id: "c-missing", commit: false }));
+    await flush();
+
+    const result = socket.lastResult();
+    expect(result?.["status"]).toBe("not_dispatched");
+    expect(String(result?.["error"])).toContain("could not be resolved");
   });
 });

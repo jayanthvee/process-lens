@@ -267,6 +267,8 @@ export interface MappingEntry {
   alternatives: string[];
   /** PL-109 item 1: the value the person typed while teaching, never a default for a row. */
   example?: string | null;
+  /** PL-124: false when no step of the task reads this column; Try one row doesn't list it. */
+  used?: boolean;
 }
 
 /** One row of `check.rows_need_a_look`: the row's number and one plain reason. */

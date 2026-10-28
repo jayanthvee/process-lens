@@ -642,7 +642,9 @@ export function TaskRun(): JSX.Element {
             <div className="run-first">
               <p className="run-about">About to add:</p>
               <dl className="run-values">
-                {(entries ?? []).map((entry) => (
+                {/* PL-124: only what the task's steps really write; a column nothing reads
+                    is not about to be added. */}
+                {(entries ?? []).filter((entry) => entry.used !== false).map((entry) => (
                   <div className="run-value" key={entry.column}>
                     <dt>{taughtLine(entry.label, entry.example)}</dt>
                     <dd>{String(first.values[entry.column] ?? "")}</dd>

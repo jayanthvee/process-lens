@@ -158,12 +158,14 @@ def _recorded_steps(recording: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if action not in ("fill", "select", "click", "check", "press"):
             continue
         prepared: dict[str, Any] = {"id": step_id, "action": action}
+        # PL-124: who made the step is the one fact the model needs to tell the page's own value
+        # from the person's. Without it the owner's typed price looked the same as the price the
+        # page showed, and the model kept the page's. Only the origin travels, never the value.
+        prepared["by"] = "page" if raw.get("page_set") is True else "person"
         if isinstance(step.get("name"), str):
             prepared["name"] = step["name"]
         if isinstance(step.get("targets"), list):
             prepared["targets"] = step["targets"]
-        if step.get("value") is not None:
-            prepared["value"] = step["value"]
         steps.append(prepared)
     return steps
 

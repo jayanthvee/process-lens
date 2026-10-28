@@ -29,6 +29,9 @@ import { ExecutorError } from "../executor/types";
 import { POLICY_BLOCKED_MESSAGE, recheckExpiry } from "../executor/guards";
 import { NOT_DRAWING_MESSAGE } from "../executor/visibility";
 
+/** The step runner's sentence for a target no rung found (`command-step.ts`, `executor.ts`). */
+const TARGET_NOT_RESOLVED = /target (?:for step \S+ )?could not be resolved/;
+
 /** The socket surface the session needs; a plain object satisfies it. */
 export interface WebSocketLike {
   send(data: string): void;
@@ -1110,6 +1113,24 @@ export class CommandSession {
       // A policy-blocked attach is a run-level event, not just a failed command. Gated the same
       // way: it, too, belongs to the command that is current.
       if (message === POLICY_BLOCKED_MESSAGE && current()) this.sendEvent("policy_blocked", message);
+      // PL-124: a target that was not found on a page that has stopped drawing is the drawing
+      // problem, not a missing element. The check before the step passed, but a covered window can
+      // stop drawing after it, and the app then never puts the element on the page. Ask again, and
+      // when it still draws nothing, refuse with the drawing sentence instead of "not found".
+      if (
+        !sent &&
+        gateRefusal === null &&
+        TARGET_NOT_RESOLVED.test(message) &&
+        this.deps.ensureDrawing &&
+        current()
+      ) {
+        const paint = await this.deps.ensureDrawing().catch(() => ({ drawing: true }));
+        if (!paint.drawing && current()) {
+          const sentence = ("message" in paint ? paint.message : undefined) ?? NOT_DRAWING_MESSAGE;
+          this.sendResult(command.command_id, "refused", null, {}, sentence);
+          return;
+        }
+      }
       if (current()) {
         // F2: once any input event has reached the page the outcome is unknown, so the honest
         // report is `lost` (the runner reconciles) — never `rejected`, which would assert a
