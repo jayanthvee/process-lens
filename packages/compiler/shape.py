@@ -407,7 +407,13 @@ def canonical_recording(shape: Shape) -> list[dict[str, Any]]:
     if shape.save == "button" and shape.save_event is not None:
         add(shape.save_event)
     else:
-        if shape.save_event is not None:
+        # Leaving is done by going to the list's address, not by replaying the click the person
+        # left with: Odoo draws a back arrow in a narrow window and a breadcrumb in a wide one, and
+        # the owner's run parked on the arrow the work window didn't have. The re-open that
+        # follows reads the value back, so a leave that didn't save is still caught. A create has
+        # no item page to re-open, so its leave click stays: it is the step the list is checked
+        # after.
+        if shape.kind == "create" and shape.save_event is not None:
             add(shape.save_event)
         out.append({"seq": len(out) + 1, "kind": "navigate", "url": shape.list_url, "step": None})
     return out
