@@ -206,6 +206,54 @@ def take_cancelled_run(
     return int(row[0]) if row is not None else None
 
 
+# PL-130: the try (a one-row preview) of this task, version and file that is still open.
+_OPEN_TRY = """
+SELECT id, status::text FROM runs
+WHERE workflow_id = %(workflow)s
+  AND recipe_version_id = %(version)s
+  AND input_batch_id = %(batch)s
+  AND mode = 'preview'
+  AND status IN ('queued', 'running', 'paused')
+ORDER BY created_at DESC
+LIMIT 1
+"""
+
+
+def open_try_run(
+    conn: psycopg.Connection,
+    *,
+    workflow_id: uuid.UUID,
+    recipe_version_id: uuid.UUID,
+    input_batch_id: uuid.UUID,
+) -> tuple[uuid.UUID, str] | None:
+    """The open try of this task, version and file, as ``(run id, status)``, if there is one."""
+    with conn.cursor() as cur:
+        cur.execute(
+            _OPEN_TRY,
+            {"workflow": workflow_id, "version": recipe_version_id, "batch": input_batch_id},
+        )
+        row = cur.fetchone()
+    return (row[0], row[1]) if row is not None else None
+
+
+# PL-130: the supervisor saw this worker's process end, so nothing will heartbeat its runs again.
+# Its heartbeat is marked lapsed at once, and the next worker takes the run over now instead of
+# after the 365-second takeover rule; the takeover's own recovery then moves a record caught in the
+# commit window to `reconciling`. Only called once the process is known to be gone.
+_RELEASE_DEAD_WORKER = """
+UPDATE runs SET heartbeat_at = 'epoch'
+WHERE worker_id = %(worker)s AND status IN ('running', 'paused')
+RETURNING id
+"""
+
+
+def release_dead_worker_runs(conn: psycopg.Connection, worker_id: str) -> list[uuid.UUID]:
+    """Mark the runs a stopped worker held as lapsed, so another worker takes them over now."""
+    with conn.cursor() as cur:
+        cur.execute(_RELEASE_DEAD_WORKER, {"worker": worker_id})
+        return [row[0] for row in cur.fetchall()]
+
+
 def heartbeat(conn: psycopg.Connection, run_id: uuid.UUID, worker_id: str, epoch: int) -> None:
     """Refresh the lease. Raises :class:`StaleLease` when another worker owns the run now."""
     with conn.cursor() as cur:

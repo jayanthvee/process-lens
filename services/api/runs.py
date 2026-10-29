@@ -26,6 +26,7 @@ from packages.ledger import (
     list_open_approvals,
     list_runs,
     open_approval_for_run,
+    open_try_run,
     reads,
     request_cancel,
     requeue_record,
@@ -260,6 +261,17 @@ def create_run_endpoint(payload: Annotated[CreateRunRequest, Body()]) -> CreateR
         tenant_id = workflow_tenant(conn, payload.workflow_id)
         if tenant_id is not None:
             require_runs_allowed(conn, tenant_id)
+        if payload.mode == "preview":
+            # PL-130: a second Try it of the same task and file returns the try still open. The
+            # owner's panel lost its first try (the screen was opened again) and queued a second.
+            open_try = open_try_run(
+                conn,
+                workflow_id=payload.workflow_id,
+                recipe_version_id=payload.recipe_version_id,
+                input_batch_id=payload.input_batch_id,
+            )
+            if open_try is not None:
+                return CreateRunResponse(run_id=open_try[0], status=open_try[1])
         try:
             run_id = create_run(
                 conn,

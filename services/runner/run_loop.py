@@ -251,6 +251,11 @@ class RunLoop:
         # PL-128: the run's recipe changes items that already exist (its key carries the values it
         # writes). Such a change can be undone on the site, so the site decides, not the ledger.
         self._updates_items = False
+        # PL-130: where an update saves, when that is before its commit step (the re-open that
+        # reads the value back), and the commit step itself. None for every other recipe.
+        self._save_point: tuple[str, dict[str, Any]] | None = None
+        # PL-130: the task's own fields, the values an approval card shows.
+        self._task_columns: frozenset[str] = frozenset()
         self._deferred_events: list[tuple[str, str]] = []
         # PL-027: whether the record being processed actually drove the browser. A record parked by
         # a precheck rule never opened a page, so there is no half-filled form to guard.
@@ -285,6 +290,8 @@ class RunLoop:
         origins = meta.get("allowed_origins")
         self._allowed_origins = tuple(str(o) for o in origins) if isinstance(origins, list) else ()
         self._updates_items = _updates_items(meta)
+        self._save_point = _save_point(recipe) if self._updates_items else None
+        self._task_columns = _task_columns(meta)
 
         # R6: never start a run whose lease could lapse mid-step: the heartbeat must outlive
         # three times the longest step in the recipe plus the dispatch budget.
@@ -765,6 +772,14 @@ class RunLoop:
                     )
                 return "paused"
 
+            # PL-130: an update that saves before its commit step is approved here, before the save.
+            if self._save_point is not None and step.get("id") == self._save_point[0]:
+                stopped = self._approve_before_save(
+                    conn, record, run, self._save_point[1], row, variables
+                )
+                if stopped is not None:
+                    return stopped
+
             action = step.get("action")
 
             if action == "branch":
@@ -824,7 +839,7 @@ class RunLoop:
                         return unanswered
                     if not verdict.passed:
                         continue
-                shown = _gate_values(step, row, variables)
+                shown = _gate_values(step, row, variables, self._task_columns)
                 verdict = self._gate(conn, record, run, box.state, step_id=step["id"], shown=shown)
                 if verdict == "approved":
                     continue
@@ -1175,7 +1190,7 @@ class RunLoop:
                 run,
                 "filling",
                 step_id=step["id"],
-                shown=_gate_values(step, row, variables),
+                shown=_gate_values(step, row, variables, self._task_columns),
             )
             if verdict == "timeout":
                 # PL-027: nobody decided, so the record is abandoned rather than committed -- under
@@ -1650,6 +1665,40 @@ class RunLoop:
 
     # -- approvals and reconcile ------------------------------------------
 
+    def _approve_before_save(
+        self,
+        conn: psycopg.Connection,
+        record: RecordClaim,
+        run: RunClaim,
+        commit: Mapping[str, Any],
+        row: Mapping[str, Any],
+        variables: Mapping[str, Any],
+    ) -> str | None:
+        """PL-130: the policy gate of an update whose save comes before its commit step.
+
+        An update saves with its Save click or by leaving the form; its commit step is the re-open
+        that reads the value back. Gating that re-open asked "go ahead?" after the value was already
+        saved. The same gate is asked here, with the commit step's own values, so the commit's gate
+        finds this decision and does not ask again. None means carry on.
+        """
+        if not evaluate_policy(
+            run.approval_policy, commits_attempted=commits_attempted(conn, run.id), mode=run.mode
+        ):
+            return None
+        verdict = self._gate(
+            conn,
+            record,
+            run,
+            "filling",
+            step_id=commit["id"],
+            shown=_gate_values(commit, row, variables, self._task_columns),
+        )
+        if verdict == "approved":
+            return None
+        if verdict == "timeout":
+            self._transition(conn, record, "filling", "parked", "nobody decided the commit gate")
+        return "parked"
+
     def _gate(
         self,
         conn: psycopg.Connection,
@@ -1808,6 +1857,14 @@ class RunLoop:
                 "pending",
                 "the site does not have it yet; trying again",
             )
+            return "pending"
+
+        # PL-130: an update whose save was cut off is done again and read back. Setting a value the
+        # item may already have adds nothing, and the re-open's read-back is the check this search
+        # could not make. A create stays parked: doing it again could add a second copy. A commit
+        # whose own read-back failed (``check_sentence``) is a person's to look at either way.
+        if self._updates_items and diff.error is not None and check_sentence is None:
+            self._transition(conn, record, "reconciling", "pending", UPDATE_CUT_OFF_REASON)
             return "pending"
 
         # S2: an ambiguous match or a search error parks the record; it never fails it.
@@ -2549,6 +2606,42 @@ class RunLoop:
 # -- helpers the loop uses ------------------------------------------------
 
 
+# PL-130: why a cut-off update goes round again instead of waiting for a person.
+UPDATE_CUT_OFF_REASON = "the save was cut off; setting it again and reading it back"
+
+
+def _task_columns(meta: Mapping[str, Any]) -> frozenset[str]:
+    """PL-130: the fields the recipe's input schema names."""
+    schema = meta.get("input_schema")
+    fields = schema.get("fields") if isinstance(schema, dict) else None
+    return frozenset(str(name) for name in fields) if isinstance(fields, dict) else frozenset()
+
+
+def _save_point(recipe: Mapping[str, Any]) -> tuple[str, dict[str, Any]] | None:
+    """PL-130: the step where an update saves, when that comes before its commit step.
+
+    A recipe checked by re-opening its item changes the fields, saves (a Save click, or leaving
+    the form by the list's address), and only then reaches its commit step: the re-open whose
+    read-back is the check. The save is the first top-level step after the last change, when a
+    navigate lies between that change and the commit. Returns that step's id and the commit step.
+    """
+    steps = [step for step in recipe.get("steps") or [] if isinstance(step, dict)]
+    commit = next((index for index, step in enumerate(steps) if step.get("commit") is True), None)
+    if commit is None:
+        return None
+    changes = [index for index in range(commit) if steps[index].get("action") in ("fill", "select")]
+    if not changes:
+        return None
+    first = changes[-1] + 1
+    if not any(steps[index].get("action") == "navigate" for index in range(first, commit)):
+        return None
+    step_id = steps[first].get("id")
+    commit_id = steps[commit].get("id")
+    if not isinstance(step_id, str) or not isinstance(commit_id, str):
+        return None
+    return step_id, steps[commit]
+
+
 def _updates_items(meta: Mapping[str, Any]) -> bool:
     """PL-128: whether a recipe changes items that already exist.
 
@@ -2927,18 +3020,27 @@ def _render_selector(
 
 
 def _gate_values(
-    step: Mapping[str, Any], row: Mapping[str, Any], variables: Mapping[str, Any]
+    step: Mapping[str, Any],
+    row: Mapping[str, Any],
+    variables: Mapping[str, Any],
+    columns: frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
     """The exact values a person is shown and therefore approves (R3).
 
     The whole rendered target ladder and the value, plus the input values of this record. That is
     what makes the approval specific: a decision can never cover a record, an element or a value the
     person did not see.
+
+    PL-130: ``columns`` are the task's own fields. A row carries both the spreadsheet's columns and
+    the task's fields they were matched to, so the card listed every value twice ("Product" and
+    "product", "New Price" and "sales_price"). The task's fields are what it uses; when the row has
+    none of them, every column is shown as before.
     """
+    record = {key: row[key] for key in sorted(row) if key in columns}
     values: dict[str, Any] = {
         "step": step.get("id"),
         "action": step.get("action"),
-        "record": {key: row[key] for key in sorted(row)},
+        "record": record or {key: row[key] for key in sorted(row)},
     }
     value = step.get("value")
     if isinstance(value, dict):

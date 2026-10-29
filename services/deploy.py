@@ -384,6 +384,28 @@ def finish_unheld_cancels(dsn: str) -> list[uuid.UUID]:
         return []
 
 
+def worker_id_for(number: int) -> str:
+    """The id a supervisor's ``number``-th worker runs under, and holds its runs' leases with."""
+    return f"deploy-worker-{number}"
+
+
+def release_worker_runs(dsn: str, worker_id: str) -> list[uuid.UUID]:
+    """PL-130: hand a stopped worker's runs to the next worker now, not after 365 seconds.
+
+    The owner's price run sat six minutes in "saving it now", with Cancel doing nothing, after its
+    worker was replaced: the run still carried the old worker's fresh heartbeat, so no other worker
+    could take it over until that heartbeat was 365 seconds old.
+    """
+    from packages.ledger import release_dead_worker_runs
+
+    try:
+        with psycopg.connect(dsn, autocommit=True, connect_timeout=3) as conn:
+            return release_dead_worker_runs(conn, worker_id)
+    except psycopg.Error as exc:
+        print(f"  could not hand back the runs of {worker_id}: {exc}")
+        return []
+
+
 def start_worker(
     api_url: str,
     runner_secret: str,
@@ -407,7 +429,7 @@ def start_worker(
             "-m",
             "services.runner",
             "--worker-id",
-            f"deploy-worker-{number}",
+            worker_id_for(number),
             "--executor",
             "browser",
             "--session",
@@ -448,8 +470,18 @@ def supervisor_command() -> int:
 
     print("Supervisor watching: each connected Chrome gets a worker for its own runs.")
     workers: dict[str, subprocess.Popen] = {}
+    worker_ids: dict[str, str] = {}
     worker_number = 0
     attached_before = 0
+
+    def hand_back(session_id: str) -> None:
+        # PL-130: the process is gone, so its runs go to the next worker at once.
+        worker_id = worker_ids.pop(session_id, None)
+        if worker_id is None:
+            return
+        for run_id in release_worker_runs(dsn, worker_id):
+            print(f"  Handed run {str(run_id)[:8]} to the next runner.")
+
     try:
         while True:
             for session_id, process in list(workers.items()):
@@ -461,6 +493,7 @@ def supervisor_command() -> int:
                         else f"  The runner for Chrome {session_id[:8]} finished."
                     )
                     del workers[session_id]
+                    hand_back(session_id)
             for run_id in finish_unheld_cancels(dsn):
                 print(f"  Cancelled run {str(run_id)[:8]}: its Chrome was not there to finish it.")
             read = attached_sessions(api_url, runner_secret)
@@ -475,12 +508,15 @@ def supervisor_command() -> int:
             # (it reconnected, or the person disconnected), its worker would pause every run it
             # touches, so it is stopped; a reconnected Chrome gets a new one on the next tick.
             for session_id in [sid for sid in workers if sid not in live]:
+                print(f"  Chrome {session_id[:8]} is no longer connected; stopping its runner.")
                 stop_process(workers.pop(session_id))
+                hand_back(session_id)
             if len(sessions) != attached_before:
                 print(f"  {len(sessions)} Chrome window(s) connected.")
                 attached_before = len(sessions)
             for session in sessions_to_start(open_runs(dsn), sessions, set(workers)):
                 worker_number += 1
+                worker_ids[session.session_id] = worker_id_for(worker_number)
                 workers[session.session_id] = start_worker(
                     api_url,
                     runner_secret,
