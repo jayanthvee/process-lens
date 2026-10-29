@@ -29,6 +29,7 @@ from pydantic import BaseModel
 
 from packages.compiler import CompileError, CompileOptions, compile_recording
 from packages.compiler.shape import Shape, canonical_recording, read_shape, sample_row
+from packages.compiler.validation import assert_valid_recipe
 from services.ai import AiService, CleanRecordingRequest
 
 from .db import connection
@@ -143,8 +144,11 @@ def _compile_shape(request: CompileRequest) -> CompileResponse:
         shape.save = "leave"
     events = canonical_recording(shape)
     row = sample_row(shape)
+    # PL-129: an update is always checked by re-opening the item and reading the value back; a
+    # Save click it was taught with stays a plain step before the leave (``canonical_recording``).
+    checked_by_reopening = shape.kind == "update" or shape.save == "leave"
     save_ids: list[str] = []
-    if shape.save == "button" and shape.save_event is not None:
+    if not checked_by_reopening and shape.save == "button" and shape.save_event is not None:
         step_id = (shape.save_event.get("step") or {}).get("id")
         if isinstance(step_id, str):
             save_ids = [step_id]
@@ -161,9 +165,9 @@ def _compile_shape(request: CompileRequest) -> CompileResponse:
         record_key_column=shape.item_column,
         idempotency_key=idempotency_key,
         allowed_origins=request.allowed_origins or [shape.origin],
-        commit_step_ids=save_ids if shape.save == "button" else None,
+        commit_step_ids=save_ids if not checked_by_reopening and shape.save == "button" else None,
         duplicate_check=True,
-        save_by_itself=shape.save == "leave",
+        save_by_itself=checked_by_reopening,
         search_before_new=shape.kind == "create",
         save_new_form=shape.kind == "create" and shape.save == "leave" and shape.save_event is None,
     )
@@ -175,7 +179,48 @@ def _compile_shape(request: CompileRequest) -> CompileResponse:
             status_code=422,
             detail={"message": message, "problems": list(exc.problems) or [message]},
         ) from exc
-    return CompileResponse(recipe=result.recipe, warnings=result.warnings, search_kind=shape.kind)
+    recipe = result.recipe
+    if shape.kind == "update" and shape.save == "button":
+        recipe = _save_when_offered(recipe)
+    return CompileResponse(recipe=recipe, warnings=result.warnings, search_kind=shape.kind)
+
+
+# How long a run waits for the app's Save control after the change. Odoo draws it as soon as the
+# form changes; a form that did not change never shows it.
+SAVE_OFFERED_TIMEOUT_MS = 3000
+
+
+def _save_when_offered(recipe: dict[str, Any]) -> dict[str, Any]:
+    """PL-129: an update's Save click is pressed only when the page shows it.
+
+    Odoo shows its Save icon only on a changed form. A row whose item already has the value changes
+    nothing, so the icon is absent and a plain click would fail the row. The click becomes a branch
+    on the control being there; the re-open's read-back decides the row either way.
+    """
+    steps = recipe["steps"]
+    leave = max(index for index, step in enumerate(steps) if step.get("action") == "navigate")
+    save = steps[leave - 1] if leave > 0 else None
+    if save is None or save.get("action") != "click" or save.get("commit"):
+        return recipe
+    steps[leave - 1] = {
+        "id": f"{save['id']}-when-offered",
+        "action": "branch",
+        "name": "Save if the page offers it",
+        "intent": "save the change",
+        "when": {
+            "element_present": {"targets": [dict(rung) for rung in save["targets"]]},
+            "timeout_ms": SAVE_OFFERED_TIMEOUT_MS,
+        },
+        "then": [save],
+    }
+    try:
+        assert_valid_recipe(recipe)
+    except CompileError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"message": str(exc).split("\n", 1)[0], "problems": list(exc.problems)},
+        ) from exc
+    return recipe
 
 
 class ShapeBody(BaseModel):

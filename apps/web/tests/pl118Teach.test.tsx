@@ -206,8 +206,10 @@ describe("teaching keeps the recording", () => {
 
     expect(sent.some((message) => message.type === "record:start")).toBe(true);
     expect(sent.some((message) => message.type === "record:clear")).toBe(false);
-    // The steps are still on the screen: continuing adds to them.
-    expect(screen.getByText(/We'll skip a row if this/)).toBeTruthy();
+    // The steps are still on the screen: continuing adds to them. PL-129: naming and saving wait
+    // for Stop, so the steps themselves are what shows.
+    expect(screen.getAllByText(/799/).length).toBeGreaterThan(0);
+    expect(screen.queryByRole("button", { name: "Save as task" })).toBeNull();
   });
 
   it("asks before Start over throws the steps away", async () => {

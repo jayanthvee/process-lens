@@ -34,7 +34,11 @@ import {
   stepProblems,
   type StepProblem,
 } from "../../../extension/src/popup/flow";
-import { compileRefusalSentence, plainSentences, stepSentence } from "../../../extension/src/popup/words";
+import {
+  compileRefusalSentence,
+  plainSentences,
+  stepSentence,
+} from "../../../extension/src/popup/words";
 import {
   CODE_FROM_EMAIL_BUTTON,
   CODE_FROM_EMAIL_LATER,
@@ -109,7 +113,10 @@ function quoted(value: unknown): string {
   return `“${value === null || value === undefined ? "" : String(value)}”`;
 }
 
-function mergeEvent(events: RecordedEvent[], event: RecordedEvent): RecordedEvent[] {
+function mergeEvent(
+  events: RecordedEvent[],
+  event: RecordedEvent,
+): RecordedEvent[] {
   const index = events.findIndex((candidate) => candidate.seq === event.seq);
   if (index < 0) return [...events, event];
   const next = events.slice();
@@ -159,9 +166,11 @@ export function PanelTeach(): JSX.Element {
   const visibleEvents = events.filter((event) => !hiddenSeqs.has(event.seq));
   // PL-125: a stopped recording that opened an item is a task with a shape. The panel then asks
   // three plain questions about it instead of showing every recorded step for the person to tidy.
-  const shapeMode = !recording && status.signIn !== true && shape !== null && shape.opened;
+  const shapeMode =
+    !recording && status.signIn !== true && shape !== null && shape.opened;
   // PL-127: while the shape is unread the old step list stays hidden too; Save reads it again.
-  const shapePending = !recording && status.signIn !== true && shape === null && shapeUnread;
+  const shapePending =
+    !recording && status.signIn !== true && shape === null && shapeUnread;
   const askingShape = shapeMode || shapePending;
   const hiddenEvents = events.filter((event) => hiddenSeqs.has(event.seq));
   const values = recordedValues(visibleEvents);
@@ -177,10 +186,13 @@ export function PanelTeach(): JSX.Element {
     const chrome = extensionChrome();
     if (chrome?.runtime === undefined) return null;
     try {
-      const answer = (await chrome.runtime.sendMessage(message)) as RecorderResponse | undefined;
+      const answer = (await chrome.runtime.sendMessage(message)) as
+        RecorderResponse | undefined;
       return answer ?? null;
     } catch {
-      setProblem("ProcessLens's recorder is not answering. Reload the extension and try again.");
+      setProblem(
+        "ProcessLens's recorder is not answering. Reload the extension and try again.",
+      );
       return null;
     }
   }
@@ -192,7 +204,9 @@ export function PanelTeach(): JSX.Element {
       setEvents(next.events);
       setConfirmingOver(false);
       setName((current) =>
-        nameEdited && current.trim() !== "" ? current : defaultName(next.events),
+        nameEdited && current.trim() !== ""
+          ? current
+          : defaultName(next.events),
       );
     }
   }
@@ -204,7 +218,11 @@ export function PanelTeach(): JSX.Element {
       apply(answer);
       // PL-125: switching panel tabs unmounts this screen; a stopped recording's questions are
       // read again rather than lost.
-      if (answer && answer.status?.state !== "recording" && answer.events.length > 0) {
+      if (
+        answer &&
+        answer.status?.state !== "recording" &&
+        answer.events.length > 0
+      ) {
         void askShape(answer.events);
       }
     });
@@ -216,7 +234,9 @@ export function PanelTeach(): JSX.Element {
         setStatus(incoming.status);
       }
       if (incoming.type === "record:appended" && incoming.event !== undefined) {
-        setEvents((current) => mergeEvent(current, incoming.event as RecordedEvent));
+        setEvents((current) =>
+          mergeEvent(current, incoming.event as RecordedEvent),
+        );
       }
     };
     chrome?.runtime?.onMessage?.addListener(listener);
@@ -250,7 +270,7 @@ export function PanelTeach(): JSX.Element {
       commitEdited
         ? current
         : status.signIn === true
-          ? defaultCommitStepId(visibleEvents) ?? ""
+          ? (defaultCommitStepId(visibleEvents) ?? "")
           : defaultCommitChoice(visibleEvents),
     );
     // Only re-derive on a new recording, a cleaning decision, or a sign-in decision; a deliberate
@@ -267,7 +287,10 @@ export function PanelTeach(): JSX.Element {
     setNote(null);
     setConfirmingOver(false);
     const chrome = extensionChrome();
-    const tabs = await chrome?.tabs?.query({ active: true, currentWindow: true });
+    const tabs = await chrome?.tabs?.query({
+      active: true,
+      currentWindow: true,
+    });
     const tabId = tabs?.[0]?.id;
     const answer = await send({
       type: "record:start",
@@ -299,7 +322,10 @@ export function PanelTeach(): JSX.Element {
   async function askShape(stopped: RecordedEvent[]): Promise<TaskShape | null> {
     setCleaned(STOPPED);
     const config = apiConfig();
-    const read = await readShape(stopped, { baseUrl: config.base, headers: config.headers });
+    const read = await readShape(stopped, {
+      baseUrl: config.base,
+      headers: config.headers,
+    });
     setShape(read);
     setShapeUnread(read === null);
     if (read?.save) setSaveAnswer(read.save);
@@ -365,7 +391,8 @@ export function PanelTeach(): JSX.Element {
         return;
       }
     }
-    const byShape = !recording && status.signIn !== true && taught !== null && taught.opened;
+    const byShape =
+      !recording && status.signIn !== true && taught !== null && taught.opened;
     if (byShape && taught?.kind === null) {
       setProblem(taught.problem ?? NO_EVENTS);
       return;
@@ -383,7 +410,8 @@ export function PanelTeach(): JSX.Element {
       const intents: Record<string, string> = {};
       if (cleaned?.ok === true) {
         for (const step of cleaned.steps) {
-          if (step.keep && step.intent.trim() !== "") intents[step.id] = step.intent;
+          if (step.keep && step.intent.trim() !== "")
+            intents[step.id] = step.intent;
         }
       }
       const request = byShape
@@ -392,17 +420,19 @@ export function PanelTeach(): JSX.Element {
             save: shape === null ? (taught?.save ?? "leave") : saveAnswer,
           })
         : makeRecipeRequest(visibleEvents, {
-        name: trimmed,
-        recordKeyColumn: keyColumn,
-        // PL-107: the person chooses which click saves; "" is "Nothing gets saved", which
-        // compiles a read-only recipe (no commit step). PL-118: the sentinel is the app's own
-        // save when the form is left, and the compiler builds its leave/re-open commit.
-        // PL-117: a sign-in saves nothing, so it never sends a commit choice at all.
-        commitStepId:
-          status.signIn === true || selfSave || commitStepId === "" ? null : commitStepId,
-        saveByItself: selfSave && status.signIn !== true,
-        intents,
-      });
+            name: trimmed,
+            recordKeyColumn: keyColumn,
+            // PL-107: the person chooses which click saves; "" is "Nothing gets saved", which
+            // compiles a read-only recipe (no commit step). PL-118: the sentinel is the app's own
+            // save when the form is left, and the compiler builds its leave/re-open commit.
+            // PL-117: a sign-in saves nothing, so it never sends a commit choice at all.
+            commitStepId:
+              status.signIn === true || selfSave || commitStepId === ""
+                ? null
+                : commitStepId,
+            saveByItself: selfSave && status.signIn !== true,
+            intents,
+          });
       if (!byShape && values.length === 0) {
         // No column to key on: every Run once carries a fresh id, so the ledger sees new work.
         request.record_key_column = "";
@@ -436,7 +466,9 @@ export function PanelTeach(): JSX.Element {
         {
           name: trimmed,
           recipe: compiled.recipe,
-          ...(signIn === null ? {} : { sign_in: true, sign_in_column: signIn.column }),
+          ...(signIn === null
+            ? {}
+            : { sign_in: true, sign_in_column: signIn.column }),
         },
         { baseUrl: config.base, headers: config.headers },
       );
@@ -458,7 +490,11 @@ export function PanelTeach(): JSX.Element {
       setName(trimmed);
       setNameEdited(true);
     } catch (failure) {
-      setProblem(failure instanceof Error ? failure.message : "Could not reach ProcessLens.");
+      setProblem(
+        failure instanceof Error
+          ? failure.message
+          : "Could not reach ProcessLens.",
+      );
       setNote(null);
     } finally {
       setSaving(false);
@@ -469,34 +505,47 @@ export function PanelTeach(): JSX.Element {
   // PL-118 item 2: the app's own save is offered whenever the recording has no Save click. A
   // sign-in saves nothing (PL-113 S2), so it is never offered there.
   const selfSaveOffered =
-    visibleEvents.length > 0 && status.signIn !== true && !hasSaveClick(visibleEvents);
+    visibleEvents.length > 0 &&
+    status.signIn !== true &&
+    !hasSaveClick(visibleEvents);
   // PL-118 item 4: an edit's key line names the key column and the exact change.
   const isUpdate = updateDetected(visibleEvents, keyColumn);
   // PL-118 item 5: the count is the lines the person sees; a code typed for them is named, not
   // counted as a step.
   const hiddenCodeSteps = status.code?.state === "typed" ? 1 : 0;
   // PL-109 item 5/6: the labels the decisions name.
-  const keyLabel = values.find((value) => value.column === keyColumn)?.label ?? keyColumn;
+  const keyLabel =
+    values.find((value) => value.column === keyColumn)?.label ?? keyColumn;
   const commitLabel =
-    clickChoices.find((choice) => choice.id === commitStepId)?.label.replace(/^Clicked /, "") ?? "";
+    clickChoices
+      .find((choice) => choice.id === commitStepId)
+      ?.label.replace(/^Clicked /, "") ?? "";
   // PL-103: a step that cannot be repeated says so on its own row, with its fix. Like the popup,
   // the check runs once the recording is stopped: while it is still being built there is nothing
   // to judge yet.
-  const problems = recording ? new Map<number, StepProblem>() : stepProblems(visibleEvents);
+  const problems = recording
+    ? new Map<number, StepProblem>()
+    : stepProblems(visibleEvents);
   // PL-107: a plain click's own words are already the "Which click saves your work?" choices, so
   // the step list shows the other steps and any step that needs a fix (a click's included). That
   // keeps one line per step on screen instead of the same sentence twice.
   const clickSeqs = new Set(
-    visibleEvents.filter((event) => event.step?.action === "click").map((event) => event.seq),
+    visibleEvents
+      .filter((event) => event.step?.action === "click")
+      .map((event) => event.seq),
   );
-  const listLines = lines.filter((line) => !clickSeqs.has(line.seq) || problems.has(line.seq));
+  const listLines = lines.filter(
+    (line) => !clickSeqs.has(line.seq) || problems.has(line.seq),
+  );
   // PL-109 item 1: the value the person typed, shown where the step names the field.
   const typedBySeq = new Map<number, string>();
   for (const event of visibleEvents) {
     const step = event?.step ?? null;
-    if (step === null || (step.action !== "fill" && step.action !== "select")) continue;
+    if (step === null || (step.action !== "fill" && step.action !== "select"))
+      continue;
     const source = step.value;
-    if (source && source.kind === "constant") typedBySeq.set(event.seq, String(source.value));
+    if (source && source.kind === "constant")
+      typedBySeq.set(event.seq, String(source.value));
   }
 
   return (
@@ -506,7 +555,8 @@ export function PanelTeach(): JSX.Element {
         {recording ? "Recording" : "Not recording"}
       </p>
       <p className="panel-note">
-        Do the job once in your browser. ProcessLens watches, then you save it as a task.
+        Do the job once in your browser. ProcessLens watches, then you save it
+        as a task.
       </p>
       <div className="panel-actions">
         <button
@@ -515,9 +565,16 @@ export function PanelTeach(): JSX.Element {
           disabled={recording}
           onClick={() => void start()}
         >
-          {!recording && lines.length > 0 ? "Continue teaching" : "Start teaching"}
+          {!recording && lines.length > 0
+            ? "Continue teaching"
+            : "Start teaching"}
         </button>
-        <button type="button" className="btn quiet" disabled={!recording} onClick={() => void stop()}>
+        <button
+          type="button"
+          className="btn quiet"
+          disabled={!recording}
+          onClick={() => void stop()}
+        >
           Stop
         </button>
         {lines.length > 0 && !recording ? (
@@ -527,7 +584,11 @@ export function PanelTeach(): JSX.Element {
         ) : null}
       </div>
       {confirmingOver ? (
-        <div className="panel-confirm" role="alertdialog" aria-label="Throw away these steps?">
+        <div
+          className="panel-confirm"
+          role="alertdialog"
+          aria-label="Throw away these steps?"
+        >
           <p className="panel-note">Throw away these {lines.length} steps?</p>
           <button
             type="button"
@@ -564,7 +625,11 @@ export function PanelTeach(): JSX.Element {
       {codeState?.state === "offer" ? (
         <div className="panel-code">
           <p className="panel-note">{CODE_FROM_EMAIL_OFFER}</p>
-          <button type="button" className="btn quiet" onClick={() => void allowCodes()}>
+          <button
+            type="button"
+            className="btn quiet"
+            onClick={() => void allowCodes()}
+          >
             {CODE_FROM_EMAIL_BUTTON}
           </button>
           <p className="panel-note">{CODE_FROM_EMAIL_LATER}</p>
@@ -583,7 +648,11 @@ export function PanelTeach(): JSX.Element {
       {shapePending ? (
         <p className="panel-problem" role="status">
           {SHAPE_UNREAD}{" "}
-          <button type="button" className="panel-step-fix" onClick={() => void askShape(events)}>
+          <button
+            type="button"
+            className="panel-step-fix"
+            onClick={() => void askShape(events)}
+          >
             Try again
           </button>
         </p>
@@ -599,13 +668,14 @@ export function PanelTeach(): JSX.Element {
               <p className="panel-label">Which item?</p>
               {shape.kind === "update" ? (
                 <p className="panel-note">
-                  Each row opens the {shape.item?.label.toLowerCase() || "item"} it names. You
-                  opened <b>{quoted(shape.item?.text)}</b>.
+                  Each row opens the {shape.item?.label.toLowerCase() || "item"}{" "}
+                  it names. You opened <b>{quoted(shape.item?.text)}</b>.
                 </p>
               ) : (
                 <p className="panel-note">
                   Each row adds a new one. A row whose{" "}
-                  <b>{shape.item?.label || "key"}</b> is already on the list is skipped.
+                  <b>{shape.item?.label || "key"}</b> is already on the list is
+                  skipped.
                 </p>
               )}
               <p className="panel-label">What changes?</p>
@@ -613,7 +683,9 @@ export function PanelTeach(): JSX.Element {
                 {shape.changes.map((change) => (
                   <li key={change.column} className="panel-note">
                     <b>{change.label}</b> — you typed {quoted(change.value)}
-                    {change.was === null || change.was === undefined || change.was === ""
+                    {change.was === null ||
+                    change.was === undefined ||
+                    change.was === ""
                       ? ""
                       : ` (it was ${quoted(change.was)})`}
                   </li>
@@ -629,7 +701,9 @@ export function PanelTeach(): JSX.Element {
                       checked={saveAnswer === "button"}
                       onChange={() => setSaveAnswer("button")}
                     />{" "}
-                    The <b>{shape.save_label?.replace(/^Click /, "") || "Save"}</b> click saves it
+                    The{" "}
+                    <b>{shape.save_label?.replace(/^Click /, "") || "Save"}</b>{" "}
+                    click saves it
                   </label>
                   <label className="panel-note">
                     <input
@@ -643,8 +717,8 @@ export function PanelTeach(): JSX.Element {
                 </div>
               ) : (
                 <p className="panel-note">
-                  It saves when you leave the page. Each row is checked afterwards, so a change
-                  that didn't save is never marked done.
+                  It saves when you leave the page. Each row is checked
+                  afterwards, so a change that didn't save is never marked done.
                 </p>
               )}
             </>
@@ -654,7 +728,9 @@ export function PanelTeach(): JSX.Element {
             className="panel-change"
             onClick={() => setShowingRecorded((current) => !current)}
           >
-            {showingRecorded ? "Hide what was recorded" : `Show what was recorded (${lines.length})`}
+            {showingRecorded
+              ? "Hide what was recorded"
+              : `Show what was recorded (${lines.length})`}
           </button>
         </div>
       ) : null}
@@ -667,12 +743,16 @@ export function PanelTeach(): JSX.Element {
             return (
               <li
                 key={line.seq}
-                className={problem === undefined ? "panel-step" : "panel-step is-problem"}
+                className={
+                  problem === undefined ? "panel-step" : "panel-step is-problem"
+                }
               >
                 <div className="panel-step-line">
                   <span>
                     {line.sentence}
-                    {typedBySeq.has(line.seq) ? ` — “${typedBySeq.get(line.seq)}”` : ""}
+                    {typedBySeq.has(line.seq)
+                      ? ` — “${typedBySeq.get(line.seq)}”`
+                      : ""}
                   </span>
                   <button
                     type="button"
@@ -707,12 +787,16 @@ export function PanelTeach(): JSX.Element {
       {askingShape || hiddenEvents.length === 0 ? null : (
         <div className="panel-hidden">
           <p className="panel-note">
-            Hidden: {hiddenEvents.length} step{hiddenEvents.length === 1 ? "" : "s"} the page
-            did by itself.{" "}
+            Hidden: {hiddenEvents.length} step
+            {hiddenEvents.length === 1 ? "" : "s"} the page did by itself.{" "}
             <button
               type="button"
               className="panel-change"
-              aria-label={showingHidden ? "Hide the steps the page did by itself" : "Show the steps the page did by itself"}
+              aria-label={
+                showingHidden
+                  ? "Hide the steps the page did by itself"
+                  : "Show the steps the page did by itself"
+              }
               onClick={() => setShowingHidden((current) => !current)}
             >
               {showingHidden ? "Hide" : "Show"}
@@ -730,7 +814,9 @@ export function PanelTeach(): JSX.Element {
                         type="button"
                         className="panel-step-fix"
                         onClick={() =>
-                          setBroughtBack((current) => new Set(current).add(event.seq))
+                          setBroughtBack((current) =>
+                            new Set(current).add(event.seq),
+                          )
                         }
                       >
                         Bring back
@@ -744,7 +830,9 @@ export function PanelTeach(): JSX.Element {
         </div>
       )}
 
-      {visibleEvents.length === 0 || recording || askingShape ? null : status.signIn === true ? (
+      {visibleEvents.length === 0 ||
+      recording ||
+      askingShape ? null : status.signIn === true ? (
         // PL-117: a sign-in saves nothing, so there is no save click to offer or send.
         <div className="panel-commit">
           <p className="panel-note">A sign-in saves nothing.</p>
@@ -777,8 +865,8 @@ export function PanelTeach(): JSX.Element {
                 // PL-113 item 2 / PL-118 item 2: no click in the recording changes data. Say so
                 // plainly and offer the app's own save instead of letting a tab stand in.
                 <p className="panel-note">
-                  We didn't see a Save click. Some apps save by themselves. Click Save while
-                  teaching, or choose how your work is saved.
+                  We didn't see a Save click. Some apps save by themselves.
+                  Click Save while teaching, or choose how your work is saved.
                 </p>
               ) : null}
               <label className="panel-label" htmlFor="panel-commit">
@@ -801,7 +889,9 @@ export function PanelTeach(): JSX.Element {
                   </option>
                 ))}
                 {selfSaveOffered ? (
-                  <option value={SAVE_BY_ITSELF}>{SAVE_BY_ITSELF_CHOICE}</option>
+                  <option value={SAVE_BY_ITSELF}>
+                    {SAVE_BY_ITSELF_CHOICE}
+                  </option>
                 ) : null}
                 <option value="">Nothing gets saved</option>
               </select>
@@ -810,97 +900,113 @@ export function PanelTeach(): JSX.Element {
         </div>
       )}
 
-      <div className="panel-save">
-        <label className="panel-label" htmlFor="panel-task-name">
-          What should this task be called?
-        </label>
-        <input
-          id="panel-task-name"
-          className="panel-input"
-          type="text"
-          value={name}
-          autoComplete="off"
-          spellCheck={false}
-          onChange={(event) => {
-            setName(event.target.value);
-            setNameEdited(true);
-            storeName(event.target.value);
-          }}
-        />
-        {/* PL-116: a sign-in runs with one email; the duplicate-key line describes a spreadsheet
+      {/* PL-129: a task is saved only after Stop. While recording the panel shows the steps as
+          they come in, and the owner's price task saved from that list skipped every row. */}
+      {recording ? (
+        <p className="panel-note">
+          Press Stop when you're done. Then ProcessLens shows what it learned,
+          and you name the task.
+        </p>
+      ) : (
+        <div className="panel-save">
+          <label className="panel-label" htmlFor="panel-task-name">
+            What should this task be called?
+          </label>
+          <input
+            id="panel-task-name"
+            className="panel-input"
+            type="text"
+            value={name}
+            autoComplete="off"
+            spellCheck={false}
+            onChange={(event) => {
+              setName(event.target.value);
+              setNameEdited(true);
+              storeName(event.target.value);
+            }}
+          />
+          {/* PL-116: a sign-in runs with one email; the duplicate-key line describes a spreadsheet
             task and is noise here. The key is still worked out and sent on save, unchanged. A
             sign-in that typed no identifiable value still needs the question -- hiding it would
             leave Save disabled with no way out -- so only its note is left out. */}
-        {askingShape || values.length === 0 || (status.signIn === true && keyColumn !== "") ? null : (
-          <div className="panel-key">
-            {keyColumn !== "" && !changingKey ? (
-              <p className="panel-note">
-                {isUpdate ? (
-                  <>
-                    We'll skip a row if this <b>{keyLabel.toLowerCase()}</b> already got this
-                    exact change.{" "}
-                  </>
-                ) : (
-                  <>
-                    We'll use <b>{keyLabel}</b> so nothing gets added twice.{" "}
-                  </>
-                )}
-                <button
-                  type="button"
-                  className="panel-change"
-                  aria-label="Change the value that is different for every row"
-                  onClick={() => setChangingKey(true)}
-                >
-                  Change
-                </button>
-              </p>
-            ) : (
-              <>
-                <label className="panel-label" htmlFor="panel-task-key">
-                  Which value is different for every row?
-                </label>
-                {status.signIn === true ? null : (
-                  <p className="panel-note">We use it so nothing gets added twice.</p>
-                )}
-                <select
-                  id="panel-task-key"
-                  className="panel-input"
-                  value={keyColumn}
-                  onChange={(event) => setKeyColumn(event.target.value)}
-                >
-                  {values.map((value) => (
-                    <option key={value.column} value={value.column}>
-                      {value.label}
-                    </option>
-                  ))}
-                </select>
-              </>
-            )}
-          </div>
-        )}
-        <button
-          type="button"
-          className="btn primary"
-          disabled={
-            saving ||
-            visibleEvents.length === 0 ||
-            (askingShape ? shape?.kind === null : values.length > 0 && keyColumn === "")
-          }
-          onClick={() => void save()}
-        >
-          Save as task
-        </button>
-        {note === null ? null : (
-          <p className="panel-note" role="status">
-            {note}
-          </p>
-        )}
-        {problem === null ? null : (
-          <p className="panel-problem" role="status">
-            {problem}
-          </p>
-        )}
-      </div>
+          {askingShape ||
+          values.length === 0 ||
+          (status.signIn === true && keyColumn !== "") ? null : (
+            <div className="panel-key">
+              {keyColumn !== "" && !changingKey ? (
+                <p className="panel-note">
+                  {isUpdate ? (
+                    <>
+                      We'll skip a row if this <b>{keyLabel.toLowerCase()}</b>{" "}
+                      already got this exact change.{" "}
+                    </>
+                  ) : (
+                    <>
+                      We'll use <b>{keyLabel}</b> so nothing gets added
+                      twice.{" "}
+                    </>
+                  )}
+                  <button
+                    type="button"
+                    className="panel-change"
+                    aria-label="Change the value that is different for every row"
+                    onClick={() => setChangingKey(true)}
+                  >
+                    Change
+                  </button>
+                </p>
+              ) : (
+                <>
+                  <label className="panel-label" htmlFor="panel-task-key">
+                    Which value is different for every row?
+                  </label>
+                  {status.signIn === true ? null : (
+                    <p className="panel-note">
+                      We use it so nothing gets added twice.
+                    </p>
+                  )}
+                  <select
+                    id="panel-task-key"
+                    className="panel-input"
+                    value={keyColumn}
+                    onChange={(event) => setKeyColumn(event.target.value)}
+                  >
+                    {values.map((value) => (
+                      <option key={value.column} value={value.column}>
+                        {value.label}
+                      </option>
+                    ))}
+                  </select>
+                </>
+              )}
+            </div>
+          )}
+          <button
+            type="button"
+            className="btn primary"
+            disabled={
+              saving ||
+              visibleEvents.length === 0 ||
+              (askingShape
+                ? shape?.kind === null
+                : values.length > 0 && keyColumn === "")
+            }
+            onClick={() => void save()}
+          >
+            Save as task
+          </button>
+          {note === null ? null : (
+            <p className="panel-note" role="status">
+              {note}
+            </p>
+          )}
+          {problem === null ? null : (
+            <p className="panel-problem" role="status">
+              {problem}
+            </p>
+          )}
+        </div>
+      )}
     </section>
   );
 }
