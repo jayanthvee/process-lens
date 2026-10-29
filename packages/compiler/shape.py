@@ -409,6 +409,13 @@ def canonical_recording(shape: Shape) -> list[dict[str, Any]]:
         add(change.event)
     if shape.save == "button" and shape.save_event is not None:
         add(shape.save_event)
+        if shape.kind == "update":
+            # PL-129: an update's Save click changes neither the address nor the page's words, so
+            # nothing after it shows that it worked. The click is kept, then the run leaves by the
+            # list's address and the re-open reads the value back, exactly as for a leave.
+            out.append(
+                {"seq": len(out) + 1, "kind": "navigate", "url": shape.list_url, "step": None}
+            )
     else:
         # Leaving is done by going to the list's address, not by replaying the click the person
         # left with: Odoo draws a back arrow in a narrow window and a breadcrumb in a wide one, and
