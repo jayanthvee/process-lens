@@ -50,7 +50,7 @@ next. The columns may otherwise change only in a `failed|parked → pending` re-
 | From | To | Used when |
 | --- | --- | --- |
 | `pending` | `claimed` | The claim query picks the record |
-| `pending` | `skipped` | Its idempotency key is already in `committed_keys` (pre-batch check) |
+| `pending` | `skipped` | Its idempotency key is already in `committed_keys` (pre-batch check; creates only since PL-128, an update is decided by the site) |
 | `pending` | `failed` | Close-out: `attempts >= max_attempts` |
 | `claimed` | `prechecked` | Precheck finished |
 | `claimed` | `pending` | Released: worker shutdown, or recovery of an abandoned claim |
@@ -138,7 +138,7 @@ P-001 proposed migration 0002 for each of these; L1, L4, L5, and L6 are now enfo
 | I5 | Each record is claimed by exactly one worker | Claim pattern, `SKIP LOCKED` | Two-worker race over 50 records, 10 times (DB, PL-002) |
 | I6 | No `submitting → pending`; a crash in the commit window passes through `reconciling` | Guard | `tests/db` illegal-transition case; kill test (Phase 3) |
 | I7 | Zero duplicates in the destination after crashes | Write-ahead and reconcile | Kill test: 20 kills mid-save, then count by key through the demo test API (`tests/`, Phase 3) |
-| I8 | A re-run of the same file submits nothing new | `committed_keys` skip pattern | End-to-end re-run on the demo CRM (Phase 3) |
+| I8 | A re-run of the same file submits nothing new (a create; PL-128: an update is set again and read back, since the site can be changed after a run) | `committed_keys` skip pattern | End-to-end re-run on the demo CRM (Phase 3) |
 | I9 | `verified` after a commit implies a `committed_keys` row | Verify transaction | Integration: verified commit records = keys per run |
 | I10 | Ledger, recipe versions, and audit rows cannot be edited | Append-only triggers | `tests/db` UPDATE/DELETE rejected (DB, PL-002) |
 | I11 | L1 to L6 above | Database (L1, L4, L5, L6) and code (L2, L3) | `tests/db/test_ledger_hardening.py` for L1/L4/L6; `tests/breakit/` (T1) for L2/L3 |
