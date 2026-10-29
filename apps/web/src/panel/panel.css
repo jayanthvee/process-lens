@@ -54,10 +54,11 @@ body,
   gap: 4px;
   padding: 4px;
   border-radius: 12px;
-  background: var(--glass);
+  /* PL-130: solid, and covering the shell's top padding too, so a page scrolled under the tabs
+     no longer shows through them ("Teach a task" was drawn over "Teach"). */
+  background: var(--fog-1);
+  box-shadow: 0 -10px 0 10px var(--fog-1);
   border: 1px solid var(--glass-line);
-  backdrop-filter: blur(18px);
-  -webkit-backdrop-filter: blur(18px);
 }
 .panel-nav a {
   padding: 8px 6px;

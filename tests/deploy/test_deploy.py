@@ -314,3 +314,50 @@ def test_a_failed_read_of_the_connected_chromes_stops_no_worker(
     assert started == ["session-anna"]
     # The only stop is the shutdown's own, after the last tick.
     assert len(stopped) == 1
+
+
+def test_a_stopped_runner_hands_its_runs_back_at_once(
+    monkeypatch: pytest.MonkeyPatch, deploy_env: None
+) -> None:
+    """PL-130: when a runner's process ends, or its Chrome goes, its runs go to the next runner now.
+
+    Tick 1 starts Anna's and Ben's runners. Before tick 2, Anna's runner has exited by itself and
+    Ben's Chrome is gone, so his runner is stopped. Both hand back their runs by their own ids.
+    """
+    runs = [_open("queued", "browser-anna"), _open("queued", "browser-ben")]
+    monkeypatch.setattr(deploy, "open_runs", lambda dsn: runs)
+    monkeypatch.setattr(deploy, "finish_unheld_cancels", lambda dsn: [])
+    reads = iter([[ANNA, BEN], [ANNA], [ANNA]])
+    monkeypatch.setattr(deploy, "attached_sessions", lambda api_url, secret=None: next(reads))
+    released: list[str] = []
+    monkeypatch.setattr(
+        deploy, "release_worker_runs", lambda dsn, worker_id: released.append(worker_id) or []
+    )
+    processes: dict[str, Any] = {}
+
+    class Process:
+        def __init__(self) -> None:
+            self.returncode: int | None = None
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+    def fake_start(api_url: str, secret: str, session_id: str, *, number: int, browser_id=None):
+        processes[session_id] = Process()
+        return processes[session_id]
+
+    monkeypatch.setattr(deploy, "start_worker", fake_start)
+    monkeypatch.setattr(deploy, "stop_process", lambda process: None)
+    ticks = {"n": 0}
+
+    def fake_sleep(seconds: float) -> None:
+        ticks["n"] += 1
+        if ticks["n"] == 1:
+            processes["session-anna"].returncode = 1
+        if ticks["n"] >= 2:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(deploy.time, "sleep", fake_sleep)
+
+    assert deploy.main(["supervisor"]) == 0
+    assert released == ["deploy-worker-1", "deploy-worker-2"]

@@ -73,7 +73,7 @@ next. The columns may otherwise change only in a `failed|parked → pending` re-
 | `submitted_unverified` | `failed` | The page shows a positive rejection (see rule L2) |
 | `submitted_unverified` | `reconciling` | Crash, timeout, or anything short of proof |
 | `reconciling` | `verified` | The destination check finds exactly this commit |
-| `reconciling` | `pending` | The destination check finds nothing: retry, consuming an attempt |
+| `reconciling` | `pending` | The destination check finds nothing: retry, consuming an attempt. PL-130: an update whose save was cut off and whose site could not be checked is retried too (setting a value again adds nothing, and the re-open reads it back); a create stays parked |
 | `reconciling` | `parked` | The destination check is ambiguous |
 | `reconciling` | `failed` | The destination check cannot be performed (for example, the search itself keeps erroring) |
 | `parked` | `pending` | A person corrected the record and re-queued it (a commit-attempted record needs `destination_checked_by`) |
